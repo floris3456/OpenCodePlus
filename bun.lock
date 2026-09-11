@@ -362,6 +362,7 @@
         "@opencode/codemode": "workspace:*",
         "@opencode/plugin": "workspace:*",
         "@opencode/plugin-browser": "workspace:*",
+        "@opencode/plus": "workspace:*",
         "@opencode/schema": "workspace:*",
         "@opencode/util": "workspace:*",
         "@parcel/watcher": "2.5.1",
@@ -621,6 +622,23 @@
         "@opencode/plugin": "workspace:*",
         "@opencode/schema": "workspace:*",
         "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@typescript/native-preview": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/plus": {
+      "name": "@opencode/plus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@opencode/plugin": "workspace:*",
+        "@opencode/schema": "workspace:*",
+        "@opentui/solid": "catalog:",
+        "effect": "catalog:",
+        "solid-js": "catalog:",
       },
       "devDependencies": {
         "@tsconfig/bun": "catalog:",
@@ -903,6 +921,7 @@
         "@opencode/latex": "workspace:*",
         "@opencode/merman": "workspace:*",
         "@opencode/plugin": "workspace:*",
+        "@opencode/plus": "workspace:*",
         "@opencode/schema": "workspace:*",
         "@opencode/simulation": "workspace:*",
         "@opencode/theme": "workspace:*",
@@ -2215,6 +2234,8 @@
     "@opencode/plugin": ["@opencode/plugin@workspace:packages/plugin"],
 
     "@opencode/plugin-browser": ["@opencode/plugin-browser@workspace:packages/plugin-browser"],
+
+    "@opencode/plus": ["@opencode/plus@workspace:packages/plus"],
 
     "@opencode/posts": ["@opencode/posts@workspace:packages/posts"],
 
