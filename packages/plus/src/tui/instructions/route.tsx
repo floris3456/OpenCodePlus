@@ -40,6 +40,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const wide = () => dimensions().width >= WIDE_THRESHOLD
   // Narrow terminals swap between panes instead of showing both.
   const [showDetail, setShowDetail] = createSignal(false)
+  const [editing, setEditing] = createSignal(false)
   onCleanup(() => state.dispose())
 
   const route = props.context.ui.router.current()
@@ -90,6 +91,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   function back() {
+    if (editing()) {
+      // The detail pane owns escape while editing; this path only covers
+      // races where its layer has not mounted yet.
+      setEditing(false)
+      return
+    }
     if (!wide() && showDetail()) {
       setShowDetail(false)
       return
@@ -108,25 +115,46 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     void state.setEnabled(node, node.badges.enabled === false)
   }
 
-  props.context.keymap.layer(() => ({
-    commands: [
-      { bind: "up,k", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
-      { bind: "down,j", title: "Next row", group: "Instructions", run: () => state.move(1) },
-      { bind: "left,h", title: "Collapse", group: "Instructions", run: collapseOrParent },
-      { bind: "right,l", title: "Expand", group: "Instructions", run: expandOrChild },
-      { bind: "return", title: "Expand", group: "Instructions", run: expandOrChild },
-      { bind: "space", title: "Toggle enabled", group: "Instructions", run: toggle },
-      { bind: "r", title: "Refresh", group: "Instructions", run: () => state.refresh() },
-      { bind: "escape", title: "Back", group: "Instructions", run: back },
-    ],
-  }))
+  function acknowledge() {
+    const node = current()
+    if (!node) return
+    void state.acknowledge(node)
+  }
+
+  props.context.keymap.layer(() => {
+    // While the detail editor owns the keyboard, tree navigation stays
+    // silent so typing never moves the selection or toggles rows.
+    if (editing()) return { commands: [] }
+    return {
+      commands: [
+        { bind: "up,k", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
+        { bind: "down,j", title: "Next row", group: "Instructions", run: () => state.move(1) },
+        { bind: "left,h", title: "Collapse", group: "Instructions", run: collapseOrParent },
+        { bind: "right,l", title: "Expand", group: "Instructions", run: expandOrChild },
+        { bind: "return", title: "Expand", group: "Instructions", run: expandOrChild },
+        { bind: "space", title: "Toggle enabled", group: "Instructions", run: toggle },
+        { bind: "a", title: "Acknowledge review", group: "Instructions", run: acknowledge },
+        { bind: "r", title: "Refresh", group: "Instructions", run: () => void state.refresh() },
+        { bind: "escape", title: "Back", group: "Instructions", run: back },
+      ],
+    }
+  })
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={props.context.theme.background.default}>
       <box flexGrow={1} minHeight={0} flexDirection={wide() ? "row" : "column"}>
         <Show
           when={wide() || !showDetail()}
-          fallback={<DetailPane context={props.context} node={state.selected} snapshot={state.snapshot} />}
+          fallback={
+            <DetailPane
+              context={props.context}
+              node={state.selected}
+              snapshot={state.snapshot}
+              state={state}
+              editing={editing}
+              onEditingChange={setEditing}
+            />
+          }
         >
           <box flexGrow={wide() ? 1 : 0} width={wide() ? "50%" : "100%"}>
             <TreePane
@@ -139,18 +167,27 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           </box>
           <Show when={wide()}>
             <box flexGrow={1} width="50%">
-              <DetailPane context={props.context} node={state.selected} snapshot={state.snapshot} />
+              <DetailPane
+                context={props.context}
+                node={state.selected}
+                snapshot={state.snapshot}
+                state={state}
+                editing={editing}
+                onEditingChange={setEditing}
+              />
             </box>
           </Show>
         </Show>
       </box>
       <Show when={state.status()}>{(line) => <text fg={props.context.theme.text.feedback.info.default}>{line()}</text>}</Show>
       <text fg={props.context.theme.text.subdued}>
-        {wide()
-          ? "up/down move · left/right expand · space toggle · r refresh · esc back"
-          : showDetail()
-            ? "esc back to tree"
-            : "up/down move · enter detail · space toggle · r refresh · esc back"}
+        {editing()
+          ? "ctrl+s save · esc cancel"
+          : wide()
+            ? "up/down move · left/right expand · space toggle · a acknowledge · e edit · r refresh · esc back"
+            : showDetail()
+              ? "e edit · a acknowledge · esc back to tree"
+              : "up/down move · enter detail · space toggle · a acknowledge · r refresh · esc back"}
       </text>
     </box>
   )

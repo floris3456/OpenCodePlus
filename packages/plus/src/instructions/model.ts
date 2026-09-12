@@ -42,6 +42,34 @@ export function fingerprint(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex")
 }
 
+export interface MergeCustomizationFields {
+  readonly text?: string
+  readonly state?: CustomizationState
+  readonly reviewed?: string
+}
+
+export function mergeCustomization(
+  customizations: readonly Customization[],
+  item: Item,
+  agent: string,
+  fields: MergeCustomizationFields,
+): Customization[] {
+  const existing = customizations.find((record) => record.item === item.id && record.agent === agent)
+  const text = fields.text ?? existing?.text
+  const state = fields.state ?? existing?.state ?? "inherit"
+  const reviewed = fields.reviewed ?? existing?.reviewed
+  const record: Customization = {
+    item: item.id,
+    agent,
+    state,
+    basedOn: existing?.basedOn ?? item.fingerprint,
+    updated: new Date().toISOString(),
+    ...(text === undefined ? {} : { text }),
+    ...(reviewed === undefined ? {} : { reviewed }),
+  }
+  return [...customizations.filter((entry) => !(entry.item === item.id && entry.agent === agent)), record]
+}
+
 export function applies(item: Item, agent: string): boolean {
   return item.agents.length === 0 || item.agents.includes(agent)
 }

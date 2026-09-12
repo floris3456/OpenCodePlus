@@ -3,6 +3,7 @@ import {
   applies,
   effective,
   fingerprint,
+  mergeCustomization,
   override,
   type Customization,
   type Item,
@@ -180,4 +181,75 @@ test("review stays false when nothing changed upstream", () => {
 test("review stays false without a customization", () => {
   const item = makeItem({ text: "revised text" })
   expect(effective(makeSnapshot([]), item, "alpha").review).toBe(false)
+})
+
+test("mergeCustomization acknowledge sets reviewed and clears the review flag", () => {
+  const item = makeItem({ text: "revised text" })
+  const customizations = mergeCustomization([], item, "alpha", { reviewed: item.fingerprint })
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].reviewed).toBe(item.fingerprint)
+  expect(effective(makeSnapshot(customizations), item, "alpha").review).toBe(false)
+})
+
+test("mergeCustomization save text sets text and marks the item customized", () => {
+  const item = makeItem()
+  const customizations = mergeCustomization([], item, "alpha", { text: "custom" })
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].text).toBe("custom")
+  expect(effective(makeSnapshot(customizations), item, "alpha").customized).toBe(true)
+})
+
+test("mergeCustomization acknowledge preserves the other fields of an existing record", () => {
+  const item = makeItem({ text: "revised text" })
+  const existing = makeCustomization({
+    agent: "alpha",
+    text: "custom",
+    state: "disabled",
+    basedOn: fingerprint("default text"),
+  })
+  const customizations = mergeCustomization([existing], item, "alpha", { reviewed: item.fingerprint })
+  expect(customizations).toHaveLength(1)
+  const record = customizations[0]
+  expect(record.text).toBe("custom")
+  expect(record.state).toBe("disabled")
+  expect(record.basedOn).toBe(fingerprint("default text"))
+  expect(record.reviewed).toBe(item.fingerprint)
+})
+
+test("mergeCustomization save text preserves the other fields of an existing record", () => {
+  const item = makeItem({ text: "revised text" })
+  const existing = makeCustomization({
+    agent: "alpha",
+    state: "disabled",
+    basedOn: fingerprint("default text"),
+    reviewed: fingerprint("revised text"),
+  })
+  const customizations = mergeCustomization([existing], item, "alpha", { text: "custom" })
+  expect(customizations).toHaveLength(1)
+  const record = customizations[0]
+  expect(record.text).toBe("custom")
+  expect(record.state).toBe("disabled")
+  expect(record.basedOn).toBe(fingerprint("default text"))
+  expect(record.reviewed).toBe(fingerprint("revised text"))
+})
+
+test("mergeCustomization replaces the matching record instead of appending a duplicate", () => {
+  const item = makeItem()
+  const other = makeCustomization({ item: "item-2", agent: "alpha", text: "other" })
+  const existing = makeCustomization({ agent: "alpha", text: "before" })
+  const customizations = mergeCustomization([other, existing], item, "alpha", { text: "after" })
+  expect(customizations).toHaveLength(2)
+  expect(customizations.filter((record) => record.item === "item-1" && record.agent === "alpha")).toHaveLength(1)
+  expect(customizations.find((record) => record.item === "item-1")?.text).toBe("after")
+  expect(customizations.find((record) => record.item === "item-2")).toEqual(other)
+})
+
+test("mergeCustomization defaults basedOn to the item fingerprint and omits undefined optionals", () => {
+  const item = makeItem()
+  const customizations = mergeCustomization([], item, "alpha", { state: "disabled" })
+  expect(customizations).toHaveLength(1)
+  const record = customizations[0]
+  expect(record.basedOn).toBe(item.fingerprint)
+  expect("text" in record).toBe(false)
+  expect("reviewed" in record).toBe(false)
 })

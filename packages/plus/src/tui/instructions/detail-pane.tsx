@@ -1,14 +1,17 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { For, Show } from "solid-js"
+import { createEffect, createSignal, For, Show } from "solid-js"
 import { effective } from "../../instructions/model.js"
 import type { TreeNode } from "../../instructions/tree.js"
-import { modelSnapshotOf } from "./state.js"
 import type { Snapshot } from "../../rpc.js"
+import { modelSnapshotOf, type InstructionsState } from "./state.js"
 
-interface DetailPaneProps {
+export interface DetailPaneProps {
   context: Plugin.Context
   node: () => TreeNode | undefined
   snapshot: () => Snapshot | undefined
+  state: InstructionsState
+  editing: () => boolean
+  onEditingChange: (editing: boolean) => void
 }
 
 function resolvedText(node: TreeNode, snapshot: Snapshot): string {
@@ -43,6 +46,82 @@ function scopeLine(node: TreeNode): string | undefined {
 }
 
 export function DetailPane(props: DetailPaneProps) {
+  const [draft, setDraft] = createSignal<string>("")
+  let area: { plainText: string; isDestroyed: boolean; focus(): void; blur(): void; gotoBufferEnd(): void } | undefined
+
+  function editable(): boolean {
+    const node = props.node()
+    if (!node) return false
+    if (node.badges.readOnly === true) return false
+    return node.itemId !== undefined
+  }
+
+  function cancelEditing() {
+    area?.blur()
+    setDraft("")
+    props.onEditingChange(false)
+  }
+
+  async function saveEditing() {
+    const target = area
+    const node = props.node()
+    if (!target || target.isDestroyed || !node) return
+    setDraft(target.plainText)
+    const saved = await props.state.saveText(node, target.plainText)
+    if (saved) cancelEditing()
+  }
+
+  function isEditing(): boolean {
+    return props.editing() && editable()
+  }
+
+  createEffect(() => {
+    if (!isEditing()) return
+    const target = area
+    if (!target || target.isDestroyed) return
+    target.focus()
+    target.gotoBufferEnd()
+  })
+
+  // Drafts belong to one node: leaving the node discards the editor
+  // instead of saving stale text against a new target. Snapshot changes
+  // alone must not discard: a stale-revision save adopts the new snapshot
+  // and keeps the draft so the user can save again.
+  createEffect((previous: string | undefined) => {
+    const node = props.node()
+    const current = node?.id
+    if (previous !== undefined && current !== previous && props.editing()) cancelEditing()
+    return current
+  }, undefined)
+
+  props.context.keymap.layer(() => {
+    if (!isEditing()) {
+      const node = props.node()
+      const snapshot = props.snapshot()
+      if (!node || !snapshot) return { commands: [] }
+      if (node.badges.readOnly === true || node.itemId === undefined) return { commands: [] }
+      return {
+        commands: [
+          {
+            bind: "e",
+            title: "Edit text",
+            group: "Instructions",
+            run: () => {
+              setDraft(resolvedText(node, snapshot))
+              props.onEditingChange(true)
+            },
+          },
+        ],
+      }
+    }
+    return {
+      commands: [
+        { bind: "ctrl+s", title: "Save text", group: "Instructions", run: () => void saveEditing() },
+        { bind: "escape", title: "Cancel editing", group: "Instructions", run: cancelEditing },
+      ],
+    }
+  })
+
   return (
     <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
       <Show when={props.node()} fallback={<text fg={props.context.theme.text.subdued}>Select an item</text>}>
@@ -59,9 +138,30 @@ export function DetailPane(props: DetailPaneProps) {
             </For>
             <Show when={props.snapshot()}>
               {(snapshot) => (
-                <scrollbox flexGrow={1}>
-                  <text fg={props.context.theme.text.default}>{resolvedText(node(), snapshot())}</text>
-                </scrollbox>
+                <Show
+                  when={isEditing()}
+                  fallback={
+                    <scrollbox flexGrow={1}>
+                      <text fg={props.context.theme.text.default}>{resolvedText(node(), snapshot())}</text>
+                    </scrollbox>
+                  }
+                >
+                  <textarea
+                    flexGrow={1}
+                    initialValue={draft()}
+                    textColor={props.context.theme.text.formfield.default}
+                    focusedTextColor={props.context.theme.text.formfield.focused}
+                    cursorColor={props.context.theme.text.formfield.focused}
+                    ref={(next) => {
+                      area = next
+                    }}
+                    onContentChange={() => {
+                      if (!area || area.isDestroyed) return
+                      setDraft(area.plainText)
+                    }}
+                  />
+                  <text fg={props.context.theme.text.subdued}>ctrl+s save · esc cancel</text>
+                </Show>
               )}
             </Show>
           </box>
