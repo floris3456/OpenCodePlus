@@ -50,6 +50,15 @@ The package uses only the public plugin API so it stays loadable as an external 
 - `packages/tui/package.json` — adds `"@opencode/plus": "workspace:*"` to dependencies.
 - `bun.lock` — workspace dependency resolution entries.
 
+## Boundaries and known limits
+
+- **Per-server MCP tool checklist: closed, not deferred.** The public plugin API exposes no authoritative link from a tool back to its originating MCP server. Core's internal MCP tool record carries a `server` field (`packages/core/src/mcp/index.ts`), but tool registration passes only name, namespace, mode, schemas, description and executor (`packages/core/src/tool/mcp.ts`), and the public `Tool.Info` (`packages/schema/src/tool.ts`) has no MCP origin field. The tool namespace is a sanitized server name, so matching it would be name inference, which this package forbids. `Mcp.ServerConfig` (`packages/schema/src/mcp.ts`) has server-wide `disabled` and `codemode` but no per-tool enablement. What remains supported is the flat tool list plus a whole-server toggle.
+- **Native vs Code Mode tools.** Core partitions tools in `Tool.snapshot` (`packages/core/src/tool.ts`): `options.codemode === false` means native and appears as an individual key of the session tool list; anything else, including absent options, is Code Mode and is reached only through the aggregated `execute` inventory. Plus applies tool changes through the session context, so it can only toggle or re-describe native tools. Code Mode rows are therefore marked non-actionable rather than silently doing nothing. Note the partition happens after the tool registry, so `ctx.tool.transform` itself can reach both kinds — the limit is Plus's application path, not the whole plugin API.
+- **Discovery must not observe Plus's own applied output.** `discover()` reads the host after Plus's transforms are installed, so treating that as upstream makes the publish fingerprint flip every pass and produces a permanent dispose/reinstall loop. Prompt discovery avoids this by retaining a per-agent baseline and, for file-backed agents, rereading the markdown body (core decodes agent markdown as `{...frontmatter, system: body}` with the body trimmed). Anything that starts mutating the tool registry would need the same treatment — tools currently have no baseline unmasking.
+- **Every client-facing RPC error must be declared** in the `Definition`, because core's `encodeError` fails on undeclared ones.
+- **Never send an optional key whose value is `undefined` across the RPC boundary.** Core validates each RPC result as a JSON value, so a present-but-`undefined` property makes the whole call fail with HTTP 400. Omit the key instead. `expectRpcBody` in `test/rpc.test.ts` guards this.
+- **Remaining known limits**, listed plainly: builtin agents have no backing file, so an upstream prompt edit stays masked while a customization is active; instruction-row customizations are recorded but not yet applied, so those rows are offered as non-actionable; MCP server configuration is file-owned, so MCP text edits are not applied.
+
 ## Shortcut
 
 - `ctrl+x p` (`<leader>p`) toggles project mode after displaying a confirmation dialog.
