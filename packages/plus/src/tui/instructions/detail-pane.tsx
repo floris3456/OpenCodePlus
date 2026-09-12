@@ -124,17 +124,32 @@ export function DetailPane(props: DetailPaneProps) {
 
   return (
     <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
-      <Show when={props.node()} fallback={<text fg={props.context.theme.text.subdued}>Select an item</text>}>
+      <Show
+        when={props.node()}
+        fallback={
+          <text flexShrink={0} fg={props.context.theme.text.subdued}>
+            Select an item
+          </text>
+        }
+      >
         {(node) => (
           <box flexDirection="column" gap={1} flexGrow={1} minHeight={0}>
-            <text fg={props.context.theme.text.default}>
+            <text flexShrink={0} fg={props.context.theme.text.default}>
               {node().label} ({node().kind})
             </text>
             <Show when={scopeLine(node())}>
-              {(line) => <text fg={props.context.theme.text.subdued}>{line()}</text>}
+              {(line) => (
+                <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                  {line()}
+                </text>
+              )}
             </Show>
             <For each={badgeLabels(node())}>
-              {(label) => <text fg={badgeColor(props.context, label)}>{label}</text>}
+              {(label) => (
+                <text flexShrink={0} fg={badgeColor(props.context, label)}>
+                  {label}
+                </text>
+              )}
             </For>
             <Show when={props.snapshot()}>
               {(snapshot) => (
@@ -160,7 +175,9 @@ export function DetailPane(props: DetailPaneProps) {
                       setDraft(area.plainText)
                     }}
                   />
-                  <text fg={props.context.theme.text.subdued}>ctrl+s save · esc cancel</text>
+                  <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                    ctrl+s save · esc cancel
+                  </text>
                 </Show>
               )}
             </Show>

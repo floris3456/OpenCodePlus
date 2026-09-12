@@ -1,5 +1,4 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { read } from "../../project.js"
 import { Definition } from "../../rpc.js"
 import type { AgentEntry, FileScope, Snapshot } from "../../rpc.js"
 
@@ -16,17 +15,6 @@ export function createAgentActions(context: Plugin.Context) {
       if (disposed) return undefined
       context.ui.toast.show({ variant: "error", message: errorMessage(error) })
       return undefined
-    }
-  }
-
-  async function loadProtected(directory: string | undefined): Promise<ReadonlySet<string>> {
-    if (!directory) return new Set()
-    try {
-      const config = await read(directory)
-      if (disposed) return new Set()
-      return new Set(config?.protectedAgents ?? [])
-    } catch {
-      return new Set()
     }
   }
 
@@ -104,7 +92,7 @@ export function createAgentActions(context: Plugin.Context) {
   }
 
   async function pickEligibleAgent(snapshot: Snapshot, action: "rename" | "delete"): Promise<AgentEntry | undefined> {
-    const protectedAgents = await loadProtected(context.location?.directory)
+    const protectedAgents = new Set(snapshot.protectedAgents)
     if (disposed) return undefined
     if (snapshot.agents.length === 0) {
       context.ui.toast.show({ variant: "error", message: "No agents found" })

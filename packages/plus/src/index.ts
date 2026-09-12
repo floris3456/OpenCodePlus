@@ -96,16 +96,16 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
     "instructions.snapshot": (_input, context) =>
       Effect.gen(function* () {
         const directory = ctx.location.directory
-        const stored = yield* loadStored(directory, () =>
+        const loaded = yield* loadStored(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
-        const discovered = yield* Effect.promise(() => discover(ctx, stored))
-        return toSnapshot(discovered)
+        const discovered = yield* Effect.promise(() => discover(ctx, loaded.stored))
+        return toSnapshot(discovered, loaded.protectedAgents)
       }),
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
         const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
+        const protectedAgents = yield* requireProject(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
         const customizations = input.customizations.map(toCustomization)
@@ -114,19 +114,19 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         )
         if (!saved.ok) {
           const current = yield* Effect.promise(() => discover(ctx, saved.current))
-          return conflictResult(current)
+          return conflictResult(current, protectedAgents)
         }
         const discovered = yield* publishFresh(ctx, state, { revision: saved.revision, customizations })
-        return successResult(saved.revision, discovered)
+        return successResult(saved.revision, discovered, protectedAgents)
       }),
     "instructions.refresh": (_input, context) =>
       Effect.gen(function* () {
         const directory = ctx.location.directory
-        const stored = yield* loadStored(directory, () =>
+        const loaded = yield* loadStored(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
-        const discovered = yield* publishFresh(ctx, state, stored)
-        return toSnapshot(discovered)
+        const discovered = yield* publishFresh(ctx, state, loaded.stored)
+        return toSnapshot(discovered, loaded.protectedAgents)
       }),
     "agent.create": (input, context) =>
       Effect.gen(function* () {
@@ -198,17 +198,19 @@ function disabledMessage(directory: string): string {
   return `Project mode is not enabled for ${directory}`
 }
 
-function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<void, E> {
+function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<readonly string[], E> {
   return Effect.gen(function* () {
     const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) return yield* Effect.fail(disabled())
+    return config.protectedAgents
   })
 }
 
-function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<Stored, E> {
+function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<{ stored: Stored; protectedAgents: readonly string[] }, E> {
   return Effect.gen(function* () {
-    yield* requireProject(directory, disabled)
-    return yield* Effect.promise(() => load(directory))
+    const protectedAgents = yield* requireProject(directory, disabled)
+    const stored = yield* Effect.promise(() => load(directory))
+    return { stored, protectedAgents }
   })
 }
 
@@ -314,7 +316,7 @@ function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   })
 }
 
-function toSnapshot(discovered: Discovered): Snapshot {
+function toSnapshot(discovered: Discovered, protectedAgents: readonly string[]): Snapshot {
   return {
     revision: discovered.snapshot.revision,
     agents: discovered.agents.map((agent) => ({
@@ -333,15 +335,16 @@ function toSnapshot(discovered: Discovered): Snapshot {
       ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
       updated: record.updated,
     })),
+    protectedAgents: [...protectedAgents],
   }
 }
 
-function successResult(revision: number, discovered: Discovered): MutateResult {
-  return { ok: true, revision, snapshot: toSnapshot(discovered) }
+function successResult(revision: number, discovered: Discovered, protectedAgents: readonly string[]): MutateResult {
+  return { ok: true, revision, snapshot: toSnapshot(discovered, protectedAgents) }
 }
 
-function conflictResult(discovered: Discovered): MutateResult {
-  return { ok: false, reason: "stale", snapshot: toSnapshot(discovered) }
+function conflictResult(discovered: Discovered, protectedAgents: readonly string[]): MutateResult {
+  return { ok: false, reason: "stale", snapshot: toSnapshot(discovered, protectedAgents) }
 }
 
 function toCustomization(record: SnapshotCustomization): Customization {

@@ -406,3 +406,43 @@ test("mutate returning a customization without text or reviewed survives core's 
   expect("reviewed" in result.snapshot.customizations[0]).toBe(false)
   expectRpcBody(result)
 })
+
+test("snapshots carry protectedAgents from the project config across snapshot, refresh, and mutate results", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  await Bun.write(
+    path.join(directory, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["builder"] }) + "\n",
+  )
+  const handlers = createHandlers(emptyHost(directory), createState())
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.protectedAgents).toEqual(["builder"])
+  expectRpcBody(snapshot)
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(refreshed.protectedAgents).toEqual(["builder"])
+  expectRpcBody(refreshed)
+
+  const success = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: 0, customizations: [customization("item-1")] },
+      throwingContext({}),
+    ),
+  )
+  expect(success.ok).toBe(true)
+  if (!success.ok) throw new Error("expected mutate to succeed")
+  expect(success.snapshot.protectedAgents).toEqual(["builder"])
+  expectRpcBody(success)
+
+  const conflict = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: 0, customizations: [customization("item-1", { text: "stale" })] },
+      throwingContext({}),
+    ),
+  )
+  expect(conflict.ok).toBe(false)
+  if (conflict.ok) throw new Error("expected stale conflict")
+  expect(conflict.snapshot.protectedAgents).toEqual(["builder"])
+  expectRpcBody(conflict)
+})
