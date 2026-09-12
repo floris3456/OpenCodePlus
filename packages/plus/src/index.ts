@@ -320,11 +320,19 @@ function toSnapshot(discovered: Discovered): Snapshot {
     agents: discovered.agents.map((agent) => ({
       id: agent.id,
       scope: agent.scope,
-      path: agent.path,
+      ...(agent.path === undefined ? {} : { path: agent.path }),
       fileBacked: agent.path !== undefined,
     })),
     items: discovered.snapshot.items,
-    customizations: discovered.snapshot.customizations,
+    customizations: discovered.snapshot.customizations.map((record) => ({
+      item: record.item,
+      agent: record.agent,
+      ...(record.text === undefined ? {} : { text: record.text }),
+      state: record.state,
+      basedOn: record.basedOn,
+      ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
+      updated: record.updated,
+    })),
   }
 }
 
@@ -340,10 +348,10 @@ function toCustomization(record: SnapshotCustomization): Customization {
   return {
     item: record.item,
     agent: record.agent,
-    text: record.text,
+    ...(record.text === undefined ? {} : { text: record.text }),
     state: record.state,
     basedOn: record.basedOn,
-    reviewed: record.reviewed,
+    ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
     updated: record.updated,
   }
 }
@@ -351,15 +359,15 @@ function toCustomization(record: SnapshotCustomization): Customization {
 function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | undefined {
   if (fields === undefined) return undefined
   return {
-    model: fields.model,
-    variant: fields.variant,
-    request: fields.request === undefined ? undefined : { ...fields.request },
-    description: fields.description,
-    mode: fields.mode,
-    hidden: fields.hidden,
-    color: fields.color,
-    steps: fields.steps,
-    disabled: fields.disabled,
-    permissions: fields.permissions,
+    ...(fields.model === undefined ? {} : { model: fields.model }),
+    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
+    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
+    ...(fields.description === undefined ? {} : { description: fields.description }),
+    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
+    ...(fields.color === undefined ? {} : { color: fields.color }),
+    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
+    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
+    ...(fields.permissions === undefined ? {} : { permissions: fields.permissions }),
   }
 }

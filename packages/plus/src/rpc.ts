@@ -13,10 +13,10 @@ export interface SnapshotCustomization extends Schema.Schema.Type<typeof Snapsho
 export const SnapshotCustomization = Schema.Struct({
   item: Schema.String,
   agent: Schema.String,
-  text: Schema.optional(Schema.String),
+  text: Schema.optionalKey(Schema.String),
   state: Schema.Union([Schema.Literal("inherit"), Schema.Literal("enabled"), Schema.Literal("disabled")]),
   basedOn: Schema.String,
-  reviewed: Schema.optional(Schema.String),
+  reviewed: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotCustomization" })
 
@@ -42,7 +42,7 @@ export interface AgentEntry extends Schema.Schema.Type<typeof AgentEntry> {}
 export const AgentEntry = Schema.Struct({
   id: Schema.String,
   scope: Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("builtin")]),
-  path: Schema.optional(Schema.String),
+  path: Schema.optionalKey(Schema.String),
   fileBacked: Schema.Boolean,
 }).annotate({ identifier: "Plus.AgentEntry" })
 
@@ -98,23 +98,23 @@ export const AgentPermissionRule = Schema.Struct({
 
 export interface CreateAgentFields extends Schema.Schema.Type<typeof CreateAgentFields> {}
 export const CreateAgentFields = Schema.Struct({
-  model: Schema.optional(Schema.String),
-  variant: Schema.optional(Schema.String),
-  request: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  description: Schema.optional(Schema.String),
-  mode: Schema.optional(Schema.Union([Schema.Literal("subagent"), Schema.Literal("primary"), Schema.Literal("all")])),
-  hidden: Schema.optional(Schema.Boolean),
-  color: Schema.optional(Schema.String),
-  steps: Schema.optional(Schema.Int),
-  disabled: Schema.optional(Schema.Boolean),
-  permissions: Schema.optional(Schema.Array(AgentPermissionRule)),
+  model: Schema.optionalKey(Schema.String),
+  variant: Schema.optionalKey(Schema.String),
+  request: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  description: Schema.optionalKey(Schema.String),
+  mode: Schema.optionalKey(Schema.Union([Schema.Literal("subagent"), Schema.Literal("primary"), Schema.Literal("all")])),
+  hidden: Schema.optionalKey(Schema.Boolean),
+  color: Schema.optionalKey(Schema.String),
+  steps: Schema.optionalKey(Schema.Int),
+  disabled: Schema.optionalKey(Schema.Boolean),
+  permissions: Schema.optionalKey(Schema.Array(AgentPermissionRule)),
 }).annotate({ identifier: "Plus.CreateAgentFields" })
 
 export interface CreateAgentInput extends Schema.Schema.Type<typeof CreateAgentInput> {}
 export const CreateAgentInput = Schema.Struct({
   scope: FileScope,
   id: Schema.String,
-  fields: Schema.optional(CreateAgentFields),
+  fields: Schema.optionalKey(CreateAgentFields),
   prompt: Schema.String,
 }).annotate({ identifier: "Plus.CreateAgentInput" })
 

@@ -195,6 +195,15 @@ function customization(item: string, overrides?: { text?: string; agent?: string
   }
 }
 
+// Core serves RPC results as JSON through HttpApi, whose success schema is
+// the canonical JSON codec of RpcOutput. Unknown encodes to Json on that
+// path, so a present-but-undefined key fails with "Expected JSON value".
+const RpcBody = Schema.toCodecJson(Schema.Struct({ output: Schema.optionalKey(Schema.Unknown) }))
+
+function expectRpcBody(value: unknown) {
+  expect(() => Schema.encodeUnknownSync(RpcBody)({ output: value })).not.toThrow()
+}
+
 test("gated methods fail with project.disabled when project mode is off", async () => {
   const directory = await tempDir()
   const handlers = createHandlers(emptyHost(directory), createState())
@@ -360,4 +369,40 @@ test("agent file conflicts surface as declared errors", async () => {
   )
   expect(deleted).toEqual({ id: "beta", path: path.join(directory, ".opencode", "agent", "beta.md") })
   expect(await Bun.file(deleted.path).exists()).toBe(false)
+})
+
+test("snapshot with a builtin agent omits path and survives core's rpc body check", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const hostAgents = [Agent.Info.default(Agent.ID.make("ghost"))]
+  const handlers = createHandlers(emptyHost(directory, hostAgents), createState())
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.agents).toEqual([{ id: "ghost", scope: "builtin", fileBacked: false }])
+  expect("path" in snapshot.agents[0]).toBe(false)
+  expectRpcBody(snapshot)
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(refreshed).toEqual(snapshot)
+  expectRpcBody(refreshed)
+})
+
+test("mutate returning a customization without text or reviewed survives core's rpc body check", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const hostAgents = [Agent.Info.default(Agent.ID.make("ghost"))]
+  const handlers = createHandlers(emptyHost(directory, hostAgents), createState())
+
+  const result = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: 0, customizations: [customization("item-1")] },
+      throwingContext({}),
+    ),
+  )
+  expect(result.ok).toBe(true)
+  if (!result.ok) throw new Error("expected mutate to succeed")
+  expect(result.snapshot.customizations).toHaveLength(1)
+  expect("text" in result.snapshot.customizations[0]).toBe(false)
+  expect("reviewed" in result.snapshot.customizations[0]).toBe(false)
+  expectRpcBody(result)
 })

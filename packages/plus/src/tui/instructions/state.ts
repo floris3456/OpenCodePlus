@@ -27,10 +27,10 @@ export function modelSnapshotOf(rpc: Snapshot): ModelSnapshot {
     customizations: rpc.customizations.map((record) => ({
       item: record.item,
       agent: record.agent,
-      text: record.text,
+      ...(record.text === undefined ? {} : { text: record.text }),
       state: record.state,
       basedOn: record.basedOn,
-      reviewed: record.reviewed,
+      ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
       updated: record.updated,
     })),
   }
@@ -50,7 +50,11 @@ export function createInstructionsState(context: Plugin.Context) {
     if (!current) return []
     return tree({
       snapshot: modelSnapshotOf(current),
-      agents: current.agents.map((agent) => ({ id: agent.id, scope: agent.scope, path: agent.path })),
+      agents: current.agents.map((agent) => ({
+        id: agent.id,
+        scope: agent.scope,
+        ...(agent.path === undefined ? {} : { path: agent.path }),
+      })),
       expanded: expanded(),
     })
   }
