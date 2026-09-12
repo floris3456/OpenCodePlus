@@ -1,8 +1,9 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import type { Customization, Item } from "../../instructions/model.js"
+import { mergeCustomization } from "../../instructions/model.js"
+import type { Customization, Item, MergeCustomizationFields } from "../../instructions/model.js"
 import { tree, type TreeNode } from "../../instructions/tree.js"
-import { Definition, type Snapshot, type SnapshotCustomization } from "../../rpc.js"
+import { Definition, type Snapshot } from "../../rpc.js"
 
 export interface ModelSnapshot {
   revision: number
@@ -159,6 +160,19 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function setEnabled(node: TreeNode, value: boolean) {
+    if (node.itemId === undefined) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return
+    }
+    await mutateFields(
+      node,
+      { state: value ? "enabled" : "disabled" },
+      value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
+      `Revision changed; reloaded, toggle "${node.label}" again to apply`,
+    )
+  }
+
+  async function acknowledge(node: TreeNode) {
     const current = snapshot()
     if (!current) {
       setStatus("No snapshot loaded")
@@ -169,8 +183,12 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
       return
     }
+    if (node.badges.review !== true) {
+      setStatus(`"${node.label}" needs no review`)
+      return
+    }
     if (node.itemId === undefined) {
-      setStatus(`"${node.label}" cannot be toggled`)
+      setStatus(`"${node.label}" cannot be acknowledged`)
       return
     }
     const item = current.items.find((entry) => entry.id === node.itemId)
@@ -178,45 +196,73 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus(`Item not found for "${node.label}"`)
       return
     }
-    const agent = node.agentId ?? "*"
-    const existing = current.customizations.find((record) => record.item === node.itemId && record.agent === agent)
-    const nextState: SnapshotCustomization["state"] = value ? "enabled" : "disabled"
-    const existingText = existing?.text
-    const existingReviewed = existing?.reviewed
-    const record: SnapshotCustomization = {
-      item: node.itemId,
-      agent,
-      state: nextState,
-      basedOn: existing?.basedOn ?? item.fingerprint,
-      updated: new Date().toISOString(),
-      ...(existingText === undefined ? {} : { text: existingText }),
-      ...(existingReviewed === undefined ? {} : { reviewed: existingReviewed }),
+    await mutateFields(
+      node,
+      { reviewed: item.fingerprint },
+      `Acknowledged "${node.label}"`,
+      `Revision changed; reloaded, acknowledge "${node.label}" again to apply`,
+    )
+  }
+
+  async function saveText(node: TreeNode, text: string): Promise<boolean> {
+    return mutateFields(
+      node,
+      { text },
+      `Saved "${node.label}"`,
+      `Revision changed; reloaded, save "${node.label}" again to apply`,
+    )
+  }
+
+  async function mutateFields(
+    node: TreeNode,
+    fields: MergeCustomizationFields,
+    successStatus: string,
+    staleStatus: string,
+  ): Promise<boolean> {
+    const current = snapshot()
+    if (!current) {
+      setStatus("No snapshot loaded")
+      return false
     }
-    const customizations = [
-      ...current.customizations.filter((entry) => !(entry.item === node.itemId && entry.agent === agent)),
-      record,
-    ]
+    if (node.badges.readOnly) {
+      const owner = node.agentId ?? "default"
+      setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
+      return false
+    }
+    if (node.itemId === undefined) {
+      setStatus(`"${node.label}" cannot be changed`)
+      return false
+    }
+    const found = current.items.find((entry) => entry.id === node.itemId)
+    if (!found) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    const item: Item = { ...found, agents: [...found.agents] }
+    const agent = node.agentId ?? "*"
+    const model = modelSnapshotOf(current)
+    const customizations = mergeCustomization(model.customizations, item, agent, fields)
     setLoading(true)
     try {
       const result = await plus["instructions.mutate"](
         { expectedRevision: current.revision, customizations },
         { location: context.location },
       )
-      if (disposed) return
+      if (disposed) return false
       if (result.ok) {
         setSnapshot(result.snapshot)
-        setStatus(value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`)
+        setStatus(successStatus)
         ensureSelection()
-        return
+        return true
       }
       setSnapshot(result.snapshot)
-      setStatus(
-        `Revision changed (expected ${current.revision}, latest ${result.snapshot.revision}); reloaded, toggle again to apply`,
-      )
+      setStatus(`Revision changed (expected ${current.revision}, latest ${result.snapshot.revision}); ${staleStatus}`)
       ensureSelection()
+      return false
     } catch (error: unknown) {
-      if (disposed) return
+      if (disposed) return false
       setStatus(errorMessage(error))
+      return false
     } finally {
       if (!disposed) setLoading(false)
     }
@@ -245,6 +291,8 @@ export function createInstructionsState(context: Plugin.Context) {
     selectAgent,
     move,
     setEnabled,
+    acknowledge,
+    saveText,
     refresh,
     dispose,
   }
