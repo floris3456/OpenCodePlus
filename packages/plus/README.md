@@ -2,7 +2,7 @@
 
 A thin OpenCode V2 plugin adding an opt-in per-directory "Project mode" that reveals additional Project screens. The package provides a server plugin exposing RPC methods to query and toggle project status, and a TUI plugin exposing keybindings and command palette entries.
 
-*Not yet implemented:* Additional Project screens (such as instruction and agent management interfaces) are not yet built; the package currently implements project mode toggling, RPC definitions, agent markdown file utilities, and instruction customization storage primitives.
+The package implements project mode toggling, an interactive Instructions screen for viewing and customizing agent prompts and capabilities, dialog workflows for creating, renaming, and deleting agents, and server RPC handlers that persist and apply customizations across project and global scopes.
 
 ## Layout
 
@@ -14,11 +14,21 @@ src/
 ├── agents/
 │   └── files.ts             # Agent markdown creation, renaming, frontmatter serialization, and removal
 ├── instructions/
+│   ├── apply.ts             # Customization application to agent prompts, skills, tools, and MCP servers
+│   ├── discover.ts          # Discovery of customizable items and agent scopes across the workspace
 │   ├── model.ts             # Instruction customization domain model, overrides, and fingerprinting
-│   └── store.ts             # JSONL persistence for instruction records with optimistic revision locking
+│   ├── store.ts             # JSONL persistence for instruction records with optimistic revision locking
+│   └── tree.ts              # Hierarchical navigation tree projection for agents, items, and status badges
 └── tui/
     ├── index.tsx            # TUI plugin entrypoint registering commands and keybindings
-    └── project-mode.tsx     # Solid-based project mode controller, RPC client, and confirmation dialogs
+    ├── project-mode.tsx     # Solid-based project mode controller, RPC client, and confirmation dialogs
+    ├── agents/
+    │   └── create.tsx       # Interactive dialog workflows for creating, renaming, and deleting agents
+    └── instructions/
+        ├── detail-pane.tsx  # Detail pane displaying selected item text, scope, and status badges
+        ├── route.tsx        # Instructions screen route with adaptive dual-pane layout and navigation
+        ├── state.ts         # Reactive state management for instructions snapshots, selection, and mutations
+        └── tree-pane.tsx    # Tree pane rendering collapsible agent groups, item nodes, and badges
 ```
 
 ## Storage
@@ -62,9 +72,9 @@ bun test test/model.test.ts
 bun test test/store.test.ts
 bun test test/agents.test.ts
 bun test test/rpc.test.ts
-
-# Run all package tests
-bun test
+bun test test/apply.test.ts
+bun test test/discover.test.ts
+bun test test/tree.test.ts
 
 # Run package typecheck
 bun run typecheck
