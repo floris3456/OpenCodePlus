@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
+import { validateAgentId } from "../../agents/files.js"
 import { Definition } from "../../rpc.js"
 import type { AgentEntry, FileScope, Snapshot } from "../../rpc.js"
 
@@ -286,28 +287,6 @@ export function createAgentActions(context: Plugin.Context) {
   }
 
   return { createAgent, renameAgent, deleteAgent, dispose }
-}
-
-function validateAgentId(raw: string): { ok: true; id: string } | { ok: false; reason: string } {
-  const id = raw.trim()
-  if (id.length === 0) return { ok: false, reason: "Agent id cannot be empty" }
-  if (id.includes("\\"))
-    return { ok: false, reason: `Invalid agent id "${id}": backslashes are not allowed (use / for nesting)` }
-  if (id.includes("\0")) return { ok: false, reason: `Invalid agent id "${id}": null bytes are not allowed` }
-  const segments = id.split("/")
-  if (segments.some((segment) => segment.length === 0))
-    return {
-      ok: false,
-      reason: `Invalid agent id "${id}": empty path segment (check for leading, trailing, or double slashes)`,
-    }
-  if (segments.some((segment) => segment === "." || segment === ".."))
-    return { ok: false, reason: `Invalid agent id "${id}": "." and ".." segments are not allowed` }
-  if (/^(agent|agents|mode|modes)\//.test(id))
-    return {
-      ok: false,
-      reason: `Invalid agent id "${id}": ids starting with agent/, agents/, mode/ or modes/ do not round-trip`,
-    }
-  return { ok: true, id }
 }
 
 function isEligible(entry: AgentEntry, protectedAgents: ReadonlySet<string>): boolean {

@@ -9,6 +9,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fingerprint, type Customization, type Item, type Snapshot } from "./model.js"
+import { idFromPath } from "../agents/files.js"
 import { isSkillCopy } from "./apply.js"
 
 export type AgentScope = "project" | "global" | "builtin"
@@ -73,7 +74,8 @@ function readTransform<Editor, Value>(
 // domain, so scope is derived from the markdown files that define agents:
 // project files live under <directory>/.opencode/{agent,agents}/**/*.md and
 // global files under the same patterns beneath the global config dir. The
-// agent id is the file stem; an agent with no matching file is
+// agent id is the path relative to the agent directory without the .md
+// suffix, matching core's decode; an agent with no matching file is
 // builtin/plugin-provided and is not file-backed.
 async function resolveAgentSources(directory: string, agents: readonly Agent.Info[]): Promise<AgentSource[]> {
   const project = await scanAgentFiles(path.join(directory, ".opencode"))
@@ -92,9 +94,10 @@ function sourceFor(id: string, project: Map<string, string>, global: Map<string,
 async function scanAgentFiles(root: string): Promise<Map<string, string>> {
   const found = new Map<string, string>()
   for (const name of ["agent", "agents"]) {
-    const entries = await scanMarkdown(path.join(root, name))
+    const directory = path.join(root, name)
+    const entries = await scanMarkdown(directory)
     for (const file of entries) {
-      const id = path.basename(file, ".md")
+      const id = idFromPath(directory, file)
       if (!found.has(id)) found.set(id, file)
     }
   }

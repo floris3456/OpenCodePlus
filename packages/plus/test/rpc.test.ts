@@ -446,3 +446,38 @@ test("snapshots carry protectedAgents from the project config across snapshot, r
   expect(conflict.snapshot.protectedAgents).toEqual(["builder"])
   expectRpcBody(conflict)
 })
+
+test("agent methods reject traversal ids with agent.invalid and leave the filesystem untouched", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const outside = path.join(directory, ".opencode", "AGENTS.md")
+  await Bun.write(outside, "keep me\n")
+  const handlers = createHandlers(emptyHost(directory), createState())
+
+  const created: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.create"]({ scope: "project", id: "../../AGENTS", prompt: "evil" }, throwingContext(created)),
+    created,
+    "agent.invalid",
+  )
+  const renamed: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.rename"]({ scope: "project", from: "../../AGENTS", to: "beta" }, throwingContext(renamed)),
+    renamed,
+    "agent.invalid",
+  )
+  const renamedTo: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "../../AGENTS" }, throwingContext(renamedTo)),
+    renamedTo,
+    "agent.invalid",
+  )
+  const deleted: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.delete"]({ scope: "project", id: "../../AGENTS" }, throwingContext(deleted)),
+    deleted,
+    "agent.invalid",
+  )
+  expect(await Bun.file(outside).exists()).toBe(true)
+  expect(await Bun.file(outside).text()).toBe("keep me\n")
+})

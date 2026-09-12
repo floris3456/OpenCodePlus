@@ -243,3 +243,16 @@ test("tool items are collected through tool.transform", async () => {
     expect.objectContaining({ id: "tool:writer", owner: "writer", text: "write things", available: true }),
   ])
 })
+
+test("nested agent files resolve to nested ids with their scope and path", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const nestedPath = path.join(directory, ".opencode", "agent", "team", "lead.md")
+  await fs.mkdir(path.dirname(nestedPath), { recursive: true })
+  await Bun.write(nestedPath, "# lead\n")
+  const agents = [agent("team/lead", "lead")]
+  const discovered = await discover(agentContext(directory, agents), { revision: 0, customizations: [] })
+
+  expect(discovered.agents).toEqual([{ id: "team/lead", scope: "project", path: nestedPath }])
+})

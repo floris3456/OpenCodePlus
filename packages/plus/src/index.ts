@@ -7,7 +7,7 @@ import { Config } from "@opencode/schema/config"
 import { Skill } from "@opencode/schema/skill"
 import { Effect, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
-import { create, remove, rename, type AgentFields } from "./agents/files.js"
+import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { apply } from "./instructions/apply.js"
 import { discover, type Discovered } from "./instructions/discover.js"
 import type { Customization } from "./instructions/model.js"
@@ -134,24 +134,27 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         yield* requireProject(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
+        const validated = validateAgentId(input.id)
+        if (!validated.ok)
+          return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
         const created = yield* Effect.promise(() =>
           create({
             scope: input.scope,
             projectDirectory: directory,
-            id: input.id,
+            id: validated.id,
             fields: toAgentFields(input.fields),
             prompt: input.prompt,
           }),
         )
         if (!created.ok)
           return yield* Effect.fail(
-            context.error("agent.exists", `Agent ${input.id} already exists at ${created.path}`, {
+            context.error("agent.exists", `Agent ${validated.id} already exists at ${created.path}`, {
               path: created.path,
             }),
           )
         const stored = yield* Effect.promise(() => load(directory))
         yield* publishFresh(ctx, state, stored)
-        return { id: input.id, path: created.path }
+        return { id: validated.id, path: created.path }
       }),
     "agent.rename": (input, context) =>
       Effect.gen(function* () {
@@ -159,24 +162,30 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         yield* requireProject(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
+        const from = validateAgentId(input.from)
+        if (!from.ok)
+          return yield* Effect.fail(context.error("agent.invalid", from.reason, { id: input.from, reason: from.reason }))
+        const to = validateAgentId(input.to)
+        if (!to.ok)
+          return yield* Effect.fail(context.error("agent.invalid", to.reason, { id: input.to, reason: to.reason }))
         const renamed = yield* Effect.promise(() =>
-          rename({ scope: input.scope, projectDirectory: directory, from: input.from, to: input.to }),
+          rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id }),
         )
         if (!renamed.ok && renamed.reason === "missing-source")
           return yield* Effect.fail(
-            context.error("agent.missing", `Agent ${input.from} does not exist at ${renamed.path}`, {
+            context.error("agent.missing", `Agent ${from.id} does not exist at ${renamed.path}`, {
               path: renamed.path,
             }),
           )
         if (!renamed.ok)
           return yield* Effect.fail(
-            context.error("agent.exists", `Agent ${input.to} already exists at ${renamed.path}`, {
+            context.error("agent.exists", `Agent ${to.id} already exists at ${renamed.path}`, {
               path: renamed.path,
             }),
           )
         const stored = yield* Effect.promise(() => load(directory))
         yield* publishFresh(ctx, state, stored)
-        return { from: input.from, to: input.to, path: renamed.toPath }
+        return { from: from.id, to: to.id, path: renamed.toPath }
       }),
     "agent.delete": (input, context) =>
       Effect.gen(function* () {
@@ -184,12 +193,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         yield* requireProject(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
+        const validated = validateAgentId(input.id)
+        if (!validated.ok)
+          return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
         const removed = yield* Effect.promise(() =>
-          remove({ scope: input.scope, projectDirectory: directory, id: input.id }),
+          remove({ scope: input.scope, projectDirectory: directory, id: validated.id }),
         )
         const stored = yield* Effect.promise(() => load(directory))
         yield* publishFresh(ctx, state, stored)
-        return { id: input.id, path: removed.path }
+        return { id: validated.id, path: removed.path }
       }),
   }
 }

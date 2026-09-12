@@ -106,7 +106,29 @@ export async function resolveDirectory(scope: Scope, projectDirectory: string): 
 
 export async function agentPath(scope: Scope, projectDirectory: string, id: string): Promise<string> {
   const dir = await resolveDirectory(scope, projectDirectory)
-  return path.join(dir, `${id}.md`)
+  return confinedPath(dir, id)
+}
+
+export function validateAgentId(raw: string): { ok: true; id: string } | { ok: false; reason: string } {
+  const id = raw.trim()
+  if (id.length === 0) return { ok: false, reason: "Agent id cannot be empty" }
+  if (id.includes("\\"))
+    return { ok: false, reason: `Invalid agent id "${id}": backslashes are not allowed (use / for nesting)` }
+  if (id.includes("\0")) return { ok: false, reason: `Invalid agent id "${id}": null bytes are not allowed` }
+  const segments = id.split("/")
+  if (segments.some((segment) => segment.length === 0))
+    return {
+      ok: false,
+      reason: `Invalid agent id "${id}": empty path segment (check for leading, trailing, or double slashes)`,
+    }
+  if (segments.some((segment) => segment === "." || segment === ".."))
+    return { ok: false, reason: `Invalid agent id "${id}": "." and ".." segments are not allowed` }
+  if (/^(agent|agents|mode|modes)\//.test(id))
+    return {
+      ok: false,
+      reason: `Invalid agent id "${id}": ids starting with agent/, agents/, mode/ or modes/ do not round-trip`,
+    }
+  return { ok: true, id }
 }
 
 export function idFromPath(directory: string, filepath: string): string {
@@ -128,7 +150,7 @@ export async function create(input: CreateInput): Promise<CreateResult> {
 }
 
 export async function rename(input: RenameInput): Promise<RenameResult> {
-  const fromPath = await agentPath(input.scope, input.projectDirectory, input.from)
+  const fromPath = await existingAgentPath(input.scope, input.projectDirectory, input.from)
   const toPath = await agentPath(input.scope, input.projectDirectory, input.to)
   const source = Bun.file(fromPath)
   if (!(await source.exists())) return { ok: false, reason: "missing-source", path: fromPath }
@@ -140,12 +162,31 @@ export async function rename(input: RenameInput): Promise<RenameResult> {
 }
 
 export async function remove(input: RemoveInput): Promise<RemoveResult> {
-  const target = await agentPath(input.scope, input.projectDirectory, input.id)
+  const target = await existingAgentPath(input.scope, input.projectDirectory, input.id)
   const file = Bun.file(target)
   if (await file.exists()) {
     await fs.rm(target, { force: true })
   }
   return { ok: true, path: target }
+}
+
+// Discovery scans agent/ before agents/; operations on an existing id must
+// resolve the same file instead of following resolveDirectory's creation
+// preference for agents/.
+async function existingAgentPath(scope: Scope, projectDirectory: string, id: string): Promise<string> {
+  const base = configDirectory(scope, projectDirectory)
+  for (const name of ["agent", "agents"]) {
+    const candidate = confinedPath(path.join(base, name), id)
+    if (await Bun.file(candidate).exists()) return candidate
+  }
+  return confinedPath(await resolveDirectory(scope, projectDirectory), id)
+}
+
+function confinedPath(directory: string, id: string): string {
+  const root = path.resolve(directory)
+  const resolved = path.resolve(root, `${id}.md`)
+  if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) throw new Error(`Invalid agent id "${id}"`)
+  return resolved
 }
 
 export function formatMarkdown(fields: AgentFields | undefined, prompt: string): string {
