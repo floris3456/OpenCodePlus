@@ -373,22 +373,18 @@ test("supports discovered snapshot input with separate stored customizations and
     title: "skill-disc-title",
   })
   const agents: AgentSource[] = [{ id: agentId, scope: "project" }]
-  const discovered = {
-    snapshot: createSnapshot([skillItem]),
-    agents,
-  }
   const customization = createCustomization({
     item: "skill-disc-901",
     agent: agentId,
     state: "disabled",
   })
 
-  const nodes = tree(
-    discovered,
-    [customization],
-    { version: 1, protectedAgents: [] },
-    ["group:project", `agent:${agentId}`],
-  )
+  const nodes = tree({
+    snapshot: createSnapshot([skillItem], [customization]),
+    agents,
+    project: { version: 1, protectedAgents: [] },
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
 
   const skillNode = nodes.find((node) => node.itemId === "skill-disc-901")
   expect(skillNode?.badges.enabled).toBe(false)
