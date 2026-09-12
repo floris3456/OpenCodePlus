@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import type { TreeNode } from "../../instructions/tree.js"
 import { DetailPane } from "./detail-pane.js"
 import { createInstructionsState } from "./state.js"
@@ -20,13 +20,42 @@ function isTogglable(node: TreeNode): boolean {
   return node.itemId !== undefined && node.badges.readOnly !== true
 }
 
-export function InstructionsRoute(props: { context: Plugin.Context; onClose: () => void }) {
+export function extractAgentId(data: unknown): string | undefined {
+  if (typeof data !== "object" || data === null) return undefined
+  if (!("agent" in data)) return undefined
+  const value = data.agent
+  if (typeof value === "string" && value.length > 0) return value
+  return undefined
+}
+
+export interface InstructionsRouteProps {
+  readonly context: Plugin.Context
+  readonly onClose: () => void
+  readonly data?: unknown
+}
+
+export function InstructionsRoute(props: InstructionsRouteProps) {
   const state = createInstructionsState(props.context)
   const dimensions = useTerminalDimensions()
   const wide = () => dimensions().width >= WIDE_THRESHOLD
   // Narrow terminals swap between panes instead of showing both.
   const [showDetail, setShowDetail] = createSignal(false)
   onCleanup(() => state.dispose())
+
+  const route = props.context.ui.router.current()
+  const navigationData: unknown = props.data ?? (route.type === "plugin" ? route.data : undefined)
+  const initialAgent = extractAgentId(navigationData)
+
+  let initialApplied = false
+  createEffect(() => {
+    if (initialApplied) return
+    const snap = state.snapshot()
+    if (!snap) return
+    initialApplied = true
+    if (initialAgent) {
+      state.selectAgent(initialAgent)
+    }
+  })
 
   function current(): TreeNode | undefined {
     return state.selected()
