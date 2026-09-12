@@ -1,55 +1,365 @@
 import { Plugin } from "@opencode/plugin/effect"
-import type { RpcRegistration } from "@opencode/plugin/effect/rpc"
-import { Effect } from "effect"
-import { Definition, Status } from "./rpc.js"
+import type { Context } from "@opencode/plugin/effect/plugin"
+import type { Registration } from "@opencode/plugin/effect/registration"
+import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
+import { Agent } from "@opencode/schema/agent"
+import { Config } from "@opencode/schema/config"
+import { Skill } from "@opencode/schema/skill"
+import { Effect, Semaphore, Stream } from "effect"
+import type { Scope } from "effect"
+import { create, remove, rename, type AgentFields } from "./agents/files.js"
+import { apply } from "./instructions/apply.js"
+import { discover, type Discovered } from "./instructions/discover.js"
+import type { Customization } from "./instructions/model.js"
+import { load, save, type Stored } from "./instructions/store.js"
 import { disable, enable, read } from "./project.js"
+import {
+  CreateAgentFields,
+  Definition,
+  MutateResult,
+  Snapshot,
+  SnapshotCustomization,
+  Status,
+} from "./rpc.js"
+
+export interface PlusState {
+  registration: RpcRegistration<typeof Definition> | undefined
+  applied: Registration[]
+  fingerprint: string | undefined
+  revision: number | undefined
+  semaphore: Semaphore.Semaphore
+}
+
+export function createState(): PlusState {
+  return {
+    registration: undefined,
+    applied: [],
+    fingerprint: undefined,
+    revision: undefined,
+    semaphore: Effect.runSync(Semaphore.make(1)),
+  }
+}
 
 export default Plugin.define({
   id: "opencode.plus",
   effect: (ctx) =>
     Effect.gen(function* () {
-      const ref = { current: undefined as RpcRegistration<typeof Definition> | undefined }
-
-      const registration = yield* ctx.rpc
-        .register(Definition, {
-          "project.status": () =>
-            Effect.gen(function* () {
-              const directory = ctx.location.directory
-              const config = yield* Effect.promise(() => read(directory))
-              return {
-                enabled: config !== undefined,
-                directory,
-              }
-            }),
-          "project.enable": () =>
-            Effect.gen(function* () {
-              const directory = ctx.location.directory
-              yield* Effect.promise(() => enable(directory))
-              const status: Status = {
-                enabled: true,
-                directory,
-              }
-              if (ref.current) {
-                yield* ref.current.events.emit("project.changed", status).pipe(Effect.orDie)
-              }
-              return status
-            }),
-          "project.disable": () =>
-            Effect.gen(function* () {
-              const directory = ctx.location.directory
-              yield* Effect.promise(() => disable(directory))
-              const status: Status = {
-                enabled: false,
-                directory,
-              }
-              if (ref.current) {
-                yield* ref.current.events.emit("project.changed", status).pipe(Effect.orDie)
-              }
-              return status
-            }),
-        })
-        .pipe(Effect.orDie)
-
-      ref.current = registration
+      const state = createState()
+      const registration = yield* ctx.rpc.register(Definition, createHandlers(ctx, state)).pipe(Effect.orDie)
+      state.registration = registration
+      yield* activate(ctx, state).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
+      )
+      yield* watchHostEvents(ctx, state)
     }),
 })
+
+export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<typeof Definition> {
+  return {
+    "project.status": () =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const config = yield* Effect.promise(() => read(directory))
+        return {
+          enabled: config !== undefined,
+          directory,
+        }
+      }),
+    "project.enable": () =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* Effect.promise(() => enable(directory))
+        const status: Status = {
+          enabled: true,
+          directory,
+        }
+        if (state.registration) {
+          yield* state.registration.events.emit("project.changed", status).pipe(Effect.orDie)
+        }
+        yield* activate(ctx, state)
+        return status
+      }),
+    "project.disable": () =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* Effect.promise(() => disable(directory))
+        const status: Status = {
+          enabled: false,
+          directory,
+        }
+        if (state.registration) {
+          yield* state.registration.events.emit("project.changed", status).pipe(Effect.orDie)
+        }
+        yield* deactivate(state)
+        return status
+      }),
+    "instructions.snapshot": (_input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const stored = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const discovered = yield* Effect.promise(() => discover(ctx, stored))
+        return toSnapshot(discovered)
+      }),
+    "instructions.mutate": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const customizations = input.customizations.map(toCustomization)
+        const saved = yield* Effect.promise(() =>
+          save(directory, { expectedRevision: input.expectedRevision, customizations }),
+        )
+        if (!saved.ok) {
+          const current = yield* Effect.promise(() => discover(ctx, saved.current))
+          return conflictResult(current)
+        }
+        const discovered = yield* publishFresh(ctx, state, { revision: saved.revision, customizations })
+        return successResult(saved.revision, discovered)
+      }),
+    "instructions.refresh": (_input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const stored = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const discovered = yield* publishFresh(ctx, state, stored)
+        return toSnapshot(discovered)
+      }),
+    "agent.create": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const created = yield* Effect.promise(() =>
+          create({
+            scope: input.scope,
+            projectDirectory: directory,
+            id: input.id,
+            fields: toAgentFields(input.fields),
+            prompt: input.prompt,
+          }),
+        )
+        if (!created.ok)
+          return yield* Effect.fail(
+            context.error("agent.exists", `Agent ${input.id} already exists at ${created.path}`, {
+              path: created.path,
+            }),
+          )
+        const stored = yield* Effect.promise(() => load(directory))
+        yield* publishFresh(ctx, state, stored)
+        return { id: input.id, path: created.path }
+      }),
+    "agent.rename": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const renamed = yield* Effect.promise(() =>
+          rename({ scope: input.scope, projectDirectory: directory, from: input.from, to: input.to }),
+        )
+        if (!renamed.ok && renamed.reason === "missing-source")
+          return yield* Effect.fail(
+            context.error("agent.missing", `Agent ${input.from} does not exist at ${renamed.path}`, {
+              path: renamed.path,
+            }),
+          )
+        if (!renamed.ok)
+          return yield* Effect.fail(
+            context.error("agent.exists", `Agent ${input.to} already exists at ${renamed.path}`, {
+              path: renamed.path,
+            }),
+          )
+        const stored = yield* Effect.promise(() => load(directory))
+        yield* publishFresh(ctx, state, stored)
+        return { from: input.from, to: input.to, path: renamed.toPath }
+      }),
+    "agent.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const removed = yield* Effect.promise(() =>
+          remove({ scope: input.scope, projectDirectory: directory, id: input.id }),
+        )
+        const stored = yield* Effect.promise(() => load(directory))
+        yield* publishFresh(ctx, state, stored)
+        return { id: input.id, path: removed.path }
+      }),
+  }
+}
+
+function disabledMessage(directory: string): string {
+  return `Project mode is not enabled for ${directory}`
+}
+
+function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<void, E> {
+  return Effect.gen(function* () {
+    const config = yield* Effect.promise(() => read(directory))
+    if (config === undefined) return yield* Effect.fail(disabled())
+  })
+}
+
+function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<Stored, E> {
+  return Effect.gen(function* () {
+    yield* requireProject(directory, disabled)
+    return yield* Effect.promise(() => load(directory))
+  })
+}
+
+function activate(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const config = yield* Effect.promise(() => read(ctx.location.directory))
+    if (config === undefined) return
+    const stored = yield* Effect.promise(() => load(ctx.location.directory))
+    yield* publishFresh(ctx, state, stored)
+  })
+}
+
+function deactivate(state: PlusState): Effect.Effect<void> {
+  return state.semaphore.withPermits(1)(
+    Effect.gen(function* () {
+      yield* disposeApplied(state)
+      state.fingerprint = undefined
+      state.revision = undefined
+    }),
+  )
+}
+
+// Only publishFresh and deactivate acquire the semaphore, and neither calls the
+// other, so a caller never blocks on a permit it already holds.
+function publishFresh(ctx: Context, state: PlusState, stored: Stored): Effect.Effect<Discovered> {
+  return state.semaphore.withPermits(1)(
+    Effect.gen(function* () {
+      const discovered = yield* Effect.promise(() => discover(ctx, stored))
+      // A newer publish already won; this read is stale, so leave the applied
+      // registrations and the last emitted revision untouched.
+      if (state.revision !== undefined && stored.revision < state.revision) return discovered
+      const fingerprint = fingerprintDiscovered(discovered)
+      if (state.revision !== undefined && fingerprint === state.fingerprint) return discovered
+      yield* disposeApplied(state)
+      const applied = yield* Effect.promise(() => apply(ctx, discovered.snapshot, stored.customizations))
+      state.applied = [...applied.registrations]
+      state.fingerprint = fingerprint
+      state.revision = stored.revision
+      yield* emitChanged(state, stored.revision)
+      return discovered
+    }),
+  )
+}
+
+function disposeApplied(state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const registrations = state.applied
+    state.applied = []
+    yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
+  })
+}
+
+function emitChanged(state: PlusState, revision: number): Effect.Effect<void> {
+  const registration = state.registration
+  if (!registration) return Effect.void
+  return registration.events.emit("instructions.changed", { revision }).pipe(Effect.orDie)
+}
+
+function fingerprintDiscovered(discovered: Discovered): string {
+  return JSON.stringify({
+    revision: discovered.snapshot.revision,
+    items: discovered.snapshot.items,
+    agents: discovered.agents,
+  })
+}
+
+// The canonical event names, not string guesses: agent and skill reloads
+// publish their Updated events, and config reloads publish Updated whenever
+// the merged config changes. Tool and MCP-config drift arrives through the
+// same config reloads, so these three cover every host change we snapshot.
+// Our own apply calls reload(), which republishes agent.updated, but the
+// fingerprint above is unchanged then, so the refresh is a no-op instead of
+// a loop.
+const RefreshEvents: Set<string> = new Set([
+  Agent.Event.Updated.type,
+  Skill.Event.Updated.type,
+  Config.Event.Updated.type,
+])
+
+function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
+  return ctx.event.subscribe().pipe(
+    Stream.filter((event) => RefreshEvents.has(event.type)),
+    Stream.runForEach((event) =>
+      refreshFromHost(ctx, state).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus refresh failed", { cause, type: event.type })),
+      ),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
+}
+
+function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const directory = ctx.location.directory
+    const config = yield* Effect.promise(() => read(directory))
+    if (config === undefined) {
+      yield* deactivate(state)
+      return
+    }
+    const stored = yield* Effect.promise(() => load(directory))
+    yield* publishFresh(ctx, state, stored)
+  })
+}
+
+function toSnapshot(discovered: Discovered): Snapshot {
+  return {
+    revision: discovered.snapshot.revision,
+    agents: discovered.agents.map((agent) => ({
+      id: agent.id,
+      scope: agent.scope,
+      path: agent.path,
+      fileBacked: agent.path !== undefined,
+    })),
+    items: discovered.snapshot.items,
+    customizations: discovered.snapshot.customizations,
+  }
+}
+
+function successResult(revision: number, discovered: Discovered): MutateResult {
+  return { ok: true, revision, snapshot: toSnapshot(discovered) }
+}
+
+function conflictResult(discovered: Discovered): MutateResult {
+  return { ok: false, reason: "stale", snapshot: toSnapshot(discovered) }
+}
+
+function toCustomization(record: SnapshotCustomization): Customization {
+  return {
+    item: record.item,
+    agent: record.agent,
+    text: record.text,
+    state: record.state,
+    basedOn: record.basedOn,
+    reviewed: record.reviewed,
+    updated: record.updated,
+  }
+}
+
+function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | undefined {
+  if (fields === undefined) return undefined
+  return {
+    model: fields.model,
+    variant: fields.variant,
+    request: fields.request === undefined ? undefined : { ...fields.request },
+    description: fields.description,
+    mode: fields.mode,
+    hidden: fields.hidden,
+    color: fields.color,
+    steps: fields.steps,
+    disabled: fields.disabled,
+    permissions: fields.permissions,
+  }
+}
