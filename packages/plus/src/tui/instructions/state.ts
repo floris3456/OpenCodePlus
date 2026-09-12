@@ -125,6 +125,25 @@ export function createInstructionsState(context: Plugin.Context) {
     setSelectedId(id)
   }
 
+  function selectAgent(agentId: string): boolean {
+    if (disposed) return false
+    const current = snapshot()
+    if (!current) return false
+    const agent = current.agents.find((entry) => entry.id === agentId)
+    if (!agent) return false
+    const groupId = agent.scope === "builtin" ? "group:defaults" : `group:${agent.scope}`
+    if (!expanded().has(groupId)) {
+      setExpanded((previous) => {
+        const next = new Set(previous)
+        next.add(groupId)
+        return next
+      })
+    }
+    const nodeId = `agent:${agentId}`
+    setSelectedId(nodeId)
+    return true
+  }
+
   function move(delta: number) {
     const list = nodes()
     if (list.length === 0) return
@@ -223,6 +242,7 @@ export function createInstructionsState(context: Plugin.Context) {
     loading,
     toggleExpanded,
     select,
+    selectAgent,
     move,
     setEnabled,
     refresh,
