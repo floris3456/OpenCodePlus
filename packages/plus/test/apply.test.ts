@@ -8,7 +8,7 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import { Effect, type Types } from "effect"
-import { apply } from "../src/instructions/apply.js"
+import { apply, copyName } from "../src/instructions/apply.js"
 import { fingerprint, type Item, type Snapshot } from "../src/instructions/model.js"
 import { context, skillHarness } from "./harness.js"
 
@@ -202,13 +202,13 @@ test("a customized skill registers a private copy for that agent only", async ()
 
   const applied = await apply(ctx, snapshot(items), customizations)
   expect(applied.registrations).toHaveLength(2)
-  expect(skills.added.map((entry) => entry.id as string)).toEqual(["plus/alpha/notes"])
+  expect(skills.added.map((entry) => entry.id as string)).toEqual([copyName("alpha", "notes")])
   expect(skills.added[0]?.content).toBe("custom body")
   expect(skills.added[0]?.location as string).toBe(skills.state.get("notes")?.location as string)
   expect(skills.state.get("notes")?.content).toBe("skill body")
   expect(state.get("alpha")?.permissions).toEqual([
     { action: "skill", resource: "notes", effect: "deny" },
-    { action: "skill", resource: "plus/alpha/notes", effect: "allow" },
+    { action: "skill", resource: copyName("alpha", "notes"), effect: "allow" },
   ])
   expect(state.get("beta")?.permissions).toEqual([])
 })
@@ -248,11 +248,11 @@ test("a skill customization for another agent leaves this agent untouched", asyn
   })
 
   await apply(ctx, snapshot(items), customizations)
-  expect(skills.added.map((entry) => entry.id as string)).toEqual(["plus/beta/notes"])
+  expect(skills.added.map((entry) => entry.id as string)).toEqual([copyName("beta", "notes")])
   expect(state.get("alpha")?.permissions).toEqual([])
   expect(state.get("beta")?.permissions).toEqual([
     { action: "skill", resource: "notes", effect: "deny" },
-    { action: "skill", resource: "plus/beta/notes", effect: "allow" },
+    { action: "skill", resource: copyName("beta", "notes"), effect: "allow" },
   ])
 })
 

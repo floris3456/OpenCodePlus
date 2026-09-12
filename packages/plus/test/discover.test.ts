@@ -4,11 +4,13 @@ import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Project } from "@opencode/schema/project"
+import { Skill } from "@opencode/schema/skill"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { discover } from "../src/instructions/discover.js"
+import { copyName } from "../src/instructions/apply.js"
 import { context } from "./harness.js"
 
 const roots: string[] = []
@@ -103,6 +105,58 @@ test("project, global, and builtin agents resolve by file location", async () =>
     { id: "ghost", scope: "builtin" },
   ])
   expect(discovered.snapshot.items.filter((item) => item.kind === "prompt")).toHaveLength(3)
+})
+
+function skill(id: string, content: string): Skill.Info {
+  return Skill.Info.make({
+    id: Skill.ID.make(id),
+    name: Skill.Name.make(id),
+    location: AbsolutePath.make(`/skills/${id}.md`),
+    content,
+  })
+}
+
+test("personalized skill copies are excluded from discovery", async () => {
+  const directory = await tempDir("plus-discover-")
+  const copy = copyName("alpha", "notes")
+  const skills = [skill("notes", "skill body"), skill(copy, "custom body")]
+  const ctx = context({
+    location: location(directory),
+    agent: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location: location(directory), data: skills }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({ list: () => [], get: () => undefined } as never)
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({ list: () => [] } as never)
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+
+  const discovered = await discover(ctx, { revision: 0, customizations: [] })
+  expect(discovered.snapshot.items.filter((item) => item.kind === "skill")).toEqual([
+    expect.objectContaining({ id: "skill:notes", owner: "notes", text: "skill body", available: true }),
+  ])
 })
 
 test("tool items are collected through tool.transform", async () => {

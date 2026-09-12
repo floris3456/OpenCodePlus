@@ -132,8 +132,14 @@ function pushSkillRule(
   })
 }
 
-function copyName(agent: string, skill: string): string {
-  return `plus/${agent}/${skill}`
+const copyPrefix = "plus/"
+
+export function copyName(agent: string, skill: string): string {
+  return `${copyPrefix}${agent}/${skill}`
+}
+
+export function isSkillCopy(id: string): boolean {
+  return id.startsWith(copyPrefix)
 }
 
 interface SkillCopy {

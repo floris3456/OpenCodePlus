@@ -9,6 +9,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fingerprint, type Customization, type Item, type Snapshot } from "./model.js"
+import { isSkillCopy } from "./apply.js"
 
 export type AgentScope = "project" | "global" | "builtin"
 
@@ -141,7 +142,9 @@ function promptItems(agents: readonly Agent.Info[]): Item[] {
 }
 
 function skillItems(skills: readonly Skill.Info[]): Item[] {
-  return skills.map((skill) => item(`skill:${skill.id}`, "skill", skill.id, skill.name, skill.content, []))
+  return skills
+    .filter((skill) => !isSkillCopy(skill.id))
+    .map((skill) => item(`skill:${skill.id}`, "skill", skill.id, skill.name, skill.content, []))
 }
 
 function toolItems(tools: readonly (Tool.Info & { readonly id: string })[]): Item[] {
