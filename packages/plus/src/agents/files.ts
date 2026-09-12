@@ -82,7 +82,13 @@ export interface RemoveSuccess {
   path: string
 }
 
-export type RemoveResult = RemoveSuccess
+export interface RemoveMissing {
+  ok: false
+  reason: "missing"
+  path: string
+}
+
+export type RemoveResult = RemoveSuccess | RemoveMissing
 
 const ALLOWED_KEYS = [
   "model",
@@ -166,8 +172,9 @@ export async function remove(input: RemoveInput): Promise<RemoveResult> {
   const file = Bun.file(target)
   if (await file.exists()) {
     await fs.rm(target, { force: true })
+    return { ok: true, path: target }
   }
-  return { ok: true, path: target }
+  return { ok: false, reason: "missing", path: target }
 }
 
 // Discovery scans agent/ before agents/; operations on an existing id must

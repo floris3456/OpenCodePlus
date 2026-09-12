@@ -469,13 +469,20 @@ test("agent file conflicts surface as declared errors", async () => {
     "agent.exists",
   )
 
-  const missing: { current?: CapturedError } = {}
+  const missingRename: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["agent.rename"](
       { scope: "project", from: "ghost", to: "beta" },
-      throwingContext(missing),
+      throwingContext(missingRename),
     ),
-    missing,
+    missingRename,
+    "agent.missing",
+  )
+
+  const missingDelete: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.delete"]({ scope: "project", id: "ghost" }, throwingContext(missingDelete)),
+    missingDelete,
     "agent.missing",
   )
 
@@ -494,6 +501,46 @@ test("agent file conflicts surface as declared errors", async () => {
   )
   expect(deleted).toEqual({ id: "beta", path: path.join(directory, ".opencode", "agent", "beta.md") })
   expect(await Bun.file(deleted.path).exists()).toBe(false)
+  expectRpcBody(deleted)
+
+  const missingDeletedAgain: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.delete"]({ scope: "project", id: "beta" }, throwingContext(missingDeletedAgain)),
+    missingDeletedAgain,
+    "agent.missing",
+  )
+})
+
+test("agent.delete fails with declared agent.missing when agent does not exist and succeeds when present", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const handlers = createHandlers(emptyHost(directory), createState())
+
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.delete"]({ scope: "project", id: "non-existent" }, throwingContext(missing)),
+    missing,
+    "agent.missing",
+  )
+
+  const created = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "present", prompt: "Present prompt" }, throwingContext({})),
+  )
+  expect(await Bun.file(created.path).exists()).toBe(true)
+
+  const deleted = await Effect.runPromise(
+    handlers["agent.delete"]({ scope: "project", id: "present" }, throwingContext({})),
+  )
+  expect(deleted).toEqual({ id: "present", path: created.path })
+  expect(await Bun.file(created.path).exists()).toBe(false)
+  expectRpcBody(deleted)
+
+  const missingAgain: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.delete"]({ scope: "project", id: "present" }, throwingContext(missingAgain)),
+    missingAgain,
+    "agent.missing",
+  )
 })
 
 test("snapshot with a builtin agent omits path and survives core's rpc body check", async () => {

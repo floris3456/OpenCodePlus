@@ -201,6 +201,12 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         const removed = yield* Effect.promise(() =>
           remove({ scope: input.scope, projectDirectory: directory, id: validated.id }),
         )
+        if (!removed.ok)
+          return yield* Effect.fail(
+            context.error("agent.missing", `Agent ${validated.id} does not exist at ${removed.path}`, {
+              path: removed.path,
+            }),
+          )
         const stored = yield* Effect.promise(() => load(directory))
         yield* publishFresh(ctx, state, stored)
         return { id: validated.id, path: removed.path }
