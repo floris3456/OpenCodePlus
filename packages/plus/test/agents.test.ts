@@ -246,7 +246,7 @@ test("rename moves content and fails when the destination exists or source is mi
   expect(parsed.frontmatter.model).toBe("test-model")
 })
 
-test("remove deletes, and removing a missing file is a no-op", async () => {
+test("remove deletes an existing file, and removing a missing file reports that nothing was removed", async () => {
   const projectDirectory = await tempDir()
   const created = await create({
     scope: "project",
@@ -257,7 +257,17 @@ test("remove deletes, and removing a missing file is a no-op", async () => {
   expect(created.ok).toBe(true)
   if (!created.ok) return
 
+  const untouched = await create({
+    scope: "project",
+    projectDirectory,
+    id: "untouched",
+    prompt: "Untouched prompt",
+  })
+  expect(untouched.ok).toBe(true)
+  if (!untouched.ok) return
+
   expect(await Bun.file(created.path).exists()).toBe(true)
+  expect(await Bun.file(untouched.path).exists()).toBe(true)
 
   const removed = await remove({
     scope: "project",
@@ -265,15 +275,26 @@ test("remove deletes, and removing a missing file is a no-op", async () => {
     id: "to-remove",
   })
   expect(removed.ok).toBe(true)
+  if (removed.ok) {
+    expect(removed.path).toBe(created.path)
+  }
   expect(await Bun.file(created.path).exists()).toBe(false)
+  expect(await Bun.file(untouched.path).exists()).toBe(true)
 
-  // Removing again is a no-op
+  // Removing again reports that nothing was removed and touches nothing
   const missing = await remove({
     scope: "project",
     projectDirectory,
     id: "to-remove",
   })
-  expect(missing.ok).toBe(true)
+  expect(missing.ok).toBe(false)
+  if (!missing.ok) {
+    expect(missing.reason).toBe("missing")
+    expect(missing.path).toBe(created.path)
+  }
+  expect(await Bun.file(created.path).exists()).toBe(false)
+  expect(await Bun.file(untouched.path).exists()).toBe(true)
+  expect(await Bun.file(untouched.path).text()).toContain("Untouched prompt")
 })
 
 test("permissions serialize as a YAML array of { action, resource, effect } and parse back to the same ordered array", async () => {

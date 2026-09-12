@@ -260,6 +260,7 @@ export const Definition = Rpc.define({
       output: PortableAgentRef,
       errors: {
         "project.disabled": PortableProjectDisabled,
+        "agent.missing": PortableAgentMissing,
         "agent.invalid": PortableAgentInvalid,
       },
     },
