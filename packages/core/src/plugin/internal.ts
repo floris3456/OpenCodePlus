@@ -80,6 +80,7 @@ import { WellKnown } from "../wellknown.js"
 import { WriteTool } from "../tool/plugin/write.js"
 import { AgentPlugin } from "./agent.js"
 import BrowserPlugin from "@opencode/plugin-browser"
+import PlusPlugin from "@opencode/plus"
 import { CommandPlugin } from "./command.js"
 import { PlanPlugin } from "./plan.js"
 import { ModelsDevPlugin } from "./models-dev.js"
@@ -242,6 +243,7 @@ const post = [
   ConfigWorktreePlugin.Plugin,
   VariantPlugin.Plugin,
   ConfigPolicyPlugin.Plugin,
+  PlusPlugin,
 ] as const satisfies readonly InternalPlugin[]
 
 export const list = Effect.fn("PluginInternal.list")(function* () {
