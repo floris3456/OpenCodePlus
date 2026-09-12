@@ -256,3 +256,19 @@ test("nested agent files resolve to nested ids with their scope and path", async
 
   expect(discovered.agents).toEqual([{ id: "team/lead", scope: "project", path: nestedPath }])
 })
+
+test("prompt discovery reports retained upstream while the host shows Plus output, and new host text otherwise", async () => {
+  const directory = await tempDir("plus-discover-")
+  const applied = agentContext(directory, [agent("alpha", "custom"), agent("beta", "beta upstream")])
+  const baselines = new Map([
+    ["alpha", { applied: "custom", upstream: "alpha upstream" }],
+    ["beta", { applied: "stale override", upstream: "stale upstream" }],
+  ])
+  const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
+  const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
+  // Alpha still shows exactly what Plus wrote, so discovery unmasks upstream.
+  expect(texts.get("prompt:alpha")).toBe("alpha upstream")
+  // Beta's host text matches neither the retained override nor stale
+  // upstream — a genuine host edit — so it flows through untouched.
+  expect(texts.get("prompt:beta")).toBe("beta upstream")
+})

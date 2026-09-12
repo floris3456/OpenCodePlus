@@ -20,6 +20,11 @@ export interface AgentSource {
   readonly path?: string
 }
 
+export interface PromptBaseline {
+  readonly applied: string
+  readonly upstream: string
+}
+
 export interface Discovered {
   readonly snapshot: Snapshot
   readonly agents: AgentSource[]
@@ -28,6 +33,7 @@ export interface Discovered {
 export async function discover(
   ctx: Context,
   stored: { revision: number; customizations: Customization[] },
+  baselines: ReadonlyMap<string, PromptBaseline> = new Map(),
 ): Promise<Discovered> {
   const agents = yieldList(ctx.agent.list())
   const skills = yieldList(ctx.skill.list())
@@ -37,7 +43,7 @@ export async function discover(
   const sources = await resolveAgentSources(ctx.location.directory, resolvedAgents)
   const instructions = await readProjectInstructions(ctx.location.directory)
   const items = [
-    ...promptItems(resolvedAgents),
+    ...promptItems(resolvedAgents, baselines),
     ...skillItems(await skills),
     ...toolItems(tools),
     ...mcpItems(servers),
@@ -138,10 +144,26 @@ function globalConfigDir(): string {
   return path.join(base, "opencode")
 }
 
-function promptItems(agents: readonly Agent.Info[]): Item[] {
-  return agents.map((agent) =>
-    item(`prompt:${agent.id}`, "prompt", agent.id, agent.name, agent.system ?? "", [agent.id]),
-  )
+function promptItems(agents: readonly Agent.Info[], baselines: ReadonlyMap<string, PromptBaseline>): Item[] {
+  return agents.map((agent) => {
+    const text = upstreamPrompt(agent, baselines.get(agent.id))
+    return item(`prompt:${agent.id}`, "prompt", agent.id, agent.name, text, [agent.id])
+  })
+}
+
+// ctx.agent.list() returns the currently applied system prompt, which includes
+// Plus's own transform output once a prompt override is installed. Reporting
+// that output as the upstream item text would flip the publish fingerprint on
+// every pass and pin promptUpdates' skip check (resolved.text === item.text),
+// producing a permanent dispose/reinstall storm. While the host still shows
+// exactly what Plus last wrote, report the retained upstream text instead; any
+// other text is genuinely upstream (a host edit outside Plus) and flows
+// through so the "needs review" badge still fires.
+function upstreamPrompt(agent: Agent.Info, baseline: PromptBaseline | undefined): string {
+  const current = agent.system ?? ""
+  if (baseline === undefined) return current
+  if (current === baseline.applied) return baseline.upstream
+  return current
 }
 
 function skillItems(skills: readonly Skill.Info[]): Item[] {

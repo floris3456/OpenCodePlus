@@ -20,6 +20,7 @@ import type { WorktreeDomain } from "@opencode/plugin/effect/worktree"
 import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
+import { Agent } from "@opencode/schema/agent"
 import type { Skill } from "@opencode/schema/skill"
 import { Effect, Stream, type Types } from "effect"
 
@@ -181,6 +182,101 @@ export function skillHarness(initial: Skill.Info[] = []): SkillHarness {
   )
   const added: Skill.Info[] = []
   return { domain: recordingSkillDomain(state, added), state, added }
+}
+
+export interface AgentHarness {
+  readonly domain: AgentDomain
+  readonly state: Map<string, Types.DeepMutable<Agent.Info>>
+  readonly transforms: number
+  readonly disposes: number
+  readonly reloads: number
+}
+
+// A stateful agent domain mirroring core's transform/rebuild semantics: each
+// transform installs one callback, and every read rebuilds the visible state
+// from upstream plus the installed callbacks. While a callback overwrites a
+// prompt, host edits underneath stay invisible until the callback is disposed,
+// exactly as in core. Upstream itself changes only through setUpstream,
+// modeling a real host edit outside Plus.
+export function agentHarness(
+  initial: Agent.Info[],
+): AgentHarness & { setUpstream(id: string, system: string): void; upstream(id: string): string | undefined } {
+  const upstream = new Map(initial.map((agent) => [agent.id, structuredClone(agent)]))
+  const live = new Map<string, Types.DeepMutable<Agent.Info>>()
+  const installed: Array<Parameters<AgentDomain["transform"]>[0]> = []
+  const counts = { installs: 0, disposes: 0, reloads: 0 }
+  function rebuild() {
+    live.clear()
+    for (const [id, agent] of upstream) live.set(id, structuredClone(agent) as Types.DeepMutable<Agent.Info>)
+    const editor = {
+      list: () => Array.from(live.values()),
+      get: (id: string) => live.get(id),
+      default: () => undefined,
+      update: (id: string, update: (agent: Types.DeepMutable<Agent.Info>) => void) => {
+        const current = live.get(id)
+        if (current) update(current)
+      },
+      remove: (id: string) => {
+        live.delete(id)
+      },
+    }
+    for (const transform of installed) transform(editor)
+  }
+  rebuild()
+  return {
+    domain: {
+      get: () => Effect.die("unused agent.get"),
+      list: () =>
+        Effect.sync(() => ({
+          location: new Location.Info({
+            directory: AbsolutePath.make("/workspace"),
+            project: {
+              id: Project.ID.global,
+              directory: AbsolutePath.make("/workspace"),
+              canonical: AbsolutePath.make("/workspace"),
+            },
+          }),
+          data: Array.from(live.values()),
+        })),
+      transform: (callback) =>
+        Effect.sync(() => {
+          counts.installs++
+          installed.push(callback)
+          rebuild()
+          return {
+            dispose: Effect.sync(() => {
+              const index = installed.indexOf(callback)
+              if (index === -1) return
+              counts.disposes++
+              installed.splice(index, 1)
+              rebuild()
+            }),
+          }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          counts.reloads++
+          rebuild()
+        }),
+    } satisfies AgentDomain,
+    state: live,
+    get transforms() {
+      return counts.installs
+    },
+    get disposes() {
+      return counts.disposes
+    },
+    get reloads() {
+      return counts.reloads
+    },
+    setUpstream: (id: string, system: string) => {
+      const current = upstream.get(Agent.ID.make(id))
+      if (!current) return
+      upstream.set(current.id, { ...current, system })
+      rebuild()
+    },
+    upstream: (id: string) => upstream.get(Agent.ID.make(id))?.system,
+  }
 }
 
 function storageDomain(): StorageDomain {
