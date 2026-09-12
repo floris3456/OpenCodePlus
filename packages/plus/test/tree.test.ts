@@ -372,9 +372,10 @@ test("supports discovered snapshot input with separate stored customizations and
     kind: "skill",
     title: "skill-disc-title",
   })
+  const agents: AgentSource[] = [{ id: agentId, scope: "project" }]
   const discovered = {
     snapshot: createSnapshot([skillItem]),
-    agents: [{ id: agentId, scope: "project" as const }],
+    agents,
   }
   const customization = createCustomization({
     item: "skill-disc-901",
