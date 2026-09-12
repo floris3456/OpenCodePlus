@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
+import { createAgentActions } from "./agents/create.js"
 import { InstructionsRoute } from "./instructions/route.js"
 import { createProjectMode } from "./project-mode.js"
 
@@ -7,6 +8,7 @@ export default Plugin.define({
   id: "opencode.plus",
   setup(context) {
     const mode = createProjectMode(context)
+    const agents = createAgentActions(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
@@ -52,6 +54,30 @@ export default Plugin.define({
                 context.ui.router.navigate({ type: "plugin", name: "instructions" })
               },
             },
+            {
+              id: "plus.agent.create",
+              title: "Create agent",
+              group: "Project",
+              palette: true,
+              enabled: () => mode.status().enabled,
+              run: () => agents.createAgent(),
+            },
+            {
+              id: "plus.agent.rename",
+              title: "Rename agent",
+              group: "Project",
+              palette: true,
+              enabled: () => mode.status().enabled,
+              run: () => agents.renameAgent(),
+            },
+            {
+              id: "plus.agent.delete",
+              title: "Delete agent",
+              group: "Project",
+              palette: true,
+              enabled: () => mode.status().enabled,
+              run: () => agents.deleteAgent(),
+            },
           ],
         }))
         return null
@@ -61,6 +87,7 @@ export default Plugin.define({
       disposeRoute()
       disposeSlot()
       mode.dispose()
+      agents.dispose()
     }
   },
 })
