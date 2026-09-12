@@ -22,12 +22,23 @@ function resolvedText(node: TreeNode, snapshot: Snapshot): string {
   return resolved.text
 }
 
+export function isEditable(node: TreeNode | undefined): boolean {
+  if (!node) return false
+  if (node.badges.readOnly === true) return false
+  if (node.itemId === undefined) return false
+  // A row whose edit is disallowed has no save path, so it must never
+  // enter edit mode: opening the editor would only discard the draft.
+  return node.action?.edit.allowed === true
+}
+
 function badgeLabels(node: TreeNode): string[] {
   // Same badge vocabulary as the tree pane; the detail keeps it read-only.
   if (node.badges.readOnly === true) return ["protected", "read-only"]
   if (node.itemId === undefined) return []
   const labels: string[] = []
-  labels.push(node.badges.enabled === false ? "disabled" : "enabled")
+  // The enabled state shows only where it can be toggled; elsewhere the
+  // badge would read as an action that does not exist.
+  if (node.action?.toggle.allowed === true) labels.push(node.badges.enabled === false ? "disabled" : "enabled")
   if (node.badges.customized === true) labels.push("customized")
   if (node.badges.review === true) labels.push("needs review")
   return labels
@@ -50,10 +61,7 @@ export function DetailPane(props: DetailPaneProps) {
   let area: { plainText: string; isDestroyed: boolean; focus(): void; blur(): void; gotoBufferEnd(): void } | undefined
 
   function editable(): boolean {
-    const node = props.node()
-    if (!node) return false
-    if (node.badges.readOnly === true) return false
-    return node.itemId !== undefined
+    return isEditable(props.node())
   }
 
   function cancelEditing() {
@@ -99,7 +107,7 @@ export function DetailPane(props: DetailPaneProps) {
       const node = props.node()
       const snapshot = props.snapshot()
       if (!node || !snapshot) return { commands: [] }
-      if (node.badges.readOnly === true || node.itemId === undefined) return { commands: [] }
+      if (!editable()) return { commands: [] }
       return {
         commands: [
           {
