@@ -83,9 +83,6 @@ export function tree(
   return [...projectGroup, ...globalGroup, ...defaultsGroup]
 }
 
-export const projectTree = tree
-export const buildTree = tree
-
 function normalizeInput(
   input: TreeInput | Discovered | Snapshot,
   customizations?: readonly Customization[],
