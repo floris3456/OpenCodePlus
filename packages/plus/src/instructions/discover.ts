@@ -24,6 +24,7 @@ export interface PromptBaseline {
   readonly applied: string
   readonly upstream: string
   readonly file?: string
+  readonly fileBacked: boolean
 }
 
 export interface ToolSource {
@@ -179,12 +180,15 @@ function promptItems(
 // override is installed for that agent, so it flows through untouched. A file
 // body is only trusted when it matched the host upstream at baseline time;
 // otherwise another config source owns the prompt and the file is ignored to
-// avoid a spurious fingerprint change.
+// avoid a spurious fingerprint change. A file appearing where the baseline had
+// none is a source transition: the new body re-establishes ownership instead
+// of being rejected against the stale builtin upstream.
 function upstreamPrompt(agent: Agent.Info, baseline: PromptBaseline | undefined, fileBody: string | undefined): string {
   const current = agent.system ?? ""
   if (baseline === undefined) return current
   if (current !== baseline.applied) return current
   if (fileBody === undefined) return baseline.upstream
+  if (!baseline.fileBacked) return fileBody
   if (baseline.file === undefined) return baseline.upstream
   if (baseline.file !== baseline.upstream) return baseline.upstream
   return fileBody
