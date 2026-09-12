@@ -293,15 +293,15 @@ export interface McpHarness {
 // semantics: each transform installs one callback, and every registration
 // change rebuilds the visible config from upstream plus the installed
 // callbacks in order, then reconciles exactly like core's State notify. An
-// enabled server that was not already running counts one start, modeling
-// McpClient.connect; a server that stays disabled across the rebuild never
-// starts. Discovery reads inside readTransform observe the rebuilt list.
+// enabled server counts one start per reconcile that observes it enabled,
+// modeling McpClient.connect on every replaceServer; a server that stays
+// disabled across the rebuild never starts. Discovery reads inside
+// readTransform observe the rebuilt list.
 export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
   const upstream = new Map(
     initial.map(([name, config]) => [name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>]),
   )
   const installed: Array<Parameters<MCPDomain["transform"]>[0]> = []
-  const running = new Set<string>()
   const counts = { starts: 0 }
   function visible(): Map<string, Types.DeepMutable<Mcp.ServerConfig>> {
     const servers = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>()
@@ -325,10 +325,8 @@ export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
     return servers
   }
   function reconcile() {
-    for (const [name, config] of visible()) {
+    for (const config of visible().values()) {
       if (config.disabled === true) continue
-      if (running.has(name)) continue
-      running.add(name)
       counts.starts++
     }
   }
