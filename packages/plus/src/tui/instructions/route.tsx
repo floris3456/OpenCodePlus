@@ -52,10 +52,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (initialApplied) return
     const snap = state.snapshot()
     if (!snap) return
-    initialApplied = true
-    if (initialAgent) {
-      state.selectAgent(initialAgent)
+    if (initialAgent === undefined) {
+      initialApplied = true
+      return
     }
+    // The first snapshot can predate the new agent's discoverability, so only
+    // consume the handoff once selectAgent actually lands on it. Later
+    // snapshots retry; after success the guard above never re-hijacks.
+    if (state.selectAgent(initialAgent)) initialApplied = true
   })
 
   function current(): TreeNode | undefined {
