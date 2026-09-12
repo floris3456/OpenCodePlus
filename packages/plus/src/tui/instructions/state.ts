@@ -235,6 +235,13 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function reset(node: TreeNode): Promise<boolean> {
+    // Every refusal lands before the confirm: offering a destructive dialog
+    // for a row that cannot proceed would only scare the user, then refuse.
+    if (node.badges.readOnly) {
+      const owner = node.agentId ?? "default"
+      setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
+      return false
+    }
     if (node.itemId === undefined) {
       setStatus(`"${node.label}" cannot be reset`)
       return false
