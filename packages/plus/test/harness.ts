@@ -20,7 +20,8 @@ import type { WorktreeDomain } from "@opencode/plugin/effect/worktree"
 import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
-import { Effect, Stream } from "effect"
+import type { Skill } from "@opencode/schema/skill"
+import { Effect, Stream, type Types } from "effect"
 
 export type Overrides = Partial<Omit<Context, "options" | "session">> & {
   readonly session?: Partial<Context["session"]>
@@ -135,11 +136,51 @@ function shellDomain(): ShellDomain {
 }
 
 function skillDomain(): SkillDomain {
-  return {
-    list: die("unused skill.list"),
-    transform: die("unused skill.transform"),
-    reload: die("unused skill.reload"),
+  return recordingSkillDomain(new Map(), [])
+}
+
+export interface SkillHarness {
+  readonly domain: SkillDomain
+  readonly state: Map<string, Types.DeepMutable<Skill.Info>>
+  readonly added: Skill.Info[]
+}
+
+export function recordingSkillDomain(
+  state: Map<string, Types.DeepMutable<Skill.Info>> = new Map(),
+  added: Skill.Info[] = [],
+): SkillDomain {
+  const editor = {
+    list: () => Array.from(state.values()),
+    get: (id: string) => state.get(id),
+    add: (skill: Skill.Info) => {
+      added.push(skill)
+      state.set(skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>)
+    },
+    update: (id: string, update: (skill: Types.DeepMutable<Skill.Info>) => void) => {
+      const current = state.get(id)
+      if (current) update(current)
+    },
+    remove: (id: string) => {
+      state.delete(id)
+    },
   }
+  return {
+    list: () => Effect.die("unused skill.list"),
+    transform: (callback) =>
+      Effect.sync(() => {
+        callback(editor)
+        return { dispose: Effect.void }
+      }),
+    reload: () => Effect.void,
+  }
+}
+
+export function skillHarness(initial: Skill.Info[] = []): SkillHarness {
+  const state = new Map(
+    initial.map((skill) => [skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>]),
+  )
+  const added: Skill.Info[] = []
+  return { domain: recordingSkillDomain(state, added), state, added }
 }
 
 function storageDomain(): StorageDomain {
