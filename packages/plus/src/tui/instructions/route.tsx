@@ -179,8 +179,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           </Show>
         </Show>
       </box>
-      <Show when={state.status()}>{(line) => <text fg={props.context.theme.text.feedback.info.default}>{line()}</text>}</Show>
-      <text fg={props.context.theme.text.subdued}>
+      <Show when={state.status()}>
+        {(line) => (
+          <text flexShrink={0} fg={props.context.theme.text.feedback.info.default}>
+            {line()}
+          </text>
+        )}
+      </Show>
+      <text flexShrink={0} fg={props.context.theme.text.subdued}>
         {editing()
           ? "ctrl+s save · esc cancel"
           : wide()

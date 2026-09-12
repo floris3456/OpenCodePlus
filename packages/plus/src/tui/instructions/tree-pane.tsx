@@ -41,11 +41,24 @@ function badgeColor(context: Plugin.Context, label: string) {
 export function TreePane(props: TreePaneProps) {
   return (
     <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
-      <text fg={props.context.theme.text.subdued}>Instructions</text>
-      <Show when={!props.loading()} fallback={<text fg={props.context.theme.text.subdued}>Loading…</text>}>
+      <text flexShrink={0} fg={props.context.theme.text.subdued}>
+        Instructions
+      </text>
+      <Show
+        when={!props.loading()}
+        fallback={
+          <text flexShrink={0} fg={props.context.theme.text.subdued}>
+            Loading…
+          </text>
+        }
+      >
         <Show
           when={props.nodes().length > 0}
-          fallback={<text fg={props.context.theme.text.subdued}>No instructions found</text>}
+          fallback={
+            <text flexShrink={0} fg={props.context.theme.text.subdued}>
+              No instructions found
+            </text>
+          }
         >
           <scrollbox flexGrow={1}>
             <For each={props.nodes()}>

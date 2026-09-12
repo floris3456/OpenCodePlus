@@ -52,6 +52,7 @@ export const Snapshot = Schema.Struct({
   agents: Schema.Array(AgentEntry),
   items: Schema.Array(SnapshotItem),
   customizations: Schema.Array(SnapshotCustomization),
+  protectedAgents: Schema.Array(Schema.String),
 }).annotate({ identifier: "Plus.Snapshot" })
 
 export interface MutateInput extends Schema.Schema.Type<typeof MutateInput> {}
