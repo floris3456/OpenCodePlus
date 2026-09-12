@@ -9,8 +9,8 @@ import { Effect, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { apply } from "./instructions/apply.js"
-import { discover, type Discovered } from "./instructions/discover.js"
-import type { Customization } from "./instructions/model.js"
+import { discover, type Discovered, type PromptBaseline } from "./instructions/discover.js"
+import { effective, type Customization } from "./instructions/model.js"
 import { load, save, type Stored } from "./instructions/store.js"
 import { disable, enable, read } from "./project.js"
 import {
@@ -27,6 +27,7 @@ export interface PlusState {
   applied: Registration[]
   fingerprint: string | undefined
   revision: number | undefined
+  baselines: Map<string, PromptBaseline>
   semaphore: Semaphore.Semaphore
 }
 
@@ -36,6 +37,7 @@ export function createState(): PlusState {
     applied: [],
     fingerprint: undefined,
     revision: undefined,
+    baselines: new Map(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
 }
@@ -99,7 +101,7 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         const loaded = yield* loadStored(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
-        const discovered = yield* Effect.promise(() => discover(ctx, loaded.stored))
+        const discovered = yield* Effect.promise(() => discover(ctx, loaded.stored, state.baselines))
         return toSnapshot(discovered, loaded.protectedAgents)
       }),
     "instructions.mutate": (input, context) =>
@@ -113,7 +115,7 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           save(directory, { expectedRevision: input.expectedRevision, customizations }),
         )
         if (!saved.ok) {
-          const current = yield* Effect.promise(() => discover(ctx, saved.current))
+          const current = yield* Effect.promise(() => discover(ctx, saved.current, state.baselines))
           return conflictResult(current, protectedAgents)
         }
         const discovered = yield* publishFresh(ctx, state, { revision: saved.revision, customizations })
@@ -241,6 +243,7 @@ function deactivate(state: PlusState): Effect.Effect<void> {
       yield* disposeApplied(state)
       state.fingerprint = undefined
       state.revision = undefined
+      state.baselines = new Map()
     }),
   )
 }
@@ -250,21 +253,43 @@ function deactivate(state: PlusState): Effect.Effect<void> {
 function publishFresh(ctx: Context, state: PlusState, stored: Stored): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
-      const discovered = yield* Effect.promise(() => discover(ctx, stored))
+      const discovered = yield* Effect.promise(() => discover(ctx, stored, state.baselines))
       // A newer publish already won; this read is stale, so leave the applied
       // registrations and the last emitted revision untouched.
       if (state.revision !== undefined && stored.revision < state.revision) return discovered
       const fingerprint = fingerprintDiscovered(discovered)
-      if (state.revision !== undefined && fingerprint === state.fingerprint) return discovered
+      if (state.revision !== undefined && fingerprint === state.fingerprint) {
+        refreshBaselines(state, discovered)
+        return discovered
+      }
       yield* disposeApplied(state)
       const applied = yield* Effect.promise(() => apply(ctx, discovered.snapshot, stored.customizations))
       state.applied = [...applied.registrations]
       state.fingerprint = fingerprint
       state.revision = stored.revision
+      refreshBaselines(state, discovered)
       yield* emitChanged(state, stored.revision)
       return discovered
     }),
   )
+}
+
+// Plus's own agent transform rewrites the system text that the next discovery
+// reads back from ctx.agent.list(). Retain, per agent, what Plus last wrote
+// and the upstream text it replaced so discovery can report upstream while the
+// host still shows Plus's output. The map is rebuilt from the just-published
+// snapshot on every pass, mirroring apply.ts promptUpdates exactly, so removed
+// overrides and genuinely edited upstream text drop out instead of pinning a
+// stale value forever.
+function refreshBaselines(state: PlusState, discovered: Discovered): void {
+  const next = new Map<string, PromptBaseline>()
+  const prompts = discovered.snapshot.items.filter((item) => item.kind === "prompt")
+  for (const item of prompts) {
+    const resolved = effective(discovered.snapshot, item, item.owner)
+    if (!resolved.customized || resolved.text === item.text) continue
+    next.set(item.owner, { applied: resolved.text, upstream: item.text })
+  }
+  state.baselines = next
 }
 
 function disposeApplied(state: PlusState): Effect.Effect<void> {

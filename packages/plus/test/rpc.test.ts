@@ -9,10 +9,11 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState, type PlusState } from "../src/index.js"
+import { fingerprint } from "../src/instructions/model.js"
 import { load } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { context } from "./harness.js"
+import { agentHarness, context } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -99,6 +100,55 @@ function emptyHost(directory: string, agents: Agent.Info[] = []) {
       list: () => Effect.succeed({ location, data: agents }),
       transform: () => Effect.die("unused agent.transform"),
       reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location, data: [] }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => [],
+            get: () => undefined,
+            namespace: () => undefined,
+            add: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => [],
+            get: () => undefined,
+            set: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+}
+
+function liveAgentHost(directory: string, agents: ReturnType<typeof agentHarness>) {
+  const location = testLocation(directory)
+  return context({
+    location,
+    agent: {
+      get: agents.domain.get,
+      list: () => agents.domain.list(),
+      transform: agents.domain.transform,
+      reload: agents.domain.reload,
     },
     skill: {
       list: () => Effect.succeed({ location, data: [] }),
@@ -480,4 +530,113 @@ test("agent methods reject traversal ids with agent.invalid and leave the filesy
   )
   expect(await Bun.file(outside).exists()).toBe(true)
   expect(await Bun.file(outside).text()).toBe("keep me\n")
+})
+
+test("a prompt customization converges: repeated refreshes are no-ops and keep the override applied", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const state = createState()
+  const emitted = captureEmits(state)
+  const handlers = createHandlers(liveAgentHost(directory, agents), state)
+
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = before.items.find((entry) => entry.id === "prompt:alpha")
+  if (!item) throw new Error("expected prompt:alpha in snapshot")
+  expect(item.text).toBe("upstream")
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 0,
+        customizations: [
+          {
+            item: "prompt:alpha",
+            agent: "alpha",
+            text: "custom",
+            state: "inherit",
+            basedOn: fingerprint("upstream"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+  // The override really reached the host: list observes the applied text.
+  expect(agents.state.get("alpha")?.system).toBe("custom")
+  const afterApply = { transforms: agents.transforms, disposes: agents.disposes, reloads: agents.reloads }
+  expect(afterApply.transforms).toBe(1)
+  expect(afterApply.reloads).toBe(1)
+  const emittedAfterApply = emitted.length
+
+  // Drive the refresh cycle the way agent.updated would, twice: each pass
+  // must short-circuit on the unchanged fingerprint instead of disposing
+  // and reinstalling registrations.
+  for (let pass = 0; pass < 2; pass++) {
+    const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+    expectRpcBody(refreshed)
+    expect(refreshed.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream")
+    expect(agents.transforms).toBe(afterApply.transforms)
+    expect(agents.disposes).toBe(afterApply.disposes)
+    expect(agents.reloads).toBe(afterApply.reloads)
+    expect(agents.state.get("alpha")?.system).toBe("custom")
+  }
+  expect(emitted).toHaveLength(emittedAfterApply)
+})
+
+test("a genuine upstream prompt edit after a customization is still discovered", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents), state)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 0,
+        customizations: [
+          {
+            item: "prompt:alpha",
+            agent: "alpha",
+            text: "custom",
+            state: "inherit",
+            basedOn: fingerprint("upstream"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+
+  // A host edit outside Plus replaces the upstream text underneath the
+  // installed override. Core keeps showing Plus's output while the transform
+  // is installed, so the first refresh still reports the retained baseline.
+  agents.setUpstream("alpha", "upstream revised")
+  expect(agents.upstream("alpha")).toBe("upstream revised")
+  const masked = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(masked)
+  expect(masked.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream")
+
+  // Removing the override disposes the transform and unmasks the host text;
+  // the next discovery must surface the genuine edit (driving the "needs
+  // review" badge) rather than the stale retained baseline.
+  const removed = await Effect.runPromise(
+    handlers["instructions.mutate"]({ expectedRevision: 1, customizations: [] }, throwingContext({})),
+  )
+  expect(removed.ok).toBe(true)
+  if (!removed.ok) throw new Error("expected removal to succeed")
+  expect(agents.state.get("alpha")?.system).toBe("upstream revised")
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  const item = refreshed.items.find((entry) => entry.id === "prompt:alpha")
+  expect(item?.text).toBe("upstream revised")
+  expect(item?.fingerprint).toBe(fingerprint("upstream revised"))
 })
