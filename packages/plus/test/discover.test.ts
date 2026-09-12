@@ -1,11 +1,15 @@
 import { afterEach, expect, test } from "bun:test"
+import type { MCPEditor } from "@opencode/plugin/effect/mcp"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
+import type { Mcp } from "@opencode/schema/mcp"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Project } from "@opencode/schema/project"
 import { Skill } from "@opencode/schema/skill"
-import { Effect } from "effect"
+import { Tool } from "@opencode/schema/tool"
+import { Effect, Schema, type Types } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -52,6 +56,37 @@ function agent(id: string, system: string): Agent.Info {
   }
 }
 
+function tool(id: string, description: string): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    execute: () => Effect.die("unused tool.execute"),
+  }
+}
+
+function toolEditor(tools: readonly (Tool.Info & { readonly id: string })[] = []): ToolEditor {
+  return {
+    list: () => tools,
+    get: (id) => tools.find((tool) => tool.id === id),
+    namespace: () => {},
+    add: () => {},
+    update: () => {},
+    remove: () => {},
+  }
+}
+
+function mcpEditor(servers: readonly [string, Types.DeepMutable<Mcp.ServerConfig>][] = []): MCPEditor {
+  return {
+    list: () => servers,
+    get: (name) => servers.find(([serverName]) => serverName === name)?.[1],
+    set: () => {},
+    update: () => {},
+    remove: () => {},
+  }
+}
+
 function agentContext(directory: string, agents: Agent.Info[]): Context {
   return context({
     location: location(directory),
@@ -69,7 +104,7 @@ function agentContext(directory: string, agents: Agent.Info[]): Context {
     tool: {
       transform: (callback) =>
         Effect.sync(() => {
-          callback({ list: () => [], get: () => undefined } as never)
+          callback(toolEditor())
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused tool.reload"),
@@ -79,7 +114,7 @@ function agentContext(directory: string, agents: Agent.Info[]): Context {
       list: () => Effect.die("unused mcp.list"),
       transform: (callback) =>
         Effect.sync(() => {
-          callback({ list: () => [] } as never)
+          callback(mcpEditor())
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused mcp.reload"),
@@ -136,7 +171,7 @@ test("personalized skill copies are excluded from discovery", async () => {
     tool: {
       transform: (callback) =>
         Effect.sync(() => {
-          callback({ list: () => [], get: () => undefined } as never)
+          callback(toolEditor())
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused tool.reload"),
@@ -146,7 +181,7 @@ test("personalized skill copies are excluded from discovery", async () => {
       list: () => Effect.die("unused mcp.list"),
       transform: (callback) =>
         Effect.sync(() => {
-          callback({ list: () => [] } as never)
+          callback(mcpEditor())
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused mcp.reload"),
@@ -163,10 +198,7 @@ test("tool items are collected through tool.transform", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
-  const tools = [
-    { id: "reader", name: "reader", description: "read things" },
-    { id: "writer", name: "writer", description: "write things" },
-  ]
+  const tools = [tool("reader", "read things"), tool("writer", "write things")]
   let sawTransform = false
   const ctx = context({
     location: location(directory),
@@ -186,7 +218,7 @@ test("tool items are collected through tool.transform", async () => {
       transform: (callback) =>
         Effect.sync(() => {
           sawTransform = true
-          callback({ list: () => tools, get: (id: string) => tools.find((tool) => tool.id === id) } as never)
+          callback(toolEditor(tools))
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused tool.reload"),
@@ -196,7 +228,7 @@ test("tool items are collected through tool.transform", async () => {
       list: () => Effect.die("unused mcp.list"),
       transform: (callback) =>
         Effect.sync(() => {
-          callback({ list: () => [] } as never)
+          callback(mcpEditor())
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused mcp.reload"),
