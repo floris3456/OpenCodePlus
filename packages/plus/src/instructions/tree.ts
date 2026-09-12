@@ -1,5 +1,5 @@
-import { applies, effective, type Customization, type Item, type Snapshot } from "./model.js"
-import type { AgentScope, AgentSource, Discovered } from "./discover.js"
+import { applies, effective, type Item, type Snapshot } from "./model.js"
+import type { AgentScope, AgentSource } from "./discover.js"
 import type { ProjectConfig } from "../project.js"
 
 export type TreeNodeKind =
@@ -34,30 +34,24 @@ export interface TreeNode {
 export interface TreeInput {
   readonly snapshot: Snapshot
   readonly agents?: readonly AgentSource[]
-  readonly customizations?: readonly Customization[]
   readonly project?: ProjectConfig | null
-  readonly expanded?: ReadonlySet<string> | readonly string[] | Iterable<string>
+  readonly expanded?: ReadonlySet<string>
 }
 
-export function tree(
-  input: TreeInput | Discovered | Snapshot,
-  customizations?: readonly Customization[],
-  project?: ProjectConfig | null,
-  expanded?: ReadonlySet<string> | readonly string[] | Iterable<string>,
-): TreeNode[] {
-  const options = normalizeInput(input, customizations, project, expanded)
-  const expandedSet = normalizeExpanded(options.expanded)
-  const protectedSet = new Set(options.project?.protectedAgents ?? [])
+export function tree(input: TreeInput): TreeNode[] {
+  const agents = input.agents ?? []
+  const expandedSet = normalizeExpanded(input.expanded)
+  const protectedSet = new Set(input.project?.protectedAgents ?? [])
 
-  const projectAgents = options.agents.filter((agent) => agent.scope === "project")
-  const globalAgents = options.agents.filter((agent) => agent.scope === "global")
-  const builtinAgents = options.agents.filter((agent) => agent.scope === "builtin")
+  const projectAgents = agents.filter((agent) => agent.scope === "project")
+  const globalAgents = agents.filter((agent) => agent.scope === "global")
+  const builtinAgents = agents.filter((agent) => agent.scope === "builtin")
 
   const projectGroup = emitAgentGroup({
     groupId: "group:project",
     label: `Project agents (${projectAgents.length})`,
     agents: projectAgents,
-    snapshot: options.snapshot,
+    snapshot: input.snapshot,
     protectedSet,
     expandedSet,
     groupAliases: ["project", "Project agents"],
@@ -67,14 +61,14 @@ export function tree(
     groupId: "group:global",
     label: `Global agents (${globalAgents.length})`,
     agents: globalAgents,
-    snapshot: options.snapshot,
+    snapshot: input.snapshot,
     protectedSet,
     expandedSet,
     groupAliases: ["global", "Global agents"],
   })
 
   const defaultsGroup = emitDefaultsGroup({
-    snapshot: options.snapshot,
+    snapshot: input.snapshot,
     builtinAgents,
     protectedSet,
     expandedSet,
@@ -83,41 +77,9 @@ export function tree(
   return [...projectGroup, ...globalGroup, ...defaultsGroup]
 }
 
-function normalizeInput(
-  input: TreeInput | Discovered | Snapshot,
-  customizations?: readonly Customization[],
-  project?: ProjectConfig | null,
-  expanded?: ReadonlySet<string> | readonly string[] | Iterable<string>,
-): {
-  readonly snapshot: Snapshot
-  readonly agents: readonly AgentSource[]
-  readonly project?: ProjectConfig | null
-  readonly expanded?: ReadonlySet<string> | readonly string[] | Iterable<string>
-} {
-  const baseSnapshot = "snapshot" in input ? input.snapshot : input
-  const baseAgents = "agents" in input && Array.isArray(input.agents) ? input.agents : []
-  const baseProject = "project" in input ? input.project : project
-  const baseExpanded = "expanded" in input ? input.expanded : expanded
-  const custom = "customizations" in input && input.customizations ? input.customizations : customizations
-
-  const resolvedSnapshot: Snapshot = custom
-    ? { revision: baseSnapshot.revision, items: baseSnapshot.items, customizations: [...custom] }
-    : baseSnapshot
-
-  return {
-    snapshot: resolvedSnapshot,
-    agents: baseAgents,
-    project: baseProject,
-    expanded: baseExpanded,
-  }
-}
-
-function normalizeExpanded(
-  expanded?: ReadonlySet<string> | readonly string[] | Iterable<string>,
-): ReadonlySet<string> {
+function normalizeExpanded(expanded?: ReadonlySet<string>): ReadonlySet<string> {
   if (!expanded) return new Set<string>()
-  if (expanded instanceof Set) return expanded
-  return new Set(expanded)
+  return expanded
 }
 
 function isExpanded(id: string, expandedSet: ReadonlySet<string>, aliases?: readonly string[]): boolean {
