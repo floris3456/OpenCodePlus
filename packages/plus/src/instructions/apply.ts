@@ -3,6 +3,8 @@ import type { MCPEditor } from "@opencode/plugin/effect/mcp"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration, Transform } from "@opencode/plugin/effect/registration"
 import type { SessionContext, SessionHooks } from "@opencode/plugin/effect/session"
+import type { SkillEditor } from "@opencode/plugin/effect/skill"
+import { Skill } from "@opencode/schema/skill"
 import { Effect, Option, Schema, Scope } from "effect"
 import { applies, effective, type Customization, type Item, type Snapshot } from "./model.js"
 
@@ -18,12 +20,13 @@ export async function apply(ctx: Context, snapshot: Snapshot, customizations: Cu
   const prompt = await applyPrompts(ctx, scoped, agentIDs)
   if (prompt) registrations.push(prompt)
   const skills = await applySkills(ctx, scoped, agentIDs)
-  if (skills) registrations.push(skills)
+  registrations.push(...skills.registrations)
   const tools = await applyTools(ctx, scoped, agentIDs)
   if (tools) registrations.push(tools)
   const mcp = await applyMcp(ctx, scoped)
   if (mcp) registrations.push(mcp)
-  if (prompt !== undefined || skills !== undefined) await runVoid(ctx.agent.reload())
+  if (prompt !== undefined || skills.agent) await runVoid(ctx.agent.reload())
+  if (skills.skill) await runVoid(ctx.skill.reload())
   if (mcp !== undefined) await runVoid(ctx.mcp.reload())
   return { registrations }
 }
@@ -82,26 +85,102 @@ function promptUpdates(snapshot: Snapshot, prompts: Item[], agentID: string): { 
   })
 }
 
-async function applySkills(
-  ctx: Context,
-  snapshot: Snapshot,
-  agentIDs: string[],
-): Promise<Registration | undefined> {
+interface SkillApplied {
+  readonly registrations: Registration[]
+  readonly agent: boolean
+  readonly skill: boolean
+}
+
+async function applySkills(ctx: Context, snapshot: Snapshot, agentIDs: string[]): Promise<SkillApplied> {
   const skills = snapshot.items.filter((item) => item.kind === "skill")
   const denials = agentIDs.flatMap((agentID) => skillDenials(snapshot, skills, agentID))
-  if (denials.length === 0) return undefined
-  return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-    for (const denial of denials) {
-      const current = editor.get(denial.agent)
-      const denied = current?.permissions.some(
-        (rule) => rule.action === "skill" && rule.resource === denial.skill && rule.effect === "deny",
+  const copies = agentIDs.flatMap((agentID) => skillCopies(snapshot, skills, agentID))
+  if (denials.length === 0 && copies.length === 0) return { registrations: [], agent: false, skill: false }
+  const added = copies.length === 0 ? undefined : await addSkillCopies(ctx, copies)
+  const addedIDs = added?.added ?? new Set<string>()
+  const registrations: Registration[] = []
+  if (added) registrations.push(added.registration)
+  const rules = [
+    ...denials.map((denial) => ({ agent: denial.agent, resource: denial.skill, effect: "deny" as const })),
+    ...copies
+      .filter((copy) => addedIDs.has(copyName(copy.agent, copy.skill)))
+      .flatMap((copy) => [
+        { agent: copy.agent, resource: copy.skill, effect: "deny" as const },
+        { agent: copy.agent, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
+      ]),
+  ]
+  if (rules.length === 0) return { registrations, agent: false, skill: added !== undefined }
+  registrations.unshift(
+    await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+      for (const rule of rules) pushSkillRule(editor, rule)
+    }),
+  )
+  return { registrations, agent: true, skill: added !== undefined }
+}
+
+function pushSkillRule(
+  editor: AgentEditor,
+  rule: { agent: string; resource: string; effect: "deny" | "allow" },
+) {
+  const current = editor.get(rule.agent)
+  const present = current?.permissions.some(
+    (entry) => entry.action === "skill" && entry.resource === rule.resource && entry.effect === rule.effect,
+  )
+  if (present) return
+  editor.update(rule.agent, (agent) => {
+    agent.permissions.push({ action: "skill", resource: rule.resource, effect: rule.effect })
+  })
+}
+
+function copyName(agent: string, skill: string): string {
+  return `plus/${agent}/${skill}`
+}
+
+interface SkillCopy {
+  readonly agent: string
+  readonly skill: string
+  readonly text: string
+}
+
+function skillCopies(snapshot: Snapshot, skills: Item[], agentID: string): SkillCopy[] {
+  return skills.flatMap((item) => {
+    if (!applies(item, agentID)) return []
+    const resolved = effective(snapshot, item, agentID)
+    if (!resolved.enabled) return []
+    if (resolved.text === item.text) return []
+    return [{ agent: agentID, skill: item.owner, text: resolved.text }]
+  })
+}
+
+async function addSkillCopies(
+  ctx: Context,
+  copies: SkillCopy[],
+): Promise<{ registration: Registration; added: Set<string> } | undefined> {
+  const added = new Set<string>()
+  const registration = await runRegistration(ctx.skill.transform, (editor: SkillEditor) => {
+    for (const copy of copies) {
+      const original = editor.get(copy.skill)
+      if (!original) continue
+      const id = copyName(copy.agent, copy.skill)
+      added.add(id)
+      editor.add(
+        Skill.Info.make({
+          id: Skill.ID.make(id),
+          name: Skill.Name.make(original.name),
+          ...(original.description === undefined ? {} : { description: original.description }),
+          ...(original.slash === undefined ? {} : { slash: original.slash }),
+          ...(original.autoinvoke === undefined ? {} : { autoinvoke: original.autoinvoke }),
+          location: original.location,
+          content: copy.text,
+        }),
       )
-      if (denied) continue
-      editor.update(denial.agent, (agent) => {
-        agent.permissions.push({ action: "skill", resource: denial.skill, effect: "deny" })
-      })
     }
   })
+  if (added.size === 0) {
+    await Effect.runPromise(registration.dispose)
+    return undefined
+  }
+  return { registration, added }
 }
 
 function skillDenials(snapshot: Snapshot, skills: Item[], agentID: string): { agent: string; skill: string }[] {
