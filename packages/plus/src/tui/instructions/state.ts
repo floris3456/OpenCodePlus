@@ -55,6 +55,7 @@ export function createInstructionsState(context: Plugin.Context) {
         scope: agent.scope,
         ...(agent.path === undefined ? {} : { path: agent.path }),
       })),
+      tools: current.tools.map((tool) => ({ id: tool.id, native: tool.native })),
       project: { version: 1, protectedAgents: [...current.protectedAgents] },
       expanded: expanded(),
     })
