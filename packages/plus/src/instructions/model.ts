@@ -43,9 +43,10 @@ export function fingerprint(text: string): string {
 }
 
 export interface MergeCustomizationFields {
-  readonly text?: string
+  // undefined preserves the field, null clears it, a value sets it.
+  readonly text?: string | null
   readonly state?: CustomizationState
-  readonly reviewed?: string
+  readonly reviewed?: string | null
 }
 
 export function mergeCustomization(
@@ -55,9 +56,11 @@ export function mergeCustomization(
   fields: MergeCustomizationFields,
 ): Customization[] {
   const existing = customizations.find((record) => record.item === item.id && record.agent === agent)
-  const text = fields.text ?? existing?.text
+  const rest = customizations.filter((entry) => !(entry.item === item.id && entry.agent === agent))
+  const text = resolveOptional(existing?.text, fields.text)
   const state = fields.state ?? existing?.state ?? "inherit"
-  const reviewed = fields.reviewed ?? existing?.reviewed
+  const reviewed = resolveOptional(existing?.reviewed, fields.reviewed)
+  if (text === undefined && !deviates(state, item.available) && reviewed === undefined) return rest
   const record: Customization = {
     item: item.id,
     agent,
@@ -67,7 +70,20 @@ export function mergeCustomization(
     ...(text === undefined ? {} : { text }),
     ...(reviewed === undefined ? {} : { reviewed }),
   }
-  return [...customizations.filter((entry) => !(entry.item === item.id && entry.agent === agent)), record]
+  return [...rest, record]
+}
+
+function resolveOptional(existing: string | undefined, update: string | null | undefined): string | undefined {
+  if (update === undefined) return existing
+  if (update === null) return undefined
+  return update
+}
+
+export function canReset(snapshot: Snapshot, item: Item, agent: string): boolean {
+  const own = snapshot.customizations.find((record) => record.item === item.id && record.agent === agent)
+  if (!own) return false
+  if (own.text !== undefined) return true
+  return deviates(own.state, item.available)
 }
 
 export function applies(item: Item, agent: string): boolean {
