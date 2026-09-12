@@ -169,6 +169,11 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus(`"${node.label}" cannot be toggled`)
       return
     }
+    const toggle = node.action?.toggle
+    if (toggle?.allowed === false) {
+      setStatus(`"${node.label}" cannot be toggled: ${toggle.reason}`)
+      return
+    }
     await mutateFields(
       node,
       { state: value ? "enabled" : "disabled" },
@@ -188,12 +193,17 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
       return
     }
-    if (node.badges.review !== true) {
-      setStatus(`"${node.label}" needs no review`)
-      return
-    }
     if (node.itemId === undefined) {
       setStatus(`"${node.label}" cannot be acknowledged`)
+      return
+    }
+    const edit = node.action?.edit
+    if (edit?.allowed === false) {
+      setStatus(`"${node.label}" cannot be acknowledged: ${edit.reason}`)
+      return
+    }
+    if (node.badges.review !== true) {
+      setStatus(`"${node.label}" needs no review`)
       return
     }
     const item = current.items.find((entry) => entry.id === node.itemId)
@@ -210,6 +220,11 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function saveText(node: TreeNode, text: string): Promise<boolean> {
+    const edit = node.action?.edit
+    if (edit?.allowed === false) {
+      setStatus(`"${node.label}" cannot be edited: ${edit.reason}`)
+      return false
+    }
     return mutateFields(
       node,
       { text },
