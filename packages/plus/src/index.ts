@@ -279,15 +279,18 @@ function publishFresh(ctx: Context, state: PlusState, stored: Stored): Effect.Ef
 // and the upstream text it replaced so discovery can report upstream while the
 // host still shows Plus's output. The map is rebuilt from the just-published
 // snapshot on every pass, mirroring apply.ts promptUpdates exactly, so removed
-// overrides and genuinely edited upstream text drop out instead of pinning a
-// stale value forever.
+// overrides drop out instead of pinning a stale value forever. The retained
+// file body is only a fallback for builtin agents: file-backed agents reread
+// their markdown on every discovery, so genuine upstream edits surface while
+// the override stays installed.
 function refreshBaselines(state: PlusState, discovered: Discovered): void {
   const next = new Map<string, PromptBaseline>()
   const prompts = discovered.snapshot.items.filter((item) => item.kind === "prompt")
   for (const item of prompts) {
     const resolved = effective(discovered.snapshot, item, item.owner)
     if (!resolved.customized || resolved.text === item.text) continue
-    next.set(item.owner, { applied: resolved.text, upstream: item.text })
+    const file = discovered.files.get(item.owner)
+    next.set(item.owner, { applied: resolved.text, upstream: item.text, ...(file === undefined ? {} : { file }) })
   }
   state.baselines = next
 }

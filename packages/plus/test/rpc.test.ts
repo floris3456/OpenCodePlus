@@ -9,7 +9,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState, type PlusState } from "../src/index.js"
-import { fingerprint } from "../src/instructions/model.js"
+import { effective, fingerprint, type Customization, type Item } from "../src/instructions/model.js"
 import { load } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
@@ -252,6 +252,20 @@ const RpcBody = Schema.toCodecJson(Schema.Struct({ output: Schema.optionalKey(Sc
 
 function expectRpcBody(value: unknown) {
   expect(() => Schema.encodeUnknownSync(RpcBody)({ output: value })).not.toThrow()
+}
+
+type RpcSnapshot = Effect.Success<ReturnType<ReturnType<typeof createHandlers>["instructions.refresh"]>>
+
+function snapshotOf(snapshot: RpcSnapshot): { revision: number; items: Item[]; customizations: Customization[] } {
+  return {
+    revision: snapshot.revision,
+    items: snapshot.items.map(itemOf),
+    customizations: snapshot.customizations.map((record: RpcSnapshot["customizations"][number]) => ({ ...record })),
+  }
+}
+
+function itemOf(item: RpcSnapshot["items"][number]): Item {
+  return { ...item, agents: [...item.agents] }
 }
 
 test("gated methods fail with project.disabled when project mode is off", async () => {
@@ -535,6 +549,9 @@ test("agent methods reject traversal ids with agent.invalid and leave the filesy
 test("a prompt customization converges: repeated refreshes are no-ops and keep the override applied", async () => {
   const directory = await tempDir()
   await enable(directory)
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "upstream\n")
   const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
   const state = createState()
   const emitted = captureEmits(state)
@@ -588,9 +605,12 @@ test("a prompt customization converges: repeated refreshes are no-ops and keep t
   expect(emitted).toHaveLength(emittedAfterApply)
 })
 
-test("a genuine upstream prompt edit after a customization is still discovered", async () => {
+test("a genuine upstream prompt edit while a customization is active is discovered and needs review", async () => {
   const directory = await tempDir()
   await enable(directory)
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "upstream\n")
   const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
   const state = createState()
   const handlers = createHandlers(liveAgentHost(directory, agents), state)
@@ -617,26 +637,33 @@ test("a genuine upstream prompt edit after a customization is still discovered",
   if (!mutated.ok) throw new Error("expected mutate to succeed")
 
   // A host edit outside Plus replaces the upstream text underneath the
-  // installed override. Core keeps showing Plus's output while the transform
-  // is installed, so the first refresh still reports the retained baseline.
+  // installed override. The customization stays active, yet discovery rereads
+  // the file-backed prompt so the genuine edit surfaces and the "needs review"
+  // badge fires.
+  await Bun.write(alphaPath, "upstream revised\n")
   agents.setUpstream("alpha", "upstream revised")
   expect(agents.upstream("alpha")).toBe("upstream revised")
-  const masked = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(masked)
-  expect(masked.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream")
-
-  // Removing the override disposes the transform and unmasks the host text;
-  // the next discovery must surface the genuine edit (driving the "needs
-  // review" badge) rather than the stale retained baseline.
-  const removed = await Effect.runPromise(
-    handlers["instructions.mutate"]({ expectedRevision: 1, customizations: [] }, throwingContext({})),
-  )
-  expect(removed.ok).toBe(true)
-  if (!removed.ok) throw new Error("expected removal to succeed")
-  expect(agents.state.get("alpha")?.system).toBe("upstream revised")
   const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
   expectRpcBody(refreshed)
   const item = refreshed.items.find((entry) => entry.id === "prompt:alpha")
   expect(item?.text).toBe("upstream revised")
   expect(item?.fingerprint).toBe(fingerprint("upstream revised"))
+  if (!item) throw new Error("expected prompt:alpha in refreshed snapshot")
+  const record = refreshed.customizations.find((entry) => entry.item === item.id && entry.agent === "alpha")
+  if (!record) throw new Error("expected prompt:alpha customization in refreshed snapshot")
+  expect(record.basedOn).toBe(fingerprint("upstream"))
+  expect(record.basedOn).not.toBe(item.fingerprint)
+  expect(effective(snapshotOf(refreshed), itemOf(item), "alpha").review).toBe(true)
+  expect(agents.state.get("alpha")?.system).toBe("custom")
+
+  // The edit changes the publish fingerprint once, so discovery settles after
+  // one dispose/reinstall instead of storming on every pass.
+  const afterEdit = { transforms: agents.transforms, disposes: agents.disposes, reloads: agents.reloads }
+  const settled = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(settled)
+  expect(settled.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream revised")
+  expect(agents.transforms).toBe(afterEdit.transforms)
+  expect(agents.disposes).toBe(afterEdit.disposes)
+  expect(agents.reloads).toBe(afterEdit.reloads)
+  expect(agents.state.get("alpha")?.system).toBe("custom")
 })
