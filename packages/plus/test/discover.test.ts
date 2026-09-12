@@ -13,7 +13,7 @@ import { Effect, Schema, type Types } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { discover } from "../src/instructions/discover.js"
+import { agentBody, discover } from "../src/instructions/discover.js"
 import { copyName } from "../src/instructions/apply.js"
 import { context } from "./harness.js"
 
@@ -257,18 +257,67 @@ test("nested agent files resolve to nested ids with their scope and path", async
   expect(discovered.agents).toEqual([{ id: "team/lead", scope: "project", path: nestedPath }])
 })
 
-test("prompt discovery reports retained upstream while the host shows Plus output, and new host text otherwise", async () => {
+test("prompt discovery rereads file-backed upstream while the host shows Plus output, and new host text otherwise", async () => {
   const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "alpha upstream revised\n")
   const applied = agentContext(directory, [agent("alpha", "custom"), agent("beta", "beta upstream")])
   const baselines = new Map([
-    ["alpha", { applied: "custom", upstream: "alpha upstream" }],
+    ["alpha", { applied: "custom", upstream: "alpha upstream", file: "alpha upstream" }],
     ["beta", { applied: "stale override", upstream: "stale upstream" }],
   ])
   const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
   const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
-  // Alpha still shows exactly what Plus wrote, so discovery unmasks upstream.
-  expect(texts.get("prompt:alpha")).toBe("alpha upstream")
+  // Alpha still shows exactly what Plus wrote, but the backing file changed
+  // underneath the override, so discovery reports the reread body rather than
+  // the stale retained upstream.
+  expect(texts.get("prompt:alpha")).toBe("alpha upstream revised")
   // Beta's host text matches neither the retained override nor stale
   // upstream — a genuine host edit — so it flows through untouched.
   expect(texts.get("prompt:beta")).toBe("beta upstream")
+})
+
+test("prompt discovery ignores the backing file when another config source owns the prompt", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "file body\n")
+  const applied = agentContext(directory, [agent("alpha", "custom")])
+  const baselines = new Map([["alpha", { applied: "custom", upstream: "config upstream", file: "file body" }]])
+  const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
+  const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
+  // The file body did not match the host upstream when the baseline was
+  // retained, so the file is ignored and the retained upstream is reported.
+  expect(texts.get("prompt:alpha")).toBe("config upstream")
+})
+
+test("prompt discovery retains the baseline for builtin agents while the host shows Plus output", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const applied = agentContext(directory, [agent("ghost", "custom")])
+  const baselines = new Map([["ghost", { applied: "custom", upstream: "ghost upstream" }]])
+  const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
+  const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
+  // Builtins have no backing file to reread, so the retained upstream is the
+  // only available source: genuine host edits stay masked until the override
+  // is removed.
+  expect(texts.get("prompt:ghost")).toBe("ghost upstream")
+})
+
+test("agentBody matches core's trimmed markdown content for frontmatter and body-only files", () => {
+  // Core decodes file-backed agents as { ...frontmatter, system: content.trim() }.
+  expect(agentBody("---\nmode: subagent\n---\nBe helpful.\n")).toBe("Be helpful.")
+  expect(agentBody("---\nmode: subagent\n---\n")).toBe("")
+  expect(agentBody("Be helpful.\n")).toBe("Be helpful.")
+  expect(agentBody("  spaced  ")).toBe("spaced")
+  // `---` inside the body is content, not a second fence.
+  expect(agentBody("---\ndescription: x\n---\nfirst\n---\nsecond\n")).toBe("first\n---\nsecond")
+  // No opening fence means the whole file is the body.
+  expect(agentBody("not frontmatter\n---\nstill body\n")).toBe("not frontmatter\n---\nstill body")
 })

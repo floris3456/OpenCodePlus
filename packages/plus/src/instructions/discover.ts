@@ -23,11 +23,13 @@ export interface AgentSource {
 export interface PromptBaseline {
   readonly applied: string
   readonly upstream: string
+  readonly file?: string
 }
 
 export interface Discovered {
   readonly snapshot: Snapshot
   readonly agents: AgentSource[]
+  readonly files: ReadonlyMap<string, string>
 }
 
 export async function discover(
@@ -41,9 +43,10 @@ export async function discover(
   const servers = await readTransform(ctx.mcp.transform, (editor) => editor.list())
   const resolvedAgents = await agents
   const sources = await resolveAgentSources(ctx.location.directory, resolvedAgents)
+  const files = await readAgentBodies(sources)
   const instructions = await readProjectInstructions(ctx.location.directory)
   const items = [
-    ...promptItems(resolvedAgents, baselines),
+    ...promptItems(resolvedAgents, baselines, files),
     ...skillItems(await skills),
     ...toolItems(tools),
     ...mcpItems(servers),
@@ -52,6 +55,7 @@ export async function discover(
   return {
     snapshot: { revision: stored.revision, items, customizations: stored.customizations },
     agents: sources,
+    files,
   }
 }
 
@@ -144,9 +148,13 @@ function globalConfigDir(): string {
   return path.join(base, "opencode")
 }
 
-function promptItems(agents: readonly Agent.Info[], baselines: ReadonlyMap<string, PromptBaseline>): Item[] {
+function promptItems(
+  agents: readonly Agent.Info[],
+  baselines: ReadonlyMap<string, PromptBaseline>,
+  files: ReadonlyMap<string, string>,
+): Item[] {
   return agents.map((agent) => {
-    const text = upstreamPrompt(agent, baselines.get(agent.id))
+    const text = upstreamPrompt(agent, baselines.get(agent.id), files.get(agent.id))
     return item(`prompt:${agent.id}`, "prompt", agent.id, agent.name, text, [agent.id])
   })
 }
@@ -156,14 +164,46 @@ function promptItems(agents: readonly Agent.Info[], baselines: ReadonlyMap<strin
 // that output as the upstream item text would flip the publish fingerprint on
 // every pass and pin promptUpdates' skip check (resolved.text === item.text),
 // producing a permanent dispose/reinstall storm. While the host still shows
-// exactly what Plus last wrote, report the retained upstream text instead; any
-// other text is genuinely upstream (a host edit outside Plus) and flows
-// through so the "needs review" badge still fires.
-function upstreamPrompt(agent: Agent.Info, baseline: PromptBaseline | undefined): string {
+// exactly what Plus last wrote, unmask the upstream text independently of the
+// post-transform host view: file-backed agents reread their markdown body
+// (core decodes it as `system: body`), and builtin agents without a backing
+// file retain the existing baseline behaviour. Unmasked host text means no
+// override is installed for that agent, so it flows through untouched. A file
+// body is only trusted when it matched the host upstream at baseline time;
+// otherwise another config source owns the prompt and the file is ignored to
+// avoid a spurious fingerprint change.
+function upstreamPrompt(agent: Agent.Info, baseline: PromptBaseline | undefined, fileBody: string | undefined): string {
   const current = agent.system ?? ""
   if (baseline === undefined) return current
-  if (current === baseline.applied) return baseline.upstream
-  return current
+  if (current !== baseline.applied) return current
+  if (fileBody === undefined) return baseline.upstream
+  if (baseline.file === undefined) return baseline.upstream
+  if (baseline.file !== baseline.upstream) return baseline.upstream
+  return fileBody
+}
+
+// Core decodes a file-backed agent as `{...frontmatter, system: body}`, where
+// body is the markdown content after the frontmatter block, trimmed (see
+// core/src/config/plugin/agent.ts decode: `body = markdown.content.trim()`).
+// Reread that body from the resolved source files so discovery observes
+// upstream prompt edits even while Plus's transform masks the host view. The
+// frontmatter fence mirrors gray-matter: an opening `---` line, a closing
+// `---` line, then the body. Files without a valid fence are body-only.
+async function readAgentBodies(sources: readonly AgentSource[]): Promise<Map<string, string>> {
+  const bodies = new Map<string, string>()
+  const texts = await Promise.all(sources.map((source) => (source.path === undefined ? undefined : readText(source.path))))
+  sources.forEach((source, index) => {
+    const text = texts[index]
+    if (text === undefined) return
+    bodies.set(source.id, agentBody(text))
+  })
+  return bodies
+}
+
+export function agentBody(markdown: string): string {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/)
+  if (!match) return markdown.trim()
+  return (match[2] ?? "").trim()
 }
 
 function skillItems(skills: readonly Skill.Info[]): Item[] {
