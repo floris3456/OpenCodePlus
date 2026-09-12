@@ -365,6 +365,7 @@ function toSnapshot(discovered: Discovered, protectedAgents: readonly string[]):
       ...(agent.path === undefined ? {} : { path: agent.path }),
       fileBacked: agent.path !== undefined,
     })),
+    tools: discovered.tools.map((tool) => ({ id: tool.id, native: tool.native })),
     items: discovered.snapshot.items,
     customizations: discovered.snapshot.customizations.map((record) => ({
       item: record.item,

@@ -46,10 +46,17 @@ export const AgentEntry = Schema.Struct({
   fileBacked: Schema.Boolean,
 }).annotate({ identifier: "Plus.AgentEntry" })
 
+export interface ToolEntry extends Schema.Schema.Type<typeof ToolEntry> {}
+export const ToolEntry = Schema.Struct({
+  id: Schema.String,
+  native: Schema.Boolean,
+}).annotate({ identifier: "Plus.ToolEntry" })
+
 export interface Snapshot extends Schema.Schema.Type<typeof Snapshot> {}
 export const Snapshot = Schema.Struct({
   revision: Schema.Number,
   agents: Schema.Array(AgentEntry),
+  tools: Schema.Array(ToolEntry),
   items: Schema.Array(SnapshotItem),
   customizations: Schema.Array(SnapshotCustomization),
   protectedAgents: Schema.Array(Schema.String),

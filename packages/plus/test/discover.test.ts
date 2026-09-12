@@ -66,6 +66,16 @@ function tool(id: string, description: string): Tool.Info & { readonly id: strin
   }
 }
 
+function toolWithOptions(
+  id: string,
+  description: string,
+  options: Tool.Info["options"],
+): Tool.Info & { readonly id: string } {
+  const base = tool(id, description)
+  if (options === undefined) return base
+  return { ...base, options }
+}
+
 function toolEditor(tools: readonly (Tool.Info & { readonly id: string })[] = []): ToolEditor {
   return {
     list: () => tools,
@@ -241,6 +251,58 @@ test("tool items are collected through tool.transform", async () => {
   expect(discovered.snapshot.items.filter((item) => item.kind === "tool")).toEqual([
     expect.objectContaining({ id: "tool:reader", owner: "reader", text: "read things", available: true }),
     expect.objectContaining({ id: "tool:writer", owner: "writer", text: "write things", available: true }),
+  ])
+})
+
+test("discovery reports native status from the live tool inventory", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const tools = [
+    toolWithOptions("reader", "read things", { codemode: false }),
+    toolWithOptions("helper", "help things", { codemode: true }),
+    tool("writer", "write things"),
+  ]
+  const ctx = context({
+    location: location(directory),
+    agent: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(toolEditor(tools))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcpEditor())
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+
+  const discovered = await discover(ctx, { revision: 0, customizations: [] })
+  // Same rule as apply.ts: only options.codemode === false is native. A tool
+  // with no options is a Code Mode tool, exactly like one with codemode: true.
+  expect(discovered.tools).toEqual([
+    { id: "reader", native: true },
+    { id: "helper", native: false },
+    { id: "writer", native: false },
   ])
 })
 

@@ -4,6 +4,7 @@ import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import type { Rpc } from "@opencode/schema/rpc"
 import { AbsolutePath } from "@opencode/schema/schema"
+import type { Tool } from "@opencode/schema/tool"
 import { Effect, Exit, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -138,6 +139,66 @@ function emptyHost(directory: string, agents: Agent.Info[] = []) {
       reload: () => Effect.die("unused mcp.reload"),
     },
   })
+}
+
+function toolHost(directory: string, tools: readonly (Tool.Info & { readonly id: string })[]) {
+  const location = testLocation(directory)
+  return context({
+    location,
+    agent: {
+      get: () => Effect.die("unused agent.get"),
+      list: () => Effect.succeed({ location, data: [] }),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location, data: [] }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => tools,
+            get: (id) => tools.find((tool) => tool.id === id),
+            namespace: () => undefined,
+            add: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => [],
+            get: () => undefined,
+            set: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+}
+
+function hostTool(id: string, description: string, options?: Tool.Info["options"]): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    ...(options === undefined ? {} : { options }),
+    execute: () => Effect.die("unused tool.execute"),
+  }
 }
 
 function liveAgentHost(directory: string, agents: ReturnType<typeof agentHarness>) {
@@ -508,6 +569,47 @@ test("snapshots carry protectedAgents from the project config across snapshot, r
   expect(conflict.ok).toBe(false)
   if (conflict.ok) throw new Error("expected stale conflict")
   expect(conflict.snapshot.protectedAgents).toEqual(["builder"])
+  expectRpcBody(conflict)
+})
+
+test("snapshots carry tool native flags from the live inventory across snapshot, refresh, and mutate results", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const tools = [hostTool("reader", "read things", { codemode: false }), hostTool("helper", "help things")]
+  const expected = [
+    { id: "reader", native: true },
+    { id: "helper", native: false },
+  ]
+  const handlers = createHandlers(toolHost(directory, tools), createState())
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.tools).toEqual(expected)
+  expectRpcBody(snapshot)
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(refreshed.tools).toEqual(expected)
+  expectRpcBody(refreshed)
+
+  const success = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: 0, customizations: [customization("item-1")] },
+      throwingContext({}),
+    ),
+  )
+  expect(success.ok).toBe(true)
+  if (!success.ok) throw new Error("expected mutate to succeed")
+  expect(success.snapshot.tools).toEqual(expected)
+  expectRpcBody(success)
+
+  const conflict = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: 0, customizations: [customization("item-1", { text: "stale" })] },
+      throwingContext({}),
+    ),
+  )
+  expect(conflict.ok).toBe(false)
+  if (conflict.ok) throw new Error("expected stale conflict")
+  expect(conflict.snapshot.tools).toEqual(expected)
   expectRpcBody(conflict)
 })
 

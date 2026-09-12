@@ -26,9 +26,15 @@ export interface PromptBaseline {
   readonly file?: string
 }
 
+export interface ToolSource {
+  readonly id: string
+  readonly native: boolean
+}
+
 export interface Discovered {
   readonly snapshot: Snapshot
   readonly agents: AgentSource[]
+  readonly tools: ToolSource[]
   readonly files: ReadonlyMap<string, string>
 }
 
@@ -45,6 +51,7 @@ export async function discover(
   const sources = await resolveAgentSources(ctx.location.directory, resolvedAgents)
   const files = await readAgentBodies(sources)
   const instructions = await readProjectInstructions(ctx.location.directory)
+  const toolSources = toolSourcesFor(tools)
   const items = [
     ...promptItems(resolvedAgents, baselines, files),
     ...skillItems(await skills),
@@ -55,6 +62,7 @@ export async function discover(
   return {
     snapshot: { revision: stored.revision, items, customizations: stored.customizations },
     agents: sources,
+    tools: toolSources,
     files,
   }
 }
@@ -214,6 +222,14 @@ function skillItems(skills: readonly Skill.Info[]): Item[] {
 
 function toolItems(tools: readonly (Tool.Info & { readonly id: string })[]): Item[] {
   return tools.map((tool) => item(`tool:${tool.id}`, "tool", tool.id, tool.name, tool.description, []))
+}
+
+// Same rule as apply.ts readTools: only tools with options.codemode === false
+// are individual keys of the session tool list. Everything else (codemode
+// enabled or absent — the Code Mode inventory surfaced through execute) cannot
+// be toggled or edited, so tree.ts marks those rows non-actionable.
+function toolSourcesFor(tools: readonly (Tool.Info & { readonly id: string })[]): ToolSource[] {
+  return tools.map((tool) => ({ id: tool.id, native: tool.options?.codemode === false }))
 }
 
 function mcpItems(servers: readonly [string, Mcp.ServerConfig][]): Item[] {
