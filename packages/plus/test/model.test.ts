@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import {
   applies,
+  canReset,
   effective,
   fingerprint,
   mergeCustomization,
@@ -252,4 +253,118 @@ test("mergeCustomization defaults basedOn to the item fingerprint and omits unde
   expect(record.basedOn).toBe(item.fingerprint)
   expect("text" in record).toBe(false)
   expect("reviewed" in record).toBe(false)
+})
+
+test("mergeCustomization null text clears the override and omits the key", () => {
+  const item = makeItem()
+  const existing = makeCustomization({ agent: "alpha", text: "custom", state: "disabled" })
+  const customizations = mergeCustomization([existing], item, "alpha", { text: null })
+  expect(customizations).toHaveLength(1)
+  const record = customizations[0]
+  expect("text" in record).toBe(false)
+  expect(record.state).toBe("disabled")
+  expect(effective(makeSnapshot(customizations), item, "alpha").text).toBe("default text")
+})
+
+test("mergeCustomization null reviewed clears the acknowledgement and omits the key", () => {
+  const item = makeItem({ text: "revised text" })
+  const existing = makeCustomization({
+    agent: "alpha",
+    text: "custom",
+    basedOn: fingerprint("default text"),
+    reviewed: fingerprint("revised text"),
+  })
+  const customizations = mergeCustomization([existing], item, "alpha", { reviewed: null })
+  expect(customizations).toHaveLength(1)
+  const record = customizations[0]
+  expect("reviewed" in record).toBe(false)
+  expect(record.text).toBe("custom")
+  expect(effective(makeSnapshot(customizations), item, "alpha").review).toBe(true)
+})
+
+test("mergeCustomization dropping the last deviation removes the record and restores the default", () => {
+  const item = makeItem()
+  const existing = makeCustomization({ agent: "alpha", text: "custom", state: "disabled" })
+  const customizations = mergeCustomization([existing], item, "alpha", {
+    text: null,
+    reviewed: null,
+    state: "inherit",
+  })
+  expect(customizations).toHaveLength(0)
+  expect(effective(makeSnapshot(customizations), item, "alpha")).toEqual({
+    text: "default text",
+    enabled: true,
+    customized: false,
+    review: false,
+  })
+})
+
+test("mergeCustomization enable matching availability drops the inert record", () => {
+  const item = makeItem({ available: true })
+  const existing = makeCustomization({ agent: "alpha", state: "disabled" })
+  const customizations = mergeCustomization([existing], item, "alpha", { state: "enabled" })
+  expect(customizations).toHaveLength(0)
+  expect(effective(makeSnapshot(customizations), item, "alpha").customized).toBe(false)
+})
+
+test("mergeCustomization clearing text and state preserves a reviewed acknowledgement", () => {
+  const item = makeItem({ text: "revised text" })
+  const existing = makeCustomization({
+    agent: "alpha",
+    text: "custom",
+    basedOn: fingerprint("default text"),
+    reviewed: fingerprint("revised text"),
+  })
+  const customizations = mergeCustomization([existing], item, "alpha", { text: null, state: "inherit" })
+  expect(customizations).toHaveLength(1)
+  const record = customizations[0]
+  expect("text" in record).toBe(false)
+  expect(record.state).toBe("inherit")
+  expect(record.reviewed).toBe(fingerprint("revised text"))
+  const resolved = effective(makeSnapshot(customizations), item, "alpha")
+  expect(resolved.text).toBe("revised text")
+  expect(resolved.customized).toBe(false)
+  expect(resolved.review).toBe(false)
+})
+
+test("mergeCustomization clearing keeps unrelated records untouched", () => {
+  const item = makeItem()
+  const other = makeCustomization({ item: "item-2", agent: "alpha", text: "other" })
+  const existing = makeCustomization({ agent: "alpha", text: "custom" })
+  const customizations = mergeCustomization([other, existing], item, "alpha", { text: null })
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0]).toEqual(other)
+})
+
+test("mergeCustomization undefined preserves fields while null clears them", () => {
+  const item = makeItem({ text: "revised text" })
+  const existing = makeCustomization({
+    agent: "alpha",
+    text: "custom",
+    state: "disabled",
+    basedOn: fingerprint("default text"),
+    reviewed: fingerprint("revised text"),
+  })
+  const cleared = mergeCustomization([existing], item, "alpha", { reviewed: null })
+  expect(cleared).toHaveLength(1)
+  expect(cleared[0].text).toBe("custom")
+  expect(cleared[0].state).toBe("disabled")
+  expect("reviewed" in cleared[0]).toBe(false)
+})
+
+test("canReset follows only the row's own record", () => {
+  const item = makeItem()
+  expect(canReset(makeSnapshot([]), item, "alpha")).toBe(false)
+
+  const ownText = makeCustomization({ agent: "alpha", text: "custom" })
+  expect(canReset(makeSnapshot([ownText]), item, "alpha")).toBe(true)
+
+  const ownDisabled = makeCustomization({ agent: "alpha", state: "disabled" })
+  expect(canReset(makeSnapshot([ownDisabled]), item, "alpha")).toBe(true)
+
+  const inertOwn = makeCustomization({ agent: "alpha", state: "inherit" })
+  expect(canReset(makeSnapshot([inertOwn]), item, "alpha")).toBe(false)
+
+  const sharedOnly = makeCustomization({ agent: "*", text: "shared" })
+  expect(canReset(makeSnapshot([sharedOnly]), item, "alpha")).toBe(false)
 })

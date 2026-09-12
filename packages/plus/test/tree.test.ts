@@ -533,3 +533,91 @@ test("shared instruction rows refuse toggle and edit", () => {
   expect(sharedNode?.action?.toggle.allowed).toBe(false)
   expect(sharedNode?.action?.edit.allowed).toBe(false)
 })
+
+test("rows offer reset only when their own record deviates", () => {
+  const agentId = "agent-reset-1101"
+  const customSkill = createItem({ id: "skill-reset-1101", kind: "skill", title: "skill-reset-title" })
+  const untouchedSkill = createItem({ id: "skill-plain-1102", kind: "skill", title: "skill-plain-title" })
+  const sharedSkill = createItem({ id: "skill-shared-1103", kind: "skill", title: "skill-shared-title" })
+  const customized = createCustomization({ item: "skill-reset-1101", agent: agentId, text: "custom skill text" })
+  const shared = createCustomization({ item: "skill-shared-1103", agent: "*", text: "shared skill text" })
+
+  const nodes = tree({
+    snapshot: createSnapshot([customSkill, untouchedSkill, sharedSkill], [customized, shared]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  expect(nodes.find((node) => node.itemId === "skill-reset-1101")?.action?.reset).toEqual({ allowed: true })
+  expect(nodes.find((node) => node.itemId === "skill-plain-1102")?.action?.reset.allowed).toBe(false)
+  expect(nodes.find((node) => node.itemId === "skill-shared-1103")?.action?.reset.allowed).toBe(false)
+})
+
+test("prompt rows offer reset through edit even though toggle is refused", () => {
+  const agentId = "agent-reset-1104"
+  const promptItem = createItem({
+    id: `prompt:${agentId}`,
+    kind: "prompt",
+    owner: agentId,
+    title: agentId,
+    agents: [agentId],
+  })
+  const customized = createCustomization({ item: promptItem.id, agent: agentId, text: "custom prompt text" })
+
+  const nodes = tree({
+    snapshot: createSnapshot([promptItem], [customized]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  const promptNode = nodes.find((node) => node.kind === "prompt")
+  expect(promptNode?.action?.toggle.allowed).toBe(false)
+  expect(promptNode?.action?.reset).toEqual({ allowed: true })
+})
+
+test("instruction and code mode rows refuse reset with the row's own reason", () => {
+  const agentId = "agent-reset-1105"
+  const instructionItem = createItem({ id: "inst-reset-1105", kind: "instruction", title: "inst-reset-title" })
+  const codeModeItem = createItem({
+    id: "tool-reset-1106",
+    kind: "tool",
+    owner: "tool-reset-1106",
+    title: "tool-reset-title",
+  })
+  const instructionCustom = createCustomization({ item: "inst-reset-1105", agent: agentId, text: "custom" })
+  const codeModeCustom = createCustomization({ item: "tool-reset-1106", agent: agentId, text: "custom" })
+
+  const nodes = tree({
+    snapshot: createSnapshot([instructionItem, codeModeItem], [instructionCustom, codeModeCustom]),
+    agents: [{ id: agentId, scope: "project" }],
+    tools: [{ id: "tool-reset-1106", native: false }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  const instructionNode = nodes.find((node) => node.itemId === "inst-reset-1105")
+  expect(instructionNode?.action?.reset.allowed).toBe(false)
+  if (instructionNode?.action?.reset.allowed === false)
+    expect(instructionNode.action.reset.reason).toBe("instruction customizations are not applied yet")
+
+  const codeModeNode = nodes.find((node) => node.itemId === "tool-reset-1106")
+  expect(codeModeNode?.action?.reset.allowed).toBe(false)
+  if (codeModeNode?.action?.reset.allowed === false)
+    expect(codeModeNode.action.reset.reason).toContain("execute inventory")
+})
+
+test("shared rows offer reset only for their own shared record", () => {
+  const skillItem = createItem({ id: "skill-reset-1107", kind: "skill", title: "skill-reset-title" })
+  const plainItem = createItem({ id: "skill-plain-1108", kind: "skill", title: "skill-plain-title" })
+  const customized = createCustomization({ item: "skill-reset-1107", agent: "*", text: "shared skill text" })
+
+  const nodes = tree({
+    snapshot: createSnapshot([skillItem, plainItem], [customized]),
+    agents: [],
+    expanded: new Set(["group:defaults", "defaults:project"]),
+  })
+
+  expect(nodes.find((node) => node.id === "defaults:project:skill-reset-1107")?.action?.reset).toEqual({
+    allowed: true,
+  })
+  expect(nodes.find((node) => node.id === "defaults:project:skill-plain-1108")?.action?.reset.allowed).toBe(false)
+})

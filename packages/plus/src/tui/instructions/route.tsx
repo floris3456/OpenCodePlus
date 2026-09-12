@@ -33,6 +33,15 @@ function isAcknowledgable(node: TreeNode | undefined): boolean {
   return node.action?.edit.allowed === true
 }
 
+function isResettable(node: TreeNode | undefined): boolean {
+  if (!node) return false
+  if (node.badges.readOnly === true) return false
+  if (node.itemId === undefined) return false
+  // state.reset refuses read-only rows and rows whose reset capability is
+  // disallowed, so advertise only rows that can actually succeed.
+  return node.action?.reset.allowed === true
+}
+
 export function extractAgentId(data: unknown): string | undefined {
   if (typeof data !== "object" || data === null) return undefined
   if (!("agent" in data)) return undefined
@@ -138,6 +147,13 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     void state.acknowledge(node)
   }
 
+  function reset() {
+    const node = current()
+    if (!node) return
+    // state.reset reports the refusal reason itself.
+    void state.reset(node)
+  }
+
   function hintLine(): string {
     if (editing()) return "ctrl+s save · esc cancel"
     // Advertise only what the selected row supports; unsupported verbs
@@ -151,6 +167,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (isTogglable(node)) hints.push("space toggle")
     if (isAcknowledgable(node)) hints.push("a acknowledge")
     if (isEditable(node)) hints.push("e edit")
+    if (isResettable(node)) hints.push("x reset")
     if (!narrowDetail) hints.push("r refresh")
     hints.push(narrowDetail ? "esc back to tree" : "esc back")
     return hints.join(" · ")
@@ -169,6 +186,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "return", title: "Expand", group: "Instructions", run: expandOrChild },
         { bind: "space", title: "Toggle enabled", group: "Instructions", run: toggle },
         { bind: "a", title: "Acknowledge review", group: "Instructions", run: acknowledge },
+        { bind: "x", title: "Reset to default", group: "Instructions", run: reset },
         { bind: "r", title: "Refresh", group: "Instructions", run: () => void state.refresh() },
         { bind: "escape", title: "Back", group: "Instructions", run: back },
       ],

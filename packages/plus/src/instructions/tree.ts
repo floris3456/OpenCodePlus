@@ -1,4 +1,4 @@
-import { applies, effective, type Item, type Snapshot } from "./model.js"
+import { applies, canReset, effective, type Item, type Snapshot } from "./model.js"
 import type { AgentScope, AgentSource } from "./discover.js"
 import type { ProjectConfig } from "../project.js"
 
@@ -28,9 +28,14 @@ export interface TreeNodeBadges {
   readonly readOnly?: boolean
 }
 
+export type TreeNodeReset =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly reason: string }
+
 export interface TreeNodeAction {
   readonly toggle: TreeNodeToggle
   readonly edit: TreeNodeEdit
+  readonly reset: TreeNodeReset
 }
 
 export interface TreeNode {
@@ -268,6 +273,8 @@ interface ItemNodeInput {
 
 function emitItemNode(input: ItemNodeInput): TreeNode {
   const eff = effective(input.snapshot, input.item, input.agentId)
+  const toggle = input.toggle ?? { allowed: true }
+  const edit = input.edit ?? { allowed: true }
   return {
     id: `agent:${input.agentId}:${input.item.id}`,
     kind: input.item.kind,
@@ -282,10 +289,31 @@ function emitItemNode(input: ItemNodeInput): TreeNode {
     agentId: input.agentId,
     itemId: input.item.id,
     action: {
-      toggle: input.toggle ?? { allowed: true },
-      edit: input.edit ?? { allowed: true },
+      toggle,
+      edit,
+      reset: resetAction({ snapshot: input.snapshot, item: input.item, agent: input.agentId, toggle, edit }),
     },
   }
+}
+
+interface ResetInput {
+  readonly snapshot: Snapshot
+  readonly item: Item
+  readonly agent: string
+  readonly toggle: TreeNodeToggle
+  readonly edit: TreeNodeEdit
+}
+
+function resetAction(input: ResetInput): TreeNodeReset {
+  if (!canReset(input.snapshot, input.item, input.agent)) return { allowed: false, reason: "nothing to reset" }
+  const toggleBlocked = input.toggle.allowed === false
+  const editBlocked = input.edit.allowed === false
+  if (toggleBlocked && editBlocked) {
+    if (input.toggle.allowed === false && input.edit.allowed === false && input.toggle.reason === input.edit.reason)
+      return { allowed: false, reason: input.toggle.reason }
+    return { allowed: false, reason: "resetting is not supported for this row" }
+  }
+  return { allowed: true }
 }
 
 interface DefaultsGroupInput {
@@ -380,7 +408,9 @@ function emitDefaultNode(
   nativeTools: ReadonlySet<string>,
 ): TreeNode {
   const eff = effective(snapshot, item, sharedAgent)
-  const base = {
+  const toggle: TreeNodeToggle = defaultToggleFor(item, nativeTools)
+  const edit: TreeNodeEdit = defaultEditFor(item, nativeTools)
+  return {
     id: `${targetId}:${item.id}`,
     kind: item.kind,
     label: item.title,
@@ -391,36 +421,23 @@ function emitDefaultNode(
       review: eff.review,
     },
     itemId: item.id,
-  }
-  if (item.kind === "instruction")
-    return {
-      ...base,
-      action: {
-        toggle: { allowed: false, reason: "instruction customizations are not applied yet" },
-        edit: { allowed: false, reason: "instruction customizations are not applied yet" },
-      },
-    }
-  if (item.kind === "tool" && !nativeTools.has(item.owner))
-    return {
-      ...base,
-      action: {
-        toggle: { allowed: false, reason: codeModeReason },
-        edit: { allowed: false, reason: codeModeReason },
-      },
-    }
-  if (item.kind === "mcp")
-    return {
-      ...base,
-      action: {
-        toggle: { allowed: true },
-        edit: { allowed: false, reason: mcpEditReason },
-      },
-    }
-  return {
-    ...base,
     action: {
-      toggle: { allowed: true },
-      edit: { allowed: true },
+      toggle,
+      edit,
+      reset: resetAction({ snapshot, item, agent: sharedAgent, toggle, edit }),
     },
   }
+}
+
+function defaultToggleFor(item: Item, nativeTools: ReadonlySet<string>): TreeNodeToggle {
+  if (item.kind === "instruction") return { allowed: false, reason: "instruction customizations are not applied yet" }
+  if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
+  return { allowed: true }
+}
+
+function defaultEditFor(item: Item, nativeTools: ReadonlySet<string>): TreeNodeEdit {
+  if (item.kind === "instruction") return { allowed: false, reason: "instruction customizations are not applied yet" }
+  if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
+  if (item.kind === "mcp") return { allowed: false, reason: mcpEditReason }
+  return { allowed: true }
 }

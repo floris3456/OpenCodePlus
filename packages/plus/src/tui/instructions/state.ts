@@ -234,6 +234,48 @@ export function createInstructionsState(context: Plugin.Context) {
     )
   }
 
+  async function reset(node: TreeNode): Promise<boolean> {
+    // Every refusal lands before the confirm: offering a destructive dialog
+    // for a row that cannot proceed would only scare the user, then refuse.
+    if (node.badges.readOnly) {
+      const owner = node.agentId ?? "default"
+      setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
+      return false
+    }
+    if (node.itemId === undefined) {
+      setStatus(`"${node.label}" cannot be reset`)
+      return false
+    }
+    const resettable = node.action?.reset
+    if (resettable?.allowed === false) {
+      setStatus(`"${node.label}" cannot be reset: ${resettable.reason}`)
+      return false
+    }
+    const confirmed = await context.ui.dialog.confirm({
+      title: `Reset "${node.label}"?`,
+      message: `Reset "${node.label}" to its default? This discards the customization and cannot be undone.`,
+    })
+    if (!confirmed) {
+      setStatus(`Reset of "${node.label}" cancelled`)
+      return false
+    }
+    return mutateFields(
+      node,
+      resetFields(node),
+      `Reset "${node.label}" to default`,
+      `Revision changed; reloaded, reset "${node.label}" again to apply`,
+    )
+  }
+
+  function resetFields(node: TreeNode): MergeCustomizationFields {
+    const fields: MergeCustomizationFields = { text: null, reviewed: null, state: "inherit" }
+    // An MCP text override can exist alongside a disabled toggle, but edit is
+    // refused there, so keep any such pre-existing text untouched rather than
+    // dropping a change through a verb the row does not offer.
+    if (node.kind === "mcp") return { state: "inherit" }
+    return fields
+  }
+
   async function mutateFields(
     node: TreeNode,
     fields: MergeCustomizationFields,
@@ -314,6 +356,7 @@ export function createInstructionsState(context: Plugin.Context) {
     setEnabled,
     acknowledge,
     saveText,
+    reset,
     refresh,
     dispose,
   }
