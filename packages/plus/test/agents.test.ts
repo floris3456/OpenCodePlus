@@ -10,6 +10,7 @@ import {
   rename,
   resolveDirectory,
   serializeFrontmatter,
+  validateAgentId,
   type AgentFields,
   type AgentPermissionRule,
 } from "../src/agents/files.js"
@@ -383,4 +384,57 @@ test("serializeFrontmatter produces expected exact YAML and omits undefined or u
   expect(filteredYaml).toBe(expected)
   expect(filteredYaml.includes("system")).toBe(false)
   expect(filteredYaml.includes("unknownKey")).toBe(false)
+})
+
+test("traversal ids are rejected and confined to the agent root", async () => {
+  const projectDirectory = await tempDir()
+  const outside = path.join(projectDirectory, ".opencode", "AGENTS.md")
+  await fs.mkdir(path.dirname(outside), { recursive: true })
+  await Bun.write(outside, "keep me\n")
+
+  const validated = validateAgentId("../../AGENTS")
+  expect(validated.ok).toBe(false)
+  if (validated.ok) return
+  expect(validated.reason).toContain("..")
+
+  await expect(agentPath("project", projectDirectory, "../../AGENTS")).rejects.toThrow()
+  await expect(
+    remove({ scope: "project", projectDirectory, id: "../../AGENTS" }),
+  ).rejects.toThrow()
+  expect(await Bun.file(outside).exists()).toBe(true)
+  expect(await Bun.file(outside).text()).toBe("keep me\n")
+})
+
+test("rename and delete resolve the file in agent/ when an empty agents/ directory exists", async () => {
+  const projectDirectory = await tempDir()
+  const agentDir = path.join(projectDirectory, ".opencode", "agent")
+  const agentsDir = path.join(projectDirectory, ".opencode", "agents")
+  await fs.mkdir(agentDir, { recursive: true })
+  await Bun.write(path.join(agentDir, "alpha.md"), "# alpha\n")
+  await fs.mkdir(agentsDir, { recursive: true })
+
+  const renamed = await rename({ scope: "project", projectDirectory, from: "alpha", to: "beta" })
+  expect(renamed.ok).toBe(true)
+  if (!renamed.ok) return
+  expect(renamed.fromPath).toBe(path.join(agentDir, "alpha.md"))
+  expect(await Bun.file(renamed.fromPath).exists()).toBe(false)
+  expect(await Bun.file(renamed.toPath).exists()).toBe(true)
+
+  const removed = await remove({ scope: "project", projectDirectory, id: "beta" })
+  expect(removed.ok).toBe(true)
+  expect(removed.path).toBe(renamed.toPath)
+  expect(await Bun.file(renamed.toPath).exists()).toBe(false)
+})
+
+test("delete resolves the file in agent/ even when an empty agents/ directory exists", async () => {
+  const projectDirectory = await tempDir()
+  const agentDir = path.join(projectDirectory, ".opencode", "agent")
+  await fs.mkdir(agentDir, { recursive: true })
+  await Bun.write(path.join(agentDir, "alpha.md"), "# alpha\n")
+  await fs.mkdir(path.join(projectDirectory, ".opencode", "agents"), { recursive: true })
+
+  const removed = await remove({ scope: "project", projectDirectory, id: "alpha" })
+  expect(removed.ok).toBe(true)
+  expect(removed.path).toBe(path.join(agentDir, "alpha.md"))
+  expect(await Bun.file(path.join(agentDir, "alpha.md")).exists()).toBe(false)
 })

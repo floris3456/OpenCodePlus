@@ -157,6 +157,11 @@ const AgentMissing = Schema.Struct({
   path: Schema.String,
 }).annotate({ identifier: "Plus.AgentMissing" })
 
+const AgentInvalid = Schema.Struct({
+  id: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.AgentInvalid" })
+
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
@@ -186,6 +191,7 @@ const PortableProjectDisabled = Schema.toStandardSchemaV1(
 )
 const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ identifier: "Plus.AgentExists" }))
 const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
+const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
 
 export const Definition = Rpc.define({
   id: "opencode.plus",
@@ -229,6 +235,7 @@ export const Definition = Rpc.define({
       errors: {
         "project.disabled": PortableProjectDisabled,
         "agent.exists": PortableAgentExists,
+        "agent.invalid": PortableAgentInvalid,
       },
     },
     "agent.rename": {
@@ -238,6 +245,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "agent.missing": PortableAgentMissing,
         "agent.exists": PortableAgentExists,
+        "agent.invalid": PortableAgentInvalid,
       },
     },
     "agent.delete": {
@@ -245,6 +253,7 @@ export const Definition = Rpc.define({
       output: PortableAgentRef,
       errors: {
         "project.disabled": PortableProjectDisabled,
+        "agent.invalid": PortableAgentInvalid,
       },
     },
   },
