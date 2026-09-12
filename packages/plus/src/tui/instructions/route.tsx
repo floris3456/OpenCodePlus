@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import type { TreeNode } from "../../instructions/tree.js"
-import { DetailPane } from "./detail-pane.js"
+import { DetailPane, isEditable } from "./detail-pane.js"
 import { createInstructionsState } from "./state.js"
 import { TreePane } from "./tree-pane.js"
 
@@ -16,8 +16,21 @@ function isLeaf(node: TreeNode): boolean {
   return node.itemId !== undefined
 }
 
-function isTogglable(node: TreeNode): boolean {
-  return node.itemId !== undefined && node.badges.readOnly !== true
+function isTogglable(node: TreeNode | undefined): boolean {
+  if (!node) return false
+  if (node.itemId === undefined) return false
+  if (node.badges.readOnly === true) return false
+  return node.action?.toggle.allowed === true
+}
+
+function isAcknowledgable(node: TreeNode | undefined): boolean {
+  if (!node) return false
+  if (node.badges.readOnly === true) return false
+  if (node.itemId === undefined) return false
+  if (node.badges.review !== true) return false
+  // state.acknowledge refuses rows whose edit is disallowed, so the hint
+  // must not advertise an acknowledgement that cannot succeed.
+  return node.action?.edit.allowed === true
 }
 
 export function extractAgentId(data: unknown): string | undefined {
@@ -112,8 +125,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     if (!node) return
     if (!isTogglable(node)) {
-      // state.setEnabled reports the read-only / non-item reason itself.
-      if (node.badges.readOnly === true || node.itemId === undefined) void state.setEnabled(node, false)
+      // state.setEnabled reports the refusal reason itself.
+      void state.setEnabled(node, false)
       return
     }
     void state.setEnabled(node, node.badges.enabled === false)
@@ -123,6 +136,24 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     if (!node) return
     void state.acknowledge(node)
+  }
+
+  function hintLine(): string {
+    if (editing()) return "ctrl+s save · esc cancel"
+    // Advertise only what the selected row supports; unsupported verbs
+    // would promise actions the state layer refuses. Fixed navigation
+    // verbs first, then the row-dependent verbs that fit on one line.
+    const node = current()
+    const hints: string[] = []
+    const narrowDetail = !wide() && showDetail()
+    if (!wide() && !showDetail()) hints.push("up/down move", "enter detail")
+    if (wide()) hints.push("up/down move", "left/right expand")
+    if (isTogglable(node)) hints.push("space toggle")
+    if (isAcknowledgable(node)) hints.push("a acknowledge")
+    if (isEditable(node)) hints.push("e edit")
+    if (!narrowDetail) hints.push("r refresh")
+    hints.push(narrowDetail ? "esc back to tree" : "esc back")
+    return hints.join(" · ")
   }
 
   props.context.keymap.layer(() => {
@@ -191,13 +222,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         )}
       </Show>
       <text flexShrink={0} fg={props.context.theme.text.subdued}>
-        {editing()
-          ? "ctrl+s save · esc cancel"
-          : wide()
-            ? "up/down move · left/right expand · space toggle · a acknowledge · e edit · r refresh · esc back"
-            : showDetail()
-              ? "e edit · a acknowledge · esc back to tree"
-              : "up/down move · enter detail · space toggle · a acknowledge · r refresh · esc back"}
+        {hintLine()}
       </text>
     </box>
   )

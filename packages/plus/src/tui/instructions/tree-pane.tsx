@@ -21,11 +21,13 @@ function isExpandable(node: TreeNode): boolean {
 
 function badgeLabels(node: TreeNode): string[] {
   // Group / agent / default headers carry only structural badges; the
-  // enabled | customized | review triple belongs to item rows.
+  // enabled | customized | review triple belongs to item rows. Enabled
+  // shows only where it can be toggled; elsewhere it would read as an
+  // action that does not exist.
   if (node.badges.readOnly === true) return ["protected"]
   if (node.itemId === undefined) return []
   const labels: string[] = []
-  labels.push(node.badges.enabled === false ? "disabled" : "enabled")
+  if (node.action?.toggle.allowed === true) labels.push(node.badges.enabled === false ? "disabled" : "enabled")
   if (node.badges.customized === true) labels.push("customized")
   if (node.badges.review === true) labels.push("needs review")
   return labels
