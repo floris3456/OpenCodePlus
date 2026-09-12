@@ -12,12 +12,25 @@ export type TreeNodeKind =
   | "instruction"
   | "mcp"
 
+export type TreeNodeToggle =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly reason: string }
+
+export type TreeNodeEdit =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly reason: string }
+
 export interface TreeNodeBadges {
   readonly enabled?: boolean
   readonly customized?: boolean
   readonly review?: boolean
   readonly protected?: boolean
   readonly readOnly?: boolean
+}
+
+export interface TreeNodeAction {
+  readonly toggle: TreeNodeToggle
+  readonly edit: TreeNodeEdit
 }
 
 export interface TreeNode {
@@ -29,6 +42,7 @@ export interface TreeNode {
   readonly agentId?: string
   readonly itemId?: string
   readonly scope?: AgentScope
+  readonly action?: TreeNodeAction
 }
 
 export interface TreeInput {
@@ -166,6 +180,7 @@ function emitAgentChildren(agentId: string, snapshot: Snapshot, isProtected: boo
         snapshot,
         label: "Prompt",
         isProtected,
+        toggle: { allowed: false, reason: "an agent always needs a system prompt" },
       }),
     )
 
@@ -202,22 +217,12 @@ function emitAgentChildren(agentId: string, snapshot: Snapshot, isProtected: boo
         snapshot,
         label: item.title,
         isProtected,
+        toggle: { allowed: false, reason: "instruction customizations are not applied yet" },
+        edit: { allowed: false, reason: "instruction customizations are not applied yet" },
       }),
     )
 
-  const mcps = snapshot.items
-    .filter((item) => item.kind === "mcp" && applies(item, agentId))
-    .map((item) =>
-      emitItemNode({
-        agentId,
-        item,
-        snapshot,
-        label: item.title,
-        isProtected,
-      }),
-    )
-
-  return [...prompts, ...skills, ...tools, ...instructions, ...mcps]
+  return [...prompts, ...skills, ...tools, ...instructions]
 }
 
 interface ItemNodeInput {
@@ -226,6 +231,8 @@ interface ItemNodeInput {
   readonly snapshot: Snapshot
   readonly label: string
   readonly isProtected: boolean
+  readonly toggle?: TreeNodeToggle
+  readonly edit?: TreeNodeEdit
 }
 
 function emitItemNode(input: ItemNodeInput): TreeNode {
@@ -243,6 +250,10 @@ function emitItemNode(input: ItemNodeInput): TreeNode {
     },
     agentId: input.agentId,
     itemId: input.item.id,
+    action: {
+      toggle: input.toggle ?? { allowed: true },
+      edit: input.edit ?? { allowed: true },
+    },
   }
 }
 
@@ -322,19 +333,36 @@ function emitDefaultTarget(input: DefaultTargetInput): TreeNode[] {
 function emitDefaultChildren(targetId: string, snapshot: Snapshot): TreeNode[] {
   const sharedAgent = "*"
   const items = snapshot.items.filter((item) => item.kind !== "prompt" && applies(item, sharedAgent))
-  return items.map((item) => {
-    const eff = effective(snapshot, item, sharedAgent)
+  return items.map((item) => emitDefaultNode(targetId, snapshot, sharedAgent, item))
+}
+
+function emitDefaultNode(targetId: string, snapshot: Snapshot, sharedAgent: string, item: Item): TreeNode {
+  const eff = effective(snapshot, item, sharedAgent)
+  const base = {
+    id: `${targetId}:${item.id}`,
+    kind: item.kind,
+    label: item.title,
+    depth: 2,
+    badges: {
+      enabled: eff.enabled,
+      customized: eff.customized,
+      review: eff.review,
+    },
+    itemId: item.id,
+  }
+  if (item.kind === "instruction")
     return {
-      id: `${targetId}:${item.id}`,
-      kind: item.kind,
-      label: item.title,
-      depth: 2,
-      badges: {
-        enabled: eff.enabled,
-        customized: eff.customized,
-        review: eff.review,
+      ...base,
+      action: {
+        toggle: { allowed: false, reason: "instruction customizations are not applied yet" },
+        edit: { allowed: false, reason: "instruction customizations are not applied yet" },
       },
-      itemId: item.id,
     }
-  })
+  return {
+    ...base,
+    action: {
+      toggle: { allowed: true },
+      edit: { allowed: true },
+    },
+  }
 }

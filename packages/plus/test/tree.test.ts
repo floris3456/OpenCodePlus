@@ -390,3 +390,108 @@ test("supports discovered snapshot input with separate stored customizations and
   expect(skillNode?.badges.enabled).toBe(false)
   expect(skillNode?.badges.customized).toBe(true)
 })
+
+test("prompt rows stay editable but refuse toggle with an accurate reason", () => {
+  const agentId = "agent-toggle-1001"
+  const promptItem = createItem({
+    id: `prompt:${agentId}`,
+    kind: "prompt",
+    owner: agentId,
+    title: agentId,
+    agents: [agentId],
+  })
+
+  const nodes = tree({
+    snapshot: createSnapshot([promptItem]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  const promptNode = nodes.find((node) => node.kind === "prompt")
+  expect(promptNode?.action?.edit).toEqual({ allowed: true })
+  expect(promptNode?.action?.toggle.allowed).toBe(false)
+  if (promptNode?.action?.toggle.allowed === false)
+    expect(promptNode.action.toggle.reason).toBe("an agent always needs a system prompt")
+})
+
+test("skill and tool rows stay toggleable and editable", () => {
+  const agentId = "agent-action-1002"
+  const skillItem = createItem({ id: "skill-action-1002", kind: "skill", title: "skill-action-title" })
+  const toolItem = createItem({ id: "tool-action-1002", kind: "tool", title: "tool-action-title" })
+
+  const nodes = tree({
+    snapshot: createSnapshot([skillItem, toolItem]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  const skillNode = nodes.find((node) => node.itemId === "skill-action-1002")
+  const toolNode = nodes.find((node) => node.itemId === "tool-action-1002")
+  expect(skillNode?.action?.toggle).toEqual({ allowed: true })
+  expect(skillNode?.action?.edit).toEqual({ allowed: true })
+  expect(toolNode?.action?.toggle).toEqual({ allowed: true })
+  expect(toolNode?.action?.edit).toEqual({ allowed: true })
+})
+
+test("instruction rows refuse toggle and edit without using the protected badge", () => {
+  const agentId = "agent-inst-1003"
+  const instructionItem = createItem({
+    id: "inst-blocked-1003",
+    kind: "instruction",
+    title: "inst-blocked-title",
+  })
+
+  const nodes = tree({
+    snapshot: createSnapshot([instructionItem]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  const instructionNode = nodes.find((node) => node.itemId === "inst-blocked-1003")
+  expect(instructionNode?.badges.readOnly).toBe(false)
+  expect(instructionNode?.action?.toggle.allowed).toBe(false)
+  expect(instructionNode?.action?.edit.allowed).toBe(false)
+  if (instructionNode?.action?.toggle.allowed === false)
+    expect(instructionNode.action.toggle.reason).toBe("instruction customizations are not applied yet")
+  if (instructionNode?.action?.edit.allowed === false)
+    expect(instructionNode.action.edit.reason).toBe("instruction customizations are not applied yet")
+})
+
+test("per-agent children never include MCP rows; shared MCP rows stay actionable", () => {
+  const agentId = "agent-mcp-1004"
+  const mcpItem = createItem({ id: "mcp-shared-1004", kind: "mcp", owner: "server", title: "server" })
+
+  const agentNodes = tree({
+    snapshot: createSnapshot([mcpItem]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+  expect(agentNodes.some((node) => node.kind === "mcp")).toBe(false)
+
+  const sharedNodes = tree({
+    snapshot: createSnapshot([mcpItem]),
+    agents: [],
+    expanded: new Set(["group:defaults", "defaults:project"]),
+  })
+  const sharedNode = sharedNodes.find((node) => node.id === "defaults:project:mcp-shared-1004")
+  expect(sharedNode?.action?.toggle).toEqual({ allowed: true })
+  expect(sharedNode?.action?.edit).toEqual({ allowed: true })
+})
+
+test("shared instruction rows refuse toggle and edit", () => {
+  const instructionItem = createItem({
+    id: "inst-shared-1005",
+    kind: "instruction",
+    title: "inst-shared-title",
+  })
+
+  const nodes = tree({
+    snapshot: createSnapshot([instructionItem]),
+    agents: [],
+    expanded: new Set(["group:defaults", "defaults:project"]),
+  })
+
+  const sharedNode = nodes.find((node) => node.id === "defaults:project:inst-shared-1005")
+  expect(sharedNode?.action?.toggle.allowed).toBe(false)
+  expect(sharedNode?.action?.edit.allowed).toBe(false)
+})

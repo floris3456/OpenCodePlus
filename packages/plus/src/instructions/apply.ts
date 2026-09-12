@@ -81,6 +81,7 @@ function promptUpdates(snapshot: Snapshot, prompts: Item[], agentID: string): { 
     if (!applies(item, agentID)) return []
     const resolved = effective(snapshot, item, agentID)
     if (!resolved.customized || resolved.text === item.text) return []
+    if (!resolved.enabled) return []
     return [{ agent: item.owner, text: resolved.text }]
   })
 }
