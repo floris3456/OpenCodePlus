@@ -3,12 +3,13 @@ import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
+import { Permission } from "@opencode/schema/permission"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import { Effect, type Types } from "effect"
-import { apply, copyName } from "../src/instructions/apply.js"
+import { apply, copyName, copyPattern } from "../src/instructions/apply.js"
 import { fingerprint, type Item, type Snapshot } from "../src/instructions/model.js"
 import { context, skillHarness } from "./harness.js"
 
@@ -91,6 +92,30 @@ function sessionEvent(agentID: string, tools: SessionHooks["context"]["tools"]):
     options: {},
     tools,
   }
+}
+
+// Core's rule semantics cannot be imported here (@opencode/core is outside
+// the allowed imports), so these helpers mirror Permission.evaluate over
+// Wildcard.match as read in packages/core/src/permission.ts and
+// packages/core/src/util/wildcard.ts: the last matching rule wins, and an
+// unmatched resource defaults to "ask" (visible to
+// Skill.available, which filters only "deny").
+function wildcardMatch(input: string, pattern: string): boolean {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".")
+  return new RegExp(`^${escaped}$`, "s").test(input)
+}
+
+function evaluateSkill(resource: string, rules: Permission.Ruleset): Permission.Effect {
+  return (
+    rules.findLast((rule) => wildcardMatch("skill", rule.action) && wildcardMatch(resource, rule.resource)) ?? {
+      action: "skill",
+      resource: "*",
+      effect: "ask",
+    }
+  ).effect
 }
 
 test("a saved prompt override reaches agent.transform and sets system", async () => {
@@ -207,10 +232,21 @@ test("a customized skill registers a private copy for that agent only", async ()
   expect(skills.added[0]?.location as string).toBe(skills.state.get("notes")?.location as string)
   expect(skills.state.get("notes")?.content).toBe("skill body")
   expect(state.get("alpha")?.permissions).toEqual([
+    { action: "skill", resource: copyPattern(), effect: "deny" },
     { action: "skill", resource: "notes", effect: "deny" },
     { action: "skill", resource: copyName("alpha", "notes"), effect: "allow" },
   ])
-  expect(state.get("beta")?.permissions).toEqual([])
+  expect(state.get("beta")?.permissions).toEqual([{ action: "skill", resource: copyPattern(), effect: "deny" }])
+  // Effective outcomes under core's last-match-wins evaluation: the owner
+  // keeps its copy while losing the original; the other agent keeps the
+  // original while the copy is denied.
+  const copy = copyName("alpha", "notes")
+  const alpha = state.get("alpha")?.permissions ?? []
+  const beta = state.get("beta")?.permissions ?? []
+  expect(evaluateSkill(copy, alpha)).toBe("allow")
+  expect(evaluateSkill("notes", alpha)).toBe("deny")
+  expect(evaluateSkill(copy, beta)).toBe("deny")
+  expect(evaluateSkill("notes", beta)).not.toBe("deny")
 })
 
 test("a skill customization for another agent leaves this agent untouched", async () => {
@@ -249,11 +285,78 @@ test("a skill customization for another agent leaves this agent untouched", asyn
 
   await apply(ctx, snapshot(items), customizations)
   expect(skills.added.map((entry) => entry.id as string)).toEqual([copyName("beta", "notes")])
-  expect(state.get("alpha")?.permissions).toEqual([])
+  expect(state.get("alpha")?.permissions).toEqual([{ action: "skill", resource: copyPattern(), effect: "deny" }])
   expect(state.get("beta")?.permissions).toEqual([
+    { action: "skill", resource: copyPattern(), effect: "deny" },
     { action: "skill", resource: "notes", effect: "deny" },
     { action: "skill", resource: copyName("beta", "notes"), effect: "allow" },
   ])
+  // The copy is denied to the non-owner but allowed to the owner, while the
+  // non-owner still reaches the original.
+  const copy = copyName("beta", "notes")
+  expect(evaluateSkill(copy, state.get("alpha")?.permissions ?? [])).toBe("deny")
+  expect(evaluateSkill(copy, state.get("beta")?.permissions ?? [])).toBe("allow")
+  expect(evaluateSkill("notes", state.get("alpha")?.permissions ?? [])).not.toBe("deny")
+})
+
+test("two agents customizing the same skill cannot reach each other's copy", async () => {
+  const state = agentState([
+    { id: "alpha", system: "upstream" },
+    { id: "beta", system: "upstream" },
+  ])
+  const skills = skillHarness([skill("notes", "skill body")])
+  const items = skillItems()
+  const customizations = [
+    {
+      item: "skill:notes",
+      agent: "alpha",
+      text: "alpha body",
+      state: "inherit" as const,
+      basedOn: items[2].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "skill:notes",
+      agent: "beta",
+      text: "beta body",
+      state: "inherit" as const,
+      basedOn: items[2].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    skill: skills.domain,
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  await apply(ctx, snapshot(items), customizations)
+  expect(skills.added.map((entry) => entry.id as string)).toEqual([
+    copyName("alpha", "notes"),
+    copyName("beta", "notes"),
+  ])
+  const alphaCopy = copyName("alpha", "notes")
+  const betaCopy = copyName("beta", "notes")
+  const alpha = state.get("alpha")?.permissions ?? []
+  const beta = state.get("beta")?.permissions ?? []
+  expect(evaluateSkill(alphaCopy, alpha)).toBe("allow")
+  expect(evaluateSkill(betaCopy, alpha)).toBe("deny")
+  expect(evaluateSkill(betaCopy, beta)).toBe("allow")
+  expect(evaluateSkill(alphaCopy, beta)).toBe("deny")
+  // Each owner loses the original while its own copy stays reachable.
+  expect(evaluateSkill("notes", alpha)).toBe("deny")
+  expect(evaluateSkill("notes", beta)).toBe("deny")
 })
 
 test("a disabled customized skill only denies without a copy", async () => {

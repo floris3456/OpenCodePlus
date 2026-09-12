@@ -100,14 +100,18 @@ async function applySkills(ctx: Context, snapshot: Snapshot, agentIDs: string[])
   const addedIDs = added?.added ?? new Set<string>()
   const registrations: Registration[] = []
   if (added) registrations.push(added.registration)
+  const addedCopies = copies.filter((copy) => addedIDs.has(copyName(copy.agent, copy.skill)))
+  const namespaceDenies =
+    addedCopies.length === 0
+      ? []
+      : agentIDs.map((agent) => ({ agent, resource: copyPattern(), effect: "deny" as const }))
   const rules = [
     ...denials.map((denial) => ({ agent: denial.agent, resource: denial.skill, effect: "deny" as const })),
-    ...copies
-      .filter((copy) => addedIDs.has(copyName(copy.agent, copy.skill)))
-      .flatMap((copy) => [
-        { agent: copy.agent, resource: copy.skill, effect: "deny" as const },
-        { agent: copy.agent, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
-      ]),
+    ...namespaceDenies,
+    ...addedCopies.flatMap((copy) => [
+      { agent: copy.agent, resource: copy.skill, effect: "deny" as const },
+      { agent: copy.agent, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
+    ]),
   ]
   if (rules.length === 0) return { registrations, agent: false, skill: added !== undefined }
   registrations.unshift(
@@ -136,6 +140,10 @@ const copyPrefix = "plus/"
 
 export function copyName(agent: string, skill: string): string {
   return `${copyPrefix}${agent}/${skill}`
+}
+
+export function copyPattern(): string {
+  return `${copyPrefix}*`
 }
 
 export function isSkillCopy(id: string): boolean {
