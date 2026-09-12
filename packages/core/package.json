@@ -121,6 +121,7 @@
     "@opencode/schema": "workspace:*",
     "@opencode/plugin": "workspace:*",
     "@opencode/plugin-browser": "workspace:*",
+    "@opencode/plus": "workspace:*",
     "@opencode/util": "workspace:*",
     "@standard-schema/spec": "catalog:",
     "@parcel/watcher": "2.5.1",
