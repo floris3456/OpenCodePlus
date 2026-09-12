@@ -268,12 +268,22 @@ function publishFresh(ctx: Context, state: PlusState, stored: Stored): Effect.Ef
         refreshBaselines(state, discovered)
         return discovered
       }
-      yield* disposeApplied(state)
+      // Install the replacement before disposing the superseded registrations.
+      // Core rebuilds and reconciles on every registration change, so disposing
+      // first would expose the un-transformed upstream state between the two
+      // steps: an MCP server Plus keeps disabled would genuinely start, then
+      // stop again once the replacement reinstalls disabled = true. Core replays
+      // transforms in registration order with last write wins; every Plus
+      // transform overwrites the same key (agent.system, disabled = true, skill
+      // rules with a presence check, session tools by agent), so the briefly
+      // doubled callback ends with the new value.
       const applied = yield* Effect.promise(() => apply(ctx, discovered.snapshot, stored.customizations))
+      const previous = state.applied
       state.applied = [...applied.registrations]
       state.fingerprint = fingerprint
       state.revision = stored.revision
       refreshBaselines(state, discovered)
+      yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.revision)
       return discovered
     }),
@@ -296,7 +306,12 @@ function refreshBaselines(state: PlusState, discovered: Discovered): void {
     const resolved = effective(discovered.snapshot, item, item.owner)
     if (!resolved.customized || resolved.text === item.text) continue
     const file = discovered.files.get(item.owner)
-    next.set(item.owner, { applied: resolved.text, upstream: item.text, ...(file === undefined ? {} : { file }) })
+    next.set(item.owner, {
+      applied: resolved.text,
+      upstream: item.text,
+      fileBacked: file !== undefined,
+      ...(file === undefined ? {} : { file }),
+    })
   }
   state.baselines = next
 }
@@ -320,6 +335,7 @@ function fingerprintDiscovered(discovered: Discovered): string {
     revision: discovered.snapshot.revision,
     items: discovered.snapshot.items,
     agents: discovered.agents,
+    tools: discovered.tools,
   })
 }
 

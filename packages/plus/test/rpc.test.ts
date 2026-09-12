@@ -14,7 +14,7 @@ import { effective, fingerprint, type Customization, type Item } from "../src/in
 import { load } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { agentHarness, context } from "./harness.js"
+import { agentHarness, context, mcpHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -141,7 +141,10 @@ function emptyHost(directory: string, agents: Agent.Info[] = []) {
   })
 }
 
-function toolHost(directory: string, tools: readonly (Tool.Info & { readonly id: string })[]) {
+function staticToolHost(
+  directory: string,
+  tools: readonly (Tool.Info & { readonly id: string })[],
+) {
   const location = testLocation(directory)
   return context({
     location,
@@ -190,6 +193,73 @@ function toolHost(directory: string, tools: readonly (Tool.Info & { readonly id:
   })
 }
 
+function toolHost(
+  directory: string,
+  tools: readonly (Tool.Info & { readonly id: string })[],
+  hooks: { current: number },
+) {
+  const location = testLocation(directory)
+  const current = { tools }
+  const host = context({
+    location,
+    agent: {
+      get: () => Effect.die("unused agent.get"),
+      list: () => Effect.succeed({ location, data: [{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }] }),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location, data: [] }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => current.tools,
+            get: (id) => current.tools.find((tool) => tool.id === id),
+            namespace: () => undefined,
+            add: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => [],
+            get: () => undefined,
+            set: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+    session: {
+      hook: () =>
+        Effect.sync(() => {
+          hooks.current++
+          return { dispose: Effect.sync(() => { hooks.current-- }) }
+        }),
+    },
+  })
+  return {
+    ctx: host,
+    setTools(next: readonly (Tool.Info & { readonly id: string })[]): void {
+      current.tools = next
+    },
+  }
+}
+
 function hostTool(id: string, description: string, options?: Tool.Info["options"]): Tool.Info & { readonly id: string } {
   return {
     id,
@@ -201,7 +271,7 @@ function hostTool(id: string, description: string, options?: Tool.Info["options"
   }
 }
 
-function liveAgentHost(directory: string, agents: ReturnType<typeof agentHarness>) {
+function liveAgentHost(directory: string, agents: ReturnType<typeof agentHarness>, mcp?: ReturnType<typeof mcpHarness>) {
   const location = testLocation(directory)
   return context({
     location,
@@ -232,21 +302,28 @@ function liveAgentHost(directory: string, agents: ReturnType<typeof agentHarness
       reload: () => Effect.die("unused tool.reload"),
       hook: () => Effect.die("unused tool.hook"),
     },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => [],
-            get: () => undefined,
-            set: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
+    mcp:
+      mcp === undefined
+        ? {
+            list: () => Effect.die("unused mcp.list"),
+            transform: (callback) =>
+              Effect.sync(() => {
+                callback({
+                  list: () => [],
+                  get: () => undefined,
+                  set: () => undefined,
+                  update: () => undefined,
+                  remove: () => undefined,
+                })
+                return { dispose: Effect.void }
+              }),
+            reload: () => Effect.die("unused mcp.reload"),
+          }
+        : {
+            list: mcp.domain.list,
+            transform: mcp.domain.transform,
+            reload: mcp.domain.reload,
+          },
   })
 }
 
@@ -627,7 +704,7 @@ test("snapshots carry tool native flags from the live inventory across snapshot,
     { id: "reader", native: true },
     { id: "helper", native: false },
   ]
-  const handlers = createHandlers(toolHost(directory, tools), createState())
+  const handlers = createHandlers(staticToolHost(directory, tools), createState())
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.tools).toEqual(expected)
@@ -815,4 +892,261 @@ test("a genuine upstream prompt edit while a customization is active is discover
   expect(agents.disposes).toBe(afterEdit.disposes)
   expect(agents.reloads).toBe(afterEdit.reloads)
   expect(agents.state.get("alpha")?.system).toBe("custom")
+})
+
+test("a flags-only tool partition transition rebuilds the applied plan in both directions", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const native = hostTool("reader", "read things", { codemode: false })
+  const codeMode = hostTool("reader", "read things")
+  const hooks = { current: 0 }
+  const host = toolHost(directory, [codeMode], hooks)
+  const state = createState()
+  const handlers = createHandlers(host.ctx, state)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 0,
+        customizations: [
+          {
+            item: "tool:reader",
+            agent: "alpha",
+            text: "custom description",
+            state: "inherit",
+            basedOn: fingerprint("read things"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+  expect(mutated.snapshot.tools).toEqual([{ id: "reader", native: false }])
+  expect(hooks.current).toBe(0)
+
+  // Only the partition flag changes; id, name, and description stay identical,
+  // so the tool item text and agents are unchanged. The plan must still
+  // install because the native flag decides whether applyTools applies at all.
+  host.setTools([native])
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  expect(refreshed.tools).toEqual([{ id: "reader", native: true }])
+  expect(refreshed.items.find((entry) => entry.id === "tool:reader")?.text).toBe("read things")
+  expect(hooks.current).toBe(1)
+
+  // The reverse transition uninstalls the now-inapplicable plan instead of
+  // leaving it installed for a Code Mode tool.
+  host.setTools([codeMode])
+  const reverted = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(reverted)
+  expect(reverted.tools).toEqual([{ id: "reader", native: false }])
+  expect(reverted.items.find((entry) => entry.id === "tool:reader")?.text).toBe("read things")
+  expect(hooks.current).toBe(0)
+})
+
+test("a builtin agent gaining a backing file re-establishes ownership while the customization stays active", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("ghost")), system: "builtin upstream" }])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents), state)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 0,
+        customizations: [
+          {
+            item: "prompt:ghost",
+            agent: "ghost",
+            text: "custom",
+            state: "inherit",
+            basedOn: fingerprint("builtin upstream"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+
+  // A markdown file appears for the same id. Core decodes it as the new
+  // upstream prompt, but the host view still shows Plus's override, so the
+  // source transition must re-derive ownership from the file instead of
+  // pinning the stale builtin text forever.
+  const ghostPath = path.join(directory, ".opencode", "agent", "ghost.md")
+  await fs.mkdir(path.dirname(ghostPath), { recursive: true })
+  await Bun.write(ghostPath, "file upstream\n")
+  agents.setUpstream("ghost", "file upstream")
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  expect(refreshed.agents.find((entry) => entry.id === "ghost")?.fileBacked).toBe(true)
+  const item = refreshed.items.find((entry) => entry.id === "prompt:ghost")
+  expect(item?.text).toBe("file upstream")
+  expect(item?.fingerprint).toBe(fingerprint("file upstream"))
+  if (!item) throw new Error("expected prompt:ghost in refreshed snapshot")
+  const record = refreshed.customizations.find((entry) => entry.item === item.id && entry.agent === "ghost")
+  if (!record) throw new Error("expected prompt:ghost customization in refreshed snapshot")
+  expect(record.basedOn).toBe(fingerprint("builtin upstream"))
+  expect(record.basedOn).not.toBe(item.fingerprint)
+  expect(effective(snapshotOf(refreshed), itemOf(item), "ghost").review).toBe(true)
+  expect(agents.state.get("ghost")?.system).toBe("custom")
+
+  const afterTransition = { transforms: agents.transforms, disposes: agents.disposes, reloads: agents.reloads }
+  const settled = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(settled)
+  expect(settled.items.find((entry) => entry.id === "prompt:ghost")?.text).toBe("file upstream")
+  expect(agents.transforms).toBe(afterTransition.transforms)
+  expect(agents.disposes).toBe(afterTransition.disposes)
+  expect(agents.reloads).toBe(afterTransition.reloads)
+  expect(agents.state.get("ghost")?.system).toBe("custom")
+})
+
+test("deleting and recreating a backing file re-establishes ownership while the customization stays active", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const betaPath = path.join(directory, ".opencode", "agent", "beta.md")
+  await fs.mkdir(path.dirname(betaPath), { recursive: true })
+  await Bun.write(betaPath, "file upstream\n")
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("beta")), system: "file upstream" }])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents), state)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 0,
+        customizations: [
+          {
+            item: "prompt:beta",
+            agent: "beta",
+            text: "custom",
+            state: "inherit",
+            basedOn: fingerprint("file upstream"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+
+  // The file disappears: the builtin prompt underneath owns the id again, but
+  // the host still shows Plus's override, so discovery keeps reporting the
+  // retained file text rather than inventing an upstream it cannot observe.
+  await fs.rm(betaPath)
+  agents.setUpstream("beta", "builtin upstream")
+  const deleted = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(deleted)
+  expect(deleted.agents.find((entry) => entry.id === "beta")?.fileBacked).toBe(false)
+  expect(deleted.items.find((entry) => entry.id === "prompt:beta")?.text).toBe("file upstream")
+  expect(agents.state.get("beta")?.system).toBe("custom")
+
+  // Recreating the file is another source transition: the new body becomes
+  // upstream again instead of being rejected against the stale retained value.
+  await Bun.write(betaPath, "file upstream revised\n")
+  agents.setUpstream("beta", "file upstream revised")
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  expect(refreshed.agents.find((entry) => entry.id === "beta")?.fileBacked).toBe(true)
+  const item = refreshed.items.find((entry) => entry.id === "prompt:beta")
+  expect(item?.text).toBe("file upstream revised")
+  expect(item?.fingerprint).toBe(fingerprint("file upstream revised"))
+  if (!item) throw new Error("expected prompt:beta in refreshed snapshot")
+  const record = refreshed.customizations.find((entry) => entry.item === item.id && entry.agent === "beta")
+  if (!record) throw new Error("expected prompt:beta customization in refreshed snapshot")
+  expect(record.basedOn).toBe(fingerprint("file upstream"))
+  expect(record.basedOn).not.toBe(item.fingerprint)
+  expect(effective(snapshotOf(refreshed), itemOf(item), "beta").review).toBe(true)
+  expect(agents.state.get("beta")?.system).toBe("custom")
+})
+
+test("a disabled MCP server stays continuously disabled across replacement publishes", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "upstream\n")
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test" }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+  const upstreamText = JSON.stringify({ type: "remote", url: "https://example.test" })
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 0,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "disabled",
+            basedOn: fingerprint(upstreamText),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+  expect(mcp.disabled("search")).toBe(true)
+  const settled = mcp.starts
+
+  // An unrelated prompt edit forces a changed publish that disposes and
+  // reinstalls every registration. The replacement must install before the
+  // superseded disable is disposed, so the editor never observes the upstream
+  // enabled config and the server never starts in between.
+  await Bun.write(alphaPath, "upstream revised\n")
+  agents.setUpstream("alpha", "upstream revised")
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  expect(refreshed.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream revised")
+  expect(mcp.disabled("search")).toBe(true)
+  expect(mcp.starts).toBe(settled)
+
+  // A second unrelated mutation republishes again while the disable stays in
+  // force; it must not start the server either.
+  const second = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: 1,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "disabled",
+            basedOn: fingerprint(upstreamText),
+            updated: UPDATED,
+          },
+          {
+            item: "prompt:alpha",
+            agent: "alpha",
+            text: "custom",
+            state: "inherit",
+            basedOn: fingerprint("upstream revised"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(second.ok).toBe(true)
+  if (!second.ok) throw new Error("expected second mutate to succeed")
+  expectRpcBody(second)
+  expect(mcp.disabled("search")).toBe(true)
+  expect(agents.state.get("alpha")?.system).toBe("custom")
+  expect(mcp.starts).toBe(settled)
 })

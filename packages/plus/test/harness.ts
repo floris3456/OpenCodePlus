@@ -21,6 +21,7 @@ import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Agent } from "@opencode/schema/agent"
+import type { Mcp } from "@opencode/schema/mcp"
 import type { Skill } from "@opencode/schema/skill"
 import { Effect, Stream, type Types } from "effect"
 
@@ -279,6 +280,84 @@ export function agentHarness(
       rebuild()
     },
     upstream: (id: string) => upstream.get(Agent.ID.make(id))?.system,
+  }
+}
+
+export interface McpHarness {
+  readonly domain: MCPDomain
+  readonly starts: number
+  readonly disabled: (name: string) => boolean | undefined
+}
+
+// A stateful MCP domain mirroring core's transform/rebuild/reconcile
+// semantics: each transform installs one callback, and every registration
+// change rebuilds the visible config from upstream plus the installed
+// callbacks in order, then reconciles exactly like core's State notify. An
+// enabled server that was not already running counts one start, modeling
+// McpClient.connect; a server that stays disabled across the rebuild never
+// starts. Discovery reads inside readTransform observe the rebuilt list.
+export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
+  const upstream = new Map(
+    initial.map(([name, config]) => [name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>]),
+  )
+  const installed: Array<Parameters<MCPDomain["transform"]>[0]> = []
+  const running = new Set<string>()
+  const counts = { starts: 0 }
+  function visible(): Map<string, Types.DeepMutable<Mcp.ServerConfig>> {
+    const servers = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>()
+    for (const [name, config] of upstream)
+      servers.set(name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>)
+    const editor = {
+      list: () => Array.from(servers.entries()),
+      get: (name: string) => servers.get(name),
+      set: (name: string, config: Mcp.ServerConfig) => {
+        servers.set(name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>)
+      },
+      update: (name: string, update: (config: Types.DeepMutable<Mcp.ServerConfig>) => void) => {
+        const current = servers.get(name)
+        if (current) update(current)
+      },
+      remove: (name: string) => {
+        servers.delete(name)
+      },
+    }
+    for (const transform of installed) transform(editor)
+    return servers
+  }
+  function reconcile() {
+    for (const [name, config] of visible()) {
+      if (config.disabled === true) continue
+      if (running.has(name)) continue
+      running.add(name)
+      counts.starts++
+    }
+  }
+  reconcile()
+  return {
+    domain: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          installed.push(callback)
+          reconcile()
+          return {
+            dispose: Effect.sync(() => {
+              const index = installed.indexOf(callback)
+              if (index === -1) return
+              installed.splice(index, 1)
+              reconcile()
+            }),
+          }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          reconcile()
+        }),
+    } satisfies MCPDomain,
+    get starts() {
+      return counts.starts
+    },
+    disabled: (name: string) => visible().get(name)?.disabled,
   }
 }
 

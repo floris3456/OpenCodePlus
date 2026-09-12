@@ -328,8 +328,8 @@ test("prompt discovery rereads file-backed upstream while the host shows Plus ou
   await Bun.write(alphaPath, "alpha upstream revised\n")
   const applied = agentContext(directory, [agent("alpha", "custom"), agent("beta", "beta upstream")])
   const baselines = new Map([
-    ["alpha", { applied: "custom", upstream: "alpha upstream", file: "alpha upstream" }],
-    ["beta", { applied: "stale override", upstream: "stale upstream" }],
+    ["alpha", { applied: "custom", upstream: "alpha upstream", fileBacked: true, file: "alpha upstream" }],
+    ["beta", { applied: "stale override", upstream: "stale upstream", fileBacked: false }],
   ])
   const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
   const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
@@ -350,7 +350,9 @@ test("prompt discovery ignores the backing file when another config source owns 
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
   await Bun.write(alphaPath, "file body\n")
   const applied = agentContext(directory, [agent("alpha", "custom")])
-  const baselines = new Map([["alpha", { applied: "custom", upstream: "config upstream", file: "file body" }]])
+  const baselines = new Map([
+    ["alpha", { applied: "custom", upstream: "config upstream", fileBacked: true, file: "file body" }],
+  ])
   const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
   const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
   // The file body did not match the host upstream when the baseline was
@@ -363,7 +365,7 @@ test("prompt discovery retains the baseline for builtin agents while the host sh
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const applied = agentContext(directory, [agent("ghost", "custom")])
-  const baselines = new Map([["ghost", { applied: "custom", upstream: "ghost upstream" }]])
+  const baselines = new Map([["ghost", { applied: "custom", upstream: "ghost upstream", fileBacked: false }]])
   const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
   const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
   // Builtins have no backing file to reread, so the retained upstream is the
