@@ -417,11 +417,17 @@ test("prompt rows stay editable but refuse toggle with an accurate reason", () =
 test("skill and tool rows stay toggleable and editable", () => {
   const agentId = "agent-action-1002"
   const skillItem = createItem({ id: "skill-action-1002", kind: "skill", title: "skill-action-title" })
-  const toolItem = createItem({ id: "tool-action-1002", kind: "tool", title: "tool-action-title" })
+  const toolItem = createItem({
+    id: "tool-action-1002",
+    kind: "tool",
+    owner: "tool-native-1002",
+    title: "tool-action-title",
+  })
 
   const nodes = tree({
     snapshot: createSnapshot([skillItem, toolItem]),
     agents: [{ id: agentId, scope: "project" }],
+    tools: [{ id: "tool-native-1002", native: true }],
     expanded: new Set(["group:project", `agent:${agentId}`]),
   })
 
@@ -431,6 +437,38 @@ test("skill and tool rows stay toggleable and editable", () => {
   expect(skillNode?.action?.edit).toEqual({ allowed: true })
   expect(toolNode?.action?.toggle).toEqual({ allowed: true })
   expect(toolNode?.action?.edit).toEqual({ allowed: true })
+})
+
+test("code mode tool rows refuse toggle and edit in per-agent and shared views", () => {
+  const agentId = "agent-codemode-1006"
+  const toolItem = createItem({
+    id: "tool-codemode-1006",
+    kind: "tool",
+    owner: "tool-codemode-1006",
+    title: "tool-codemode-title",
+  })
+
+  const agentNodes = tree({
+    snapshot: createSnapshot([toolItem]),
+    agents: [{ id: agentId, scope: "project" }],
+    tools: [{ id: "tool-codemode-1006", native: false }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+  const agentNode = agentNodes.find((node) => node.itemId === "tool-codemode-1006")
+  expect(agentNode?.action?.toggle.allowed).toBe(false)
+  expect(agentNode?.action?.edit.allowed).toBe(false)
+
+  const sharedNodes = tree({
+    snapshot: createSnapshot([toolItem]),
+    agents: [],
+    tools: [{ id: "tool-codemode-1006", native: false }],
+    expanded: new Set(["group:defaults", "defaults:project"]),
+  })
+  const sharedNode = sharedNodes.find((node) => node.id === "defaults:project:tool-codemode-1006")
+  expect(sharedNode?.action?.toggle.allowed).toBe(false)
+  expect(sharedNode?.action?.edit.allowed).toBe(false)
+  if (sharedNode?.action?.toggle.allowed === false)
+    expect(sharedNode.action.toggle.reason).toContain("execute inventory")
 })
 
 test("instruction rows refuse toggle and edit without using the protected badge", () => {
@@ -457,7 +495,7 @@ test("instruction rows refuse toggle and edit without using the protected badge"
     expect(instructionNode.action.edit.reason).toBe("instruction customizations are not applied yet")
 })
 
-test("per-agent children never include MCP rows; shared MCP rows stay actionable", () => {
+test("per-agent children never include MCP rows; shared MCP rows toggle but refuse edit", () => {
   const agentId = "agent-mcp-1004"
   const mcpItem = createItem({ id: "mcp-shared-1004", kind: "mcp", owner: "server", title: "server" })
 
@@ -475,7 +513,7 @@ test("per-agent children never include MCP rows; shared MCP rows stay actionable
   })
   const sharedNode = sharedNodes.find((node) => node.id === "defaults:project:mcp-shared-1004")
   expect(sharedNode?.action?.toggle).toEqual({ allowed: true })
-  expect(sharedNode?.action?.edit).toEqual({ allowed: true })
+  expect(sharedNode?.action?.edit.allowed).toBe(false)
 })
 
 test("shared instruction rows refuse toggle and edit", () => {

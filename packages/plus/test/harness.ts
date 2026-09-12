@@ -213,8 +213,11 @@ export function agentHarness(
       get: (id: string) => live.get(id),
       default: () => undefined,
       update: (id: string, update: (agent: Types.DeepMutable<Agent.Info>) => void) => {
-        const current = live.get(id)
-        if (current) update(current)
+        const key = Agent.ID.make(id)
+        const current = live.get(key) ?? Agent.Info.default(key)
+        if (!live.has(key)) live.set(key, current)
+        update(current)
+        current.id = key
       },
       remove: (id: string) => {
         live.delete(id)

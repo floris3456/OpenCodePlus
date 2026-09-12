@@ -45,17 +45,27 @@ export interface TreeNode {
   readonly action?: TreeNodeAction
 }
 
+export interface ToolSource {
+  readonly id: string
+  readonly native: boolean
+}
+
 export interface TreeInput {
   readonly snapshot: Snapshot
   readonly agents?: readonly AgentSource[]
+  readonly tools?: readonly ToolSource[]
   readonly project?: ProjectConfig | null
   readonly expanded?: ReadonlySet<string>
 }
+
+const codeModeReason = "code mode tools are exposed through the execute inventory, not the session tool list"
+const mcpEditReason = "mcp server configuration can only be changed in config files"
 
 export function tree(input: TreeInput): TreeNode[] {
   const agents = input.agents ?? []
   const expandedSet = normalizeExpanded(input.expanded)
   const protectedSet = new Set(input.project?.protectedAgents ?? [])
+  const nativeTools = new Set((input.tools ?? []).filter((tool) => tool.native).map((tool) => tool.id))
 
   const projectAgents = agents.filter((agent) => agent.scope === "project")
   const globalAgents = agents.filter((agent) => agent.scope === "global")
@@ -69,6 +79,7 @@ export function tree(input: TreeInput): TreeNode[] {
     protectedSet,
     expandedSet,
     groupAliases: ["project", "Project agents"],
+    nativeTools,
   })
 
   const globalGroup = emitAgentGroup({
@@ -79,6 +90,7 @@ export function tree(input: TreeInput): TreeNode[] {
     protectedSet,
     expandedSet,
     groupAliases: ["global", "Global agents"],
+    nativeTools,
   })
 
   const defaultsGroup = emitDefaultsGroup({
@@ -86,6 +98,7 @@ export function tree(input: TreeInput): TreeNode[] {
     builtinAgents,
     protectedSet,
     expandedSet,
+    nativeTools,
   })
 
   return [...projectGroup, ...globalGroup, ...defaultsGroup]
@@ -110,6 +123,7 @@ interface AgentGroupInput {
   readonly protectedSet: ReadonlySet<string>
   readonly expandedSet: ReadonlySet<string>
   readonly groupAliases: readonly string[]
+  readonly nativeTools: ReadonlySet<string>
 }
 
 function emitAgentGroup(input: AgentGroupInput): TreeNode[] {
@@ -131,6 +145,7 @@ function emitAgentGroup(input: AgentGroupInput): TreeNode[] {
       snapshot: input.snapshot,
       protectedSet: input.protectedSet,
       expandedSet: input.expandedSet,
+      nativeTools: input.nativeTools,
     }),
   )
 
@@ -142,6 +157,7 @@ interface AgentNodeInput {
   readonly snapshot: Snapshot
   readonly protectedSet: ReadonlySet<string>
   readonly expandedSet: ReadonlySet<string>
+  readonly nativeTools: ReadonlySet<string>
 }
 
 function emitAgentNode(input: AgentNodeInput): TreeNode[] {
@@ -166,11 +182,16 @@ function emitAgentNode(input: AgentNodeInput): TreeNode[] {
     return [node]
   }
 
-  const children = emitAgentChildren(agentId, input.snapshot, isProtected)
+  const children = emitAgentChildren(agentId, input.snapshot, isProtected, input.nativeTools)
   return [node, ...children]
 }
 
-function emitAgentChildren(agentId: string, snapshot: Snapshot, isProtected: boolean): TreeNode[] {
+function emitAgentChildren(
+  agentId: string,
+  snapshot: Snapshot,
+  isProtected: boolean,
+  nativeTools: ReadonlySet<string>,
+): TreeNode[] {
   const prompts = snapshot.items
     .filter((item) => item.kind === "prompt" && applies(item, agentId))
     .map((item) =>
@@ -198,15 +219,25 @@ function emitAgentChildren(agentId: string, snapshot: Snapshot, isProtected: boo
 
   const tools = snapshot.items
     .filter((item) => item.kind === "tool" && applies(item, agentId))
-    .map((item) =>
-      emitItemNode({
+    .map((item) => {
+      if (nativeTools.has(item.owner))
+        return emitItemNode({
+          agentId,
+          item,
+          snapshot,
+          label: item.title,
+          isProtected,
+        })
+      return emitItemNode({
         agentId,
         item,
         snapshot,
         label: item.title,
         isProtected,
-      }),
-    )
+        toggle: { allowed: false, reason: codeModeReason },
+        edit: { allowed: false, reason: codeModeReason },
+      })
+    })
 
   const instructions = snapshot.items
     .filter((item) => item.kind === "instruction" && applies(item, agentId))
@@ -262,6 +293,7 @@ interface DefaultsGroupInput {
   readonly builtinAgents: readonly AgentSource[]
   readonly protectedSet: ReadonlySet<string>
   readonly expandedSet: ReadonlySet<string>
+  readonly nativeTools: ReadonlySet<string>
 }
 
 function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
@@ -283,6 +315,7 @@ function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
     snapshot: input.snapshot,
     expandedSet: input.expandedSet,
     aliases: ["default:project"],
+    nativeTools: input.nativeTools,
   })
 
   const globalDefaults = emitDefaultTarget({
@@ -291,6 +324,7 @@ function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
     snapshot: input.snapshot,
     expandedSet: input.expandedSet,
     aliases: ["default:global"],
+    nativeTools: input.nativeTools,
   })
 
   const builtinNodes = input.builtinAgents.flatMap((agent) =>
@@ -299,6 +333,7 @@ function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
       snapshot: input.snapshot,
       protectedSet: input.protectedSet,
       expandedSet: input.expandedSet,
+      nativeTools: input.nativeTools,
     }),
   )
 
@@ -311,6 +346,7 @@ interface DefaultTargetInput {
   readonly snapshot: Snapshot
   readonly expandedSet: ReadonlySet<string>
   readonly aliases: readonly string[]
+  readonly nativeTools: ReadonlySet<string>
 }
 
 function emitDefaultTarget(input: DefaultTargetInput): TreeNode[] {
@@ -326,17 +362,23 @@ function emitDefaultTarget(input: DefaultTargetInput): TreeNode[] {
     return [node]
   }
 
-  const children = emitDefaultChildren(input.id, input.snapshot)
+  const children = emitDefaultChildren(input.id, input.snapshot, input.nativeTools)
   return [node, ...children]
 }
 
-function emitDefaultChildren(targetId: string, snapshot: Snapshot): TreeNode[] {
+function emitDefaultChildren(targetId: string, snapshot: Snapshot, nativeTools: ReadonlySet<string>): TreeNode[] {
   const sharedAgent = "*"
   const items = snapshot.items.filter((item) => item.kind !== "prompt" && applies(item, sharedAgent))
-  return items.map((item) => emitDefaultNode(targetId, snapshot, sharedAgent, item))
+  return items.map((item) => emitDefaultNode(targetId, snapshot, sharedAgent, item, nativeTools))
 }
 
-function emitDefaultNode(targetId: string, snapshot: Snapshot, sharedAgent: string, item: Item): TreeNode {
+function emitDefaultNode(
+  targetId: string,
+  snapshot: Snapshot,
+  sharedAgent: string,
+  item: Item,
+  nativeTools: ReadonlySet<string>,
+): TreeNode {
   const eff = effective(snapshot, item, sharedAgent)
   const base = {
     id: `${targetId}:${item.id}`,
@@ -356,6 +398,22 @@ function emitDefaultNode(targetId: string, snapshot: Snapshot, sharedAgent: stri
       action: {
         toggle: { allowed: false, reason: "instruction customizations are not applied yet" },
         edit: { allowed: false, reason: "instruction customizations are not applied yet" },
+      },
+    }
+  if (item.kind === "tool" && !nativeTools.has(item.owner))
+    return {
+      ...base,
+      action: {
+        toggle: { allowed: false, reason: codeModeReason },
+        edit: { allowed: false, reason: codeModeReason },
+      },
+    }
+  if (item.kind === "mcp")
+    return {
+      ...base,
+      action: {
+        toggle: { allowed: true },
+        edit: { allowed: false, reason: mcpEditReason },
       },
     }
   return {

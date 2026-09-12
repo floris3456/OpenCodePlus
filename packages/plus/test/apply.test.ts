@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { MCPEditor } from "@opencode/plugin/effect/mcp"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
+import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Agent } from "@opencode/schema/agent"
 import type { Mcp } from "@opencode/schema/mcp"
 import { Model } from "@opencode/schema/model"
@@ -10,7 +11,8 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { Effect, type Types } from "effect"
+import type { Tool } from "@opencode/schema/tool"
+import { Effect, Schema, type Types } from "effect"
 import { apply, copyName, copyPattern } from "../src/instructions/apply.js"
 import { fingerprint, type Item, type Snapshot } from "../src/instructions/model.js"
 import { context, skillHarness } from "./harness.js"
@@ -58,8 +60,11 @@ function agentEditor(state: Map<string, Types.DeepMutable<Agent.Info>>): AgentEd
     get: (id) => state.get(id),
     default: () => undefined,
     update: (id, update) => {
-      const current = state.get(id)
-      if (current) update(current)
+      const key = Agent.ID.make(id)
+      const current = state.get(key) ?? Agent.Info.default(key)
+      if (!state.has(key)) state.set(key, current)
+      update(current)
+      current.id = key
     },
     remove: (id) => {
       state.delete(id)
@@ -93,6 +98,47 @@ function sessionEvent(agentID: string, tools: SessionHooks["context"]["tools"]):
     messages: [],
     options: {},
     tools,
+  }
+}
+
+function nativeTool(id: string, description: string): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    options: { codemode: false },
+    execute: () => Effect.die("unused tool.execute"),
+  }
+}
+
+function codeModeTool(id: string, description: string): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    execute: () => Effect.die("unused tool.execute"),
+  }
+}
+
+function toolDomain(tools: readonly (Tool.Info & { readonly id: string })[]) {
+  const editor: ToolEditor = {
+    list: () => tools,
+    get: (id) => tools.find((tool) => tool.id === id),
+    namespace: () => {},
+    add: () => {},
+    update: () => {},
+    remove: () => {},
+  }
+  return {
+    transform: (callback: (editor: ToolEditor) => void) =>
+      Effect.sync(() => {
+        callback(editor)
+        return { dispose: Effect.void }
+      }),
+    reload: () => Effect.die("unused tool.reload"),
+    hook: () => Effect.die("unused tool.hook"),
   }
 }
 
@@ -468,6 +514,7 @@ test("a tool description override reaches the target agent and not another agent
       transform: () => Effect.die("unused agent.transform"),
       reload: () => Effect.die("unused agent.reload"),
     },
+    tool: toolDomain([nativeTool("reader", "read things")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -488,6 +535,44 @@ test("a tool description override reaches the target agent and not another agent
   expect(alpha.tools.reader?.description).toBe("custom description")
   // The negative case is asserted: a different agent keeps the upstream description.
   expect(beta.tools.reader?.description).toBe("read things")
+})
+
+test("a Code Mode tool customization registers nothing because session context cannot reach the execute inventory", async () => {
+  const prompts = [
+    item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] }),
+  ]
+  const tools = [item({ id: "tool:helper", kind: "tool", owner: "helper", title: "helper", text: "help things" })]
+  const all = [...prompts, ...tools]
+  const customizations = [
+    {
+      item: "tool:helper",
+      agent: "alpha",
+      text: "custom description",
+      state: "inherit" as const,
+      basedOn: tools[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    tool: toolDomain([codeModeTool("helper", "help things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+
+  const applied = await apply(ctx, snapshot(all), customizations)
+  expect(applied.registrations).toEqual([])
+  expect(callbacks).toEqual([])
 })
 
 function mcpState(entries: [string, Types.DeepMutable<Mcp.ServerConfig>][]): {
@@ -517,7 +602,7 @@ function mcpState(entries: [string, Types.DeepMutable<Mcp.ServerConfig>][]): {
   return { editor, removed, configured, servers }
 }
 
-test("a shared MCP disable removes the server", async () => {
+test("a shared MCP disable flags the server disabled while keeping it listed", async () => {
   const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream" })]
   const servers = [item({ id: "mcp:search", kind: "mcp", owner: "search", title: "search", text: "{}" })]
   const all = [...prompts, ...servers]
@@ -558,8 +643,111 @@ test("a shared MCP disable removes the server", async () => {
 
   const applied = await apply(ctx, snapshot(all), customizations)
   expect(applied.registrations).toHaveLength(1)
-  expect(mcp.removed).toEqual(["search"])
+  expect(mcp.removed).toEqual([])
+  expect(mcp.servers.get("search")?.disabled).toBe(true)
   expect(reloaded).toBe(1)
+})
+
+test("a shared MCP disable survives repeated discovery because the server stays listed", async () => {
+  const upstream: [string, Types.DeepMutable<Mcp.ServerConfig>] = ["search", { type: "remote", url: "https://example.test" }]
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream" })]
+  const customizations = [
+    {
+      item: "mcp:search",
+      agent: "*",
+      state: "disabled" as const,
+      basedOn: fingerprint("{}"),
+      updated: UPDATED,
+    },
+  ]
+  const installed: Array<(editor: MCPEditor) => void> = []
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          installed.push(callback)
+          const mcp = mcpState([structuredClone(upstream)])
+          callback(mcp.editor)
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  // Each refresh rebuilds the visible list from upstream plus every installed
+  // transform, mirroring core's State rebuild semantics.
+  function visible(): Map<string, Types.DeepMutable<Mcp.ServerConfig>> {
+    const mcp = mcpState([structuredClone(upstream)])
+    for (const transform of installed) transform(mcp.editor)
+    return mcp.servers
+  }
+
+  for (let pass = 0; pass < 2; pass++) {
+    const servers = Array.from(visible()).map(([name, config]) =>
+      item({ id: `mcp:${name}`, kind: "mcp", owner: name, title: name, text: JSON.stringify(config) }),
+    )
+    expect(servers.map((server) => server.id)).toEqual(["mcp:search"])
+    await apply(ctx, snapshot([...prompts, ...servers]), customizations)
+    expect(visible().get("search")?.disabled).toBe(true)
+  }
+})
+
+test("an MCP text edit registers nothing because server configuration is file-owned", async () => {
+  const upstream = JSON.stringify({ type: "remote", url: "https://example.test" })
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream" })]
+  const servers = [item({ id: "mcp:search", kind: "mcp", owner: "search", title: "search", text: upstream })]
+  const all = [...prompts, ...servers]
+  const customizations = [
+    {
+      item: "mcp:search",
+      agent: "*",
+      text: JSON.stringify({ type: "remote", url: "https://replaced.test" }),
+      state: "inherit" as const,
+      basedOn: servers[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mcp = mcpState([["search", { type: "remote", url: "https://example.test" }]])
+  let reloaded = 0
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcp.editor)
+          return { dispose: Effect.void }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          reloaded++
+        }),
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  const applied = await apply(ctx, snapshot(all), customizations)
+  expect(applied.registrations).toEqual([])
+  expect(mcp.configured).toEqual([])
+  expect(mcp.servers.get("search")).toEqual({ type: "remote", url: "https://example.test" })
+  expect(reloaded).toBe(0)
 })
 
 test("a per-agent MCP record is ignored because servers are shared configuration", async () => {
@@ -676,4 +864,67 @@ test("instruction customizations register nothing", async () => {
 
   const applied = await apply(ctx, snapshot(all), customizations)
   expect(applied.registrations).toEqual([])
+})
+
+test("a prompt override for a removed agent does not recreate the agent", async () => {
+  const state = agentState([])
+  const prompts = [item({ id: "prompt:ghost", kind: "prompt", owner: "ghost", text: "upstream" })]
+  const customizations = [
+    { item: "prompt:ghost", agent: "ghost", text: "custom", state: "inherit" as const, basedOn: prompts[0].fingerprint, updated: UPDATED },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  await apply(ctx, snapshot(prompts), customizations)
+  expect(state.has("ghost")).toBe(false)
+})
+
+test("a skill rule for a removed agent does not recreate the agent", async () => {
+  const state = agentState([{ id: "alpha", system: "upstream" }])
+  const items = [
+    item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] }),
+    item({ id: "prompt:ghost", kind: "prompt", owner: "ghost", text: "upstream", agents: ["ghost"] }),
+    item({ id: "skill:notes", kind: "skill", owner: "notes", title: "notes", text: "skill body" }),
+  ]
+  const customizations = [
+    {
+      item: "skill:notes",
+      agent: "ghost",
+      state: "disabled" as const,
+      basedOn: items[2].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  await apply(ctx, snapshot(items), customizations)
+  expect(state.has("ghost")).toBe(false)
+  expect(state.get("alpha")?.permissions).toEqual([])
 })
