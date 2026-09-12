@@ -4,8 +4,9 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration, Transform } from "@opencode/plugin/effect/registration"
 import type { SessionContext, SessionHooks } from "@opencode/plugin/effect/session"
 import type { SkillEditor } from "@opencode/plugin/effect/skill"
+import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Skill } from "@opencode/schema/skill"
-import { Effect, Option, Schema, Scope } from "effect"
+import { Deferred, Effect, Scope } from "effect"
 import { applies, effective, type Customization, type Item, type Snapshot } from "./model.js"
 
 export interface Applied {
@@ -69,6 +70,7 @@ async function applyPrompts(
   if (updates.length === 0) return undefined
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
+      if (!editor.get(update.agent)) continue
       editor.update(update.agent, (agent) => {
         agent.system = update.text
       })
@@ -128,7 +130,8 @@ function pushSkillRule(
   rule: { agent: string; resource: string; effect: "deny" | "allow" },
 ) {
   const current = editor.get(rule.agent)
-  const present = current?.permissions.some(
+  if (!current) return
+  const present = current.permissions.some(
     (entry) => entry.action === "skill" && entry.resource === rule.resource && entry.effect === rule.effect,
   )
   if (present) return
@@ -212,8 +215,11 @@ async function applyTools(
   snapshot: Snapshot,
   agentIDs: string[],
 ): Promise<Registration | undefined> {
-  const tools = snapshot.items.filter((item) => item.kind === "tool")
-  const plans = agentIDs.flatMap((agentID) => toolPlans(snapshot, tools, agentID))
+  const items = snapshot.items.filter((item) => item.kind === "tool")
+  const customized = agentIDs.flatMap((agentID) => toolCandidates(snapshot, items, agentID))
+  if (customized.length === 0) return undefined
+  const inventory = await readTools(ctx)
+  const plans = customized.filter((plan) => !isCodeModeTool(inventory, plan.tool))
   if (plans.length === 0) return undefined
   return runHook(ctx.session.hook, "context", (event) => {
     applyToolPlan(event, plansFor(plans, event.agent))
@@ -228,7 +234,7 @@ interface ToolPlan {
   readonly text: string | undefined
 }
 
-function toolPlans(snapshot: Snapshot, tools: Item[], agentID: string): ToolPlan[] {
+function toolCandidates(snapshot: Snapshot, tools: Item[], agentID: string): ToolPlan[] {
   return tools.flatMap((item) => {
     if (!applies(item, agentID)) return []
     const resolved = effective(snapshot, item, agentID)
@@ -240,6 +246,34 @@ function toolPlans(snapshot: Snapshot, tools: Item[], agentID: string): ToolPlan
 
 function plansFor(plans: ToolPlan[], agent: string): ToolPlan[] {
   return plans.filter((plan) => plan.agent === agent)
+}
+
+type ToolInventory = ReadonlyMap<string, boolean>
+
+async function readTools(ctx: Context): Promise<ToolInventory> {
+  return readTransform(ctx.tool.transform, (editor: ToolEditor) => {
+    const inventory = new Map<string, boolean>()
+    for (const tool of editor.list()) inventory.set(tool.id, tool.options?.codemode === false)
+    return inventory
+  })
+}
+
+function readTransform<Editor, Value>(transform: Transform<Editor>, read: (editor: Editor) => Value): Promise<Value> {
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const deferred = yield* Deferred.make<Value, never>()
+        yield* transform((editor) => {
+          Deferred.doneUnsafe(deferred, Effect.succeed(read(editor)))
+        })
+        return yield* Deferred.await(deferred)
+      }),
+    ),
+  )
+}
+
+function isCodeModeTool(inventory: ToolInventory, id: string): boolean {
+  return inventory.get(id) !== true
 }
 
 function applyToolPlan(event: SessionContext, plans: ToolPlan[]) {
@@ -260,42 +294,22 @@ async function applyMcp(ctx: Context, snapshot: Snapshot): Promise<Registration 
   if (updates.length === 0) return undefined
   return runRegistration(ctx.mcp.transform, (editor: MCPEditor) => {
     for (const update of updates) {
-      if (!update.enabled) {
-        editor.remove(update.name)
-        continue
-      }
-      if (update.config === undefined) continue
-      editor.set(update.name, update.config)
+      const current = editor.get(update.name)
+      if (!current) continue
+      current.disabled = true
     }
   })
 }
 
 interface McpUpdate {
   readonly name: string
-  readonly enabled: boolean
-  readonly config?: McpConfig
 }
-
-type McpConfig = { type: "local"; command: string[] } | { type: "remote"; url: string }
 
 function mcpUpdates(snapshot: Snapshot, servers: Item[]): McpUpdate[] {
   return servers.flatMap((item): McpUpdate[] => {
     const resolved = effective(snapshot, item, "*")
     if (!resolved.customized) return []
-    if (!resolved.enabled) return [{ name: item.owner, enabled: false }]
-    if (resolved.text === item.text) return []
-    const config = parseConfig(resolved.text)
-    if (config === undefined) return []
-    return [{ name: item.owner, enabled: true, config }]
+    if (resolved.enabled) return []
+    return [{ name: item.owner }]
   })
-}
-
-const decodeConfig = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)))
-
-function parseConfig(text: string): McpConfig | undefined {
-  const decoded = Option.getOrUndefined(decodeConfig(text))
-  if (!decoded) return undefined
-  if (decoded.type === "local" && Array.isArray(decoded.command)) return { type: "local", command: decoded.command }
-  if (decoded.type === "remote" && typeof decoded.url === "string") return { type: "remote", url: decoded.url }
-  return undefined
 }
