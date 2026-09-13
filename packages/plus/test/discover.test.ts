@@ -6,6 +6,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
 import type { Mcp } from "@opencode/schema/mcp"
 import { AbsolutePath } from "@opencode/schema/schema"
+import { Permission } from "@opencode/schema/permission"
 import { Project } from "@opencode/schema/project"
 import { Skill } from "@opencode/schema/skill"
 import { Tool } from "@opencode/schema/tool"
@@ -15,7 +16,7 @@ import os from "node:os"
 import path from "node:path"
 import { agentBody, discover } from "../src/instructions/discover.js"
 import { copyName } from "../src/instructions/apply.js"
-import { fingerprint } from "../src/instructions/model.js"
+import { effective, fingerprint } from "../src/instructions/model.js"
 import { context } from "./harness.js"
 
 const roots: string[] = []
@@ -45,7 +46,7 @@ function location(directory: string): Location.Info {
   })
 }
 
-function agent(id: string, system: string): Agent.Info {
+function agent(id: string, system: string, permissions: Permission.Ruleset = []): Agent.Info {
   return {
     id: Agent.ID.make(id),
     name: Agent.Name.make(id),
@@ -53,7 +54,7 @@ function agent(id: string, system: string): Agent.Info {
     system,
     mode: "primary",
     hidden: false,
-    permissions: [],
+    permissions,
   }
 }
 
@@ -486,4 +487,71 @@ test("the same server WITH a shared disabled customization reports available ===
   expect(mcpItem?.available).toBe(true)
   expect(mcpItem?.text).toBe(expectedSanitized)
   expect(mcpItem?.fingerprint).toBe(fingerprint(expectedSanitized))
+})
+
+test("discovery reports an upstream-denied skill as available (known limitation)", async () => {
+  // Known limitation: Plus discovers skills and tools globally with available: true
+  // regardless of agent upstream permissions. Core filters denied skills in
+  // Skill.available (packages/core/src/skill.ts) and denied tools in Tool.snapshot
+  // (packages/core/src/tool.ts) before session hooks run, so an agent that upstream
+  // denies a skill or tool cannot use it even when discovery reports available: true.
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+
+  const deniedPermissions: Permission.Ruleset = [
+    { action: "skill", resource: "deploy", effect: "deny" },
+    { action: "git", resource: "*", effect: "deny" },
+  ]
+  const agents = [agent("restricted", "restricted agent", deniedPermissions)]
+  const skills = [skill("deploy", "deploy to production")]
+  const tools = [toolWithOptions("git", "run git commands", { codemode: false })]
+
+  const ctx = context({
+    location: location(directory),
+    agent: {
+      list: () => Effect.succeed({ location: location(directory), data: agents }),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location: location(directory), data: skills }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(toolEditor(tools))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcpEditor())
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+
+  const discovered = await discover(ctx, { revision: 0, customizations: [] })
+  const skillItem = discovered.snapshot.items.find((item) => item.id === "skill:deploy")
+  const toolItem = discovered.snapshot.items.find((item) => item.id === "tool:git")
+
+  // The skill and native tool are surfaced to plugin APIs by core, but Plus
+  // assigns available: true unconditionally rather than inspecting agent permissions.
+  expect(skillItem).toBeDefined()
+  expect(skillItem?.available).toBe(true)
+  expect(toolItem).toBeDefined()
+  expect(toolItem?.available).toBe(true)
+
+  // Downstream effect: effective() also reports enabled: true for the restricted agent
+  expect(effective(discovered.snapshot, skillItem!, "restricted").enabled).toBe(true)
+  expect(effective(discovered.snapshot, toolItem!, "restricted").enabled).toBe(true)
 })
