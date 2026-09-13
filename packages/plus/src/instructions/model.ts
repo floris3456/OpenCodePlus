@@ -118,12 +118,12 @@ export function effective(snapshot: Snapshot, item: Item, agent: string): Effect
         : resolved?.state === "enabled"
           ? item.kind === "mcp" || item.available
           : item.available,
-    customized: isCustomized(item, resolved, inherited),
+    customized: isCustomized(resolved, inherited),
     review: isReview(item, resolved, inherited),
   }
 }
 
-function isCustomized(item: Item, resolved: Customization | undefined, inherited: boolean): boolean {
+function isCustomized(resolved: Customization | undefined, inherited: boolean): boolean {
   if (!resolved) return false
   if (resolved.text !== undefined) return true
   return deviates(resolved.state, inherited)
@@ -131,7 +131,7 @@ function isCustomized(item: Item, resolved: Customization | undefined, inherited
 
 function isReview(item: Item, resolved: Customization | undefined, inherited: boolean): boolean {
   if (!resolved) return false
-  if (!isCustomized(item, resolved, inherited)) return false
+  if (!isCustomized(resolved, inherited)) return false
   return resolved.basedOn !== item.fingerprint && resolved.reviewed !== item.fingerprint
 }
 
