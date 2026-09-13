@@ -1278,6 +1278,98 @@ test("disable, then refresh twice, asserting effective().review === false and an
   }
 })
 
+test("redundant explicit enabled state for upstream-enabled server is normalized to inherit and does not poison discovery", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test" }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
+  expect(serverItem).toBeDefined()
+  expect(serverItem?.available).toBe(true)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "enabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+
+  const stored = await load(directory)
+  const persisted = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(persisted?.state).toBe("inherit")
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
+  expect(refreshedItem?.available).toBe(true)
+})
+
+test("genuine explicit enabled state for upstream-disabled server persists enabled and reports effective enabled true", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
+  expect(serverItem).toBeDefined()
+  expect(serverItem?.available).toBe(false)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "enabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+
+  const stored = await load(directory)
+  const persisted = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(persisted?.state).toBe("enabled")
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
+  if (!refreshedItem) throw new Error("expected mcp:search item on refresh")
+  const eff = effective(snapshotOf(refreshed), itemOf(refreshedItem), "*")
+  expect(eff.enabled).toBe(true)
+})
+
 function pluginHost(directory: string, agents: ReturnType<typeof agentHarness>) {
   const host = liveAgentHost(directory, agents)
   return {
