@@ -6,7 +6,7 @@ The package implements project mode toggling, an interactive Instructions screen
 
 ## Running it
 
-`opencodeplus` runs the Instructions TUI for a directory: run it without arguments for the current directory, or pass a project directory. CLI subcommands (such as `mcp add`) cannot be run through `opencodeplus` and must be run from the repository with `bun run dev <subcommand>`, because running them through the launcher would misdirect cwd-sensitive handlers.
+`opencodeplus` runs the Instructions TUI for a directory: run it without arguments for the current directory, or pass flags and an optional project directory. CLI subcommands (such as `mcp add`) cannot be run through `opencodeplus` and must be run from the repository with `bun run dev <subcommand>`, because running them through the launcher would misdirect cwd-sensitive handlers.
 
 Symlink the launcher onto PATH to use it from anywhere:
 
