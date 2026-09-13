@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Capture the caller's working directory before any path resolution or cd.
+CALLER_DIR="${PWD:-$(pwd)}"
+
 # Resolve the real path of this script, following symlinks.
 TARGET="$0"
 case "$TARGET" in
@@ -49,4 +52,53 @@ export OPENCODE_TUI_CHANNEL="${OPENCODE_TUI_CHANNEL:-plus}"
 # the Instructions screen silently has nothing to work with.
 unset OPENCODE_CONFIG_PROJECT_DISABLE
 
-exec bun run --cwd "$REPO/packages/cli" src/index.ts "$@"
+# --cwd "$REPO/packages/cli" is strictly required because running bun directly
+# against the CLI entrypoint from another directory fails JSX runtime resolution
+# ('react/jsx-dev-runtime'). However, --cwd changes process.cwd() for the child,
+# which causes cwd-sensitive subcommands (such as 'mcp add' or 'mcp list') to target
+# the fork's packages/cli directory instead of the user's project.
+#
+# To prevent silent misdirection:
+# 1. Refuse any invocation naming a subcommand; subcommands must be run from
+#    the repository via 'bun run dev <subcommand>'.
+# 2. For the default TUI invocation, pass the caller's directory explicitly
+#    as the directory argument unless the user already supplied one.
+candidate=""
+has_candidate=0
+for arg in "$@"; do
+  case "$arg" in
+    -*)
+      ;;
+    *)
+      candidate="$arg"
+      has_candidate=1
+      break
+      ;;
+  esac
+done
+
+if [ "$has_candidate" -eq 1 ]; then
+  if [ ! -d "$candidate" ]; then
+    echo "opencodeplus: '$candidate' is not a directory. opencodeplus runs the Instructions TUI only; cwd-sensitive subcommands such as 'mcp add' would write to the wrong project. Run subcommands from the repository with 'bun run dev <subcommand>'." >&2
+    exit 1
+  fi
+  case "$candidate" in
+    /*) ;;
+    *)
+      abs_candidate=$(cd "$candidate" 2>/dev/null && pwd)
+      replaced=0
+      for arg in "$@"; do
+        if [ "$replaced" -eq 0 ] && [ "$arg" = "$candidate" ]; then
+          set -- "$@" "$abs_candidate"
+          replaced=1
+        else
+          set -- "$@" "$arg"
+        fi
+        shift
+      done
+      ;;
+  esac
+  exec bun run --cwd "$REPO/packages/cli" src/index.ts "$@"
+else
+  exec bun run --cwd "$REPO/packages/cli" src/index.ts "$@" "$CALLER_DIR"
+fi
