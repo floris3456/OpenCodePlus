@@ -67,72 +67,80 @@ unset OPENCODE_CONFIG_PROJECT_DISABLE
 # To prevent silent misdirection:
 # 1. Refuse any invocation naming a subcommand; subcommands must be run from
 #    the repository via 'bun run dev <subcommand>'.
-#    Because CLI usage is 'opencode <subcommand> [flags] [<directory>]', a subcommand
-#    can only ever appear as $1. Inspecting only $1 prevents flag values (such as
-#    '--model anthropic/x' or '--prompt "fix bug"') from being misidentified as subcommands.
-# 2. For the default TUI invocation, pass the caller's directory explicitly
-#    as the directory argument unless the user already supplied one as the last argument.
+#    Because the CLI accepts global flags before subcommands, refusal checks every
+#    argument against an explicit list of the CLI's subcommands.
+# 2. For the default TUI invocation, recognise an existing directory positional
+#    anywhere in the arguments, normalise it to absolute in place, and append
+#    nothing; if none is supplied, pass the caller's directory explicitly.
 # 3. Restore the target directory before the CLI entrypoint executes via a Bun
 #    --preload module (restore-cwd.ts) using OPENCODEPLUS_CALLER_CWD, so the CLI
 #    and Plus plugin bind to the caller project rather than the fork.
 #
-# Residual ambiguity: if a value-taking flag's value happens to name an existing
-# directory AND is the last argument (for example '--prompt src' run where 'src/'
-# exists), it is indistinguishable from a directory positional in POSIX sh without
-# encoding flag arity, so it is treated as the directory. Note that encoding
-# upstream flag arity was deliberately avoided because it would silently drift
-# from upstream. Do not add complexity to chase this case.
+# Residual ambiguity and safe failures:
+# - If a value-taking flag's value happens to name an existing directory (for
+#   example '--prompt src' run where 'src/' exists), it is indistinguishable from
+#   a directory positional in POSIX sh without encoding flag arity, so it is
+#   treated as the directory. Note that encoding upstream flag arity was deliberately
+#   avoided because it would silently drift from upstream. Do not add complexity
+#   to chase this case.
+# - If a flag value happens to match a subcommand name (for example '--prompt run'),
+#   it is refused. This fails safe: refusing is recoverable and instructs the user
+#   to run from the repository, whereas silently targeting the wrong project is not.
 
-if [ "$#" -gt 0 ]; then
-  case "$1" in
-    -*)
-      ;;
-    *)
-      if [ ! -d "$1" ]; then
-        echo "opencodeplus: '$1' is not a directory. opencodeplus runs the Instructions TUI only; cwd-sensitive subcommands such as 'mcp add' would write to the wrong project. Run subcommands from the repository with 'bun run dev <subcommand>'." >&2
-        exit 1
-      fi
+# Pinned CLI subcommands from 'opencode --help'. Subcommands must be run from
+# the repository via 'bun run dev <subcommand>'; running them through opencodeplus
+# would misdirect cwd-sensitive handlers. This list mirrors the pinned CLI's
+# subcommands and must be updated if upstream adds one.
+for arg in "$@"; do
+  case "$arg" in
+    upgrade | update | uninstall | acp | api | debug | auth | mcp | plugin | models | stats | mini | run | session | service | pair | serve)
+      echo "opencodeplus: '$arg' is not a directory. opencodeplus runs the Instructions TUI only; cwd-sensitive subcommands such as 'mcp add' would write to the wrong project. Run subcommands from the repository with 'bun run dev <subcommand>'." >&2
+      exit 1
       ;;
   esac
-fi
+done
 
 has_dir=0
-if [ "$#" -gt 0 ]; then
-  for last_arg in "$@"; do :; done
-  case "$last_arg" in
-    -*)
-      ;;
-    *)
-      if [ -d "$last_arg" ]; then
-        has_dir=1
-      fi
-      ;;
-  esac
-fi
+TARGET_DIR=""
+total="$#"
+i=1
+while [ "$i" -le "$total" ]; do
+  arg="$1"
+  shift
+  if [ "$has_dir" -eq 0 ]; then
+    case "$arg" in
+      -*)
+        set -- "$@" "$arg"
+        ;;
+      *)
+        if [ -n "$arg" ] && [ -d "$arg" ]; then
+          has_dir=1
+          case "$arg" in
+            /*)
+              TARGET_DIR="$arg"
+              ;;
+            *)
+              abs_dir=$(cd "$arg" 2>/dev/null && pwd || true)
+              if [ -n "$abs_dir" ]; then
+                TARGET_DIR="$abs_dir"
+              else
+                TARGET_DIR="$arg"
+              fi
+              ;;
+          esac
+          set -- "$@" "$TARGET_DIR"
+        else
+          set -- "$@" "$arg"
+        fi
+        ;;
+    esac
+  else
+    set -- "$@" "$arg"
+  fi
+  i=$((i + 1))
+done
 
-if [ "$has_dir" -eq 1 ]; then
-  case "$last_arg" in
-    /*)
-      TARGET_DIR="$last_arg"
-      ;;
-    *)
-      abs_dir=$(cd "$last_arg" 2>/dev/null && pwd || true)
-      if [ -n "$abs_dir" ]; then
-        TARGET_DIR="$abs_dir"
-        i=1
-        while [ "$i" -lt "$#" ]; do
-          set -- "$@" "$1"
-          shift
-          i=$((i + 1))
-        done
-        set -- "$@" "$TARGET_DIR"
-        shift
-      else
-        TARGET_DIR="$last_arg"
-      fi
-      ;;
-  esac
-else
+if [ "$has_dir" -eq 0 ]; then
   TARGET_DIR="$CALLER_DIR"
 fi
 
