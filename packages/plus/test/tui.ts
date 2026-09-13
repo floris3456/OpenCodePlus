@@ -63,6 +63,10 @@ function createTestTheme() {
   }
 }
 
+export type TestKeymapLayer = ReturnType<Parameters<Plugin.Context["keymap"]["layer"]>[0]>
+export type TestKeymapCommand = NonNullable<TestKeymapLayer["commands"]>[number]
+type KeymapLayerCallback = Parameters<Plugin.Context["keymap"]["layer"]>[0]
+
 export interface TestFixture {
   readonly context: Plugin.Context
   readonly renderer: CliRenderer
@@ -70,6 +74,8 @@ export interface TestFixture {
   readonly waitForFrame: (predicate: (frame: string) => boolean) => Promise<string>
   readonly emitChanged: (next?: Snapshot) => Promise<void>
   readonly destroy: () => void
+  readonly commands: () => readonly TestKeymapCommand[]
+  readonly resize: (width: number, height: number) => void
   readonly [Symbol.asyncDispose]: () => Promise<void>
 }
 
@@ -91,6 +97,13 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
 
   const queue: Snapshot[] = [...options.snapshots]
   const listeners = new Set<() => void>()
+  const layers: KeymapLayerCallback[] = []
+
+  function commands(): readonly TestKeymapCommand[] {
+    return [...layers]
+      .reverse()
+      .flatMap((fn) => fn().commands ?? [])
+  }
 
   function nextSnapshot(): Snapshot {
     if (queue.length > 1) {
@@ -138,10 +151,12 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       registerCodeBlockRenderer: () => () => {},
     },
     keymap: {
-      layer: () => {},
+      layer: (fn: KeymapLayerCallback) => {
+        layers.push(fn)
+      },
       dispatch: () => {},
       shortcuts: () => [],
-      commands: () => [],
+      commands: () => commands(),
       pending: () => [],
       active: () => [],
       mode: {
@@ -212,6 +227,16 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     for (const listener of listeners) listener()
   }
 
+  // Cast to ResizableRenderer: processResize is marked private in CliRenderer's type
+  // definitions, but required to synchronously process resize events in tests.
+  const resizableRenderer = output.renderer as unknown as {
+    processResize: (width: number, height: number) => void
+  }
+
+  function resize(width: number, height: number): void {
+    resizableRenderer.processResize(width, height)
+  }
+
   return {
     context,
     renderer: output.renderer,
@@ -219,6 +244,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     waitForFrame: (predicate) => output.waitForFrame(predicate),
     emitChanged,
     destroy,
+    commands,
+    resize,
     [Symbol.asyncDispose]: async () => {
       destroy()
     },

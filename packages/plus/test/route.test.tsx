@@ -45,9 +45,6 @@ test("instructions route retries initial-agent selection across sequential snaps
 })
 
 test("defect A: editing does not survive unmounting on terminal shrink below WIDE_THRESHOLD", async () => {
-  type LayerFn = () => { commands: Array<{ bind: string; run: () => void }> }
-  const registeredLayers: LayerFn[] = []
-
   const snapshot = createSnapshot({
     revision: 1,
     agents: [{ id: "alpha", scope: "project", fileBacked: true }],
@@ -65,31 +62,17 @@ test("defect A: editing does not survive unmounting on terminal shrink below WID
     ],
   })
 
-  const fixture = await renderPlusFixture({
+  const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
-    routeData: { agent: "alpha" },
+    data: { agent: "alpha" },
     width: 120,
     height: 40,
-    render: (context) => {
-      const origLayer = context.keymap.layer
-      context.keymap.layer = (fn: any) => {
-        registeredLayers.push(fn)
-        return origLayer(fn)
-      }
-      return createComponent(InstructionsRoute, {
-        context,
-        data: { agent: "alpha" },
-        onClose: () => {},
-      })
-    },
   })
 
   function dispatch(key: string) {
-    for (let i = registeredLayers.length - 1; i >= 0; i--) {
-      const layer = registeredLayers[i]()
-      const cmd = layer.commands.find((c) => c.bind.split(",").includes(key))
-      if (cmd) {
-        cmd.run()
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
         return true
       }
     }
@@ -110,7 +93,7 @@ test("defect A: editing does not survive unmounting on terminal shrink below WID
     expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
 
     // Shrink below WIDE_THRESHOLD (100)
-    ;(fixture.renderer as any).processResize(WIDE_THRESHOLD - 10, 40)
+    fixture.resize(WIDE_THRESHOLD - 10, 40)
     await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
 
     const narrowFrame = fixture.captureCharFrame()
@@ -123,7 +106,7 @@ test("defect A: editing does not survive unmounting on terminal shrink below WID
     expect(canMove).toBe(true)
 
     // Widen back above WIDE_THRESHOLD
-    ;(fixture.renderer as any).processResize(120, 40)
+    fixture.resize(120, 40)
     await fixture.waitForFrame((frame) => frame.includes("Scope: project"))
     const widenedFrame = fixture.captureCharFrame()
     // Fresh DetailPane should not carry active editing
@@ -134,9 +117,6 @@ test("defect A: editing does not survive unmounting on terminal shrink below WID
 })
 
 test("defect B: space, a, and x are registered in keymap only when honoured by row", async () => {
-  type LayerFn = () => { commands: Array<{ bind: string; title: string; run: () => void }> }
-  const registeredLayers: LayerFn[] = []
-
   const snapshot = createSnapshot({
     revision: 1,
     agents: [{ id: "alpha", scope: "project", fileBacked: true }],
@@ -174,36 +154,21 @@ test("defect B: space, a, and x are registered in keymap only when honoured by r
     ],
   })
 
-  const fixture = await renderPlusFixture({
+  const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
-    routeData: { agent: "alpha" },
+    data: { agent: "alpha" },
     width: 120,
     height: 40,
-    render: (context) => {
-      const origLayer = context.keymap.layer
-      context.keymap.layer = (fn: any) => {
-        registeredLayers.push(fn)
-        return origLayer(fn)
-      }
-      return createComponent(InstructionsRoute, {
-        context,
-        data: { agent: "alpha" },
-        onClose: () => {},
-      })
-    },
   })
 
   function getRouteCommands() {
-    // Layer 0 is the InstructionsRoute keymap layer
-    return registeredLayers[0]().commands.map((c) => c.bind)
+    return fixture.commands().map((c) => c.bind)
   }
 
   function dispatch(key: string) {
-    for (let i = registeredLayers.length - 1; i >= 0; i--) {
-      const layer = registeredLayers[i]()
-      const cmd = layer.commands.find((c) => c.bind.split(",").includes(key))
-      if (cmd) {
-        cmd.run()
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
         return true
       }
     }
@@ -245,9 +210,6 @@ test("defect B: space, a, and x are registered in keymap only when honoured by r
 })
 
 test("defect C: navigation hints advertise enter detail only for narrow leaf rows and left/right expand only when expandable", async () => {
-  type LayerFn = () => { commands: Array<{ bind: string; run: () => void }> }
-  const registeredLayers: LayerFn[] = []
-
   const snapshot = createSnapshot({
     revision: 1,
     agents: [{ id: "alpha", scope: "project", fileBacked: true }],
@@ -266,31 +228,17 @@ test("defect C: navigation hints advertise enter detail only for narrow leaf row
   })
 
   // Start in narrow mode (80 cols)
-  const fixture = await renderPlusFixture({
+  const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
-    routeData: { agent: "alpha" },
+    data: { agent: "alpha" },
     width: 80,
     height: 40,
-    render: (context) => {
-      const origLayer = context.keymap.layer
-      context.keymap.layer = (fn: any) => {
-        registeredLayers.push(fn)
-        return origLayer(fn)
-      }
-      return createComponent(InstructionsRoute, {
-        context,
-        data: { agent: "alpha" },
-        onClose: () => {},
-      })
-    },
   })
 
   function dispatch(key: string) {
-    for (let i = registeredLayers.length - 1; i >= 0; i--) {
-      const layer = registeredLayers[i]()
-      const cmd = layer.commands.find((c) => c.bind.split(",").includes(key))
-      if (cmd) {
-        cmd.run()
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
         return true
       }
     }
@@ -316,7 +264,7 @@ test("defect C: navigation hints advertise enter detail only for narrow leaf row
     expect(narrowPromptFrame).not.toContain("left/right expand")
 
     // Switch to wide mode
-    ;(fixture.renderer as any).processResize(120, 40)
+    fixture.resize(120, 40)
     await fixture.waitForFrame((frame) => frame.includes("prompt text"))
     const widePromptFrame = fixture.captureCharFrame()
     // Wide leaf row: up/down move, no left/right expand, no enter detail
@@ -337,9 +285,6 @@ test("defect C: navigation hints advertise enter detail only for narrow leaf row
 })
 
 test("defect D: MCP review flag can be acknowledged when toggle is allowed and edit is not", async () => {
-  type LayerFn = () => { commands: Array<{ bind: string; run: () => void }> }
-  const registeredLayers: LayerFn[] = []
-
   const mcpItem = {
     id: "mcp-server-1",
     kind: "mcp" as const,
@@ -380,29 +325,16 @@ test("defect D: MCP review flag can be acknowledged when toggle is allowed and e
     ],
   })
 
-  const fixture = await renderPlusFixture({
+  const fixture = await renderInstructionsRoute({
     snapshots: [initialSnapshot, acknowledgedSnapshot],
     width: 120,
     height: 40,
-    render: (context) => {
-      const origLayer = context.keymap.layer
-      context.keymap.layer = (fn: any) => {
-        registeredLayers.push(fn)
-        return origLayer(fn)
-      }
-      return createComponent(InstructionsRoute, {
-        context,
-        onClose: () => {},
-      })
-    },
   })
 
   function dispatch(key: string) {
-    for (let i = registeredLayers.length - 1; i >= 0; i--) {
-      const layer = registeredLayers[i]()
-      const cmd = layer.commands.find((c) => c.bind.split(",").includes(key))
-      if (cmd) {
-        cmd.run()
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
         return true
       }
     }
