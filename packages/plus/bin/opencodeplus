@@ -1,0 +1,52 @@
+#!/bin/sh
+set -e
+
+# Resolve the real path of this script, following symlinks.
+TARGET="$0"
+case "$TARGET" in
+  */*) ;;
+  *)
+    TARGET=$(command -v "$TARGET" 2>/dev/null || echo "./$TARGET")
+    ;;
+esac
+
+RESOLVED=""
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED=$(readlink -f "$TARGET" 2>/dev/null || true)
+fi
+
+if [ -n "$RESOLVED" ] && [ -e "$RESOLVED" ]; then
+  TARGET="$RESOLVED"
+else
+  while [ -L "$TARGET" ]; do
+    DIR=$(cd -P "$(dirname "$TARGET")" >/dev/null 2>&1 && pwd)
+    LINK=$(readlink "$TARGET")
+    case "$LINK" in
+      /*) TARGET="$LINK" ;;
+      *) TARGET="$DIR/$LINK" ;;
+    esac
+  done
+fi
+
+SCRIPT_DIR=$(cd -P "$(dirname "$TARGET")" >/dev/null 2>&1 && pwd)
+REPO=$(cd -P "$SCRIPT_DIR/../../.." >/dev/null 2>&1 && pwd)
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "opencodeplus: 'bun' was not found on PATH. Please install Bun to use opencodeplus." >&2
+  exit 1
+fi
+
+if [ ! -f "$REPO/packages/cli/src/index.ts" ]; then
+  echo "opencodeplus: CLI entrypoint not found at $REPO/packages/cli/src/index.ts (script must be run from or symlinked to the repository)" >&2
+  exit 1
+fi
+
+# Use the 'plus' storage channel unless overridden by caller, keeping client-local
+# state (like tabs) isolated from installed opencode2.
+export OPENCODE_TUI_CHANNEL="${OPENCODE_TUI_CHANNEL:-plus}"
+
+# Plus is gated on project configuration; if OPENCODE_CONFIG_PROJECT_DISABLE is set,
+# the Instructions screen silently has nothing to work with.
+unset OPENCODE_CONFIG_PROJECT_DISABLE
+
+exec bun run --cwd "$REPO/packages/cli" src/index.ts "$@"

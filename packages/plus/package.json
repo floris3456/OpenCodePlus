@@ -5,6 +5,9 @@
   "description": "OpenCode Plus plugin",
   "type": "module",
   "license": "MIT",
+  "bin": {
+    "opencodeplus": "./bin/opencodeplus"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anomalyco/opencode.git",

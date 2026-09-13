@@ -4,6 +4,18 @@ A thin OpenCode V2 plugin adding an opt-in per-directory "Project mode" that rev
 
 The package implements project mode toggling, an interactive Instructions screen for viewing and customizing agent prompts and capabilities, dialog workflows for creating, renaming, and deleting agents, and server RPC handlers that persist and apply project-local customizations.
 
+## Running it
+
+`opencodeplus` behaves like `opencode`: run it without arguments for the current directory, or pass a project directory.
+
+Symlink the launcher onto PATH to use it from anywhere:
+
+```sh
+ln -s /path/to/repo/packages/plus/bin/opencodeplus ~/.local/bin/opencodeplus
+```
+
+The launcher executes this fork directly from source (the installed `opencode2` binary does not include Plus) and sets `OPENCODE_TUI_CHANNEL=plus` so client-local state such as open tabs remains isolated from installed `opencode2` sessions.
+
 ## Layout
 
 ```
