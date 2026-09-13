@@ -47,6 +47,9 @@ export default Plugin.define({
   effect: (ctx) =>
     Effect.gen(function* () {
       const state = createState()
+      // Applied registrations live on detached scopes, so without this
+      // finalizer they outlive the plugin when core unloads or reactivates it.
+      yield* Effect.addFinalizer(() => deactivate(state))
       const registration = yield* ctx.rpc.register(Definition, createHandlers(ctx, state)).pipe(Effect.orDie)
       state.registration = registration
       yield* activate(ctx, state).pipe(
