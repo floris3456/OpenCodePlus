@@ -12,10 +12,10 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import type { Tool } from "@opencode/schema/tool"
-import { Effect, Schema, type Types } from "effect"
+import { Effect, Schema, Scope, type Types } from "effect"
 import { apply, copyName, copyPattern } from "../src/instructions/apply.js"
 import { fingerprint, type Item, type Snapshot } from "../src/instructions/model.js"
-import { context, skillHarness } from "./harness.js"
+import { agentHarness, context, skillHarness } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -1173,3 +1173,347 @@ test("an agent with upstream permissions [{skill,plus/*,deny},{skill,plus/beta/n
   expect(evaluateSkill("plus/beta/notes", permissions)).toBe("deny")
 })
 
+test("disposes earlier registrations when a later step rejects", async () => {
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream" })]
+  const servers = [item({ id: "mcp:search", kind: "mcp", owner: "search", title: "search", text: "{}" })]
+  const customizations = [
+    {
+      item: "prompt:alpha",
+      agent: "alpha",
+      text: "custom prompt",
+      state: "inherit" as const,
+      basedOn: prompts[0].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "mcp:search",
+      agent: "*",
+      state: "disabled" as const,
+      basedOn: servers[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: agents.domain,
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: () => Effect.die(new Error("mcp transform failed")),
+      reload: () => Effect.void,
+    },
+  })
+
+  await expect(apply(ctx, snapshot([...prompts, ...servers]), customizations)).rejects.toThrow("mcp transform failed")
+  expect(agents.disposes).toBe(1)
+  expect(agents.state.get("alpha")?.system).toBe("upstream")
+})
+
+test("a normal multi-kind customization returns all registrations and disposes none", async () => {
+  const state = agentState([{ id: "alpha", system: "upstream" }])
+  let agentDisposes = 0
+  let skillDisposes = 0
+  let toolDisposes = 0
+  let mcpDisposes = 0
+  let agentReloads = 0
+  let skillReloads = 0
+  let mcpReloads = 0
+
+  const items = [
+    item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] }),
+    item({ id: "skill:notes", kind: "skill", owner: "notes", title: "notes", text: "skill body" }),
+    item({ id: "tool:reader", kind: "tool", owner: "reader", title: "reader", text: "read things" }),
+    item({ id: "mcp:search", kind: "mcp", owner: "search", title: "search", text: "{}" }),
+  ]
+  const customizations = [
+    {
+      item: "prompt:alpha",
+      agent: "alpha",
+      text: "custom prompt",
+      state: "inherit" as const,
+      basedOn: items[0].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "skill:notes",
+      agent: "alpha",
+      text: "custom skill body",
+      state: "inherit" as const,
+      basedOn: items[1].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "tool:reader",
+      agent: "alpha",
+      text: "custom tool description",
+      state: "inherit" as const,
+      basedOn: items[2].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "mcp:search",
+      agent: "*",
+      state: "disabled" as const,
+      basedOn: items[3].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+
+  const skills = skillHarness([skill("notes", "skill body")])
+  const mcp = mcpState([["search", { type: "remote", url: "https://example.test" }]])
+
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return {
+            dispose: Effect.sync(() => {
+              agentDisposes++
+            }),
+          }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          agentReloads++
+        }),
+    },
+    skill: {
+      list: () => Effect.die("unused skill.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          const res = Effect.runSync(Effect.scoped(skills.domain.transform(callback)))
+          return {
+            dispose: Effect.sync(() => {
+              skillDisposes++
+              Effect.runSync(res.dispose)
+            }),
+          }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          skillReloads++
+        }),
+    },
+    tool: toolDomain([nativeTool("reader", "read things")]),
+    session: {
+      hook: () =>
+        Effect.succeed({
+          dispose: Effect.sync(() => {
+            toolDisposes++
+          }),
+        }),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcp.editor)
+          return {
+            dispose: Effect.sync(() => {
+              mcpDisposes++
+            }),
+          }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          mcpReloads++
+        }),
+    },
+  })
+
+  const applied = await apply(ctx, snapshot(items), customizations)
+  expect(applied.registrations).toHaveLength(5)
+  expect(agentDisposes).toBe(0)
+  expect(skillDisposes).toBe(0)
+  expect(toolDisposes).toBe(0)
+  expect(mcpDisposes).toBe(0)
+  expect(state.get("alpha")?.system).toBe("custom prompt")
+  expect(skills.added.map((entry) => entry.id as string)).toEqual([copyName("alpha", "notes")])
+  expect(mcp.servers.get("search")?.disabled).toBe(true)
+  expect(agentReloads).toBe(1)
+  expect(skillReloads).toBe(1)
+  expect(mcpReloads).toBe(1)
+})
+
+test("disposes collected registrations in reverse installation order when a later step fails, and a dispose failure does not mask the original error", async () => {
+  const events: string[] = []
+  const items = [
+    item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] }),
+    item({ id: "skill:notes", kind: "skill", owner: "notes", title: "notes", text: "skill body" }),
+    item({ id: "tool:reader", kind: "tool", owner: "reader", title: "reader", text: "read things" }),
+    item({ id: "mcp:search", kind: "mcp", owner: "search", title: "search", text: "{}" }),
+  ]
+  const customizations = [
+    {
+      item: "prompt:alpha",
+      agent: "alpha",
+      text: "custom prompt",
+      state: "inherit" as const,
+      basedOn: items[0].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "skill:notes",
+      agent: "alpha",
+      text: "custom skill body",
+      state: "inherit" as const,
+      basedOn: items[1].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "tool:reader",
+      agent: "alpha",
+      text: "custom tool description",
+      state: "inherit" as const,
+      basedOn: items[2].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "mcp:search",
+      agent: "*",
+      state: "disabled" as const,
+      basedOn: items[3].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const state = agentState([{ id: "alpha", system: "upstream" }])
+  const skills = skillHarness([skill("notes", "skill body")])
+
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          const isPrompt = events.filter((e) => e.startsWith("install:")).length === 0
+          const tag = isPrompt ? "prompt" : "skill-agent-rules"
+          events.push(`install:${tag}`)
+          return {
+            dispose: Effect.sync(() => {
+              events.push(`dispose:${tag}`)
+            }),
+          }
+        }),
+      reload: () => Effect.void,
+    },
+    skill: {
+      list: () => Effect.die("unused skill.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          events.push("install:skill-copy")
+          const res = Effect.runSync(Effect.scoped(skills.domain.transform(callback)))
+          return {
+            dispose: Effect.sync(() => {
+              events.push("dispose:skill-copy")
+              Effect.runSync(res.dispose)
+            }),
+          }
+        }),
+      reload: () => Effect.void,
+    },
+    tool: toolDomain([nativeTool("reader", "read things")]),
+    session: {
+      hook: () => {
+        events.push("install:tool")
+        return Effect.succeed({
+          dispose: Effect.sync(() => {
+            events.push("dispose:tool")
+            throw new Error("tool dispose failed")
+          }),
+        })
+      },
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: () => Effect.die(new Error("mcp transform failed")),
+      reload: () => Effect.void,
+    },
+  })
+
+  await expect(apply(ctx, snapshot(items), customizations)).rejects.toThrow("mcp transform failed")
+
+  expect(events).toEqual([
+    "install:prompt",
+    "install:skill-copy",
+    "install:skill-agent-rules",
+    "install:tool",
+    "dispose:tool",
+    "dispose:skill-agent-rules",
+    "dispose:skill-copy",
+    "dispose:prompt",
+  ])
+})
+
+test("runRegistration closes its detached scope when the registration effect rejects", async () => {
+  let scopeClosed = false
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream" })]
+  const customizations = [
+    {
+      item: "prompt:alpha",
+      agent: "alpha",
+      text: "custom",
+      state: "inherit" as const,
+      basedOn: prompts[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: () =>
+        Effect.gen(function* () {
+          const scope = yield* Scope.Scope
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.sync(() => {
+              scopeClosed = true
+            }),
+          )
+          return yield* Effect.die(new Error("agent transform failed"))
+        }),
+      reload: () => Effect.void,
+    },
+  })
+
+  await expect(apply(ctx, snapshot(prompts), customizations)).rejects.toThrow("agent transform failed")
+  expect(scopeClosed).toBe(true)
+})
+
+test("runHook closes its detached scope when the hook effect rejects", async () => {
+  let scopeClosed = false
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] })]
+  const tools = [item({ id: "tool:reader", kind: "tool", owner: "reader", title: "reader", text: "read things" })]
+  const customizations = [
+    {
+      item: "tool:reader",
+      agent: "alpha",
+      text: "custom description",
+      state: "inherit" as const,
+      basedOn: tools[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    tool: toolDomain([nativeTool("reader", "read things")]),
+    session: {
+      hook: () =>
+        Effect.gen(function* () {
+          const scope = yield* Scope.Scope
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.sync(() => {
+              scopeClosed = true
+            }),
+          )
+          return yield* Effect.die(new Error("session hook failed"))
+        }),
+    },
+  })
+
+  await expect(apply(ctx, snapshot([...prompts, ...tools]), customizations)).rejects.toThrow("session hook failed")
+  expect(scopeClosed).toBe(true)
+})

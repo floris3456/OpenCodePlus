@@ -6,7 +6,7 @@ import type { SessionContext, SessionHooks } from "@opencode/plugin/effect/sessi
 import type { SkillEditor } from "@opencode/plugin/effect/skill"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Skill } from "@opencode/schema/skill"
-import { Deferred, Effect, Scope } from "effect"
+import { Deferred, Effect, Exit, Scope } from "effect"
 import { applies, effective, override, type Customization, type Item, type Snapshot } from "./model.js"
 
 export interface Applied {
@@ -17,19 +17,36 @@ export async function apply(ctx: Context, snapshot: Snapshot, customizations: Cu
   const scoped: Snapshot = { ...snapshot, customizations }
   if (scoped.customizations.length === 0) return { registrations: [] }
   const agentIDs = agentIDsFor(scoped)
-  const registrations: Registration[] = []
-  const prompt = await applyPrompts(ctx, scoped, agentIDs)
-  if (prompt) registrations.push(prompt)
-  const skills = await applySkills(ctx, scoped, agentIDs)
-  registrations.push(...skills.registrations)
-  const tools = await applyTools(ctx, scoped, agentIDs)
-  if (tools) registrations.push(tools)
-  const mcp = await applyMcp(ctx, scoped)
-  if (mcp) registrations.push(mcp)
-  if (prompt !== undefined || skills.agent) await runVoid(ctx.agent.reload())
-  if (skills.skill) await runVoid(ctx.skill.reload())
-  if (mcp !== undefined) await runVoid(ctx.mcp.reload())
-  return { registrations }
+  const installed: Registration[] = []
+  // Registrations live on detached scopes so a partial failure must be unwound explicitly.
+  try {
+    const prompt = await applyPrompts(ctx, scoped, agentIDs)
+    if (prompt) installed.push(prompt)
+    const skills = await applySkills(ctx, scoped, agentIDs, (reg) => installed.push(reg))
+    const tools = await applyTools(ctx, scoped, agentIDs)
+    if (tools) installed.push(tools)
+    const mcp = await applyMcp(ctx, scoped)
+    if (mcp) installed.push(mcp)
+    if (prompt !== undefined || skills.agent) await runVoid(ctx.agent.reload())
+    if (skills.skill) await runVoid(ctx.skill.reload())
+    if (mcp !== undefined) await runVoid(ctx.mcp.reload())
+    const registrations: Registration[] = []
+    if (prompt) registrations.push(prompt)
+    registrations.push(...skills.registrations)
+    if (tools) registrations.push(tools)
+    if (mcp) registrations.push(mcp)
+    return { registrations }
+  } catch (error) {
+    await disposeRegistrations(installed)
+    throw error
+  }
+}
+
+async function disposeRegistrations(registrations: readonly Registration[]): Promise<void> {
+  const reversed = registrations.slice().reverse()
+  for (const registration of reversed) {
+    await Effect.runPromise(registration.dispose).catch(() => {})
+  }
 }
 
 async function runVoid(effect: Effect.Effect<void>): Promise<void> {
@@ -40,8 +57,15 @@ async function runRegistration<Editor>(
   transform: Transform<Editor>,
   callback: (editor: Editor) => void,
 ): Promise<Registration> {
-  const scope = await Effect.runPromise(Scope.make())
-  return Effect.runPromise(Effect.provideService(transform(callback), Scope.Scope, scope))
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      return yield* Effect.suspend(() => transform(callback)).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
+      )
+    }),
+  )
 }
 
 async function runHook<Name extends "context">(
@@ -49,8 +73,15 @@ async function runHook<Name extends "context">(
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
 ): Promise<Registration> {
-  const scope = await Effect.runPromise(Scope.make())
-  return Effect.runPromise(Effect.provideService(hook(name, callback), Scope.Scope, scope))
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      return yield* Effect.suspend(() => hook(name, callback)).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
+      )
+    }),
+  )
 }
 
 function agentIDsFor(snapshot: Snapshot): string[] {
@@ -94,7 +125,12 @@ interface SkillApplied {
   readonly skill: boolean
 }
 
-async function applySkills(ctx: Context, snapshot: Snapshot, agentIDs: string[]): Promise<SkillApplied> {
+async function applySkills(
+  ctx: Context,
+  snapshot: Snapshot,
+  agentIDs: string[],
+  onInstall: (registration: Registration) => void,
+): Promise<SkillApplied> {
   const skills = snapshot.items.filter((item) => item.kind === "skill")
   const denials = agentIDs.flatMap((agentID) => skillDenials(snapshot, skills, agentID))
   const copies = agentIDs.flatMap((agentID) => skillCopies(snapshot, skills, agentID))
@@ -102,7 +138,10 @@ async function applySkills(ctx: Context, snapshot: Snapshot, agentIDs: string[])
   const added = copies.length === 0 ? undefined : await addSkillCopies(ctx, copies)
   const addedIDs = added?.added ?? new Set<string>()
   const registrations: Registration[] = []
-  if (added) registrations.push(added.registration)
+  if (added) {
+    onInstall(added.registration)
+    registrations.push(added.registration)
+  }
   const addedCopies = copies.filter((copy) => addedIDs.has(copyName(copy.agent, copy.skill)))
   const namespaceDenies =
     addedCopies.length === 0
@@ -117,11 +156,11 @@ async function applySkills(ctx: Context, snapshot: Snapshot, agentIDs: string[])
     ]),
   ]
   if (rules.length === 0) return { registrations, agent: false, skill: added !== undefined }
-  registrations.unshift(
-    await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-      for (const rule of rules) pushSkillRule(editor, rule)
-    }),
-  )
+  const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+    for (const rule of rules) pushSkillRule(editor, rule)
+  })
+  onInstall(agentRegistration)
+  registrations.unshift(agentRegistration)
   return { registrations, agent: true, skill: added !== undefined }
 }
 
