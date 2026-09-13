@@ -325,13 +325,24 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   void load()
-  const unsubscribe = plus.events.on("instructions.changed", () => {
+  const unsubscribeInstructions = plus.events.on("instructions.changed", () => {
+    void load()
+  })
+  const unsubscribeProject = plus.events.on("project.changed", (event) => {
+    if (!event.data.enabled) {
+      setSnapshot(undefined)
+      setSelectedId(undefined)
+      setLoading(false)
+      setStatus("Project mode is disabled for this directory")
+      return
+    }
     void load()
   })
 
   function dispose() {
     disposed = true
-    unsubscribe()
+    unsubscribeInstructions()
+    unsubscribeProject()
   }
 
   return {

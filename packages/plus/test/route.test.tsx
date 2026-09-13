@@ -419,3 +419,83 @@ test("defect D: non-actionable rows still refuse acknowledgement in state", asyn
     fixture.destroy()
   }
 })
+
+test("stops offering actions and keybindings when project mode is disabled", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    tools: [{ id: "alpha", native: true }],
+    items: [
+      {
+        id: "tool-1",
+        kind: "tool",
+        owner: "alpha",
+        title: "Tool",
+        text: "tool text",
+        agents: ["alpha"],
+        fingerprint: "fp-tool-revised",
+        available: true,
+      },
+    ],
+    customizations: [
+      {
+        item: "tool-1",
+        agent: "alpha",
+        state: "disabled",
+        basedOn: "fp-tool-initial",
+        updated: "2026-09-01T00:00:00Z",
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 120,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Tool"))
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("tool text"))
+
+    const initialFrame = fixture.captureCharFrame()
+    expect(initialFrame).toContain("space toggle")
+    expect(initialFrame).toContain("a acknowledge")
+    expect(initialFrame).toContain("x reset")
+
+    const initialCommands = fixture.commands().map((cmd) => cmd.bind)
+    expect(initialCommands).toContain("space")
+    expect(initialCommands).toContain("a")
+    expect(initialCommands).toContain("x")
+
+    await fixture.emitProjectChanged({ enabled: false })
+
+    await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled for this directory"))
+
+    const disabledFrame = fixture.captureCharFrame()
+    expect(disabledFrame).not.toContain("space toggle")
+    expect(disabledFrame).not.toContain("a acknowledge")
+    expect(disabledFrame).not.toContain("x reset")
+
+    const disabledCommands = fixture.commands().map((cmd) => cmd.bind)
+    expect(disabledCommands).not.toContain("space")
+    expect(disabledCommands).not.toContain("a")
+    expect(disabledCommands).not.toContain("x")
+  } finally {
+    fixture.destroy()
+  }
+})
