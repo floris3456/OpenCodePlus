@@ -75,7 +75,7 @@ test("agents are grouped into Project / Global / Defaults by their scope, with c
   expect(builtinAgentNodes.every((node) => node.depth === 1)).toBe(true)
 
   const defaultTargetNodes = nodes.filter((node) => node.kind === "default")
-  expect(defaultTargetNodes.map((node) => node.label)).toEqual(["Project", "Global"])
+  expect(defaultTargetNodes.map((node) => node.label)).toEqual(["Project"])
   expect(defaultTargetNodes.every((node) => node.depth === 1)).toBe(true)
 })
 
@@ -337,7 +337,7 @@ test("an empty group still emits its header with a zero count", () => {
   })
 })
 
-test("expanding defaults emits project and global targets with shared item customizations", () => {
+test("expanding defaults emits project target with shared item customizations", () => {
   const sharedSkill = createItem({
     id: "skill-shared-901",
     kind: "skill",
@@ -357,7 +357,7 @@ test("expanding defaults emits project and global targets with shared item custo
 
   expect(nodes.map((node) => node.id)).toContain("group:defaults")
   expect(nodes.map((node) => node.id)).toContain("defaults:project")
-  expect(nodes.map((node) => node.id)).toContain("defaults:global")
+  expect(nodes.map((node) => node.id)).not.toContain("defaults:global")
 
   const sharedNode = nodes.find((node) => node.id === "defaults:project:skill-shared-901")
   expect(sharedNode).toBeDefined()
