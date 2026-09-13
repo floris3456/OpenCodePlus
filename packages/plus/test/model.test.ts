@@ -559,5 +559,54 @@ test("own record with custom text keeps its own review provenance", () => {
   expect(effective(snapshotAcknowledged, item, "alpha").review).toBe(false)
 })
 
+test("acknowledging on agent inheriting customized text clears review for that agent", () => {
+  const item = makeItem({ text: "revised upstream text" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const initial = [shared]
+  expect(effective(makeSnapshot(initial), item, "alpha").review).toBe(true)
+
+  const acknowledged = mergeCustomization(initial, item, "alpha", { reviewed: item.fingerprint })
+  expect(effective(makeSnapshot(acknowledged), item, "alpha").review).toBe(false)
+  expect(effective(makeSnapshot(acknowledged), item, "*").review).toBe(true)
+})
+
+test("state-only toggle preserves review but subsequent agent acknowledge clears it", () => {
+  const item = makeItem({ text: "revised upstream text" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const toggled = mergeCustomization([shared], item, "alpha", { state: "disabled" })
+  expect(effective(makeSnapshot(toggled), item, "alpha").review).toBe(true)
+
+  const acknowledged = mergeCustomization(toggled, item, "alpha", { reviewed: item.fingerprint })
+  expect(effective(makeSnapshot(acknowledged), item, "alpha").review).toBe(false)
+  expect(effective(makeSnapshot(acknowledged), item, "*").review).toBe(true)
+})
+
+test("neither record supplies text keeps row own review provenance", () => {
+  const item = makeItem({ text: "revised upstream text", available: true })
+  const shared = makeCustomization({
+    agent: "*",
+    state: "disabled",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const own = makeCustomization({
+    agent: "alpha",
+    state: "enabled",
+    basedOn: item.fingerprint,
+  })
+  const snapshot = makeSnapshot([shared, own])
+  const resolved = override(snapshot, item.id, "alpha")
+  expect(resolved?.basedOn).toBe(own.basedOn)
+  expect(effective(snapshot, item, "alpha").review).toBe(false)
+  expect(effective(snapshot, item, "*").review).toBe(true)
+})
+
 
 

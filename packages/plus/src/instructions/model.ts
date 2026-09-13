@@ -107,18 +107,23 @@ export function override(snapshot: Snapshot, itemID: string, agent: string): Cus
   if (!own) return snapshot.customizations.find((record) => record.item === itemID && record.agent === "*")
   const shared = snapshot.customizations.find((record) => record.item === itemID && record.agent === "*")
   if (!shared || agent === "*") return own
-  // Review provenance belongs to whichever record supplies the resolved text,
-  // otherwise a state-only toggle silently clears a pending review.
-  const provenance = own.text !== undefined ? own : shared
+  // Review provenance follows whichever record supplies the resolved text,
+  // except that an explicit acknowledgement on the row's own record must win
+  // (otherwise the advertised acknowledge action silently does nothing).
+  // When neither record supplies text, no text is inherited from shared, so
+  // provenance belongs to the row's own record rather than shared.
+  const inheritsText = own.text === undefined && shared.text !== undefined
+  const basedOn = inheritsText ? shared.basedOn : own.basedOn
+  const reviewed = inheritsText ? (own.reviewed ?? shared.reviewed) : own.reviewed
   const text = own.text ?? shared.text
   return {
     item: own.item,
     agent: own.agent,
     updated: own.updated,
     state: own.state === "inherit" ? shared.state : own.state,
-    basedOn: provenance.basedOn,
+    basedOn,
     ...(text === undefined ? {} : { text }),
-    ...(provenance.reviewed === undefined ? {} : { reviewed: provenance.reviewed }),
+    ...(reviewed === undefined ? {} : { reviewed }),
   }
 }
 
