@@ -928,3 +928,48 @@ test("a skill rule for a removed agent does not recreate the agent", async () =>
   expect(state.has("ghost")).toBe(false)
   expect(state.get("alpha")?.permissions).toEqual([])
 })
+
+test("enabling a server whose item is available: false actually clears disabled in the host config", async () => {
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream" })]
+  const servers = [item({ id: "mcp:search", kind: "mcp", owner: "search", title: "search", text: "{}", available: false })]
+  const all = [...prompts, ...servers]
+  const customizations = [
+    {
+      item: "mcp:search",
+      agent: "*",
+      state: "enabled" as const,
+      basedOn: servers[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mcp = mcpState([["search", { type: "remote", url: "https://example.test", disabled: true }]])
+  let reloaded = 0
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcp.editor)
+          return { dispose: Effect.void }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          reloaded++
+        }),
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  const applied = await apply(ctx, snapshot(all), customizations)
+  expect(applied.registrations).toHaveLength(1)
+  expect(mcp.servers.get("search")?.disabled).toBeUndefined()
+  expect(reloaded).toBe(1)
+})

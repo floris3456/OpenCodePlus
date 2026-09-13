@@ -15,6 +15,7 @@ import os from "node:os"
 import path from "node:path"
 import { agentBody, discover } from "../src/instructions/discover.js"
 import { copyName } from "../src/instructions/apply.js"
+import { fingerprint } from "../src/instructions/model.js"
 import { context } from "./harness.js"
 
 const roots: string[] = []
@@ -384,4 +385,105 @@ test("agentBody matches core's trimmed markdown content for frontmatter and body
   expect(agentBody("---\ndescription: x\n---\nfirst\n---\nsecond\n")).toBe("first\n---\nsecond")
   // No opening fence means the whole file is the body.
   expect(agentBody("not frontmatter\n---\nstill body\n")).toBe("not frontmatter\n---\nstill body")
+})
+
+test("a server with upstream disabled: true and no customization is discovered with available === false, and its text/fingerprint exclude the disabled key", async () => {
+  const directory = await tempDir("plus-discover-")
+  const serverConfig: Mcp.ServerConfig = { type: "remote", url: "https://example.test", disabled: true }
+  const servers: [string, Types.DeepMutable<Mcp.ServerConfig>][] = [["search", structuredClone(serverConfig)]]
+  const ctx = context({
+    location: location(directory),
+    agent: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(toolEditor())
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcpEditor(servers))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+
+  const discovered = await discover(ctx, { revision: 0, customizations: [] })
+  const mcpItem = discovered.snapshot.items.find((item) => item.id === "mcp:search")
+  expect(mcpItem).toBeDefined()
+  expect(mcpItem?.available).toBe(false)
+  const expectedSanitized = JSON.stringify({ type: "remote", url: "https://example.test" })
+  expect(mcpItem?.text).toBe(expectedSanitized)
+  expect(mcpItem?.fingerprint).toBe(fingerprint(expectedSanitized))
+})
+
+test("the same server WITH a shared disabled customization reports available === true and the identical stable text/fingerprint", async () => {
+  const directory = await tempDir("plus-discover-")
+  const serverConfig: Mcp.ServerConfig = { type: "remote", url: "https://example.test", disabled: true }
+  const servers: [string, Types.DeepMutable<Mcp.ServerConfig>][] = [["search", structuredClone(serverConfig)]]
+  const ctx = context({
+    location: location(directory),
+    agent: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    skill: {
+      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      transform: () => Effect.die("unused skill.transform"),
+      reload: () => Effect.die("unused skill.reload"),
+    },
+    tool: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(toolEditor())
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused tool.reload"),
+      hook: () => Effect.die("unused tool.hook"),
+    },
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcpEditor(servers))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.die("unused mcp.reload"),
+    },
+  })
+
+  const expectedSanitized = JSON.stringify({ type: "remote", url: "https://example.test" })
+  const customizations = [
+    {
+      item: "mcp:search",
+      agent: "*",
+      state: "disabled" as const,
+      basedOn: fingerprint(expectedSanitized),
+      updated: "2026-01-01T00:00:00.000Z",
+    },
+  ]
+  const discovered = await discover(ctx, { revision: 0, customizations })
+  const mcpItem = discovered.snapshot.items.find((item) => item.id === "mcp:search")
+  expect(mcpItem).toBeDefined()
+  expect(mcpItem?.available).toBe(true)
+  expect(mcpItem?.text).toBe(expectedSanitized)
+  expect(mcpItem?.fingerprint).toBe(fingerprint(expectedSanitized))
 })
