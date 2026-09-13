@@ -28,7 +28,13 @@ function isAcknowledgable(node: TreeNode | undefined): boolean {
   if (node.badges.readOnly === true) return false
   if (node.itemId === undefined) return false
   if (node.badges.review !== true) return false
-  return node.action?.edit.allowed === true || node.action?.toggle.allowed === true
+  // Acknowledge must follow whether the row retains a usable action (edit, toggle,
+  // or reset), because a row can be reviewable while both toggle and edit are refused.
+  return (
+    node.action?.edit.allowed === true ||
+    node.action?.toggle.allowed === true ||
+    node.action?.reset.allowed === true
+  )
 }
 
 function isResettable(node: TreeNode | undefined): boolean {

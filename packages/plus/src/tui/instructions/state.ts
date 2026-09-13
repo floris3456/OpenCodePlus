@@ -204,8 +204,18 @@ export function createInstructionsState(context: Plugin.Context) {
     }
     const edit = node.action?.edit
     const toggle = node.action?.toggle
-    if (edit?.allowed !== true && toggle?.allowed !== true) {
-      const reason = edit?.allowed === false ? edit.reason : toggle?.allowed === false ? toggle.reason : "action is not supported"
+    const reset = node.action?.reset
+    // Acknowledge must follow whether the row retains a usable action (edit, toggle,
+    // or reset), because a row can be reviewable while both toggle and edit are refused.
+    if (edit?.allowed !== true && toggle?.allowed !== true && reset?.allowed !== true) {
+      const reason =
+        edit?.allowed === false
+          ? edit.reason
+          : toggle?.allowed === false
+            ? toggle.reason
+            : reset?.allowed === false
+              ? reset.reason
+              : "action is not supported"
       setStatus(`"${node.label}" cannot be acknowledged: ${reason}`)
       return
     }
