@@ -1513,6 +1513,10 @@ function dynamicMcpHarness(initial: readonly [string, Types.DeepMutable<Mcp.Serv
       upstream.set(name, structuredClone(config))
       reconcile()
     },
+    remove: (name: string) => {
+      upstream.delete(name)
+      reconcile()
+    },
   }
 }
 
@@ -1662,4 +1666,256 @@ test("non-MCP absent item round-trips its explicit state unchanged", async () =>
   expect(persistedTool?.state).toBe("enabled")
   expect(persistedTool?.basedOn).toBe(fingerprint("tool-content"))
   expect(persistedTool?.updated).toBe(UPDATED)
+})
+
+test("reviewer lifecycle: unrelated save preserves verified disabled state for temporarily absent mcp server", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = dynamicMcpHarness([["search", { type: "remote", url: "https://example.test" }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  // 1. Present upstream-enabled MCP server
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
+  expect(serverItem).toBeDefined()
+  expect(serverItem?.available).toBe(true)
+
+  // 2. Disable it through the real mutate handler
+  const disabledMutate = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "disabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(disabledMutate.ok).toBe(true)
+  if (!disabledMutate.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(disabledMutate)
+
+  const storedAfterDisable = await load(directory)
+  const disabledRecord = storedAfterDisable.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(disabledRecord?.state).toBe("disabled")
+
+  // 3. Make the item absent from discovery
+  mcp.remove("search")
+  const refreshAbsent = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshAbsent)
+  expect(refreshAbsent.items.some((entry) => entry.id === "mcp:search")).toBe(false)
+
+  // 4. Submit an unrelated change while resubmitting the whole collection (as the client does)
+  const promptItem = refreshAbsent.items.find((entry) => entry.id === "prompt:alpha")
+  expect(promptItem).toBeDefined()
+  const unrelatedMutate = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: refreshAbsent.revision,
+        customizations: [
+          ...refreshAbsent.customizations,
+          {
+            item: "prompt:alpha",
+            agent: "alpha",
+            text: "new prompt instructions",
+            state: "inherit",
+            basedOn: promptItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(unrelatedMutate.ok).toBe(true)
+  if (!unrelatedMutate.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(unrelatedMutate)
+
+  // 5. Assert the MCP record STILL has state: "disabled"
+  const storedAfterUnrelated = await load(directory)
+  const preservedRecord = storedAfterUnrelated.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(preservedRecord).toBeDefined()
+  expect(preservedRecord?.state).toBe("disabled")
+
+  // 6. Make the server present again upstream-enabled
+  mcp.add("search", { type: "remote", url: "https://example.test" })
+
+  // 7. Assert it is still effectively disabled
+  const restoredRefresh = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(restoredRefresh)
+  const restoredItem = restoredRefresh.items.find((entry) => entry.id === "mcp:search")
+  expect(restoredItem).toBeDefined()
+  expect(restoredItem?.available).toBe(true)
+  const eff = effective(snapshotOf(restoredRefresh), itemOf(restoredItem!), "*")
+  expect(eff.enabled).toBe(false)
+  expect(mcp.disabled("search")).toBe(true)
+})
+
+test("unrelated save preserves verified enabled state for temporarily absent upstream-disabled server", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = dynamicMcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  // 1. Present upstream-disabled MCP server
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
+  expect(serverItem).toBeDefined()
+  expect(serverItem?.available).toBe(false)
+
+  // 2. Enable it through the real mutate handler
+  const enabledMutate = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "enabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(enabledMutate.ok).toBe(true)
+  if (!enabledMutate.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(enabledMutate)
+
+  const storedAfterEnable = await load(directory)
+  const enabledRecord = storedAfterEnable.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(enabledRecord?.state).toBe("enabled")
+
+  // 3. Make the item absent from discovery
+  mcp.remove("search")
+  const refreshAbsent = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshAbsent)
+  expect(refreshAbsent.items.some((entry) => entry.id === "mcp:search")).toBe(false)
+
+  // 4. Submit an unrelated change while resubmitting the whole collection
+  const promptItem = refreshAbsent.items.find((entry) => entry.id === "prompt:alpha")
+  expect(promptItem).toBeDefined()
+  const unrelatedMutate = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: refreshAbsent.revision,
+        customizations: [
+          ...refreshAbsent.customizations,
+          {
+            item: "prompt:alpha",
+            agent: "alpha",
+            text: "unrelated instructions",
+            state: "inherit",
+            basedOn: promptItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(unrelatedMutate.ok).toBe(true)
+  if (!unrelatedMutate.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(unrelatedMutate)
+
+  // 5. Assert the MCP record STILL has state: "enabled"
+  const storedAfterUnrelated = await load(directory)
+  const preservedRecord = storedAfterUnrelated.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(preservedRecord).toBeDefined()
+  expect(preservedRecord?.state).toBe("enabled")
+
+  // 6. Make the server present again upstream-disabled
+  mcp.add("search", { type: "remote", url: "https://example.test", disabled: true })
+
+  // 7. Assert it is still effectively enabled
+  const restoredRefresh = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(restoredRefresh)
+  const restoredItem = restoredRefresh.items.find((entry) => entry.id === "mcp:search")
+  expect(restoredItem).toBeDefined()
+  expect(restoredItem?.available).toBe(false)
+  const eff = effective(snapshotOf(restoredRefresh), itemOf(restoredItem!), "*")
+  expect(eff.enabled).toBe(true)
+  expect(mcp.disabled("search")).toBeUndefined()
+})
+
+test("changed explicit state for absent mcp server normalizes to inherit", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = dynamicMcpHarness([["search", { type: "remote", url: "https://example.test" }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  // 1. Disable server when present
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
+  expect(serverItem).toBeDefined()
+
+  const disabledMutate = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "disabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(disabledMutate.ok).toBe(true)
+  if (!disabledMutate.ok) throw new Error("expected mutate to succeed")
+
+  // 2. Remove server so it is absent
+  mcp.remove("search")
+  const refreshAbsent = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(refreshAbsent.items.some((entry) => entry.id === "mcp:search")).toBe(false)
+
+  // 3. Mutate with changed explicit state (disabled -> enabled) while absent
+  const changedMutate = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: refreshAbsent.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "enabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(changedMutate.ok).toBe(true)
+  if (!changedMutate.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(changedMutate)
+
+  // 4. State was changed relative to stored while absent, so it must normalize to inherit
+  const stored = await load(directory)
+  const normalizedRecord = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(normalizedRecord?.state).toBe("inherit")
 })

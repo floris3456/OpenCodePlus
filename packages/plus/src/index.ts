@@ -117,6 +117,7 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         const customizations = normalizeCustomizations(
           input.customizations.map(toCustomization),
           current.snapshot.items,
+          loaded.stored.customizations,
         )
         const saved = yield* Effect.promise(() =>
           save(directory, { expectedRevision: input.expectedRevision, customizations }),
@@ -420,6 +421,7 @@ function conflictResult(discovered: Discovered, protectedAgents: readonly string
 function normalizeCustomizations(
   customizations: readonly Customization[],
   items: readonly Item[],
+  stored: readonly Customization[],
 ): Customization[] {
   const itemMap = new Map(items.map((item) => [item.id, item]))
   const sharedNormalized = new Map(
@@ -427,23 +429,26 @@ function normalizeCustomizations(
       .filter((record) => record.agent === "*")
       .map((record) => {
         const item = itemMap.get(record.item)
-        if (!item) return [record.item, normalizeAbsent(record)]
+        if (!item) return [record.item, normalizeAbsent(record, stored)]
         return [record.item, normalizeRecord(record, item, [])]
       }),
   )
   return customizations.map((record) => {
     const item = itemMap.get(record.item)
-    if (!item) return normalizeAbsent(record)
+    if (!item) return normalizeAbsent(record, stored)
     if (record.agent === "*") return sharedNormalized.get(record.item) ?? record
     const shared = sharedNormalized.get(record.item)
     return normalizeRecord(record, item, shared ? [shared] : [])
   })
 }
 
-function normalizeAbsent(record: Customization): Customization {
+function normalizeAbsent(record: Customization, stored: readonly Customization[]): Customization {
   if (!record.item.startsWith("mcp:")) return record
-  // Discovery infers upstream MCP availability from the stored state, so an explicit
-  // state that was never checked against a live item must not be persisted.
+  const previous = stored.find((entry) => entry.item === record.item && entry.agent === record.agent)
+  if (previous !== undefined && record.state === previous.state) return record
+  // Discovery infers upstream MCP availability from stored explicit state, so never
+  // persist an unverifiable new or changed explicit MCP state while the item is absent.
+  // Conversely, never destroy an existing state that was verified while the item was present.
   return {
     item: record.item,
     agent: record.agent,
