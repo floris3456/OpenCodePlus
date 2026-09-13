@@ -131,21 +131,13 @@ function pushSkillRule(
 ) {
   const current = editor.get(rule.agent)
   if (!current) return
-  // Core evaluates permissions last-match-wins via rulesets.flat().findLast(...).
-  // An identical earlier entry is insufficient if a later rule overrode it.
-  const last = current.permissions.findLast(
-    (entry) => matchPattern("skill", entry.action) && matchPattern(rule.resource, entry.resource),
-  )
-  if (last?.effect === rule.effect) return
+  // Core evaluates permissions last-match-wins, so appending is always
+  // sufficient and always correct, whereas deciding a rule is redundant
+  // requires reimplementing core's wildcard semantics and still cannot
+  // reason about concrete resources covered by a wildcard.
   editor.update(rule.agent, (agent) => {
     agent.permissions.push({ action: "skill", resource: rule.resource, effect: rule.effect })
   })
-}
-
-function matchPattern(input: string, pattern: string): boolean {
-  if (pattern === "*" || pattern === input) return true
-  if (pattern.endsWith("*")) return input.startsWith(pattern.slice(0, -1))
-  return false
 }
 
 const copyPrefix = "plus/"

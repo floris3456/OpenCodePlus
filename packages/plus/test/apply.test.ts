@@ -1071,3 +1071,105 @@ test("an agent with upstream permissions [{skill,notes,deny},{skill,*,allow}], d
   expect(lastMatching).toEqual({ action: "skill", resource: "notes", effect: "deny" })
   expect(evaluateSkill("notes", permissions)).toBe("deny")
 })
+
+test("an agent with upstream permissions [{skill,notes,deny},{skill,n?tes,allow}], disabling notes through Plus, ends with a Plus-appended deny as the last entry", async () => {
+  const state = agentState([{ id: "alpha", system: "upstream" }])
+  const alphaAgent = state.get("alpha")
+  if (!alphaAgent) throw new Error("missing alpha agent")
+  alphaAgent.permissions = [
+    { action: "skill", resource: "notes", effect: "deny" },
+    { action: "skill", resource: "n?tes", effect: "allow" },
+  ]
+  const items = [
+    item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] }),
+    item({ id: "skill:notes", kind: "skill", owner: "notes", title: "notes", text: "skill body" }),
+  ]
+  const customizations = [
+    {
+      item: "skill:notes",
+      agent: "alpha",
+      state: "disabled" as const,
+      basedOn: items[1].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  await apply(ctx, snapshot(items), customizations)
+  const permissions = state.get("alpha")?.permissions ?? []
+  expect(permissions).toEqual([
+    { action: "skill", resource: "notes", effect: "deny" },
+    { action: "skill", resource: "n?tes", effect: "allow" },
+    { action: "skill", resource: "notes", effect: "deny" },
+  ])
+  const lastEntry = permissions[permissions.length - 1]
+  expect(lastEntry).toEqual({ action: "skill", resource: "notes", effect: "deny" })
+  expect(evaluateSkill("notes", permissions)).toBe("deny")
+})
+
+test("an agent with upstream permissions [{skill,plus/*,deny},{skill,plus/beta/notes,allow}], when another agent customizes notes, ends with a Plus-appended namespace deny after the pre-existing allow", async () => {
+  const state = agentState([
+    { id: "alpha", system: "upstream" },
+    { id: "beta", system: "upstream" },
+  ])
+  const alphaAgent = state.get("alpha")
+  if (!alphaAgent) throw new Error("missing alpha agent")
+  alphaAgent.permissions = [
+    { action: "skill", resource: "plus/*", effect: "deny" },
+    { action: "skill", resource: "plus/beta/notes", effect: "allow" },
+  ]
+  const skills = skillHarness([skill("notes", "skill body")])
+  const items = skillItems()
+  const customizations = [
+    {
+      item: "skill:notes",
+      agent: "beta",
+      text: "custom body",
+      state: "inherit" as const,
+      basedOn: items[2].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    skill: skills.domain,
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  await apply(ctx, snapshot(items), customizations)
+  const permissions = state.get("alpha")?.permissions ?? []
+  expect(permissions).toEqual([
+    { action: "skill", resource: "plus/*", effect: "deny" },
+    { action: "skill", resource: "plus/beta/notes", effect: "allow" },
+    { action: "skill", resource: "plus/*", effect: "deny" },
+  ])
+  const lastEntry = permissions[permissions.length - 1]
+  expect(lastEntry).toEqual({ action: "skill", resource: "plus/*", effect: "deny" })
+  expect(evaluateSkill("plus/beta/notes", permissions)).toBe("deny")
+})
+
