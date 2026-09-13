@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import { mergeCustomization } from "../../instructions/model.js"
+import { mergeCustomization, resetFields } from "../../instructions/model.js"
 import type { Customization, Item, MergeCustomizationFields } from "../../instructions/model.js"
 import { tree, type TreeNode } from "../../instructions/tree.js"
 import { Definition, type Snapshot } from "../../rpc.js"
@@ -265,15 +265,6 @@ export function createInstructionsState(context: Plugin.Context) {
       `Reset "${node.label}" to default`,
       `Revision changed; reloaded, reset "${node.label}" again to apply`,
     )
-  }
-
-  function resetFields(node: TreeNode): MergeCustomizationFields {
-    const fields: MergeCustomizationFields = { text: null, reviewed: null, state: "inherit" }
-    // An MCP text override can exist alongside a disabled toggle, but edit is
-    // refused there, so keep any such pre-existing text untouched rather than
-    // dropping a change through a verb the row does not offer.
-    if (node.kind === "mcp") return { state: "inherit" }
-    return fields
   }
 
   async function mutateFields(

@@ -6,6 +6,7 @@ import {
   fingerprint,
   mergeCustomization,
   override,
+  resetFields,
   type Customization,
   type Item,
   type Snapshot,
@@ -367,4 +368,60 @@ test("canReset follows only the row's own record", () => {
 
   const sharedOnly = makeCustomization({ agent: "*", text: "shared" })
   expect(canReset(makeSnapshot([sharedOnly]), item, "alpha")).toBe(false)
+})
+
+test("mergeCustomization per-agent enable over shared disable keeps record and overrides to enabled", () => {
+  const item = makeItem({ available: true })
+  const shared = makeCustomization({ agent: "*", state: "disabled" })
+  const customizations = mergeCustomization([shared], item, "alpha", { state: "enabled" })
+  const own = customizations.find((record) => record.item === item.id && record.agent === "alpha")
+  expect(own).toBeDefined()
+  expect(own?.state).toBe("enabled")
+  const resolved = override(makeSnapshot(customizations), item.id, "alpha")
+  expect(resolved?.state).toBe("enabled")
+})
+
+test("mergeCustomization per-agent disable over shared enable keeps record and overrides to disabled", () => {
+  const item = makeItem({ available: false })
+  const shared = makeCustomization({ agent: "*", state: "enabled" })
+  const customizations = mergeCustomization([shared], item, "alpha", { state: "disabled" })
+  const own = customizations.find((record) => record.item === item.id && record.agent === "alpha")
+  expect(own).toBeDefined()
+  expect(own?.state).toBe("disabled")
+  const resolved = override(makeSnapshot(customizations), item.id, "alpha")
+  expect(resolved?.state).toBe("disabled")
+})
+
+test("mergeCustomization drops per-agent record matching inherited state", () => {
+  const item = makeItem({ available: true })
+  const sharedDisabled = makeCustomization({ agent: "*", state: "disabled" })
+  const customizations1 = mergeCustomization([sharedDisabled], item, "alpha", { state: "disabled" })
+  expect(customizations1.find((record) => record.agent === "alpha")).toBeUndefined()
+
+  const sharedEnabled = makeCustomization({ agent: "*", state: "enabled" })
+  const customizations2 = mergeCustomization([sharedEnabled], item, "alpha", { state: "enabled" })
+  expect(customizations2.find((record) => record.agent === "alpha")).toBeUndefined()
+})
+
+test("canReset and reset on MCP text-only record with state inherit", () => {
+  const item = makeItem({ kind: "mcp" })
+  const record = makeCustomization({ agent: "alpha", text: "custom config", state: "inherit" })
+  const snapshot = makeSnapshot([record])
+  expect(canReset(snapshot, item, "alpha")).toBe(false)
+  const postReset = mergeCustomization(snapshot.customizations, item, "alpha", resetFields(item))
+  expect(postReset).toHaveLength(1)
+  expect(postReset[0].text).toBe("custom config")
+  expect(postReset[0].state).toBe("inherit")
+})
+
+test("canReset and reset on MCP mixed text and state record", () => {
+  const item = makeItem({ kind: "mcp", available: true })
+  const record = makeCustomization({ agent: "alpha", text: "custom config", state: "disabled" })
+  const snapshot = makeSnapshot([record])
+  expect(canReset(snapshot, item, "alpha")).toBe(true)
+  const postReset = mergeCustomization(snapshot.customizations, item, "alpha", resetFields(item))
+  expect(postReset).toHaveLength(1)
+  expect(postReset[0].text).toBe("custom config")
+  expect(postReset[0].state).toBe("inherit")
+  expect(canReset(makeSnapshot(postReset), item, "alpha")).toBe(false)
 })
