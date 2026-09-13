@@ -61,11 +61,16 @@ export function mergeCustomization(
   const state = fields.state ?? existing?.state ?? "inherit"
   const reviewed = resolveOptional(existing?.reviewed, fields.reviewed)
   const inherited = inheritedAvailable(customizations, item, agent)
-  if (text === undefined && !deviates(state, inherited) && reviewed === undefined) return rest
+  const deviating = deviates(state, inherited)
+  if (text === undefined && !deviating && reviewed === undefined) return rest
+  // An explicit state is only ever stored when it genuinely deviates, because
+  // upstreamMcpAvailable in discover.ts infers pre-transform MCP availability
+  // from the presence of an explicit state, and a redundant one makes it report
+  // the opposite of the truth.
   const record: Customization = {
     item: item.id,
     agent,
-    state,
+    state: deviating ? state : "inherit",
     basedOn: existing?.basedOn ?? item.fingerprint,
     updated: new Date().toISOString(),
     ...(text === undefined ? {} : { text }),

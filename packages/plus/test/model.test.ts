@@ -463,3 +463,30 @@ test("effective per-agent disable over shared enable reports customized", () => 
   expect(result.enabled).toBe(false)
 })
 
+test("mergeCustomization shared MCP disable, acknowledge, then re-enable normalizes state to inherit", () => {
+  const item = makeItem({ id: "mcp:server", kind: "mcp", available: true })
+  const disabled = mergeCustomization([], item, "*", { state: "disabled" })
+  const revisedItem = { ...item, fingerprint: fingerprint("changed command") }
+  const acknowledged = mergeCustomization(disabled, revisedItem, "*", { reviewed: revisedItem.fingerprint })
+  const reEnabled = mergeCustomization(acknowledged, revisedItem, "*", { state: "enabled" })
+  expect(reEnabled).toHaveLength(1)
+  expect(reEnabled[0].state).toBe("inherit")
+  expect(reEnabled[0].reviewed).toBe(revisedItem.fingerprint)
+})
+
+test("mergeCustomization record kept alive by text normalizes non-deviating state to inherit", () => {
+  const item = makeItem({ available: true })
+  const customizations = mergeCustomization([], item, "alpha", { text: "custom text", state: "enabled" })
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].state).toBe("inherit")
+  expect(customizations[0].text).toBe("custom text")
+})
+
+test("mergeCustomization genuine MCP enable against unavailable upstream preserves enabled state", () => {
+  const item = makeItem({ id: "mcp:server", kind: "mcp", available: false })
+  const customizations = mergeCustomization([], item, "*", { state: "enabled" })
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].state).toBe("enabled")
+})
+
+
