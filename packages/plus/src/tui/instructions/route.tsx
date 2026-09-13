@@ -90,10 +90,6 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       setEditing(false)
       setDraft("")
     }
-    if (!detailMounted() && editing()) {
-      setEditing(false)
-      setDraft("")
-    }
     return slot
   }, undefined)
 

@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import type { Snapshot } from "../src/rpc.js"
+import type { MutateInput, Snapshot } from "../src/rpc.js"
 import { expect, test } from "bun:test"
 import { createComponent } from "solid-js"
 import { InstructionsRoute, WIDE_THRESHOLD } from "../src/tui/instructions/route.js"
@@ -879,6 +879,279 @@ test("defect C: leaf rows omit expand commands in wide mode and narrow detail al
     expect(narrowDetailFrame).not.toContain("up/down move")
     expect(narrowDetailFrame).not.toContain("r refresh")
     expect(narrowDetailFrame).toContain("esc back to tree")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("defect A: in-progress draft survives terminal shrink below WIDE_THRESHOLD and detail reopen", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "item-1",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "hello world",
+        agents: ["alpha"],
+        fingerprint: "fp-1",
+        available: true,
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 120,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("hello world"))
+    dispatch("e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor).toBeDefined()
+    editor?.setText("hello world customized draft")
+    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft"))
+
+    // Shrink below WIDE_THRESHOLD with showDetail false: detail pane unmounts
+    fixture.resize(WIDE_THRESHOLD - 10, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
+
+    const narrowTreeFrame = fixture.captureCharFrame()
+    expect(narrowTreeFrame).not.toContain("ctrl+s save")
+    expect(narrowTreeFrame).toContain("enter detail")
+
+    // Reopen detail pane in narrow mode: dirty draft must still be present and editing active
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft"))
+
+    const narrowDetailFrame = fixture.captureCharFrame()
+    expect(narrowDetailFrame).toContain("ctrl+s save · esc cancel")
+    expect(narrowDetailFrame).toContain("hello world customized draft")
+    expect(fixture.renderer.currentFocusedEditor?.plainText).toBe("hello world customized draft")
+
+    // Editing can continue: type further
+    const reopenedEditor = fixture.renderer.currentFocusedEditor
+    expect(reopenedEditor).toBeDefined()
+    reopenedEditor?.setText("hello world customized draft extended")
+    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft extended"))
+    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+function createMutateRecordingContext(
+  context: Plugin.Context,
+  onMutate: (input: MutateInput) => void,
+): Plugin.Context {
+  return new Proxy(context, {
+    get(target, prop, receiver) {
+      if (prop !== "client") return Reflect.get(target, prop, receiver)
+      const client = target.client
+      return new Proxy(client, {
+        get(clientTarget, clientProp, clientReceiver) {
+          if (clientProp !== "rpc") return Reflect.get(clientTarget, clientProp, clientReceiver)
+          return (...args: Parameters<typeof clientTarget.rpc>) => {
+            const rpc = clientTarget.rpc(...args)
+            return new Proxy(rpc, {
+              get(rpcTarget, rpcProp, rpcReceiver) {
+                if (rpcProp !== "instructions.mutate") return Reflect.get(rpcTarget, rpcProp, rpcReceiver)
+                const original = Reflect.get(rpcTarget, rpcProp, rpcReceiver)
+                if (typeof original !== "function") return original
+                return (input: MutateInput, opts: unknown) => {
+                  onMutate(input)
+                  return Reflect.apply(original, rpcTarget, [input, opts])
+                }
+              },
+            })
+          }
+        },
+      })
+    },
+  })
+}
+
+test("empty resolved text preserves typed draft across threshold resize and saves typed text", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "item-empty",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "",
+        agents: ["alpha"],
+        fingerprint: "fp-empty",
+        available: true,
+      },
+    ],
+  })
+
+  const mutations: MutateInput[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [snapshot],
+    routeData: { agent: "alpha" },
+    width: 80,
+    height: 40,
+    render: (context) => {
+      const wrapped = createMutateRecordingContext(context, (input) => {
+        mutations.push(input)
+      })
+      return createComponent(InstructionsRoute, {
+        context: wrapped,
+        onClose: () => {},
+        data: { agent: "alpha" },
+      })
+    },
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Agent: alpha"))
+    dispatch("e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor).toBeDefined()
+    editor?.setText("newly saved prompt text")
+    await fixture.waitForFrame((frame) => frame.includes("newly saved prompt text"))
+
+    // Resize across threshold to wide mode
+    fixture.resize(120, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Project agents") && frame.includes("ctrl+s save"))
+
+    const widenedFrame = fixture.captureCharFrame()
+    expect(widenedFrame).toContain("ctrl+s save · esc cancel")
+    expect(widenedFrame).toContain("newly saved prompt text")
+
+    // Save with ctrl+s: assert the typed text is saved (not empty, not old value)
+    dispatch("ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Saved "Prompt"'))
+
+    expect(mutations.length).toBe(1)
+    const savedCustomization = mutations[0].customizations.find((entry) => entry.item === "item-empty")
+    expect(savedCustomization).toBeDefined()
+    expect(savedCustomization?.text).toBe("newly saved prompt text")
+    expect(savedCustomization?.text).not.toBe("")
+    expect(savedCustomization?.text).not.toBe(snapshot.items[0].text)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("unedited editor still cancels on terminal shrink below WIDE_THRESHOLD when showDetail is false", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "item-1",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "hello world",
+        agents: ["alpha"],
+        fingerprint: "fp-1",
+        available: true,
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 120,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("hello world"))
+    dispatch("e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
+
+    // Shrink below WIDE_THRESHOLD without editing (draft is clean): must cancel editing
+    fixture.resize(WIDE_THRESHOLD - 10, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
+
+    const narrowTreeFrame = fixture.captureCharFrame()
+    expect(narrowTreeFrame).not.toContain("ctrl+s save")
+    expect(narrowTreeFrame).toContain("enter detail")
+
+    // Keymap is restored to normal tree navigation
+    const canMove = dispatch("up")
+    expect(canMove).toBe(true)
+    dispatch("down")
+
+    // Reopen detail in narrow mode: must NOT be in edit mode
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("hello world") && frame.includes("e edit"))
+
+    const narrowDetailFrame = fixture.captureCharFrame()
+    expect(narrowDetailFrame).not.toContain("ctrl+s save")
+    expect(narrowDetailFrame).toContain("e edit")
+    expect(fixture.renderer.currentFocusedEditor).toBeNull()
+
+    // Widen back above WIDE_THRESHOLD: must still NOT be in edit mode
+    fixture.resize(120, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Agent: alpha") && frame.includes("e edit"))
+
+    const widenedFrame = fixture.captureCharFrame()
+    expect(widenedFrame).not.toContain("ctrl+s save")
+    expect(widenedFrame).toContain("e edit")
+    expect(fixture.renderer.currentFocusedEditor).toBeNull()
   } finally {
     fixture.destroy()
   }
