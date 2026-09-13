@@ -199,8 +199,10 @@ export function createInstructionsState(context: Plugin.Context) {
       return
     }
     const edit = node.action?.edit
-    if (edit?.allowed === false) {
-      setStatus(`"${node.label}" cannot be acknowledged: ${edit.reason}`)
+    const toggle = node.action?.toggle
+    if (edit?.allowed !== true && toggle?.allowed !== true) {
+      const reason = edit?.allowed === false ? edit.reason : toggle?.allowed === false ? toggle.reason : "action is not supported"
+      setStatus(`"${node.label}" cannot be acknowledged: ${reason}`)
       return
     }
     if (node.badges.review !== true) {
