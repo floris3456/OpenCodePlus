@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import type { TreeNode } from "../../instructions/tree.js"
-import { DetailPane, isEditable } from "./detail-pane.js"
+import { DetailPane, isEditable, resolvedText } from "./detail-pane.js"
 import { createInstructionsState } from "./state.js"
 import { TreePane } from "./tree-pane.js"
 
@@ -61,17 +61,43 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   // Narrow terminals swap between panes instead of showing both.
   const [showDetail, setShowDetail] = createSignal(false)
   const [editing, setEditing] = createSignal(false)
+  const [draft, setDraft] = createSignal("")
   const detailMounted = () => wide() || showDetail()
   const detailSlot = (): "wide" | "narrow" | "none" => {
     if (wide()) return "wide"
     if (showDetail()) return "narrow"
     return "none"
   }
+
+  const savedText = (): string => {
+    const node = state.selected()
+    const snap = state.snapshot()
+    if (!node || !snap) return ""
+    return resolvedText(node, snap)
+  }
+
+  const isDraftDirty = () => editing() && draft() !== savedText()
+
   createEffect((previous?: "wide" | "narrow" | "none") => {
     const slot = detailSlot()
-    if (previous !== undefined && previous !== slot && editing()) setEditing(false)
-    if (!detailMounted() && editing()) setEditing(false)
+    if (previous !== undefined && previous !== slot && !isDraftDirty() && editing()) {
+      setEditing(false)
+      setDraft("")
+    }
+    if (!detailMounted() && editing()) {
+      setEditing(false)
+      setDraft("")
+    }
     return slot
+  }, undefined)
+
+  createEffect((previous?: string) => {
+    const current = state.selectedId()
+    if (previous !== undefined && current !== previous && editing()) {
+      setEditing(false)
+      setDraft("")
+    }
+    return current
   }, undefined)
   onCleanup(() => state.dispose())
 
@@ -131,6 +157,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       // The detail pane owns escape while editing; this path only covers
       // races where its layer has not mounted yet.
       setEditing(false)
+      setDraft("")
       return
     }
     if (!wide() && showDetail()) {
@@ -195,17 +222,29 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     // silent so typing never moves the selection or toggles rows.
     if (editing() && detailMounted()) return { commands: [] }
     const node = current()
+    const narrowDetail = !wide() && showDetail()
+    const canExpand = !narrowDetail && Boolean(node && (isExpandable(node) || (!wide() && isLeaf(node))))
     return {
       commands: [
-        { bind: "up,k", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
-        { bind: "down,j", title: "Next row", group: "Instructions", run: () => state.move(1) },
-        { bind: "left,h", title: "Collapse", group: "Instructions", run: collapseOrParent },
-        { bind: "right,l", title: "Expand", group: "Instructions", run: expandOrChild },
-        { bind: "return", title: "Expand", group: "Instructions", run: expandOrChild },
+        ...(!narrowDetail
+          ? [
+              { bind: "up,k", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
+              { bind: "down,j", title: "Next row", group: "Instructions", run: () => state.move(1) },
+              { bind: "left,h", title: "Collapse", group: "Instructions", run: collapseOrParent },
+            ]
+          : []),
+        ...(canExpand
+          ? [
+              { bind: "right,l", title: "Expand", group: "Instructions", run: expandOrChild },
+              { bind: "return", title: "Expand", group: "Instructions", run: expandOrChild },
+            ]
+          : []),
         ...(isTogglable(node) ? [{ bind: "space", title: "Toggle enabled", group: "Instructions", run: toggle }] : []),
         ...(isAcknowledgable(node) ? [{ bind: "a", title: "Acknowledge review", group: "Instructions", run: acknowledge }] : []),
         ...(isResettable(node) ? [{ bind: "x", title: "Reset to default", group: "Instructions", run: reset }] : []),
-        { bind: "r", title: "Refresh", group: "Instructions", run: () => void state.refresh() },
+        ...(!narrowDetail
+          ? [{ bind: "r", title: "Refresh", group: "Instructions", run: () => void state.refresh() }]
+          : []),
         { bind: "escape", title: "Back", group: "Instructions", run: back },
       ],
     }
@@ -224,6 +263,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               state={state}
               editing={editing}
               onEditingChange={setEditing}
+              draft={draft}
+              onDraftChange={setDraft}
             />
           }
         >
@@ -245,6 +286,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 state={state}
                 editing={editing}
                 onEditingChange={setEditing}
+                draft={draft}
+                onDraftChange={setDraft}
               />
             </box>
           </Show>

@@ -12,9 +12,11 @@ export interface DetailPaneProps {
   state: InstructionsState
   editing: () => boolean
   onEditingChange: (editing: boolean) => void
+  draft: () => string
+  onDraftChange: (draft: string) => void
 }
 
-function resolvedText(node: TreeNode, snapshot: Snapshot): string {
+export function resolvedText(node: TreeNode, snapshot: Snapshot): string {
   const found = snapshot.items.find((entry) => entry.id === node.itemId)
   if (!found) return "No item details"
   const item = { ...found, agents: [...found.agents] }
@@ -57,7 +59,6 @@ function scopeLine(node: TreeNode): string | undefined {
 }
 
 export function DetailPane(props: DetailPaneProps) {
-  const [draft, setDraft] = createSignal<string>("")
   let area: { plainText: string; isDestroyed: boolean; focus(): void; blur(): void; gotoBufferEnd(): void } | undefined
 
   function editable(): boolean {
@@ -66,7 +67,7 @@ export function DetailPane(props: DetailPaneProps) {
 
   function cancelEditing() {
     area?.blur()
-    setDraft("")
+    props.onDraftChange("")
     props.onEditingChange(false)
   }
 
@@ -74,7 +75,7 @@ export function DetailPane(props: DetailPaneProps) {
     const target = area
     const node = props.node()
     if (!target || target.isDestroyed || !node) return
-    setDraft(target.plainText)
+    props.onDraftChange(target.plainText)
     const saved = await props.state.saveText(node, target.plainText)
     if (saved) cancelEditing()
   }
@@ -115,7 +116,7 @@ export function DetailPane(props: DetailPaneProps) {
             title: "Edit text",
             group: "Instructions",
             run: () => {
-              setDraft(resolvedText(node, snapshot))
+              props.onDraftChange(resolvedText(node, snapshot))
               props.onEditingChange(true)
             },
           },
@@ -171,7 +172,7 @@ export function DetailPane(props: DetailPaneProps) {
                 >
                   <textarea
                     flexGrow={1}
-                    initialValue={draft()}
+                    initialValue={props.draft()}
                     textColor={props.context.theme.text.formfield.default}
                     focusedTextColor={props.context.theme.text.formfield.focused}
                     cursorColor={props.context.theme.text.formfield.focused}
@@ -180,7 +181,7 @@ export function DetailPane(props: DetailPaneProps) {
                     }}
                     onContentChange={() => {
                       if (!area || area.isDestroyed) return
-                      setDraft(area.plainText)
+                      props.onDraftChange(area.plainText)
                     }}
                   />
                   <text flexShrink={0} fg={props.context.theme.text.subdued}>
