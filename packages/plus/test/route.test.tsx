@@ -1,3 +1,5 @@
+import type { Plugin } from "@opencode/plugin/tui"
+import type { Snapshot } from "../src/rpc.js"
 import { expect, test } from "bun:test"
 import { createComponent } from "solid-js"
 import { InstructionsRoute, WIDE_THRESHOLD } from "../src/tui/instructions/route.js"
@@ -624,6 +626,257 @@ test("editing does not survive detail pane remount on terminal shrink when showD
 
     const narrowFrame = fixture.captureCharFrame()
     expect(narrowFrame).not.toContain("ctrl+s save")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+function createDelayedContext(
+  context: Plugin.Context,
+  snapshotPromise: () => Promise<Snapshot>,
+): Plugin.Context {
+  return new Proxy(context, {
+    get(target, prop, receiver) {
+      if (prop === "client") {
+        const client = target.client
+        return new Proxy(client, {
+          get(clientTarget, clientProp, clientReceiver) {
+            if (clientProp === "rpc") {
+              return (...args: Parameters<typeof clientTarget.rpc>) => {
+                const rpc = clientTarget.rpc(...args)
+                return new Proxy(rpc, {
+                  get(rpcTarget, rpcProp, rpcReceiver) {
+                    if (rpcProp === "instructions.snapshot") {
+                      return snapshotPromise
+                    }
+                    return Reflect.get(rpcTarget, rpcProp, rpcReceiver)
+                  },
+                })
+              }
+            }
+            return Reflect.get(clientTarget, clientProp, clientReceiver)
+          },
+        })
+      }
+      return Reflect.get(target, prop, receiver)
+    },
+  })
+}
+
+test("defect A: in-progress draft survives layout change across WIDE_THRESHOLD", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "item-1",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "hello world",
+        agents: ["alpha"],
+        fingerprint: "fp-1",
+        available: true,
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 80,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("hello world"))
+    dispatch("e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor).toBeDefined()
+    editor?.setText("hello world customized draft")
+    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft"))
+
+    fixture.resize(WIDE_THRESHOLD + 20, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+
+    const widenedFrame = fixture.captureCharFrame()
+    expect(widenedFrame).toContain("ctrl+s save · esc cancel")
+    expect(widenedFrame).toContain("hello world customized draft")
+    expect(fixture.renderer.currentFocusedEditor?.plainText).toBe("hello world customized draft")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("defect B: late snapshot response cannot repopulate screen after project mode is disabled", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    tools: [{ id: "alpha", native: true }],
+    items: [
+      {
+        id: "tool-1",
+        kind: "tool",
+        owner: "alpha",
+        title: "Tool",
+        text: "tool text",
+        agents: ["alpha"],
+        fingerprint: "fp-tool-revised",
+        available: true,
+      },
+    ],
+    customizations: [
+      {
+        item: "tool-1",
+        agent: "alpha",
+        state: "disabled",
+        basedOn: "fp-tool-initial",
+        updated: "2026-09-01T00:00:00Z",
+      },
+    ],
+  })
+
+  let resolveSnapshot: (() => void) | undefined
+  const delayedPromise = new Promise<Snapshot>((resolve) => {
+    resolveSnapshot = () => resolve(snapshot)
+  })
+
+  let requestStarted = false
+  const fixture = await renderPlusFixture({
+    snapshots: [snapshot],
+    render: (context) => {
+      const wrapped = createDelayedContext(context, async () => {
+        requestStarted = true
+        return delayedPromise
+      })
+      return createComponent(InstructionsRoute, { context: wrapped, onClose: () => {} })
+    },
+  })
+
+  try {
+    await fixture.waitForFrame(() => requestStarted)
+
+    await fixture.emitProjectChanged({ enabled: false })
+    await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled for this directory"))
+
+    resolveSnapshot?.()
+    await delayedPromise
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const disabledFrame = fixture.captureCharFrame()
+    expect(disabledFrame).toContain("Project mode is disabled for this directory")
+    expect(disabledFrame).not.toContain("Tool")
+    expect(disabledFrame).not.toContain("alpha")
+
+    const commands = fixture.commands().map((cmd) => cmd.bind)
+    expect(commands).not.toContain("space")
+    expect(commands).not.toContain("a")
+    expect(commands).not.toContain("x")
+
+    await fixture.emitProjectChanged({ enabled: true })
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    const recoveredFrame = fixture.captureCharFrame()
+    expect(recoveredFrame).not.toContain("Project mode is disabled for this directory")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("defect C: leaf rows omit expand commands in wide mode and narrow detail aligns with footer", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "prompt-1",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "prompt text",
+        agents: ["alpha"],
+        fingerprint: "fp-prompt",
+        available: true,
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 120,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    // Alpha agent row (expandable structural row in wide mode)
+    const agentCommands = fixture.commands().map((c) => c.bind)
+    expect(agentCommands).toContain("up,k")
+    expect(agentCommands).toContain("return")
+    expect(agentCommands).toContain("right,l")
+    expect(agentCommands).toContain("r")
+
+    // Expand agent and select Prompt (leaf row in wide mode)
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("prompt text"))
+
+    const wideLeafCommands = fixture.commands().map((c) => c.bind)
+    expect(wideLeafCommands).not.toContain("right,l")
+    expect(wideLeafCommands).not.toContain("return")
+    expect(wideLeafCommands).toContain("up,k")
+    expect(wideLeafCommands).toContain("down,j")
+    expect(wideLeafCommands).toContain("left,h")
+    expect(wideLeafCommands).toContain("r")
+
+    // Switch to narrow mode with detail open
+    fixture.resize(80, 40)
+    // Open detail for leaf in narrow mode
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("esc back to tree"))
+
+    const narrowDetailCommands = fixture.commands().map((c) => c.bind)
+    expect(narrowDetailCommands).not.toContain("up,k")
+    expect(narrowDetailCommands).not.toContain("down,j")
+    expect(narrowDetailCommands).not.toContain("left,h")
+    expect(narrowDetailCommands).not.toContain("right,l")
+    expect(narrowDetailCommands).not.toContain("return")
+    expect(narrowDetailCommands).not.toContain("r")
+    expect(narrowDetailCommands).toContain("escape")
+
+    const narrowDetailFrame = fixture.captureCharFrame()
+    expect(narrowDetailFrame).not.toContain("up/down move")
+    expect(narrowDetailFrame).not.toContain("r refresh")
+    expect(narrowDetailFrame).toContain("esc back to tree")
   } finally {
     fixture.destroy()
   }

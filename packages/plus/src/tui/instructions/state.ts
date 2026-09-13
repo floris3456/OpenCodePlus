@@ -44,6 +44,8 @@ export function createInstructionsState(context: Plugin.Context) {
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
   let disposed = false
+  let disabled = false
+  let generation = 0
 
   function nodes(): TreeNode[] {
     const current = snapshot()
@@ -77,11 +79,12 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function load() {
-    if (disposed) return
+    if (disposed || disabled) return
+    const requestGen = ++generation
     setLoading(true)
     try {
       const fresh = await plus["instructions.snapshot"](undefined, { location: context.location })
-      if (disposed) return
+      if (disposed || disabled || requestGen !== generation) return
       const firstLoad = snapshot() === undefined
       setSnapshot(fresh)
       // First load only: expand the top-level groups so agents are visible.
@@ -95,27 +98,28 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus("")
       ensureSelection()
     } catch (error: unknown) {
-      if (disposed) return
+      if (disposed || disabled || requestGen !== generation) return
       setStatus(errorMessage(error))
     } finally {
-      if (!disposed) setLoading(false)
+      if (!disposed && !disabled && requestGen === generation) setLoading(false)
     }
   }
 
   async function refresh() {
-    if (disposed) return
+    if (disposed || disabled) return
+    const requestGen = ++generation
     setLoading(true)
     try {
       const fresh = await plus["instructions.refresh"](undefined, { location: context.location })
-      if (disposed) return
+      if (disposed || disabled || requestGen !== generation) return
       setSnapshot(fresh)
       setStatus("Refreshed from host")
       ensureSelection()
     } catch (error: unknown) {
-      if (disposed) return
+      if (disposed || disabled || requestGen !== generation) return
       setStatus(errorMessage(error))
     } finally {
-      if (!disposed) setLoading(false)
+      if (!disposed && !disabled && requestGen === generation) setLoading(false)
     }
   }
 
@@ -298,13 +302,14 @@ export function createInstructionsState(context: Plugin.Context) {
     const agent = node.agentId ?? "*"
     const model = modelSnapshotOf(current)
     const customizations = mergeCustomization(model.customizations, item, agent, fields)
+    const requestGen = ++generation
     setLoading(true)
     try {
       const result = await plus["instructions.mutate"](
         { expectedRevision: current.revision, customizations },
         { location: context.location },
       )
-      if (disposed) return false
+      if (disposed || disabled || requestGen !== generation) return false
       if (result.ok) {
         setSnapshot(result.snapshot)
         setStatus(successStatus)
@@ -316,11 +321,11 @@ export function createInstructionsState(context: Plugin.Context) {
       ensureSelection()
       return false
     } catch (error: unknown) {
-      if (disposed) return false
+      if (disposed || disabled || requestGen !== generation) return false
       setStatus(errorMessage(error))
       return false
     } finally {
-      if (!disposed) setLoading(false)
+      if (!disposed && !disabled && requestGen === generation) setLoading(false)
     }
   }
 
@@ -330,17 +335,21 @@ export function createInstructionsState(context: Plugin.Context) {
   })
   const unsubscribeProject = plus.events.on("project.changed", (event) => {
     if (!event.data.enabled) {
+      disabled = true
+      generation++
       setSnapshot(undefined)
       setSelectedId(undefined)
       setLoading(false)
       setStatus("Project mode is disabled for this directory")
       return
     }
+    disabled = false
     void load()
   })
 
   function dispose() {
     disposed = true
+    generation++
     unsubscribeInstructions()
     unsubscribeProject()
   }
