@@ -131,13 +131,21 @@ function pushSkillRule(
 ) {
   const current = editor.get(rule.agent)
   if (!current) return
-  const present = current.permissions.some(
-    (entry) => entry.action === "skill" && entry.resource === rule.resource && entry.effect === rule.effect,
+  // Core evaluates permissions last-match-wins via rulesets.flat().findLast(...).
+  // An identical earlier entry is insufficient if a later rule overrode it.
+  const last = current.permissions.findLast(
+    (entry) => matchPattern("skill", entry.action) && matchPattern(rule.resource, entry.resource),
   )
-  if (present) return
+  if (last?.effect === rule.effect) return
   editor.update(rule.agent, (agent) => {
     agent.permissions.push({ action: "skill", resource: rule.resource, effect: rule.effect })
   })
+}
+
+function matchPattern(input: string, pattern: string): boolean {
+  if (pattern === "*" || pattern === input) return true
+  if (pattern.endsWith("*")) return input.startsWith(pattern.slice(0, -1))
+  return false
 }
 
 const copyPrefix = "plus/"
@@ -238,7 +246,6 @@ function toolCandidates(snapshot: Snapshot, tools: Item[], agentID: string): Too
   return tools.flatMap((item) => {
     if (!applies(item, agentID)) return []
     const resolved = effective(snapshot, item, agentID)
-    if (!resolved.customized) return []
     if (resolved.enabled && resolved.text === item.text) return []
     return [{ agent: agentID, tool: item.owner, enabled: resolved.enabled, text: resolved.text }]
   })

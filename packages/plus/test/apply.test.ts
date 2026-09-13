@@ -973,3 +973,101 @@ test("enabling a server whose item is available: false actually clears disabled 
   expect(mcp.servers.get("search")?.disabled).toBeUndefined()
   expect(reloaded).toBe(1)
 })
+
+test("an agent-level disable plus a Defaults-level disable removes the native tool for that agent", async () => {
+  const prompts = [item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] })]
+  const tools = [item({ id: "tool:reader", kind: "tool", owner: "reader", title: "reader", text: "read things" })]
+  const all = [...prompts, ...tools]
+  const customizations = [
+    {
+      item: "tool:reader",
+      agent: "alpha",
+      state: "disabled" as const,
+      basedOn: tools[0].fingerprint,
+      updated: UPDATED,
+    },
+    {
+      item: "tool:reader",
+      agent: "*",
+      state: "disabled" as const,
+      basedOn: tools[0].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: () => Effect.die("unused agent.transform"),
+      reload: () => Effect.die("unused agent.reload"),
+    },
+    tool: toolDomain([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+
+  const applied = await apply(ctx, snapshot(all), customizations)
+  expect(applied.registrations).toHaveLength(1)
+  expect(callbacks).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const alpha = sessionEvent("alpha", { reader: { description: "read things", input: { type: "object" } } })
+  await Effect.runPromise(run(alpha))
+  expect(alpha.tools.reader).toBeUndefined()
+})
+
+test("an agent with upstream permissions [{skill,notes,deny},{skill,*,allow}], disabling notes through Plus, ends with a Plus-appended deny as the last matching entry", async () => {
+  const state = agentState([{ id: "alpha", system: "upstream" }])
+  const alphaAgent = state.get("alpha")
+  if (!alphaAgent) throw new Error("missing alpha agent")
+  alphaAgent.permissions = [
+    { action: "skill", resource: "notes", effect: "deny" },
+    { action: "skill", resource: "*", effect: "allow" },
+  ]
+  const items = [
+    item({ id: "prompt:alpha", kind: "prompt", owner: "alpha", text: "upstream", agents: ["alpha"] }),
+    item({ id: "skill:notes", kind: "skill", owner: "notes", title: "notes", text: "skill body" }),
+  ]
+  const customizations = [
+    {
+      item: "skill:notes",
+      agent: "alpha",
+      state: "disabled" as const,
+      basedOn: items[1].fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const ctx = context({
+    agent: {
+      list: () => Effect.die("unused agent.list"),
+      get: () => Effect.die("unused agent.get"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(agentEditor(state))
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+    session: {
+      hook: () => Effect.die("unused session.hook"),
+    },
+  })
+
+  await apply(ctx, snapshot(items), customizations)
+  const permissions = state.get("alpha")?.permissions ?? []
+  expect(permissions).toEqual([
+    { action: "skill", resource: "notes", effect: "deny" },
+    { action: "skill", resource: "*", effect: "allow" },
+    { action: "skill", resource: "notes", effect: "deny" },
+  ])
+  const lastMatching = permissions.findLast(
+    (entry) => entry.action === "skill" && (entry.resource === "notes" || entry.resource === "*"),
+  )
+  expect(lastMatching).toEqual({ action: "skill", resource: "notes", effect: "deny" })
+  expect(evaluateSkill("notes", permissions)).toBe("deny")
+})
