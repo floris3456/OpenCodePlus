@@ -347,15 +347,6 @@ function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
     nativeTools: input.nativeTools,
   })
 
-  const globalDefaults = emitDefaultTarget({
-    id: "defaults:global",
-    label: "Global",
-    snapshot: input.snapshot,
-    expandedSet: input.expandedSet,
-    aliases: ["default:global"],
-    nativeTools: input.nativeTools,
-  })
-
   const builtinNodes = input.builtinAgents.flatMap((agent) =>
     emitAgentNode({
       agent,
@@ -366,7 +357,7 @@ function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
     }),
   )
 
-  return [header, ...projectDefaults, ...globalDefaults, ...builtinNodes]
+  return [header, ...projectDefaults, ...builtinNodes]
 }
 
 interface DefaultTargetInput {

@@ -162,11 +162,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const hints: string[] = []
     const narrowDetail = !wide() && showDetail()
+    const detailMounted = wide() || showDetail()
     if (!wide() && !showDetail()) hints.push("up/down move", "enter detail")
     if (wide()) hints.push("up/down move", "left/right expand")
     if (isTogglable(node)) hints.push("space toggle")
     if (isAcknowledgable(node)) hints.push("a acknowledge")
-    if (isEditable(node)) hints.push("e edit")
+    if (detailMounted && isEditable(node)) hints.push("e edit")
     if (isResettable(node)) hints.push("x reset")
     if (!narrowDetail) hints.push("r refresh")
     hints.push(narrowDetail ? "esc back to tree" : "esc back")
