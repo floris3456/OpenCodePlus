@@ -107,7 +107,19 @@ export function override(snapshot: Snapshot, itemID: string, agent: string): Cus
   if (!own) return snapshot.customizations.find((record) => record.item === itemID && record.agent === "*")
   const shared = snapshot.customizations.find((record) => record.item === itemID && record.agent === "*")
   if (!shared || agent === "*") return own
-  return { ...own, text: own.text ?? shared.text, state: own.state === "inherit" ? shared.state : own.state }
+  // Review provenance belongs to whichever record supplies the resolved text,
+  // otherwise a state-only toggle silently clears a pending review.
+  const provenance = own.text !== undefined ? own : shared
+  const text = own.text ?? shared.text
+  return {
+    item: own.item,
+    agent: own.agent,
+    updated: own.updated,
+    state: own.state === "inherit" ? shared.state : own.state,
+    basedOn: provenance.basedOn,
+    ...(text === undefined ? {} : { text }),
+    ...(provenance.reviewed === undefined ? {} : { reviewed: provenance.reviewed }),
+  }
 }
 
 export function effective(snapshot: Snapshot, item: Item, agent: string): Effective {
