@@ -499,3 +499,132 @@ test("stops offering actions and keybindings when project mode is disabled", asy
     fixture.destroy()
   }
 })
+
+test("editing does not survive detail pane remount on terminal widen above WIDE_THRESHOLD", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "item-1",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "hello world",
+        agents: ["alpha"],
+        fingerprint: "fp-1",
+        available: true,
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 80,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    // Expand alpha to reveal Prompt
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    // Move to Prompt
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
+    // Open leaf detail in narrow mode (sets showDetail to true)
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("hello world"))
+    // Start editing Prompt
+    dispatch("e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
+
+    // Widen terminal above WIDE_THRESHOLD
+    fixture.resize(120, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
+
+    const widenedFrame = fixture.captureCharFrame()
+    expect(widenedFrame).not.toContain("ctrl+s save")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("editing does not survive detail pane remount on terminal shrink when showDetail is true", async () => {
+  const snapshot = createSnapshot({
+    revision: 1,
+    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
+    items: [
+      {
+        id: "item-1",
+        kind: "prompt",
+        owner: "alpha",
+        title: "Prompt",
+        text: "hello world",
+        agents: ["alpha"],
+        fingerprint: "fp-1",
+        available: true,
+      },
+    ],
+  })
+
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    data: { agent: "alpha" },
+    width: 80,
+    height: 40,
+  })
+
+  function dispatch(key: string) {
+    for (const cmd of fixture.commands()) {
+      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+        void cmd.run()
+        return true
+      }
+    }
+    return false
+  }
+
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("alpha"))
+    // Expand alpha to reveal Prompt
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
+    // Move to Prompt
+    dispatch("down")
+    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
+    // Open leaf detail in narrow mode to establish showDetail() === true
+    dispatch("return")
+    await fixture.waitForFrame((frame) => frame.includes("hello world"))
+
+    // Widen to establish wide mode with detail open and showDetail() true
+    fixture.resize(120, 40)
+    await fixture.waitForFrame((frame) => frame.includes("Project agents") && frame.includes("hello world"))
+
+    // Start editing in wide mode while showDetail() is true
+    dispatch("e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
+
+    // Shrink back to narrow while showDetail() is true
+    fixture.resize(80, 40)
+    await fixture.waitForFrame((frame) => frame.includes("esc back to tree") && !frame.includes("ctrl+s save"))
+
+    const narrowFrame = fixture.captureCharFrame()
+    expect(narrowFrame).not.toContain("ctrl+s save")
+  } finally {
+    fixture.destroy()
+  }
+})
