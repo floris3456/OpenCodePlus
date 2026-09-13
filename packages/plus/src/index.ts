@@ -10,7 +10,7 @@ import type { Scope } from "effect"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { apply } from "./instructions/apply.js"
 import { discover, type Discovered, type PromptBaseline } from "./instructions/discover.js"
-import { effective, type Customization } from "./instructions/model.js"
+import { effective, mergeCustomization, type Customization, type Item } from "./instructions/model.js"
 import { load, save, type Stored } from "./instructions/store.js"
 import { disable, enable, read } from "./project.js"
 import {
@@ -110,19 +110,23 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
         const directory = ctx.location.directory
-        const protectedAgents = yield* requireProject(directory, () =>
+        const loaded = yield* loadStored(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
-        const customizations = input.customizations.map(toCustomization)
+        const current = yield* Effect.promise(() => discover(ctx, loaded.stored, state.baselines))
+        const customizations = normalizeCustomizations(
+          input.customizations.map(toCustomization),
+          current.snapshot.items,
+        )
         const saved = yield* Effect.promise(() =>
           save(directory, { expectedRevision: input.expectedRevision, customizations }),
         )
         if (!saved.ok) {
-          const current = yield* Effect.promise(() => discover(ctx, saved.current, state.baselines))
-          return conflictResult(current, protectedAgents)
+          const conflict = yield* Effect.promise(() => discover(ctx, saved.current, state.baselines))
+          return conflictResult(conflict, loaded.protectedAgents)
         }
         const discovered = yield* publishFresh(ctx, state, { revision: saved.revision, customizations })
-        return successResult(saved.revision, discovered, protectedAgents)
+        return successResult(saved.revision, discovered, loaded.protectedAgents)
       }),
     "instructions.refresh": (_input, context) =>
       Effect.gen(function* () {
@@ -411,6 +415,51 @@ function successResult(revision: number, discovered: Discovered, protectedAgents
 
 function conflictResult(discovered: Discovered, protectedAgents: readonly string[]): MutateResult {
   return { ok: false, reason: "stale", snapshot: toSnapshot(discovered, protectedAgents) }
+}
+
+function normalizeCustomizations(
+  customizations: readonly Customization[],
+  items: readonly Item[],
+): Customization[] {
+  const itemMap = new Map(items.map((item) => [item.id, item]))
+  const sharedNormalized = new Map(
+    customizations
+      .filter((record) => record.agent === "*")
+      .map((record) => {
+        const item = itemMap.get(record.item)
+        if (!item) return [record.item, record]
+        return [record.item, normalizeRecord(record, item, [])]
+      }),
+  )
+  return customizations.map((record) => {
+    const item = itemMap.get(record.item)
+    if (!item) return record
+    if (record.agent === "*") return sharedNormalized.get(record.item) ?? record
+    const shared = sharedNormalized.get(record.item)
+    return normalizeRecord(record, item, shared ? [shared] : [])
+  })
+}
+
+function normalizeRecord(
+  record: Customization,
+  item: Item,
+  context: readonly Customization[],
+): Customization {
+  const merged = mergeCustomization(context, item, record.agent, {
+    text: record.text ?? "",
+    state: record.state,
+    reviewed: record.reviewed,
+  })
+  const candidate = merged.find((entry) => entry.item === item.id && entry.agent === record.agent)
+  return {
+    item: record.item,
+    agent: record.agent,
+    ...(record.text === undefined ? {} : { text: record.text }),
+    state: candidate?.state ?? record.state,
+    basedOn: record.basedOn,
+    ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
+    updated: record.updated,
+  }
 }
 
 function toCustomization(record: SnapshotCustomization): Customization {
