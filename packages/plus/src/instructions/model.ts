@@ -22,6 +22,7 @@ export interface Customization {
   state: CustomizationState
   basedOn: string
   reviewed?: string
+  sharedReviewed?: string
   updated: string
 }
 
@@ -107,14 +108,16 @@ export function override(snapshot: Snapshot, itemID: string, agent: string): Cus
   if (!own) return snapshot.customizations.find((record) => record.item === itemID && record.agent === "*")
   const shared = snapshot.customizations.find((record) => record.item === itemID && record.agent === "*")
   if (!shared || agent === "*") return own
-  // Review provenance follows whichever record supplies the resolved text,
-  // except that an explicit acknowledgement on the row's own record must win
-  // (otherwise the advertised acknowledge action silently does nothing).
-  // When neither record supplies text, no text is inherited from shared, so
-  // provenance belongs to the row's own record rather than shared.
+  // Review provenance for inheriting agents must satisfy three constraints:
+  // (A) A state-only toggle on the agent row must not clear pending review of inherited text.
+  // (B) An explicit acknowledgement on the agent row must clear that agent's review.
+  // (C) A stale own acknowledgement must not mask a newer shared acknowledgement (or vice versa);
+  //     both acknowledgements are preserved so review clears if either matches the current fingerprint.
+  // When the agent record supplies its own text or neither supplies text, provenance belongs solely to own.
   const inheritsText = own.text === undefined && shared.text !== undefined
   const basedOn = inheritsText ? shared.basedOn : own.basedOn
-  const reviewed = inheritsText ? (own.reviewed ?? shared.reviewed) : own.reviewed
+  const reviewed = own.reviewed
+  const sharedReviewed = inheritsText ? shared.reviewed : undefined
   const text = own.text ?? shared.text
   return {
     item: own.item,
@@ -124,6 +127,7 @@ export function override(snapshot: Snapshot, itemID: string, agent: string): Cus
     basedOn,
     ...(text === undefined ? {} : { text }),
     ...(reviewed === undefined ? {} : { reviewed }),
+    ...(sharedReviewed === undefined ? {} : { sharedReviewed }),
   }
 }
 
@@ -154,7 +158,11 @@ function isCustomized(resolved: Customization | undefined, inherited: boolean): 
 function isReview(item: Item, resolved: Customization | undefined, inherited: boolean): boolean {
   if (!resolved) return false
   if (!isCustomized(resolved, inherited)) return false
-  return resolved.basedOn !== item.fingerprint && resolved.reviewed !== item.fingerprint
+  return (
+    resolved.basedOn !== item.fingerprint &&
+    resolved.reviewed !== item.fingerprint &&
+    resolved.sharedReviewed !== item.fingerprint
+  )
 }
 
 function deviates(state: CustomizationState, available: boolean): boolean {

@@ -608,5 +608,84 @@ test("neither record supplies text keeps row own review provenance", () => {
   expect(effective(snapshot, item, "*").review).toBe(true)
 })
 
+test("stale agent acknowledgement does not mask newer shared acknowledgement", () => {
+  const itemH1 = makeItem({ text: "upstream text v1" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: itemH1.fingerprint,
+  })
+
+  // 2. Upstream changes to H2. Agent alpha acknowledges.
+  const itemH2 = makeItem({ text: "upstream text v2" })
+  const afterAlphaAck = mergeCustomization([shared], itemH2, "alpha", {
+    reviewed: itemH2.fingerprint,
+  })
+
+  // 3. Upstream changes to H3. Defaults acknowledges.
+  const itemH3 = makeItem({ text: "upstream text v3" })
+  const afterDefaultsAck = mergeCustomization(afterAlphaAck, itemH3, "*", {
+    reviewed: itemH3.fingerprint,
+  })
+
+  // 4. For alpha, override yields shared text acknowledged at H3, so review is false.
+  expect(effective(makeSnapshot(afterDefaultsAck), itemH3, "alpha").review).toBe(false)
+  expect(effective(makeSnapshot(afterDefaultsAck), itemH3, "*").review).toBe(false)
+})
+
+test("state-only toggle on an inheriting agent preserves review", () => {
+  const itemH1 = makeItem({ text: "upstream text v1" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: itemH1.fingerprint,
+  })
+  const itemH2 = makeItem({ text: "upstream text v2" })
+  const toggled = mergeCustomization([shared], itemH2, "alpha", { state: "disabled" })
+  expect(effective(makeSnapshot(toggled), itemH2, "alpha").review).toBe(true)
+})
+
+test("agent acknowledgement at the current fingerprint clears review for that agent", () => {
+  const itemH1 = makeItem({ text: "upstream text v1" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: itemH1.fingerprint,
+  })
+  const itemH2 = makeItem({ text: "upstream text v2" })
+  const toggled = mergeCustomization([shared], itemH2, "alpha", { state: "disabled" })
+  const acknowledged = mergeCustomization(toggled, itemH2, "alpha", { reviewed: itemH2.fingerprint })
+  expect(effective(makeSnapshot(acknowledged), itemH2, "alpha").review).toBe(false)
+  expect(effective(makeSnapshot(acknowledged), itemH2, "*").review).toBe(true)
+})
+
+test("genuinely new upstream change after both acknowledgements re-raises review for the agent", () => {
+  const itemH1 = makeItem({ text: "upstream text v1" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: itemH1.fingerprint,
+  })
+
+  // Agent acknowledges at H2
+  const itemH2 = makeItem({ text: "upstream text v2" })
+  const afterAlphaAck = mergeCustomization([shared], itemH2, "alpha", {
+    reviewed: itemH2.fingerprint,
+  })
+
+  // Defaults acknowledges at H3
+  const itemH3 = makeItem({ text: "upstream text v3" })
+  const afterDefaultsAck = mergeCustomization(afterAlphaAck, itemH3, "*", {
+    reviewed: itemH3.fingerprint,
+  })
+
+  // Upstream changes to H4 (neither alpha's H2 nor shared's H3 matches H4)
+  const itemH4 = makeItem({ text: "upstream text v4" })
+  expect(effective(makeSnapshot(afterDefaultsAck), itemH4, "alpha").review).toBe(true)
+  expect(effective(makeSnapshot(afterDefaultsAck), itemH4, "*").review).toBe(true)
+})
+
+
+
 
 
