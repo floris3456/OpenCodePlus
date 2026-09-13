@@ -5,7 +5,7 @@ import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createComponent } from "solid-js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
-import type { Snapshot } from "../src/rpc.js"
+import type { Snapshot, Status } from "../src/rpc.js"
 
 export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
   return {
@@ -73,6 +73,7 @@ export interface TestFixture {
   readonly captureCharFrame: () => string
   readonly waitForFrame: (predicate: (frame: string) => boolean) => Promise<string>
   readonly emitChanged: (next?: Snapshot) => Promise<void>
+  readonly emitProjectChanged: (status?: Partial<Status>) => Promise<void>
   readonly destroy: () => void
   readonly commands: () => readonly TestKeymapCommand[]
   readonly resize: (width: number, height: number) => void
@@ -96,7 +97,9 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   })
 
   const queue: Snapshot[] = [...options.snapshots]
-  const listeners = new Set<() => void>()
+  type RpcListener = (event: { data: Status }) => void
+  const instructionsListeners = new Set<RpcListener>()
+  const projectListeners = new Set<RpcListener>()
   const layers: KeymapLayerCallback[] = []
 
   function commands(): readonly TestKeymapCommand[] {
@@ -125,10 +128,16 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         "instructions.refresh": async () => nextSnapshot(),
         "instructions.mutate": async () => ({ ok: true, revision: 1, snapshot: nextSnapshot() }),
         events: {
-          on: (_name: string, handler: () => void) => {
-            listeners.add(handler)
+          on: (name: string, handler: RpcListener) => {
+            if (name === "project.changed") {
+              projectListeners.add(handler)
+              return () => {
+                projectListeners.delete(handler)
+              }
+            }
+            instructionsListeners.add(handler)
             return () => {
-              listeners.delete(handler)
+              instructionsListeners.delete(handler)
             }
           },
         },
@@ -224,7 +233,15 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
 
   async function emitChanged(next?: Snapshot): Promise<void> {
     if (next !== undefined) queue.push(next)
-    for (const listener of listeners) listener()
+    for (const listener of instructionsListeners) listener({ data: { enabled: true, directory: "" } })
+  }
+
+  async function emitProjectChanged(status?: Partial<Status>): Promise<void> {
+    const data: Status = {
+      enabled: status?.enabled ?? false,
+      directory: status?.directory ?? "",
+    }
+    for (const listener of projectListeners) listener({ data })
   }
 
   // Cast to ResizableRenderer: processResize is marked private in CliRenderer's type
@@ -243,6 +260,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     captureCharFrame: () => output.captureCharFrame(),
     waitForFrame: (predicate) => output.waitForFrame(predicate),
     emitChanged,
+    emitProjectChanged,
     destroy,
     commands,
     resize,
