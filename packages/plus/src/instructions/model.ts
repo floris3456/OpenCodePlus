@@ -109,7 +109,14 @@ export function effective(snapshot: Snapshot, item: Item, agent: string): Effect
   const resolved = override(snapshot, item.id, agent)
   return {
     text: resolved?.text ?? item.text,
-    enabled: item.available && resolved?.state !== "disabled",
+    // Plus can genuinely enable an upstream-disabled MCP server by deleting
+    // `disabled` from config, whereas it cannot conjure missing skills or tools.
+    enabled:
+      resolved?.state === "disabled"
+        ? false
+        : resolved?.state === "enabled"
+          ? item.kind === "mcp" || item.available
+          : item.available,
     customized: isCustomized(item, resolved),
     review: isReview(item, resolved),
   }

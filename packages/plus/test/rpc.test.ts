@@ -1188,6 +1188,50 @@ test("through the real snapshot -> mutate -> apply path, an upstream disabled: t
   expect(mcp.disabled("search")).toBeUndefined()
 })
 
+test("through the real snapshot -> mutate -> apply handler path, enabling an upstream disabled server clears disabled in config and reports effective enabled true in refreshed snapshot", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
+  expect(serverItem).toBeDefined()
+  expect(serverItem?.available).toBe(false)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "enabled",
+            basedOn: serverItem!.fingerprint,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+  expect(mcp.disabled("search")).toBeUndefined()
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
+  if (!refreshedItem) throw new Error("expected mcp:search item on refresh")
+  const eff = effective(snapshotOf(refreshed), itemOf(refreshedItem), "*")
+  expect(eff.enabled).toBe(true)
+})
+
 test("disable, then refresh twice, asserting effective().review === false and an unchanged fingerprint on both passes", async () => {
   const directory = await tempDir()
   await enable(directory)

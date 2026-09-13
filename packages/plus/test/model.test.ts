@@ -109,6 +109,22 @@ test("effective disables unavailable items", () => {
   expect(result.customized).toBe(false)
 })
 
+test("effective enables unavailable MCP item with shared enabled record", () => {
+  const item = makeItem({ kind: "mcp", available: false })
+  const record = makeCustomization({ agent: "*", state: "enabled" })
+  const result = effective(makeSnapshot([record]), item, "alpha")
+  expect(result.enabled).toBe(true)
+  expect(result.customized).toBe(true)
+})
+
+test("effective keeps unavailable non-MCP item disabled even with enabled record", () => {
+  const item = makeItem({ kind: "skill", available: false })
+  const record = makeCustomization({ agent: "*", state: "enabled" })
+  const result = effective(makeSnapshot([record]), item, "alpha")
+  expect(result.enabled).toBe(false)
+  expect(result.customized).toBe(true)
+})
+
 test("effective resolves custom text and disabled state", () => {
   const item = makeItem()
   const record = makeCustomization({ agent: "alpha", text: "custom", state: "disabled" })
