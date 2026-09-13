@@ -490,9 +490,13 @@ test("instruction rows refuse toggle and edit without using the protected badge"
   expect(instructionNode?.action?.toggle.allowed).toBe(false)
   expect(instructionNode?.action?.edit.allowed).toBe(false)
   if (instructionNode?.action?.toggle.allowed === false)
-    expect(instructionNode.action.toggle.reason).toBe("instruction customizations are not applied yet")
+    expect(instructionNode.action.toggle.reason).toBe(
+      "the public plugin API does not expose source-aware instruction customization",
+    )
   if (instructionNode?.action?.edit.allowed === false)
-    expect(instructionNode.action.edit.reason).toBe("instruction customizations are not applied yet")
+    expect(instructionNode.action.edit.reason).toBe(
+      "the public plugin API does not expose source-aware instruction customization",
+    )
 })
 
 test("per-agent children never include MCP rows; shared MCP rows toggle but refuse edit", () => {
@@ -532,6 +536,14 @@ test("shared instruction rows refuse toggle and edit", () => {
   const sharedNode = nodes.find((node) => node.id === "defaults:project:inst-shared-1005")
   expect(sharedNode?.action?.toggle.allowed).toBe(false)
   expect(sharedNode?.action?.edit.allowed).toBe(false)
+  if (sharedNode?.action?.toggle.allowed === false)
+    expect(sharedNode.action.toggle.reason).toBe(
+      "the public plugin API does not expose source-aware instruction customization",
+    )
+  if (sharedNode?.action?.edit.allowed === false)
+    expect(sharedNode.action.edit.reason).toBe(
+      "the public plugin API does not expose source-aware instruction customization",
+    )
 })
 
 test("rows offer reset only when their own record deviates", () => {
@@ -597,7 +609,9 @@ test("instruction and code mode rows refuse reset with the row's own reason", ()
   const instructionNode = nodes.find((node) => node.itemId === "inst-reset-1105")
   expect(instructionNode?.action?.reset.allowed).toBe(false)
   if (instructionNode?.action?.reset.allowed === false)
-    expect(instructionNode.action.reset.reason).toBe("instruction customizations are not applied yet")
+    expect(instructionNode.action.reset.reason).toBe(
+      "the public plugin API does not expose source-aware instruction customization",
+    )
 
   const codeModeNode = nodes.find((node) => node.itemId === "tool-reset-1106")
   expect(codeModeNode?.action?.reset.allowed).toBe(false)

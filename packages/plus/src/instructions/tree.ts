@@ -65,6 +65,7 @@ export interface TreeInput {
 
 const codeModeReason = "code mode tools are exposed through the execute inventory, not the session tool list"
 const mcpEditReason = "mcp server configuration can only be changed in config files"
+const instructionReason = "the public plugin API does not expose source-aware instruction customization"
 
 export function tree(input: TreeInput): TreeNode[] {
   const agents = input.agents ?? []
@@ -253,8 +254,8 @@ function emitAgentChildren(
         snapshot,
         label: item.title,
         isProtected,
-        toggle: { allowed: false, reason: "instruction customizations are not applied yet" },
-        edit: { allowed: false, reason: "instruction customizations are not applied yet" },
+        toggle: { allowed: false, reason: instructionReason },
+        edit: { allowed: false, reason: instructionReason },
       }),
     )
 
@@ -430,13 +431,13 @@ function emitDefaultNode(
 }
 
 function defaultToggleFor(item: Item, nativeTools: ReadonlySet<string>): TreeNodeToggle {
-  if (item.kind === "instruction") return { allowed: false, reason: "instruction customizations are not applied yet" }
+  if (item.kind === "instruction") return { allowed: false, reason: instructionReason }
   if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
   return { allowed: true }
 }
 
 function defaultEditFor(item: Item, nativeTools: ReadonlySet<string>): TreeNodeEdit {
-  if (item.kind === "instruction") return { allowed: false, reason: "instruction customizations are not applied yet" }
+  if (item.kind === "instruction") return { allowed: false, reason: instructionReason }
   if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
   if (item.kind === "mcp") return { allowed: false, reason: mcpEditReason }
   return { allowed: true }
