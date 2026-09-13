@@ -7,7 +7,7 @@ import type { SkillEditor } from "@opencode/plugin/effect/skill"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Skill } from "@opencode/schema/skill"
 import { Deferred, Effect, Scope } from "effect"
-import { applies, effective, type Customization, type Item, type Snapshot } from "./model.js"
+import { applies, effective, override, type Customization, type Item, type Snapshot } from "./model.js"
 
 export interface Applied {
   readonly registrations: Registration[]
@@ -296,6 +296,10 @@ async function applyMcp(ctx: Context, snapshot: Snapshot): Promise<Registration 
     for (const update of updates) {
       const current = editor.get(update.name)
       if (!current) continue
+      if (update.enabled) {
+        delete current.disabled
+        continue
+      }
       current.disabled = true
     }
   })
@@ -303,13 +307,15 @@ async function applyMcp(ctx: Context, snapshot: Snapshot): Promise<Registration 
 
 interface McpUpdate {
   readonly name: string
+  readonly enabled: boolean
 }
 
 function mcpUpdates(snapshot: Snapshot, servers: Item[]): McpUpdate[] {
   return servers.flatMap((item): McpUpdate[] => {
-    const resolved = effective(snapshot, item, "*")
-    if (!resolved.customized) return []
-    if (resolved.enabled) return []
-    return [{ name: item.owner }]
+    const resolved = override(snapshot, item.id, "*")
+    if (!resolved || resolved.state === "inherit") return []
+    const enabled = resolved.state === "enabled"
+    if (enabled === item.available) return []
+    return [{ name: item.owner, enabled }]
   })
 }

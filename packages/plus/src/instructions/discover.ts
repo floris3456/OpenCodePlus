@@ -57,7 +57,7 @@ export async function discover(
     ...promptItems(resolvedAgents, baselines, files),
     ...skillItems(await skills),
     ...toolItems(tools),
-    ...mcpItems(servers),
+    ...mcpItems(servers, stored.customizations),
     ...instructionItems(ctx.location.directory, instructions),
   ]
   return {
@@ -236,8 +236,36 @@ function toolSourcesFor(tools: readonly (Tool.Info & { readonly id: string })[])
   return tools.map((tool) => ({ id: tool.id, native: tool.options?.codemode === false }))
 }
 
-function mcpItems(servers: readonly [string, Mcp.ServerConfig][]): Item[] {
-  return servers.map(([name, config]) => item(`mcp:${name}`, "mcp", name, name, JSON.stringify(config), []))
+// Discovery reads config through Plus's own transform, so `config.disabled` reflects
+// post-transform state rather than raw upstream. Upstream availability must reconstruct
+// the pre-transform value by removing Plus's own known contribution: if a shared
+// (`agent: "*"`) record for that item says `disabled`, upstream must have been enabled, so
+// `true`; if it says `enabled`, upstream must have been disabled, so `false`; otherwise
+// `config.disabled !== true`. This inference is load-bearing: otherwise a disabled server
+// would report `available: false`, `mcpUpdates` would short-circuit on `enabled === item.available`,
+// the disable would silently stop being reinstalled on the next publish, and `effective()`
+// would report `customized: false` so the user could not undo it. Serializing the item text
+// from a copy without `disabled` ensures the fingerprint never incorporates Plus's own
+// enablement contribution.
+function mcpItems(servers: readonly [string, Mcp.ServerConfig][], customizations: readonly Customization[]): Item[] {
+  return servers.map(([name, config]) => {
+    const id = `mcp:${name}`
+    const available = upstreamMcpAvailable(id, config, customizations)
+    const sanitized = { ...config }
+    delete (sanitized as { disabled?: boolean }).disabled
+    return item(id, "mcp", name, name, JSON.stringify(sanitized), [], available)
+  })
+}
+
+function upstreamMcpAvailable(
+  id: string,
+  config: Mcp.ServerConfig,
+  customizations: readonly Customization[],
+): boolean {
+  const shared = customizations.find((record) => record.item === id && record.agent === "*")
+  if (shared?.state === "disabled") return true
+  if (shared?.state === "enabled") return false
+  return config.disabled !== true
 }
 
 async function readProjectInstructions(directory: string): Promise<{ path: string; text: string }[]> {
@@ -276,6 +304,14 @@ function instructionItems(directory: string, files: { path: string; text: string
   })
 }
 
-function item(id: string, kind: Item["kind"], owner: string, title: string, text: string, agents: string[]): Item {
-  return { id, kind, owner, title, text, agents, fingerprint: fingerprint(text), available: true }
+function item(
+  id: string,
+  kind: Item["kind"],
+  owner: string,
+  title: string,
+  text: string,
+  agents: string[],
+  available = true,
+): Item {
+  return { id, kind, owner, title, text, agents, fingerprint: fingerprint(text), available }
 }
