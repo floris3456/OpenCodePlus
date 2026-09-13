@@ -62,9 +62,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const [showDetail, setShowDetail] = createSignal(false)
   const [editing, setEditing] = createSignal(false)
   const detailMounted = () => wide() || showDetail()
-  createEffect(() => {
+  const detailSlot = (): "wide" | "narrow" | "none" => {
+    if (wide()) return "wide"
+    if (showDetail()) return "narrow"
+    return "none"
+  }
+  createEffect((previous?: "wide" | "narrow" | "none") => {
+    const slot = detailSlot()
+    if (previous !== undefined && previous !== slot && editing()) setEditing(false)
     if (!detailMounted() && editing()) setEditing(false)
-  })
+    return slot
+  }, undefined)
   onCleanup(() => state.dispose())
 
   const route = props.context.ui.router.current()
