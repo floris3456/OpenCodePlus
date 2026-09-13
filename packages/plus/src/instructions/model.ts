@@ -60,7 +60,8 @@ export function mergeCustomization(
   const text = resolveOptional(existing?.text, fields.text)
   const state = fields.state ?? existing?.state ?? "inherit"
   const reviewed = resolveOptional(existing?.reviewed, fields.reviewed)
-  if (text === undefined && !deviates(state, item.available) && reviewed === undefined) return rest
+  const inherited = inheritedAvailable(customizations, item, agent)
+  if (text === undefined && !deviates(state, inherited) && reviewed === undefined) return rest
   const record: Customization = {
     item: item.id,
     agent,
@@ -79,11 +80,17 @@ function resolveOptional(existing: string | undefined, update: string | null | u
   return update
 }
 
+export function resetFields(item: { kind: string }): MergeCustomizationFields {
+  if (item.kind === "mcp") return { state: "inherit" }
+  return { text: null, reviewed: null, state: "inherit" }
+}
+
 export function canReset(snapshot: Snapshot, item: Item, agent: string): boolean {
   const own = snapshot.customizations.find((record) => record.item === item.id && record.agent === agent)
   if (!own) return false
-  if (own.text !== undefined) return true
-  return deviates(own.state, item.available)
+  const inherited = inheritedAvailable(snapshot.customizations, item, agent)
+  if (item.kind !== "mcp" && own.text !== undefined) return true
+  return deviates(own.state, inherited)
 }
 
 export function applies(item: Item, agent: string): boolean {
@@ -124,4 +131,12 @@ function deviates(state: CustomizationState, available: boolean): boolean {
   if (state === "inherit") return false
   if (state === "enabled") return !available
   return available
+}
+
+function inheritedAvailable(customizations: readonly Customization[], item: Item, agent: string): boolean {
+  if (agent !== "*") {
+    const shared = customizations.find((record) => record.item === item.id && record.agent === "*")
+    if (shared && shared.state !== "inherit") return shared.state === "enabled"
+  }
+  return item.available
 }
