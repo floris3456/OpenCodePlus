@@ -5,7 +5,9 @@ import { Project } from "@opencode/schema/project"
 import type { Rpc } from "@opencode/schema/rpc"
 import { AbsolutePath } from "@opencode/schema/schema"
 import type { Tool } from "@opencode/schema/tool"
-import { Effect, Exit, Schema, Scope } from "effect"
+import type { Mcp } from "@opencode/schema/mcp"
+import type { MCPDomain, MCPEditor } from "@opencode/plugin/effect/mcp"
+import { Effect, Exit, Schema, Scope, type Types } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -1425,4 +1427,239 @@ test("closing the plugin activation scope disposes applied registrations", async
       expect(agents.state.get("alpha")?.system).toBe("upstream")
     }),
   )
+})
+
+function toMutableConfig(config: Mcp.ServerConfig): Types.DeepMutable<Mcp.ServerConfig> {
+  if (config.type === "local") {
+    return {
+      type: "local",
+      command: [...config.command],
+      ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
+      ...(config.environment === undefined ? {} : { environment: { ...config.environment } }),
+      ...(config.disabled === undefined ? {} : { disabled: config.disabled }),
+      ...(config.codemode === undefined ? {} : { codemode: config.codemode }),
+      ...(config.timeout === undefined ? {} : { timeout: { ...config.timeout } }),
+    }
+  }
+  return {
+    type: "remote",
+    url: config.url,
+    ...(config.headers === undefined ? {} : { headers: { ...config.headers } }),
+    ...(config.disabled === undefined ? {} : { disabled: config.disabled }),
+    ...(config.codemode === undefined ? {} : { codemode: config.codemode }),
+    ...(config.timeout === undefined ? {} : { timeout: { ...config.timeout } }),
+  }
+}
+
+function dynamicMcpHarness(initial: readonly [string, Types.DeepMutable<Mcp.ServerConfig>][]) {
+  const upstream = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>(initial)
+  const installed: Array<(editor: MCPEditor) => void> = []
+  const counts = { starts: 0 }
+  function visible(): Map<string, Types.DeepMutable<Mcp.ServerConfig>> {
+    const servers = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>()
+    for (const [name, config] of upstream) {
+      servers.set(name, structuredClone(config))
+    }
+    const editor: MCPEditor = {
+      list: () => Array.from(servers.entries()),
+      get: (name: string) => servers.get(name),
+      set: (name: string, config: Mcp.ServerConfig) => {
+        servers.set(name, toMutableConfig(config))
+      },
+      update: (name: string, update: (config: Types.DeepMutable<Mcp.ServerConfig>) => void) => {
+        const current = servers.get(name)
+        if (current) update(current)
+      },
+      remove: (name: string) => {
+        servers.delete(name)
+      },
+    }
+    for (const transform of installed) transform(editor)
+    return servers
+  }
+  function reconcile() {
+    for (const config of visible().values()) {
+      if (config.disabled === true) continue
+      counts.starts++
+    }
+  }
+  reconcile()
+  return {
+    domain: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback: (editor: MCPEditor) => void) =>
+        Effect.sync(() => {
+          installed.push(callback)
+          reconcile()
+          return {
+            dispose: Effect.sync(() => {
+              const index = installed.indexOf(callback)
+              if (index === -1) return
+              installed.splice(index, 1)
+              reconcile()
+            }),
+          }
+        }),
+      reload: () =>
+        Effect.sync(() => {
+          reconcile()
+        }),
+    } satisfies MCPDomain,
+    get starts() {
+      return counts.starts
+    },
+    disabled: (name: string) => visible().get(name)?.disabled,
+    add: (name: string, config: Types.DeepMutable<Mcp.ServerConfig>) => {
+      upstream.set(name, structuredClone(config))
+      reconcile()
+    },
+  }
+}
+
+test("shared explicit enabled record for absent mcp item normalizes to inherit and does not poison discovery", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const mcp = dynamicMcpHarness([])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  expect(initial.items.some((entry) => entry.id === "mcp:search")).toBe(false)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:search",
+            agent: "*",
+            state: "enabled",
+            text: "saved text",
+            basedOn: fingerprint("server"),
+            reviewed: "saved review",
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+
+  const stored = await load(directory)
+  const persisted = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
+  expect(persisted).toBeDefined()
+  expect(persisted?.state).toBe("inherit")
+  expect(persisted?.text).toBe("saved text")
+  expect(persisted?.reviewed).toBe("saved review")
+  expect(persisted?.basedOn).toBe(fingerprint("server"))
+  expect(persisted?.updated).toBe(UPDATED)
+
+  mcp.add("search", { type: "remote", url: "https://example.test" })
+
+  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expectRpcBody(refreshed)
+  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
+  expect(refreshedItem).toBeDefined()
+  expect(refreshedItem?.available).toBe(true)
+})
+
+test("absent mcp item with explicit disabled state normalizes to inherit", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents), state)
+
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "mcp:ghost",
+            agent: "*",
+            state: "disabled",
+            text: "ghost text",
+            basedOn: fingerprint("ghost"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+
+  const stored = await load(directory)
+  const persisted = stored.customizations.find((record) => record.item === "mcp:ghost" && record.agent === "*")
+  expect(persisted?.state).toBe("inherit")
+  expect(persisted?.text).toBe("ghost text")
+})
+
+test("non-MCP absent item round-trips its explicit state unchanged", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const state = createState()
+  const handlers = createHandlers(liveAgentHost(directory, agents), state)
+
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expectRpcBody(initial)
+  expect(initial.items.some((entry) => entry.id === "skill:absent")).toBe(false)
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: initial.revision,
+        customizations: [
+          {
+            item: "skill:absent",
+            agent: "*",
+            state: "disabled",
+            text: "custom instructions",
+            basedOn: fingerprint("skill-content"),
+            reviewed: "reviewed-flag",
+            updated: UPDATED,
+          },
+          {
+            item: "tool:absent",
+            agent: "alpha",
+            state: "enabled",
+            basedOn: fingerprint("tool-content"),
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+
+  const stored = await load(directory)
+  const persistedSkill = stored.customizations.find((record) => record.item === "skill:absent" && record.agent === "*")
+  expect(persistedSkill).toBeDefined()
+  expect(persistedSkill?.state).toBe("disabled")
+  expect(persistedSkill?.text).toBe("custom instructions")
+  expect(persistedSkill?.reviewed).toBe("reviewed-flag")
+  expect(persistedSkill?.basedOn).toBe(fingerprint("skill-content"))
+  expect(persistedSkill?.updated).toBe(UPDATED)
+
+  const persistedTool = stored.customizations.find((record) => record.item === "tool:absent" && record.agent === "alpha")
+  expect(persistedTool).toBeDefined()
+  expect(persistedTool?.state).toBe("enabled")
+  expect(persistedTool?.basedOn).toBe(fingerprint("tool-content"))
+  expect(persistedTool?.updated).toBe(UPDATED)
 })
