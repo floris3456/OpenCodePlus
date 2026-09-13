@@ -286,7 +286,7 @@ test("defect C: navigation hints advertise enter detail only for narrow leaf row
   }
 })
 
-test("defect D: MCP review flag can be acknowledged when toggle is allowed and edit is not", async () => {
+test("defect D: MCP review flag can be acknowledged when reset is allowed and toggle and edit are not", async () => {
   const mcpItem = {
     id: "mcp-server-1",
     kind: "mcp" as const,
@@ -364,6 +364,8 @@ test("defect D: MCP review flag can be acknowledged when toggle is allowed and e
     const mcpFrame = fixture.captureCharFrame()
     expect(mcpFrame).toContain("needs review")
     expect(mcpFrame).toContain("a acknowledge")
+    expect(mcpFrame).toContain("x reset")
+    expect(mcpFrame).not.toContain("space toggle")
 
     // Dispatch "a" to acknowledge
     dispatch("a")

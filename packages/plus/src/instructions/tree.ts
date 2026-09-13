@@ -1,4 +1,4 @@
-import { applies, canReset, effective, type Item, type Snapshot } from "./model.js"
+import { applies, canReset, effective, override, type Item, type Snapshot } from "./model.js"
 import type { AgentScope, AgentSource } from "./discover.js"
 import type { ProjectConfig } from "../project.js"
 
@@ -65,6 +65,8 @@ export interface TreeInput {
 
 const codeModeReason = "code mode tools are exposed through the execute inventory, not the session tool list"
 const mcpEditReason = "mcp server configuration can only be changed in config files"
+const mcpToggleReason =
+  "Plus cannot verify the upstream state of an already-overridden server, so the row offers reset to return it to upstream rather than a toggle that might not take effect"
 const instructionReason = "the public plugin API does not expose source-aware instruction customization"
 
 export function tree(input: TreeInput): TreeNode[] {
@@ -307,6 +309,7 @@ interface ResetInput {
 
 function resetAction(input: ResetInput): TreeNodeReset {
   if (!canReset(input.snapshot, input.item, input.agent)) return { allowed: false, reason: "nothing to reset" }
+  if (input.item.kind === "mcp") return { allowed: true }
   const toggleBlocked = input.toggle.allowed === false
   const editBlocked = input.edit.allowed === false
   if (toggleBlocked && editBlocked) {
@@ -400,7 +403,7 @@ function emitDefaultNode(
   nativeTools: ReadonlySet<string>,
 ): TreeNode {
   const eff = effective(snapshot, item, sharedAgent)
-  const toggle: TreeNodeToggle = defaultToggleFor(item, nativeTools)
+  const toggle: TreeNodeToggle = defaultToggleFor(item, nativeTools, snapshot, sharedAgent)
   const edit: TreeNodeEdit = defaultEditFor(item, nativeTools)
   return {
     id: `${targetId}:${item.id}`,
@@ -421,9 +424,20 @@ function emitDefaultNode(
   }
 }
 
-function defaultToggleFor(item: Item, nativeTools: ReadonlySet<string>): TreeNodeToggle {
+function defaultToggleFor(
+  item: Item,
+  nativeTools: ReadonlySet<string>,
+  snapshot: Snapshot,
+  agent: string,
+): TreeNodeToggle {
   if (item.kind === "instruction") return { allowed: false, reason: instructionReason }
   if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
+  if (item.kind === "mcp") {
+    const resolved = override(snapshot, item.id, agent)
+    if (resolved?.state === "enabled" || resolved?.state === "disabled") {
+      return { allowed: false, reason: mcpToggleReason }
+    }
+  }
   return { allowed: true }
 }
 

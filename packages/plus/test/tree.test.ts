@@ -666,3 +666,54 @@ test("per-agent enable over shared disable carries the customized badge", () => 
   expect(node?.badges.enabled).toBe(true)
 })
 
+test("shared MCP row with an explicit disabled record refuses toggle and offers reset", () => {
+  const mcpItem = createItem({ id: "mcp-server-disabled", kind: "mcp", owner: "server", title: "server", available: true })
+  const customization = createCustomization({
+    item: "mcp-server-disabled",
+    agent: "*",
+    state: "disabled",
+  })
+
+  const nodes = tree({
+    snapshot: createSnapshot([mcpItem], [customization]),
+    agents: [],
+    expanded: new Set(["group:defaults", "defaults:project"]),
+  })
+
+  const node = nodes.find((entry) => entry.id === "defaults:project:mcp-server-disabled")
+  expect(node).toBeDefined()
+  expect(node?.action?.toggle.allowed).toBe(false)
+  if (node?.action?.toggle.allowed === false) {
+    expect(node.action.toggle.reason).toBe(
+      "Plus cannot verify the upstream state of an already-overridden server, so the row offers reset to return it to upstream rather than a toggle that might not take effect",
+    )
+  }
+  expect(node?.action?.reset).toEqual({ allowed: true })
+})
+
+test("shared MCP row with an explicit enabled record refuses toggle and offers reset", () => {
+  const mcpItem = createItem({ id: "mcp-server-enabled", kind: "mcp", owner: "server", title: "server", available: false })
+  const customization = createCustomization({
+    item: "mcp-server-enabled",
+    agent: "*",
+    state: "enabled",
+  })
+
+  const nodes = tree({
+    snapshot: createSnapshot([mcpItem], [customization]),
+    agents: [],
+    expanded: new Set(["group:defaults", "defaults:project"]),
+  })
+
+  const node = nodes.find((entry) => entry.id === "defaults:project:mcp-server-enabled")
+  expect(node).toBeDefined()
+  expect(node?.action?.toggle.allowed).toBe(false)
+  if (node?.action?.toggle.allowed === false) {
+    expect(node.action.toggle.reason).toBe(
+      "Plus cannot verify the upstream state of an already-overridden server, so the row offers reset to return it to upstream rather than a toggle that might not take effect",
+    )
+  }
+  expect(node?.action?.reset).toEqual({ allowed: true })
+})
+
+
