@@ -5,13 +5,13 @@ import { Project } from "@opencode/schema/project"
 import type { Rpc } from "@opencode/schema/rpc"
 import { AbsolutePath } from "@opencode/schema/schema"
 import type { Tool } from "@opencode/schema/tool"
-import { Effect, Exit, Schema } from "effect"
+import { Effect, Exit, Schema, Scope } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createHandlers, createState, type PlusState } from "../src/index.js"
+import PlusPlugin, { createHandlers, createState, type PlusState } from "../src/index.js"
 import { effective, fingerprint, type Customization, type Item } from "../src/instructions/model.js"
-import { load } from "../src/instructions/store.js"
+import { load, save } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, context, mcpHarness } from "./harness.js"
@@ -1276,4 +1276,61 @@ test("disable, then refresh twice, asserting effective().review === false and an
     const eff = effective(snapshotOf(refreshed), itemOf(item), "*")
     expect(eff.review).toBe(false)
   }
+})
+
+function pluginHost(directory: string, agents: ReturnType<typeof agentHarness>) {
+  const host = liveAgentHost(directory, agents)
+  return {
+    ...host,
+    rpc: Object.assign(
+      () => {
+        throw new Error("unused rpc.client")
+      },
+      {
+        register: () =>
+          Effect.succeed({
+            dispose: Effect.void,
+            events: { emit: () => Effect.void },
+          }),
+      },
+    ),
+  }
+}
+
+test("closing the plugin activation scope disposes applied registrations", async () => {
+  const directory = await tempDir()
+  await enable(directory)
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "upstream\n")
+  await save(directory, {
+    expectedRevision: 0,
+    customizations: [
+      {
+        item: "prompt:alpha",
+        agent: "alpha",
+        text: "custom",
+        state: "inherit",
+        basedOn: fingerprint("upstream"),
+        updated: UPDATED,
+      },
+    ],
+  })
+  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
+  const host = pluginHost(directory, agents)
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      yield* PlusPlugin.effect(host).pipe(Scope.provide(scope))
+
+      expect(agents.transforms).toBe(1)
+      expect(agents.disposes).toBe(0)
+      expect(agents.state.get("alpha")?.system).toBe("custom")
+
+      yield* Scope.close(scope, Exit.void)
+      expect(agents.disposes).toBe(1)
+      expect(agents.state.get("alpha")?.system).toBe("upstream")
+    }),
+  )
 })
