@@ -441,3 +441,25 @@ test("canReset and reset on MCP mixed text and state record", () => {
   expect(postReset[0].state).toBe("inherit")
   expect(canReset(makeSnapshot(postReset), item, "alpha")).toBe(false)
 })
+
+test("effective per-agent enable over shared disable reports customized and allows reset", () => {
+  const item = makeItem({ available: true })
+  const shared = makeCustomization({ agent: "*", state: "disabled" })
+  const own = makeCustomization({ agent: "alpha", state: "enabled" })
+  const snapshot = makeSnapshot([shared, own])
+  const result = effective(snapshot, item, "alpha")
+  expect(result.customized).toBe(true)
+  expect(result.enabled).toBe(true)
+  expect(canReset(snapshot, item, "alpha")).toBe(true)
+})
+
+test("effective per-agent disable over shared enable reports customized", () => {
+  const item = makeItem({ available: false })
+  const shared = makeCustomization({ agent: "*", state: "enabled" })
+  const own = makeCustomization({ agent: "alpha", state: "disabled" })
+  const snapshot = makeSnapshot([shared, own])
+  const result = effective(snapshot, item, "alpha")
+  expect(result.customized).toBe(true)
+  expect(result.enabled).toBe(false)
+})
+

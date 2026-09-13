@@ -635,3 +635,34 @@ test("shared rows offer reset only for their own shared record", () => {
   })
   expect(nodes.find((node) => node.id === "defaults:project:skill-plain-1108")?.action?.reset.allowed).toBe(false)
 })
+
+test("per-agent enable over shared disable carries the customized badge", () => {
+  const agentId = "agent-subj-1201"
+  const item = createItem({
+    id: "tool-custom-badge-1201",
+    kind: "tool",
+    title: "tool-custom-title",
+    available: true,
+  })
+  const shared = createCustomization({
+    item: "tool-custom-badge-1201",
+    agent: "*",
+    state: "disabled",
+  })
+  const own = createCustomization({
+    item: "tool-custom-badge-1201",
+    agent: agentId,
+    state: "enabled",
+  })
+
+  const nodes = tree({
+    snapshot: createSnapshot([item], [shared, own]),
+    agents: [{ id: agentId, scope: "project" }],
+    expanded: new Set(["group:project", `agent:${agentId}`]),
+  })
+
+  const node = nodes.find((entry) => entry.itemId === "tool-custom-badge-1201")
+  expect(node?.badges.customized).toBe(true)
+  expect(node?.badges.enabled).toBe(true)
+})
+

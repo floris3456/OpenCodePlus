@@ -107,6 +107,7 @@ export function override(snapshot: Snapshot, itemID: string, agent: string): Cus
 
 export function effective(snapshot: Snapshot, item: Item, agent: string): Effective {
   const resolved = override(snapshot, item.id, agent)
+  const inherited = inheritedAvailable(snapshot.customizations, item, resolved?.agent ?? agent)
   return {
     text: resolved?.text ?? item.text,
     // Plus can genuinely enable an upstream-disabled MCP server by deleting
@@ -117,20 +118,20 @@ export function effective(snapshot: Snapshot, item: Item, agent: string): Effect
         : resolved?.state === "enabled"
           ? item.kind === "mcp" || item.available
           : item.available,
-    customized: isCustomized(item, resolved),
-    review: isReview(item, resolved),
+    customized: isCustomized(item, resolved, inherited),
+    review: isReview(item, resolved, inherited),
   }
 }
 
-function isCustomized(item: Item, resolved: Customization | undefined): boolean {
+function isCustomized(item: Item, resolved: Customization | undefined, inherited: boolean): boolean {
   if (!resolved) return false
   if (resolved.text !== undefined) return true
-  return deviates(resolved.state, item.available)
+  return deviates(resolved.state, inherited)
 }
 
-function isReview(item: Item, resolved: Customization | undefined): boolean {
+function isReview(item: Item, resolved: Customization | undefined, inherited: boolean): boolean {
   if (!resolved) return false
-  if (!isCustomized(item, resolved)) return false
+  if (!isCustomized(item, resolved, inherited)) return false
   return resolved.basedOn !== item.fingerprint && resolved.reviewed !== item.fingerprint
 }
 
