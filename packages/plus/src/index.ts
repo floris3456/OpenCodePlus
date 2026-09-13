@@ -427,17 +427,32 @@ function normalizeCustomizations(
       .filter((record) => record.agent === "*")
       .map((record) => {
         const item = itemMap.get(record.item)
-        if (!item) return [record.item, record]
+        if (!item) return [record.item, normalizeAbsent(record)]
         return [record.item, normalizeRecord(record, item, [])]
       }),
   )
   return customizations.map((record) => {
     const item = itemMap.get(record.item)
-    if (!item) return record
+    if (!item) return normalizeAbsent(record)
     if (record.agent === "*") return sharedNormalized.get(record.item) ?? record
     const shared = sharedNormalized.get(record.item)
     return normalizeRecord(record, item, shared ? [shared] : [])
   })
+}
+
+function normalizeAbsent(record: Customization): Customization {
+  if (!record.item.startsWith("mcp:")) return record
+  // Discovery infers upstream MCP availability from the stored state, so an explicit
+  // state that was never checked against a live item must not be persisted.
+  return {
+    item: record.item,
+    agent: record.agent,
+    ...(record.text === undefined ? {} : { text: record.text }),
+    state: "inherit",
+    basedOn: record.basedOn,
+    ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
+    updated: record.updated,
+  }
 }
 
 function normalizeRecord(
