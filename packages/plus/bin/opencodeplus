@@ -44,6 +44,12 @@ if [ ! -f "$REPO/packages/cli/src/index.ts" ]; then
   exit 1
 fi
 
+PRELOAD="$SCRIPT_DIR/restore-cwd.ts"
+if [ ! -f "$PRELOAD" ]; then
+  echo "opencodeplus: Preload script not found at $PRELOAD" >&2
+  exit 1
+fi
+
 # Use the 'plus' storage channel unless overridden by caller, keeping client-local
 # state (like tabs) isolated from installed opencode2.
 export OPENCODE_TUI_CHANNEL="${OPENCODE_TUI_CHANNEL:-plus}"
@@ -66,6 +72,9 @@ unset OPENCODE_CONFIG_PROJECT_DISABLE
 #    '--model anthropic/x' or '--prompt "fix bug"') from being misidentified as subcommands.
 # 2. For the default TUI invocation, pass the caller's directory explicitly
 #    as the directory argument unless the user already supplied one as the last argument.
+# 3. Restore the target directory before the CLI entrypoint executes via a Bun
+#    --preload module (restore-cwd.ts) using OPENCODEPLUS_CALLER_CWD, so the CLI
+#    and Plus plugin bind to the caller project rather than the fork.
 #
 # Residual ambiguity: if a value-taking flag's value happens to name an existing
 # directory AND is the last argument (for example '--prompt src' run where 'src/'
@@ -103,22 +112,34 @@ fi
 
 if [ "$has_dir" -eq 1 ]; then
   case "$last_arg" in
-    /*) ;;
+    /*)
+      TARGET_DIR="$last_arg"
+      ;;
     *)
       abs_dir=$(cd "$last_arg" 2>/dev/null && pwd || true)
       if [ -n "$abs_dir" ]; then
+        TARGET_DIR="$abs_dir"
         i=1
         while [ "$i" -lt "$#" ]; do
           set -- "$@" "$1"
           shift
           i=$((i + 1))
         done
-        set -- "$@" "$abs_dir"
+        set -- "$@" "$TARGET_DIR"
         shift
+      else
+        TARGET_DIR="$last_arg"
       fi
       ;;
   esac
-  exec bun run --cwd "$REPO/packages/cli" src/index.ts "$@"
 else
-  exec bun run --cwd "$REPO/packages/cli" src/index.ts "$@" "$CALLER_DIR"
+  TARGET_DIR="$CALLER_DIR"
+fi
+
+export OPENCODEPLUS_CALLER_CWD="$TARGET_DIR"
+
+if [ "$has_dir" -eq 1 ]; then
+  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/index.ts" "$@"
+else
+  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/index.ts" "$@" "$TARGET_DIR"
 fi
