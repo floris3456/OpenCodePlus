@@ -489,4 +489,75 @@ test("mergeCustomization genuine MCP enable against unavailable upstream preserv
   expect(customizations[0].state).toBe("enabled")
 })
 
+test("state-only toggle on agent inheriting customized text preserves pending review", () => {
+  const item = makeItem({ text: "revised upstream text" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const initial = [shared]
+  expect(effective(makeSnapshot(initial), item, "alpha").review).toBe(true)
+
+  const toggled = mergeCustomization(initial, item, "alpha", { state: "disabled" })
+  expect(effective(makeSnapshot(toggled), item, "alpha").review).toBe(true)
+})
+
+test("acknowledging shared customization clears review for inheriting agent", () => {
+  const item = makeItem({ text: "revised upstream text" })
+  const shared = makeCustomization({
+    agent: "*",
+    text: "custom shared text",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const toggled = mergeCustomization([shared], item, "alpha", { state: "disabled" })
+  const acknowledged = mergeCustomization(toggled, item, "*", { reviewed: item.fingerprint })
+  expect(effective(makeSnapshot(acknowledged), item, "*").review).toBe(false)
+  expect(effective(makeSnapshot(acknowledged), item, "alpha").review).toBe(false)
+})
+
+test("own record with custom text keeps its own review provenance", () => {
+  const item = makeItem({ text: "revised upstream text" })
+  const staleShared = makeCustomization({
+    agent: "*",
+    text: "shared text",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const upToDateOwn = makeCustomization({
+    agent: "alpha",
+    text: "own text",
+    basedOn: item.fingerprint,
+  })
+  const snapshotWithUpToDateOwn = makeSnapshot([staleShared, upToDateOwn])
+  const resolvedUpToDate = override(snapshotWithUpToDateOwn, item.id, "alpha")
+  expect(resolvedUpToDate?.basedOn).toBe(upToDateOwn.basedOn)
+  expect(effective(snapshotWithUpToDateOwn, item, "alpha").review).toBe(false)
+  expect(effective(snapshotWithUpToDateOwn, item, "*").review).toBe(true)
+
+  const upToDateShared = makeCustomization({
+    agent: "*",
+    text: "shared text",
+    basedOn: item.fingerprint,
+  })
+  const staleOwn = makeCustomization({
+    agent: "alpha",
+    text: "own text",
+    basedOn: fingerprint("original upstream text"),
+  })
+  const snapshotWithStaleOwn = makeSnapshot([upToDateShared, staleOwn])
+  const resolvedStale = override(snapshotWithStaleOwn, item.id, "alpha")
+  expect(resolvedStale?.basedOn).toBe(staleOwn.basedOn)
+  expect(effective(snapshotWithStaleOwn, item, "alpha").review).toBe(true)
+  expect(effective(snapshotWithStaleOwn, item, "*").review).toBe(false)
+
+  const acknowledgedOwn = mergeCustomization(snapshotWithStaleOwn.customizations, item, "alpha", {
+    reviewed: item.fingerprint,
+  })
+  const snapshotAcknowledged = makeSnapshot(acknowledgedOwn)
+  const resolvedAck = override(snapshotAcknowledged, item.id, "alpha")
+  expect(resolvedAck?.reviewed).toBe(item.fingerprint)
+  expect(effective(snapshotAcknowledged, item, "alpha").review).toBe(false)
+})
+
+
 
