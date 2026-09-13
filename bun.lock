@@ -641,6 +641,7 @@
         "solid-js": "catalog:",
       },
       "devDependencies": {
+        "@opentui/core": "catalog:",
         "@tsconfig/bun": "catalog:",
         "@types/bun": "catalog:",
         "@typescript/native-preview": "catalog:",
