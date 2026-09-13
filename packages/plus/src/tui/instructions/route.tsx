@@ -28,9 +28,7 @@ function isAcknowledgable(node: TreeNode | undefined): boolean {
   if (node.badges.readOnly === true) return false
   if (node.itemId === undefined) return false
   if (node.badges.review !== true) return false
-  // state.acknowledge refuses rows whose edit is disallowed, so the hint
-  // must not advertise an acknowledgement that cannot succeed.
-  return node.action?.edit.allowed === true
+  return node.action?.edit.allowed === true || node.action?.toggle.allowed === true
 }
 
 function isResettable(node: TreeNode | undefined): boolean {
@@ -63,6 +61,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   // Narrow terminals swap between panes instead of showing both.
   const [showDetail, setShowDetail] = createSignal(false)
   const [editing, setEditing] = createSignal(false)
+  const detailMounted = () => wide() || showDetail()
+  createEffect(() => {
+    if (!detailMounted() && editing()) setEditing(false)
+  })
   onCleanup(() => state.dispose())
 
   const route = props.context.ui.router.current()
@@ -155,19 +157,25 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   function hintLine(): string {
-    if (editing()) return "ctrl+s save · esc cancel"
+    if (editing() && detailMounted()) return "ctrl+s save · esc cancel"
     // Advertise only what the selected row supports; unsupported verbs
     // would promise actions the state layer refuses. Fixed navigation
     // verbs first, then the row-dependent verbs that fit on one line.
     const node = current()
     const hints: string[] = []
     const narrowDetail = !wide() && showDetail()
-    const detailMounted = wide() || showDetail()
-    if (!wide() && !showDetail()) hints.push("up/down move", "enter detail")
-    if (wide()) hints.push("up/down move", "left/right expand")
+    if (!wide() && !showDetail()) {
+      hints.push("up/down move")
+      if (node && isLeaf(node)) hints.push("enter detail")
+      if (node && isExpandable(node)) hints.push("left/right expand")
+    }
+    if (wide()) {
+      hints.push("up/down move")
+      if (node && isExpandable(node)) hints.push("left/right expand")
+    }
     if (isTogglable(node)) hints.push("space toggle")
     if (isAcknowledgable(node)) hints.push("a acknowledge")
-    if (detailMounted && isEditable(node)) hints.push("e edit")
+    if (detailMounted() && isEditable(node)) hints.push("e edit")
     if (isResettable(node)) hints.push("x reset")
     if (!narrowDetail) hints.push("r refresh")
     hints.push(narrowDetail ? "esc back to tree" : "esc back")
@@ -177,7 +185,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   props.context.keymap.layer(() => {
     // While the detail editor owns the keyboard, tree navigation stays
     // silent so typing never moves the selection or toggles rows.
-    if (editing()) return { commands: [] }
+    if (editing() && detailMounted()) return { commands: [] }
+    const node = current()
     return {
       commands: [
         { bind: "up,k", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
@@ -185,9 +194,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "left,h", title: "Collapse", group: "Instructions", run: collapseOrParent },
         { bind: "right,l", title: "Expand", group: "Instructions", run: expandOrChild },
         { bind: "return", title: "Expand", group: "Instructions", run: expandOrChild },
-        { bind: "space", title: "Toggle enabled", group: "Instructions", run: toggle },
-        { bind: "a", title: "Acknowledge review", group: "Instructions", run: acknowledge },
-        { bind: "x", title: "Reset to default", group: "Instructions", run: reset },
+        ...(isTogglable(node) ? [{ bind: "space", title: "Toggle enabled", group: "Instructions", run: toggle }] : []),
+        ...(isAcknowledgable(node) ? [{ bind: "a", title: "Acknowledge review", group: "Instructions", run: acknowledge }] : []),
+        ...(isResettable(node) ? [{ bind: "x", title: "Reset to default", group: "Instructions", run: reset }] : []),
         { bind: "r", title: "Refresh", group: "Instructions", run: () => void state.refresh() },
         { bind: "escape", title: "Back", group: "Instructions", run: back },
       ],
