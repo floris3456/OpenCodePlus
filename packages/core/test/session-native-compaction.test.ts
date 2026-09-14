@@ -4,7 +4,6 @@ import { OpenAI } from "@opencode/ai/providers"
 import { Agent } from "@opencode/core/agent"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { Instructions } from "@opencode/core/instructions/index"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
@@ -28,7 +27,7 @@ import { DateTime, Deferred, Effect, Fiber, Schema } from "effect"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
-  AppNodeBuilder.build(
+  LayerNode.compile(
     LayerNode.group([
       Database.node,
       Bus.node,
@@ -40,7 +39,9 @@ const it = testEffect(
       PluginHooks.node,
       llmClient,
     ]),
-    [Bus.node.replace(Bus.configured({ persist: true }))],
+    {
+      replacements: [Bus.node.replace(Bus.configured({ persist: true }))],
+    },
   ),
 )
 
