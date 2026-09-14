@@ -26,6 +26,8 @@ export interface Discovered {
   readonly items: Item[]
   readonly agents: AgentSource[]
   readonly servers: { readonly name: string; readonly enabled: boolean }[]
+  /** Markdown bodies reread from the resolved agent source files, by agent id. Exported so baseline capture can record the baseline-time body. */
+  readonly bodies: ReadonlyMap<string, string>
 }
 
 export interface BaseTemplate {
@@ -66,7 +68,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...instructionFileItems(directory, instructions),
     ...mcp.items,
   ]
-  return { items, agents: sources, servers: mcp.servers }
+  return { items, agents: sources, servers: mcp.servers, bodies }
 }
 
 async function yieldList<Data>(list: Effect.Effect<{ data: Data }, unknown, never>): Promise<Data> {
