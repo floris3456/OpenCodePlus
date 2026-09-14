@@ -21,9 +21,9 @@ import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Agent } from "@opencode/schema/agent"
-import type { Mcp } from "@opencode/schema/mcp"
-import type { Skill } from "@opencode/schema/skill"
-import { Effect, Stream, type Types } from "effect"
+import { Skill } from "@opencode/schema/skill"
+import type { Tool } from "@opencode/schema/tool"
+import { Effect, Schema, Stream, type Types } from "effect"
 
 export type Overrides = Partial<Omit<Context, "options" | "session">> & {
   readonly session?: Partial<Context["session"]>
@@ -283,6 +283,49 @@ export function agentHarness(
   }
 }
 
+export function toolInfo(id: string, description: string, options?: Tool.Info["options"]): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    ...(options === undefined ? {} : { options }),
+    execute: () => Effect.die("unused tool.execute"),
+  }
+}
+
+export interface ToolHarness {
+  readonly domain: ToolDomain
+  readonly tools: Map<string, { description: string; options?: Tool.Info["options"] }>
+}
+
+export function toolHarness(entries: readonly { id: string; description: string; options?: Tool.Info["options"] }[] = []): ToolHarness {
+  const tools = new Map(entries.map((entry) => [entry.id, { description: entry.description, ...(entry.options === undefined ? {} : { options: entry.options }) }]))
+  return {
+    domain: {
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback({
+            list: () => Array.from(tools.entries()).map(([id, tool]) => toolInfo(id, tool.description, tool.options)),
+            get: (id) => {
+              const tool = tools.get(id)
+              if (!tool) return undefined
+              return toolInfo(id, tool.description, tool.options)
+            },
+            namespace: () => undefined,
+            add: () => undefined,
+            update: () => undefined,
+            remove: () => undefined,
+          })
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+      hook: die("unused tool.hook"),
+    },
+    tools,
+  }
+}
+
 export interface McpHarness {
   readonly domain: MCPDomain
   readonly starts: number
@@ -297,23 +340,20 @@ export interface McpHarness {
 // modeling McpClient.connect on every replaceServer; a server that stays
 // disabled across the rebuild never starts. Discovery reads inside
 // readTransform observe the rebuilt list.
-export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
-  const upstream = new Map(
-    initial.map(([name, config]) => [name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>]),
-  )
+export function mcpHarness(initial: [string, { type: "remote"; url: string; disabled?: boolean }][]): McpHarness {
+  const upstream = new Map(initial.map(([name, config]) => [name, structuredClone(config)]))
   const installed: Array<Parameters<MCPDomain["transform"]>[0]> = []
   const counts = { starts: 0 }
-  function visible(): Map<string, Types.DeepMutable<Mcp.ServerConfig>> {
-    const servers = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>()
-    for (const [name, config] of upstream)
-      servers.set(name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>)
+  function visible(): Map<string, { type: "remote"; url: string; disabled?: boolean }> {
+    const servers = new Map<string, { type: "remote"; url: string; disabled?: boolean }>()
+    for (const [name, config] of upstream) servers.set(name, structuredClone(config))
     const editor = {
       list: () => Array.from(servers.entries()),
       get: (name: string) => servers.get(name),
-      set: (name: string, config: Mcp.ServerConfig) => {
-        servers.set(name, structuredClone(config) as Types.DeepMutable<Mcp.ServerConfig>)
+      set: (name: string, config: { type: "remote"; url: string; disabled?: boolean }) => {
+        servers.set(name, structuredClone(config))
       },
-      update: (name: string, update: (config: Types.DeepMutable<Mcp.ServerConfig>) => void) => {
+      update: (name: string, update: (config: { type: "remote"; url: string; disabled?: boolean }) => void) => {
         const current = servers.get(name)
         if (current) update(current)
       },
@@ -321,7 +361,7 @@ export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
         servers.delete(name)
       },
     }
-    for (const transform of installed) transform(editor)
+    for (const transform of installed) transform(editor as never)
     return servers
   }
   function reconcile() {
@@ -357,6 +397,63 @@ export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
     },
     disabled: (name: string) => visible().get(name)?.disabled,
   }
+}
+
+export function skillInfo(id: string, content: string, locationPath = `/skills/${id}.md`): Skill.Info {
+  return Skill.Info.make({
+    id: Skill.ID.make(id),
+    name: Skill.Name.make(id),
+    location: AbsolutePath.make(locationPath),
+    content,
+  })
+}
+
+export function agentInfo(id: string, system: string): Agent.Info {
+  return { ...Agent.Info.default(Agent.ID.make(id)), system }
+}
+
+export function fullContext(options: {
+  directory: string
+  agents?: Agent.Info[]
+  skills?: Skill.Info[]
+  tools?: { id: string; description: string; options?: Tool.Info["options"] }[]
+  servers?: [string, { type: "remote"; url: string; disabled?: boolean }][]
+  hooks?: { current: number }
+}): Context {
+  const agents = options.agents ?? []
+  const skills = options.skills ?? []
+  const entries = options.tools ?? []
+  const servers = options.servers ?? []
+  const location = new Location.Info({
+    directory: AbsolutePath.make(options.directory),
+    project: {
+      id: Project.ID.global,
+      directory: AbsolutePath.make(options.directory),
+      canonical: AbsolutePath.make(options.directory),
+    },
+  })
+  const tools = toolHarness(entries)
+  const mcp = mcpHarness(servers)
+  const skillState = skillHarness(skills)
+  const agentState = agentHarness(agents)
+  const skillDomain = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  return context({
+    location,
+    agent: agentState.domain,
+    skill: skillDomain,
+    tool: tools.domain,
+    mcp: mcp.domain,
+    session: options.hooks === undefined ? {} : {
+      hook: () =>
+        Effect.sync(() => {
+          if (options.hooks) options.hooks.current++
+          return { dispose: Effect.sync(() => { if (options.hooks) options.hooks.current-- }) }
+        }),
+    },
+  })
 }
 
 function storageDomain(): StorageDomain {

@@ -366,6 +366,11 @@ test("global scope uses OPENCODE_CONFIG_DIR when set", async () => {
       expect(created.path).toBe(path.join(customGlobal, "agent", "global-reviewer.md"))
       expect(await Bun.file(created.path).exists()).toBe(true)
     }
+
+    const renamed = await rename({ scope: "global", projectDirectory: "", from: "global-reviewer", to: "global-lead" })
+    expect(renamed.ok).toBe(true)
+    const removed = await remove({ scope: "global", projectDirectory: "", id: "global-lead" })
+    expect(removed.ok).toBe(true)
   } finally {
     if (previous !== undefined) {
       process.env.OPENCODE_CONFIG_DIR = previous
