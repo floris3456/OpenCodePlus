@@ -320,3 +320,72 @@ export interface Assembled {
 - `mcp.missing`: `{ name: string }`
 - `mcp.invalid`: `{ name: string, reason: string }`
 
+## Teams (`teams.ts`, `paths.ts`)
+
+A team is a named set of agent files toggled as a unit. When a team is
+enabled its agents become visible to core as real agents. Teams are not a
+Defaults concept: levels are `"project" | "global"` only.
+
+```ts
+export type TeamLevel = "project" | "global"
+export interface TeamRecord {
+  readonly type: "team"
+  readonly level: TeamLevel
+  readonly team: string
+  readonly enabled: boolean
+  readonly updated: string
+}
+export interface TeamAgent { readonly id: string; readonly path: string }
+export interface DiscoveredTeam {
+  readonly level: TeamLevel
+  readonly team: string
+  readonly path: string
+  readonly agents: readonly TeamAgent[]
+}
+export function validateTeamName(raw: string): { ok: true; team: string } | { ok: false; reason: string }
+export function discoverTeams(level: TeamLevel, projectDirectory: string): Promise<DiscoveredTeam[]>
+export function isTeamEnabled(records: readonly TeamRecord[], level: TeamLevel, team: string): boolean
+export function resolveTeams(
+  discovered: readonly DiscoveredTeam[],
+  records: readonly TeamRecord[],
+  regular: readonly AgentSource[],
+): { teams: readonly TeamContribution[]; agents: readonly AgentSource[] }
+```
+
+On-disk layout (mirrors how `projectRecordsPath`/`globalRecordsPath`
+resolve): `paths.ts` exports `projectTeamsPath(directory)` →
+`<projectDir>/.opencodeplus/teams` and `globalTeamsPath(configDir =
+globalConfigDir())` → `<globalConfigDir()>/opencodeplus/teams`. A team is one
+directory `<root>/<team>/`; agent files are `<team>/<agentId>.md` in the same
+frontmatter+body format `agents/files.ts` `formatMarkdown` writes, including
+nested ids (`sub/agent.md` → `sub/agent`).
+
+Validation (`validateTeamName`, same confinement style as
+`validateAgentId`/`resolveInstructionPath`): rejects empty names, NUL,
+absolute paths, any `/` or `\`, `.`, and anything containing `..`. Validated
+names can never escape the teams directory; unvalidated input fails closed.
+
+Discovery: one entry per immediate subdirectory, sorted by name; a team
+directory with no agent files is still a team; a missing teams directory
+means no teams, not an error. Only `*.md` files are members (other files are
+ignored), listed as `{ id, path }` sorted by id.
+
+Membership: `isTeamEnabled` returns the matching record's `enabled`, and a
+team with no record at all is DISABLED. `resolveTeams` reports each team's
+enabled flag with its on-disk members plus the winning team copy per agent
+id as `AgentSource` entries (`scope` = team level, `path` = team file,
+`team` = team name; `model.ts` `AgentSource.team` is optional and additive).
+
+Collision rule extends the `model.ts` chain (project over global over
+defaults): level rank decides first, applied both between team copies and
+between a team copy and a same-id regular agent. Ties go to the established
+non-team identity: a regular project agent beats a project team copy, a
+regular global agent beats a global team copy, and only a team copy outranks
+a defaults template. Among enabled team copies at the same level with the
+same agent id, the lexicographically smallest team name wins.
+
+Not yet implemented: the `Teams` tree group beside `Agents`, the `V2Team`
+store schema/union addition in `store.ts`, and the RPC surface. The
+`resolveTeams` output shape is the input the discovery/apply follow-up will
+merge into core-visible agents.
+
