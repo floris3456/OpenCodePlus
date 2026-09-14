@@ -722,7 +722,11 @@ function deltaRows(before: readonly StoredRecord[], after: readonly StoredRecord
 function groupByIdentity(records: readonly StoredRecord[]): Map<string, StoredRecord[]> {
   const groups = new Map<string, StoredRecord[]>()
   for (const record of records) {
-    const key = `${record.type} ${recordTarget(record)}`
+    // NUL separates the type from the row id, written as an escape so the
+    // source stays plain text. It keeps a customization and a split over the
+    // same coordinates distinct, and the id validators reject NUL bytes, so
+    // it cannot collide with row-id content.
+    const key = `${record.type}\\u0000${recordTarget(record)}`
     const group = groups.get(key)
     if (group === undefined) groups.set(key, [record])
     else group.push(record)
