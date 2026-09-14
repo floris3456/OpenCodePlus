@@ -7,35 +7,41 @@ import type { SkillEditor } from "@opencode/plugin/effect/skill"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Skill } from "@opencode/schema/skill"
 import { Deferred, Effect, Exit, Scope } from "effect"
-import { applies, effective, override, type Customization, type Item, type Snapshot } from "./model.js"
+import { applies, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+
+export interface ApplyAgent {
+  readonly id: string
+  readonly level: Level
+}
+
+export interface ApplyInput {
+  readonly items: readonly Item[]
+  readonly agents: readonly ApplyAgent[]
+  readonly records: readonly CustomizationRecord[]
+  readonly splits: readonly SplitRecord[]
+  readonly scopes: Scopes
+}
 
 export interface Applied {
   readonly registrations: Registration[]
 }
 
-export async function apply(ctx: Context, snapshot: Snapshot, customizations: Customization[]): Promise<Applied> {
-  const scoped: Snapshot = { ...snapshot, customizations }
-  if (scoped.customizations.length === 0) return { registrations: [] }
-  const agentIDs = agentIDsFor(scoped)
+export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
+  if (input.records.length === 0) return { registrations: [] }
   const installed: Registration[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
-    const prompt = await applyPrompts(ctx, scoped, agentIDs)
-    if (prompt) installed.push(prompt)
-    const skills = await applySkills(ctx, scoped, agentIDs, (reg) => installed.push(reg))
-    const tools = await applyTools(ctx, scoped, agentIDs)
-    if (tools) installed.push(tools)
-    const mcp = await applyMcp(ctx, scoped)
-    if (mcp) installed.push(mcp)
-    if (prompt !== undefined || skills.agent) await runVoid(ctx.agent.reload())
-    if (skills.skill) await runVoid(ctx.skill.reload())
+    const role = await applyRoles(ctx, input)
+    if (role !== undefined) installed.push(role)
+    const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
+    const session = await applySession(ctx, input)
+    if (session !== undefined) installed.push(session)
+    const mcp = await applyMcp(ctx, input)
+    if (mcp !== undefined) installed.push(mcp)
+    if (role !== undefined || skills.agentChanged) await runVoid(ctx.agent.reload())
+    if (skills.skillChanged) await runVoid(ctx.skill.reload())
     if (mcp !== undefined) await runVoid(ctx.mcp.reload())
-    const registrations: Registration[] = []
-    if (prompt) registrations.push(prompt)
-    registrations.push(...skills.registrations)
-    if (tools) registrations.push(tools)
-    if (mcp) registrations.push(mcp)
-    return { registrations }
+    return { registrations: [...installed] }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
@@ -84,20 +90,44 @@ async function runHook<Name extends "context">(
   )
 }
 
-function agentIDsFor(snapshot: Snapshot): string[] {
-  return snapshot.items
-    .filter((item) => item.kind === "prompt")
-    .map((item) => item.owner)
-    .filter((id, index, all) => all.indexOf(id) === index)
+interface ChainArgs {
+  readonly records: readonly CustomizationRecord[]
+  readonly splits: readonly SplitRecord[]
+  readonly scopes: Scopes
 }
 
-async function applyPrompts(
-  ctx: Context,
-  snapshot: Snapshot,
-  agentIDs: string[],
-): Promise<Registration | undefined> {
-  const prompts = snapshot.items.filter((item) => item.kind === "prompt")
-  const updates = agentIDs.flatMap((agentID) => promptUpdates(snapshot, prompts, agentID))
+function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
+  return resolve({
+    upstream: item,
+    records: args.records,
+    splits: args.splits,
+    scopes: args.scopes,
+    address: { level: agent.level, agent: agent.id, item: item.id, section: null },
+  })
+}
+
+function isNoop(item: Item, resolved: { assembled: string; enabled: boolean }): boolean {
+  return resolved.assembled === item.text && resolved.enabled === item.enabled
+}
+
+function parseId(id: string, prefix: string): string {
+  if (id.startsWith(prefix)) return id.slice(prefix.length)
+  return id
+}
+
+async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const updates = input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "system") return []
+      if (item.id !== "system:role") return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.assembled === item.text && resolved.enabled === item.enabled) return []
+      // A disabled role never clears the agent system text.
+      if (!resolved.enabled) return []
+      return [{ agent: agent.id, text: resolved.assembled }]
+    }),
+  )
   if (updates.length === 0) return undefined
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
@@ -109,44 +139,47 @@ async function applyPrompts(
   })
 }
 
-function promptUpdates(snapshot: Snapshot, prompts: Item[], agentID: string): { agent: string; text: string }[] {
-  return prompts.flatMap((item) => {
-    if (!applies(item, agentID)) return []
-    const resolved = effective(snapshot, item, agentID)
-    if (!resolved.customized || resolved.text === item.text) return []
-    if (!resolved.enabled) return []
-    return [{ agent: item.owner, text: resolved.text }]
-  })
-}
-
 interface SkillApplied {
-  readonly registrations: Registration[]
-  readonly agent: boolean
-  readonly skill: boolean
+  readonly agentChanged: boolean
+  readonly skillChanged: boolean
 }
 
 async function applySkills(
   ctx: Context,
-  snapshot: Snapshot,
-  agentIDs: string[],
+  input: ApplyInput,
   onInstall: (registration: Registration) => void,
 ): Promise<SkillApplied> {
-  const skills = snapshot.items.filter((item) => item.kind === "skill")
-  const denials = agentIDs.flatMap((agentID) => skillDenials(snapshot, skills, agentID))
-  const copies = agentIDs.flatMap((agentID) => skillCopies(snapshot, skills, agentID))
-  if (denials.length === 0 && copies.length === 0) return { registrations: [], agent: false, skill: false }
+  const denials = input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "skill") return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.assembled === item.text && resolved.enabled === item.enabled) return []
+      if (resolved.enabled) return []
+      return [{ agent: agent.id, skill: parseId(item.id, "skill:") }]
+    }),
+  )
+  const copies = input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "skill") return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.assembled === item.text && resolved.enabled === item.enabled) return []
+      if (!resolved.enabled) return []
+      // Enabling an upstream-disabled skill with unchanged text needs no copy.
+      if (resolved.assembled === item.text) return []
+      return [{ agent: agent.id, skill: parseId(item.id, "skill:"), text: resolved.assembled }]
+    }),
+  )
+  if (denials.length === 0 && copies.length === 0) return { agentChanged: false, skillChanged: false }
   const added = copies.length === 0 ? undefined : await addSkillCopies(ctx, copies)
+  if (added !== undefined) onInstall(added.registration)
   const addedIDs = added?.added ?? new Set<string>()
-  const registrations: Registration[] = []
-  if (added) {
-    onInstall(added.registration)
-    registrations.push(added.registration)
-  }
   const addedCopies = copies.filter((copy) => addedIDs.has(copyName(copy.agent, copy.skill)))
   const namespaceDenies =
     addedCopies.length === 0
       ? []
-      : agentIDs.map((agent) => ({ agent, resource: copyPattern(), effect: "deny" as const }))
+      : input.agents.map((agent) => ({ agent: agent.id, resource: copyPattern(), effect: "deny" as const }))
   const rules = [
     ...denials.map((denial) => ({ agent: denial.agent, resource: denial.skill, effect: "deny" as const })),
     ...namespaceDenies,
@@ -155,19 +188,15 @@ async function applySkills(
       { agent: copy.agent, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
     ]),
   ]
-  if (rules.length === 0) return { registrations, agent: false, skill: added !== undefined }
+  if (rules.length === 0) return { agentChanged: false, skillChanged: added !== undefined }
   const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const rule of rules) pushSkillRule(editor, rule)
   })
   onInstall(agentRegistration)
-  registrations.unshift(agentRegistration)
-  return { registrations, agent: true, skill: added !== undefined }
+  return { agentChanged: true, skillChanged: added !== undefined }
 }
 
-function pushSkillRule(
-  editor: AgentEditor,
-  rule: { agent: string; resource: string; effect: "deny" | "allow" },
-) {
+function pushSkillRule(editor: AgentEditor, rule: { agent: string; resource: string; effect: "deny" | "allow" }) {
   const current = editor.get(rule.agent)
   if (!current) return
   // Core evaluates permissions last-match-wins, so appending is always
@@ -197,16 +226,6 @@ interface SkillCopy {
   readonly agent: string
   readonly skill: string
   readonly text: string
-}
-
-function skillCopies(snapshot: Snapshot, skills: Item[], agentID: string): SkillCopy[] {
-  return skills.flatMap((item) => {
-    if (!applies(item, agentID)) return []
-    const resolved = effective(snapshot, item, agentID)
-    if (!resolved.enabled) return []
-    if (resolved.text === item.text) return []
-    return [{ agent: agentID, skill: item.owner, text: resolved.text }]
-  })
 }
 
 async function addSkillCopies(
@@ -240,50 +259,108 @@ async function addSkillCopies(
   return { registration, added }
 }
 
-function skillDenials(snapshot: Snapshot, skills: Item[], agentID: string): { agent: string; skill: string }[] {
-  return skills.flatMap((item) => {
-    if (!applies(item, agentID)) return []
-    const resolved = effective(snapshot, item, agentID)
-    if (resolved.enabled) return []
-    return [{ agent: agentID, skill: item.owner }]
-  })
-}
-
-async function applyTools(
-  ctx: Context,
-  snapshot: Snapshot,
-  agentIDs: string[],
-): Promise<Registration | undefined> {
-  const items = snapshot.items.filter((item) => item.kind === "tool")
-  const customized = agentIDs.flatMap((agentID) => toolCandidates(snapshot, items, agentID))
-  if (customized.length === 0) return undefined
-  const inventory = await readTools(ctx)
-  const plans = customized.filter((plan) => !isCodeModeTool(inventory, plan.tool))
-  if (plans.length === 0) return undefined
-  return runHook(ctx.session.hook, "context", (event) => {
-    applyToolPlan(event, plansFor(plans, event.agent))
-    return Effect.void
-  })
+interface BasePlan {
+  readonly agent: string
+  readonly template: string
+  readonly text: string
 }
 
 interface ToolPlan {
   readonly agent: string
   readonly tool: string
   readonly enabled: boolean
-  readonly text: string | undefined
+  readonly text: string
 }
 
-function toolCandidates(snapshot: Snapshot, tools: Item[], agentID: string): ToolPlan[] {
-  return tools.flatMap((item) => {
-    if (!applies(item, agentID)) return []
-    const resolved = effective(snapshot, item, agentID)
-    if (resolved.enabled && resolved.text === item.text) return []
-    return [{ agent: agentID, tool: item.owner, enabled: resolved.enabled, text: resolved.text }]
+interface InstructionPlan {
+  readonly agent: string
+  readonly path: string
+  readonly text: string
+  readonly enabled: boolean
+}
+
+function basePlans(input: ApplyInput): BasePlan[] {
+  return input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "base") return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (isNoop(item, resolved)) return []
+      if (!resolved.enabled) return []
+      return [{ agent: agent.id, template: parseId(item.id, "base:"), text: resolved.assembled }]
+    }),
+  )
+}
+
+function toolCandidates(input: ApplyInput): ToolPlan[] {
+  return input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "tool") return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (isNoop(item, resolved)) return []
+      return [{ agent: agent.id, tool: parseId(item.id, "tool:"), enabled: resolved.enabled, text: resolved.assembled }]
+    }),
+  )
+}
+
+function instructionPlans(input: ApplyInput): InstructionPlan[] {
+  return input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "system") return []
+      if (item.id === "system:role") return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (isNoop(item, resolved)) return []
+      return [{ agent: agent.id, path: parseId(item.id, "system:"), text: resolved.assembled, enabled: resolved.enabled }]
+    }),
+  )
+}
+
+async function applySession(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const base = basePlans(input)
+  const candidates = toolCandidates(input)
+  const instructions = instructionPlans(input)
+  if (base.length === 0 && candidates.length === 0 && instructions.length === 0) return undefined
+  let tools: ToolPlan[] = []
+  if (candidates.length > 0) {
+    const inventory = await readTools(ctx)
+    tools = candidates.filter((plan) => !isCodeModeTool(inventory, plan.tool))
+  }
+  if (base.length === 0 && tools.length === 0 && instructions.length === 0) return undefined
+  return runHook(ctx.session.hook, "context", (event) => {
+    applyBasePlan(event, base)
+    applyToolPlan(event, tools.filter((plan) => plan.agent === String(event.agent)))
+    applyInstructions(event.system, instructions.filter((plan) => plan.agent === String(event.agent)))
+    return Effect.void
   })
 }
 
-function plansFor(plans: ToolPlan[], agent: string): ToolPlan[] {
-  return plans.filter((plan) => plan.agent === agent)
+function templateForModel(model: { readonly providerID: string; readonly id: string }): string {
+  const hay = `${model.providerID} ${model.id}`.toLowerCase()
+  if (hay.includes("gpt")) return "gpt"
+  if (hay.includes("claude")) return "claude"
+  if (hay.includes("muse")) return "muse"
+  if (hay.includes("gemini")) return "gemini"
+  return "general"
+}
+
+function applyBasePlan(event: SessionContext, plans: readonly BasePlan[]) {
+  const candidates = plans.filter((plan) => plan.agent === String(event.agent))
+  if (candidates.length === 0) return
+  // Only the template active for this request's model changes what the model
+  // sees; stored edits for other templates wait until the agent switches model.
+  const active = templateForModel(event.model)
+  const match = candidates.find((plan) => plan.template === active)
+  if (match === undefined) return
+  // Same seam as core's optimize plugin (session context hook): Plus registers
+  // later, so this unconditional overwrite wins over the model-family default.
+  const first = event.system[0]
+  if (first === undefined) {
+    event.system.push({ type: "text", text: match.text })
+    return
+  }
+  event.system[0] = { ...first, text: match.text }
 }
 
 type ToolInventory = ReadonlyMap<string, boolean>
@@ -314,21 +391,68 @@ function isCodeModeTool(inventory: ToolInventory, id: string): boolean {
   return inventory.get(id) !== true
 }
 
-function applyToolPlan(event: SessionContext, plans: ToolPlan[]) {
+function applyToolPlan(event: SessionContext, plans: readonly ToolPlan[]) {
   for (const plan of plans) {
     if (!plan.enabled) {
       delete event.tools[plan.tool]
       continue
     }
-    if (plan.text === undefined) continue
     const tool = event.tools[plan.tool]
     if (tool) tool.description = plan.text
   }
 }
 
-async function applyMcp(ctx: Context, snapshot: Snapshot): Promise<Registration | undefined> {
-  const servers = snapshot.items.filter((item) => item.kind === "mcp")
-  const updates = mcpUpdates(snapshot, servers)
+// Core per-file instruction seam (one system part per instruction source file
+// carrying its path) is not yet present in this worktree: SessionContext.system
+// parts currently carry no path. Implemented against the documented contract —
+// a part whose metadata.path (or top-level path) equals the instruction path —
+// so drop/replace needs no string surgery on a merged blob. Do NOT fall back
+// to editing merged text by matching.
+export function applyInstructions(
+  system: SessionContext["system"],
+  plans: readonly InstructionPlan[],
+): void {
+  for (const plan of plans) {
+    const index = system.findIndex((part) => partPath(part) === plan.path)
+    if (!plan.enabled) {
+      if (index !== -1) system.splice(index, 1)
+      continue
+    }
+    if (index !== -1) {
+      const current = system[index]
+      if (current === undefined) continue
+      if (current.text !== plan.text) system[index] = { ...current, text: plan.text }
+      continue
+    }
+    system.push({ type: "text", text: plan.text, metadata: { path: plan.path } })
+  }
+}
+
+function partPath(part: SessionContext["system"][number]): string | undefined {
+  const metadata = part.metadata as Record<string, unknown> | undefined
+  const fromMetadata = metadata?.["path"]
+  if (typeof fromMetadata === "string") return fromMetadata
+  const nested = (metadata?.["instruction"] as Record<string, unknown> | undefined)?.["path"]
+  if (typeof nested === "string") return nested
+  const direct = (part as { path?: unknown }).path
+  if (typeof direct === "string") return direct
+  return undefined
+}
+
+async function applyMcp(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const updates = input.items.flatMap((item) => {
+    if (item.kind !== "mcp") return []
+    const resolved = resolve({
+      upstream: item,
+      records: input.records,
+      splits: input.splits,
+      scopes: input.scopes,
+      address: { level: "defaults", agent: null, item: item.id, section: null },
+    })
+    // Server configuration is file-owned: a stored text on an MCP row is never applied.
+    if (resolved.enabled === item.enabled) return []
+    return [{ name: parseId(item.id, "mcp:"), enabled: resolved.enabled }]
+  })
   if (updates.length === 0) return undefined
   return runRegistration(ctx.mcp.transform, (editor: MCPEditor) => {
     for (const update of updates) {
@@ -340,20 +464,5 @@ async function applyMcp(ctx: Context, snapshot: Snapshot): Promise<Registration 
       }
       current.disabled = true
     }
-  })
-}
-
-interface McpUpdate {
-  readonly name: string
-  readonly enabled: boolean
-}
-
-function mcpUpdates(snapshot: Snapshot, servers: Item[]): McpUpdate[] {
-  return servers.flatMap((item): McpUpdate[] => {
-    const resolved = override(snapshot, item.id, "*")
-    if (!resolved || resolved.state === "inherit") return []
-    const enabled = resolved.state === "enabled"
-    if (enabled === item.available) return []
-    return [{ name: item.owner, enabled }]
   })
 }
