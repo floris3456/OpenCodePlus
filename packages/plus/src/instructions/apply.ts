@@ -9,6 +9,7 @@ import { Skill } from "@opencode/schema/skill"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Deferred, Effect, Exit, Scope } from "effect"
+import path from "node:path"
 import { applies, isCodeModeToolEntry, isCodeModeToolId, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
 
 export interface ApplyAgent {
@@ -113,7 +114,12 @@ function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
 }
 
 function isNoop(item: Item, resolved: { assembled: string; enabled: boolean }): boolean {
-  return resolved.assembled === item.text && resolved.enabled === item.enabled
+  // assemble normalizes whitespace (collapses blank runs, trims), so an
+  // unchanged resolution never round-trips byte-identically when the raw
+  // upstream carries a trailing newline or extra blank lines. Compare through
+  // the same normalization (like skillCustomized does) so an unrelated save
+  // installs no plan for an untouched template.
+  return normalizeLossless(resolved.assembled) === normalizeLossless(item.text) && resolved.enabled === item.enabled
 }
 
 // A skill installs a copy, denial or rule only when its resolved view for
@@ -150,7 +156,7 @@ async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration
       if (item.id !== "system:role") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (resolved.assembled === item.text && resolved.enabled === item.enabled) return []
+      if (isNoop(item, resolved)) return []
       // A disabled role never clears the agent system text.
       if (!resolved.enabled) return []
       return [{ agent: agent.id, text: resolved.assembled }]
@@ -360,53 +366,52 @@ async function applySession(ctx: Context, input: ApplyInput): Promise<Registrati
     tools = candidates.filter((plan) => !isCodeModeToolId(inventory, plan.tool))
   }
   if (base.length === 0 && tools.length === 0 && instructions.length === 0) return undefined
-  const activeByAgent = await readActiveBase(ctx, input.agents)
+  const pins = new Map<string, string>()
+  for (const agent of input.agents) {
+    if (agent.base !== undefined) pins.set(agent.id, agent.base)
+  }
+  const catalog = await Effect.runPromise(
+    ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+  )
+  const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
   const customByAgent = await readCustomSystem(ctx, input.agents)
   return runHook(ctx.session.hook, "context", (event) => {
-    applyBasePlan(event, base, activeByAgent, customByAgent)
+    applyBasePlan(event, base, classifier, customByAgent)
     applyToolPlan(event, tools.filter((plan) => plan.agent === String(event.agent)))
-    applyInstructions(event.system, instructions.filter((plan) => plan.agent === String(event.agent)))
+    applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
     return Effect.void
   })
 }
 
-// The one host-sourced classification: resolve each agent's model through the
-// catalog exactly like the core optimize plugin, then ask `ctx.prompt.active`.
-// An explicit per-agent base threaded from discover wins; otherwise the
-// agent's configured model (or the catalog default) classifies it. Custom
-// agents are classified too — the caller skips them — so the map stays total.
-async function readActiveBase(
-  ctx: Context,
-  agents: readonly ApplyAgent[],
-): Promise<ReadonlyMap<string, string | undefined>> {
-  const catalog = await Effect.runPromise(
-    ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
-  )
-  const fallback = await Effect.runPromise(
-    ctx.catalog.model
-      .default()
-      .pipe(Effect.catchCause(() => Effect.succeed({ data: undefined as Model.Info | undefined }))),
-  )
-  const listed = await Effect.runPromise(
-    ctx.agent.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Agent.Info[] }))),
-  )
-  return new Map(
-    agents.map((agent) => {
-      if (agent.base !== undefined) return [agent.id, agent.base] as const
-      const info = listed.data.find((entry) => String(entry.id) === agent.id)
-      const ref = info?.model ?? fallback.data
-      const model =
-        ref === undefined
-          ? { id: "", name: "" }
-          : (catalog.data.find((entry) => entry.providerID === ref.providerID && entry.id === ref.id) ?? {
-              id: ref.id,
-              name: ref.id,
-            })
-      const active = Effect.runSync(
-        ctx.prompt.active(model).pipe(Effect.catchCause(() => Effect.succeed(undefined as string | undefined))),
-      )
-      return [agent.id, active] as const
-    }),
+// The one host-sourced classification: mirror the core optimize plugin
+// (core/src/plugin/optimize.ts lines 59-62) — look the REQUEST model ref up
+// in the catalog list, defaulting to a bare ref (name = id, like
+// `Model.Info.default`) when the catalog has no entry, then ask
+// `ctx.prompt.active`. Classification happens per request from `event.model`
+// because a session can select or switch to a model family that differs from
+// the agent's configured model; classifying once at install time would serve
+// the configured family's customization to the wrong model. An explicit
+// per-agent base threaded from discover (index.ts derives it from the agent's
+// configured model) wins over the request model.
+interface RequestClassifier {
+  readonly pinned: ReadonlyMap<string, string>
+  readonly catalog: readonly Model.Info[]
+  readonly prompt: Context["prompt"]
+}
+
+function classifyRequest(
+  classifier: RequestClassifier,
+  agent: string,
+  ref: { providerID: unknown; id: unknown },
+): string | undefined {
+  const pinned = classifier.pinned.get(agent)
+  if (pinned !== undefined) return pinned
+  const providerID = String(ref.providerID)
+  const id = String(ref.id)
+  const found = classifier.catalog.find((entry) => String(entry.providerID) === providerID && String(entry.id) === id)
+  const model = found !== undefined ? { id: found.id, name: found.name } : { id, name: id }
+  return Effect.runSync(
+    classifier.prompt.active(model).pipe(Effect.catchCause(() => Effect.succeed(undefined as string | undefined))),
   )
 }
 
@@ -432,7 +437,7 @@ async function readCustomSystem(
 function applyBasePlan(
   event: SessionContext,
   plans: readonly BasePlan[],
-  activeByAgent: ReadonlyMap<string, string | undefined>,
+  classifier: RequestClassifier,
   customByAgent: ReadonlySet<string>,
 ) {
   if (customByAgent.has(String(event.agent))) return
@@ -440,22 +445,67 @@ function applyBasePlan(
   if (candidates.length === 0) return
   // Only the template active for this request's model changes what the model
   // sees; stored edits for other templates wait until the agent switches model.
-  const active = activeByAgent.get(String(event.agent))
+  const active = classifyRequest(classifier, String(event.agent), event.model)
   if (active === undefined) return
   const match = candidates.find((plan) => plan.template === active)
   if (match === undefined) return
-  // Host templates already carry core's rendered tool guidance: the plugin
-// host serves `PromptTemplate.templates` (raw bundled text), the core
-// optimize plugins run first (`pre`) and overwrite `system[0]` with the
-// rendered family template, and Plus runs last (`post`) after the rendered
-// text is already in place. Stored custom text replaces it verbatim — there
-// is no second render seam to call.
+  // System[0] already carries core's rendered family template: core's
+  // optimize plugins run first (`pre`) and overwrite `system[0]` with the
+  // rendered text, and Plus runs last (`post`). Stored custom text is raw
+  // host template text, so render it through the host-owned seam before
+  // writing: splice the rendered guidance out of the live system[0] in place
+  // of the raw placeholder, and substitute the request model name for the
+  // model placeholder.
   const first = event.system[0]
   if (first === undefined) {
-    event.system.push({ type: "text", text: match.text })
+    event.system.push({ type: "text", text: renderBaseText(match.text, event, classifier) })
     return
   }
-  event.system[0] = { ...first, text: match.text }
+  event.system[0] = { ...first, text: renderBaseText(match.text, event, classifier) }
+}
+
+// Render one stored base customization the way core's optimize plugin renders
+// the family template it replaces (core/src/plugin/optimize.ts + system
+// prompt seam): the raw `${OPENCODE_TOOL_GUIDANCE}` marker becomes the live
+// tool guidance visible in system[0], and `{{MODEL_NAME}}` becomes the
+// request model name. The live text — not a regenerated guidance string —
+// is the source of truth for what core rendered for this request, so Plus
+// never invents guidance for tools the request does not have.
+function renderBaseText(text: string, event: SessionContext, classifier: RequestClassifier): string {
+  const rendered = spliceToolGuidance(text, event.system[0]?.text)
+  return rendered.replaceAll("{{MODEL_NAME}}", requestModelName(classifier, event))
+}
+
+function requestModelName(classifier: RequestClassifier, event: SessionContext): string {
+  const providerID = String(event.model.providerID)
+  const id = String(event.model.id)
+  const found = classifier.catalog.find((entry) => String(entry.providerID) === providerID && String(entry.id) === id)
+  return found === undefined ? id : found.name
+}
+
+// The stored customization only knows the RAW placeholder; the live system[0]
+// already carries core's rendered guidance for this request's tool set. Take
+// the guidance span out of the live text by aligning the raw template around
+// its placeholder: the literal text before the marker locates the guidance
+// start in the live text, and the literal text after the marker locates its
+// end. No marker in the stored text means nothing to render; no live text (or
+// a live text that no longer contains the template's surroundings, e.g. an
+// agent-owned prompt Plus must not rewrite — already excluded above) leaves
+// the stored text untouched rather than inventing guidance.
+const toolGuidanceMarker = "${OPENCODE_TOOL_GUIDANCE}"
+
+function spliceToolGuidance(stored: string, live: string | undefined): string {
+  const at = stored.indexOf(toolGuidanceMarker)
+  if (at === -1) return stored
+  if (live === undefined) return stored.replaceAll(toolGuidanceMarker, "")
+  const before = stored.slice(0, at)
+  const after = stored.slice(at + toolGuidanceMarker.length)
+  const start = before === "" ? 0 : live.indexOf(before)
+  if (start === -1) return stored.replaceAll(toolGuidanceMarker, "")
+  const guidanceStart = start + before.length
+  const guidanceEnd = after === "" ? live.length : live.indexOf(after, guidanceStart)
+  if (guidanceEnd === -1) return stored.replaceAll(toolGuidanceMarker, "")
+  return stored.replaceAll(toolGuidanceMarker, live.slice(guidanceStart, guidanceEnd))
 }
 
 type ToolInventory = ReadonlyMap<string, boolean>
@@ -494,16 +544,52 @@ function applyToolPlan(event: SessionContext, plans: readonly ToolPlan[]) {
 }
 
 // Core per-file instruction seam: one baseline part per instruction source
-// file, with the canonical absolute file path on `metadata.instruction.path`.
-// Match parts to plans by comparing that canonical path; a relative plan path
-// also matches the trailing segments of the absolute part path.
+// file, with the canonical absolute file path on `metadata.instruction.path`
+// (core/src/session/model-request.ts `instructionPart`). A plan path is the
+// location-relative discovery id (`AGENTS.md`, `../AGENTS.md`, or a longer
+// climb for the global file — discover.ts `instructionFileItems`, never
+// edited here), so resolve it against the owning location before comparing:
+// the plan applies to the event's session directory exactly the way
+// discovery resolved it, and the comparison is against the absolute part
+// path. Without the session directory the id is ambiguous — `AGENTS.md`
+// alone cannot tell the global file from the project file, and `..`
+// segments never match a canonical path — so the context-hook caller passes
+// the full event and apply reads `event.sessionID`'s location from the host.
 export function applyInstructions(
+  event: Pick<SessionContext, "system">,
+  plans: readonly InstructionPlan[],
+): void {
+  applyInstructionsToSystem(event.system, plans)
+}
+
+// The context-hook path: resolve each plan id against the owning session
+// directory to a canonical absolute path, then match parts by canonical
+// identity. `ctx.location.directory` is that directory: the plugin host is
+// location-scoped (core PluginHost binds one Location.Service per location),
+// the context event fires for sessions of that location, and discovery
+// resolved these same ids against `ctx.location.directory`. `..` segments
+// resolve here instead of silently matching nothing, and a bare `AGENTS.md`
+// resolves to the session file rather than the first same-named part.
+function applyInstructionPlans(ctx: Context, event: SessionContext, plans: readonly InstructionPlan[]): void {
+  const resolved = plans.map((plan) => ({ ...plan, path: resolveInstructionId(ctx.location.directory, plan.path) }))
+  applyInstructionsToSystem(event.system, resolved)
+}
+
+function resolveInstructionId(directory: string, id: string): string {
+  const relative = id.replace(/^\/+/, "")
+  if (relative === "") return directory
+  return path.resolve(directory, relative)
+}
+
+// Direct system-array form for unit callers that already hold the real event
+// system (the exported shape keeps the event wrapper so the location-aware
+// resolution has a home once discover.ts carries the owning directory).
+function applyInstructionsToSystem(
   system: SessionContext["system"],
   plans: readonly InstructionPlan[],
 ): void {
   for (const plan of plans) {
-    const relative = plan.path.replace(/^\/+/, "")
-    const index = system.findIndex((part) => matchesPart(partPath(part), plan.path, relative))
+    const index = system.findIndex((part) => matchesPart(partPath(part), plan.path))
     if (!plan.enabled) {
       if (index !== -1) system.splice(index, 1)
       continue
@@ -518,11 +604,15 @@ export function applyInstructions(
   }
 }
 
-function matchesPart(candidate: string | undefined, absolute: string, relative: string): boolean {
+// Canonical-path identity: a part matches only when its absolute path equals
+// the plan's absolute path. Suffix matching is gone — `AGENTS.md` used to
+// match the FIRST part ending in that name (normally the global file, not
+// the project one), and ids containing `..` never matched at all, so
+// disabling an ancestor or global instruction silently did nothing while
+// editing it appended a duplicate.
+function matchesPart(candidate: string | undefined, absolute: string): boolean {
   if (candidate === undefined) return false
-  if (candidate === absolute || candidate === relative) return true
-  if (candidate.endsWith(`/${relative}`)) return true
-  return false
+  return candidate === absolute
 }
 
 function partPath(part: SessionContext["system"][number]): string | undefined {
