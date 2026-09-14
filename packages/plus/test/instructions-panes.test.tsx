@@ -118,6 +118,12 @@ test("roots render with depth, badges, and collapsed review roll-up", () => {
   const nodes = tree({ items: items(), records: [], agents: agents(), expanded: new Set() })
   expect(nodes.map((node) => node.id)).toEqual(["root:project", "root:global", "root:defaults"])
   expect(nodes.map((node) => node.depth)).toEqual([0, 0, 0])
+  // Roots render only the roots while collapsed; the new Agents group and the
+  // shared Defaults groups appear once their root expands.
+  const children = tree({ items: items(), records: [], agents: agents(), expanded: new Set(["root:project", "root:defaults"]) })
+  expect(children.find((node) => node.id === "group:project:agents")?.depth).toBe(1)
+  expect(children.find((node) => node.id === "group:defaults:agents")?.label).toBe("Agents")
+  expect(children.find((node) => node.id === "group:defaults::tools")?.depth).toBe(1)
   // Roots are structural: no addressable state badge.
   expect(badgeLabels(nodes[0])).toEqual([])
   // Collapsed roots still report logical children as expandable.
@@ -139,12 +145,15 @@ test("review rolls up to collapsed ancestors as a count", () => {
   const records = [record({ item: "tool:bash", text: "mine", basedOn: fingerprint("v1"), basedOnText: "v1" })]
   const input = { items: [upstream, ...items().filter((item) => item.id !== "tool:bash")], records, agents: agents() }
   const collapsed = tree({ ...input, expanded: new Set() })
+  // Review rolls up through the collapsed chain: root and its Agents group.
   const root = collapsed.find((node) => node.id === "root:project")
   expect(root?.badges.review).toBe(true)
   expect(root?.badges.reviewCount).toBe(1)
   expect(badgeLabels(root!)).toContain("1 to review")
   expect(yellowOnly("1 to review")).toBe(true)
   expect(yellowOnly("review")).toBe(true)
+  const chain = tree({ ...input, expanded: new Set(["root:project", "group:project:agents"]) })
+  expect(chain.find((node) => node.id === "group:project:agents")?.badges.review).toBe(true)
   const full = tree({ ...input, expanded: new Set(allIds(input)) })
   const item = full.find((node) => node.id === "item:project:Implementer:tool:bash")
   expect(item?.badges.review).toBe(true)
@@ -153,8 +162,14 @@ test("review rolls up to collapsed ancestors as a count", () => {
 
 test("full subtree rows carry indentation order, markers, and addressable badges", () => {
   const nodes = expandAll()
+  const agentsGroup = nodes.find((node) => node.id === "group:project:agents")
+  expect(agentsGroup?.depth).toBe(1)
+  expect(agentsGroup?.label).toBe("Agents")
   const agent = nodes.find((node) => node.id === "agent:project:Implementer")
-  expect(agent?.depth).toBe(1)
+  expect(agent?.depth).toBe(2)
+  // Agent children shifted one deeper: category groups sit at depth 3.
+  const tools = nodes.find((node) => node.id === "group:project:Implementer:tools")
+  expect(tools?.depth).toBe(3)
   // Item rows carry the addressable state badge plus modified/active/review.
   const role = nodes.find((node) => node.id === "item:project:Implementer:system:role")
   expect(badgeLabels(role!)).toContain("on")
@@ -164,7 +179,7 @@ test("full subtree rows carry indentation order, markers, and addressable badges
     items: items(),
     records: [record({ item: "tool:bash", text: "mine" })],
     agents: agents(),
-    expanded: new Set(["root:project", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
+    expanded: new Set(["root:project", "group:project:agents", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
   })
   const bash = modified.find((node) => node.id === "item:project:Implementer:tool:bash")
   expect(badgeLabels(bash!)).toEqual(expect.arrayContaining(["on", "modified"]))
