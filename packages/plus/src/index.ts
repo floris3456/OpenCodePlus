@@ -552,20 +552,33 @@ function templateFields(markdown: string): AgentFields | undefined {
   }
 }
 
-interface BaseTemplateResult {
-  readonly ok: boolean
+interface BaseTemplateSuccess {
+  readonly ok: true
   readonly id: string
-  readonly reason?: "exists"
-  readonly message?: string
 }
+
+interface BaseTemplateExists {
+  readonly ok: false
+  readonly reason: "exists"
+  readonly id: string
+}
+
+interface BaseTemplateInvalid {
+  readonly ok: false
+  readonly reason: "invalid"
+  readonly id: string
+  readonly message: string
+}
+
+type BaseTemplateResult = BaseTemplateSuccess | BaseTemplateExists | BaseTemplateInvalid
 
 async function createBaseTemplate(id: string, title: string, text: string): Promise<BaseTemplateResult> {
   const trimmed = id.trim()
-  if (trimmed.length === 0) return { ok: false, id, message: "Base template id cannot be empty" }
+  if (trimmed.length === 0) return { ok: false, reason: "invalid", id, message: "Base template id cannot be empty" }
   if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0"))
-    return { ok: false, id, message: `Invalid base template id "${id}"` }
+    return { ok: false, reason: "invalid", id, message: `Invalid base template id "${id}"` }
   const target = path.join(userBaseDir(), `${trimmed}.txt`)
-  if (await Bun.file(target).exists()) return { ok: false, id: trimmed, reason: "exists" }
+  if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: trimmed }
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, text)
   await appendBaseIndex(trimmed, title)
@@ -597,25 +610,40 @@ async function readBaseIndex(target: string): Promise<Record<string, string>> {
   }
 }
 
-interface InstructionResult {
-  readonly ok: boolean
+interface InstructionSuccess {
+  readonly ok: true
   readonly id: string
   readonly path: string
-  readonly reason?: "exists"
-  readonly message?: string
 }
+
+interface InstructionExists {
+  readonly ok: false
+  readonly reason: "exists"
+  readonly id: string
+  readonly path: string
+}
+
+interface InstructionInvalid {
+  readonly ok: false
+  readonly reason: "invalid"
+  readonly id: string
+  readonly path: string
+  readonly message: string
+}
+
+type InstructionResult = InstructionSuccess | InstructionExists | InstructionInvalid
 
 async function createInstruction(input: { projectDirectory: string; name: string; text: string }): Promise<InstructionResult> {
   const name = input.name.trim()
-  if (name.length === 0) return { ok: false, id: input.name, path: "", message: "Instruction name cannot be empty" }
+  if (name.length === 0) return { ok: false, reason: "invalid", id: input.name, path: "", message: "Instruction name cannot be empty" }
   if (name.includes("\0") || name.includes(".."))
-    return { ok: false, id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
+    return { ok: false, reason: "invalid", id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
   const relative = name.endsWith(".md") ? name : `${name}.md`
   const root = path.resolve(input.projectDirectory)
   const target = path.resolve(root, relative)
   if (target === root || !target.startsWith(`${root}${path.sep}`))
-    return { ok: false, id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
-  if (await Bun.file(target).exists()) return { ok: false, id: relative, path: target, reason: "exists" }
+    return { ok: false, reason: "invalid", id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
+  if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: relative, path: target }
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, input.text.endsWith("\n") ? input.text : `${input.text}\n`)
   return { ok: true, id: `system:${path.relative(root, target)}`, path: target }

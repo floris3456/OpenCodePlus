@@ -1,6 +1,7 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { Transform } from "@opencode/plugin/effect/registration"
 import type { Agent } from "@opencode/schema/agent"
-import type { Skill } from "@opencode/schema/skill"
+import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
 import { copyName } from "./apply.js"
 import { resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
@@ -62,7 +63,7 @@ async function readSystem(ctx: Context, agent: string): Promise<string[]> {
 }
 
 async function listTools(ctx: Context): Promise<Map<string, { id: string; description: string }>> {
-  return readTransform(ctx.tool.transform, (editor) => {
+  return readTransform(ctx.tool.transform, (editor: ToolEditor) => {
     const live = new Map<string, { id: string; description: string }>()
     for (const tool of editor.list()) live.set(tool.id, { id: tool.id, description: tool.description })
     return live
@@ -74,9 +75,7 @@ async function listSkills(ctx: Context): Promise<Map<string, string>> {
   return new Map(output.data.map((skill) => [String(skill.id), skill.content]))
 }
 
-function readTransform<Editor, Value>(transform: {
-  (callback: (editor: Editor) => void): Effect.Effect<unknown>
-}, read: (editor: Editor) => Value): Promise<Value> {
+function readTransform<Editor, Value>(transform: Transform<Editor>, read: (editor: Editor) => Value): Promise<Value> {
   return Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {

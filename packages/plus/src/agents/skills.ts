@@ -89,14 +89,18 @@ function describeBody(body: string, fallback: string): string {
   return first.slice(0, 120)
 }
 
-function parseSkillFile(text: string): { name?: unknown; description?: unknown } | undefined {
+function parseSkillFile(text: string): { name?: string; description?: string } | undefined {
   const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/)
   if (!match) return undefined
   const raw = match[1] ?? ""
   try {
     const data = Bun.YAML.parse(raw)
     if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
-    return data as { name?: unknown; description?: unknown }
+    const fields = data as { name?: unknown; description?: unknown }
+    return {
+      ...(typeof fields.name === "string" ? { name: fields.name } : {}),
+      ...(typeof fields.description === "string" ? { description: fields.description } : {}),
+    }
   } catch {
     return undefined
   }
