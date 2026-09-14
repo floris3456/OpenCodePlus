@@ -44,6 +44,8 @@ export const layer = Layer.effect(
               editor.add({
                 name: tool.name,
                 options: { namespace: namespace(tool.server), codemode: tool.codemode !== false },
+                // options.namespace is sanitized; keep the real server name here.
+                origin: { type: "mcp" as const, name: tool.server },
                 description: tool.description ?? "",
                 input: {
                   ...schema,

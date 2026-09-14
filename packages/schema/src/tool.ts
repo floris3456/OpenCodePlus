@@ -99,4 +99,7 @@ export type Info<
   readonly execute: (input: InputValue<Input>, context: Context) => Effect.Effect<Result<Output>, Error>
   readonly output?: Output
   readonly options?: Options
+  // options.namespace is a sanitized server name, so deriving the server from it is name
+  // inference. origin carries the real source name for consumers that need it.
+  readonly origin?: { readonly type: "mcp" | "plugin"; readonly name: string }
 }
