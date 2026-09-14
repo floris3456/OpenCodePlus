@@ -306,6 +306,147 @@ test("instructions.assembled reads the host after application and reflects an ex
   await expectDeclaredError(handlers["instructions.assembled"]({ agent: "ghost" }, throwingContext(unknown)), unknown, "agent.unknown")
 })
 
+test("a records-only mutate re-applies to the host", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const tools = toolHarness([{ id: "reader", description: "read things", options: { codemode: false } }])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role")
+  if (!role) throw new Error("expected system:role")
+  // Warm the publish fingerprint the way activation does: an initial publish
+  // with zero records installs nothing and remembers upstream.
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  const override: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "ROLE OVERRIDE: you are the walkthrough agent.",
+    basedOn: role.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [override],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(agents.state.get("alpha")?.system).toBe("ROLE OVERRIDE: you are the walkthrough agent.")
+  const assembled = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(assembled.system).toEqual(["ROLE OVERRIDE: you are the walkthrough agent."])
+  const cleared = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: mutated.revision,
+      expectedGlobalRevision: mutated.globalRevision,
+      records: [],
+    }, throwingContext({})),
+  )
+  expect(cleared.ok).toBe(true)
+  if (!cleared.ok) throw new Error("expected reset to succeed")
+  expect(agents.state.get("alpha")?.system).toBe(upstream)
+  const restored = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(restored.system).toEqual([upstream])
+})
+
+test("an unchanged republish does not reinstall", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role")
+  if (!role) throw new Error("expected system:role")
+  const records: Plus.SnapshotCustomizationRecord[] = [{
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "custom role",
+    basedOn: role.fingerprint,
+    updated: UPDATED,
+  }]
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records,
+    }, throwingContext({})),
+  )
+  expect(first.ok).toBe(true)
+  if (!first.ok) throw new Error("expected mutate to succeed")
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  // Same records, same upstream: the publish fingerprint is unchanged, so no
+  // reinstall happens.
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+})
+
+test("instructions.assembled reports the registry tool description for a per-agent override", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agents = agentHarness([agentInfo("alpha", "upstream role")])
+  const tools = toolHarness([{ id: "reader", description: "read things", options: { codemode: false } }])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const tool = snapshot.items.find((item) => item.id === "tool:reader")
+  if (!tool) throw new Error("expected tool:reader")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [{
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "tool:reader",
+        section: null,
+        text: "custom description",
+        basedOn: tool.fingerprint,
+        updated: UPDATED,
+      }],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const assembled = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  const reader = assembled.tools.find((entry) => entry.id === "reader")
+  if (!reader) throw new Error("expected reader in assembled tools")
+  expect(reader.description).toBe("read things")
+})
+
 test("agent create/rename/delete work at both scopes and create accepts a template seed", async () => {
   const { project, config } = await tempRoot()
   await enable(project)
