@@ -3,10 +3,12 @@ import path from "node:path"
 import { Option, Schema } from "effect"
 import type { Boundary } from "./sections.js"
 import type { CustomizationRecord, Level, SplitRecord } from "./model.js"
+import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, projectRecordsPath } from "./paths.js"
 
 export type { CustomizationRecord, SplitRecord }
-export type StoredRecord = CustomizationRecord | SplitRecord
+export type { TeamRecord }
+export type StoredRecord = CustomizationRecord | SplitRecord | TeamRecord
 export type RecordState = "on" | "off"
 
 export type { Level }
@@ -72,7 +74,17 @@ const V2Split = Schema.Struct({
   updated: Schema.String,
 })
 
-const V2Record = Schema.Union([V2Customization, V2Split])
+// Teams are never defaults-level: only project|global decodes, so any other
+// level fails validation and the line is skipped like any malformed record.
+const V2Team = Schema.Struct({
+  type: Schema.Literal("team"),
+  level: Schema.Union([Schema.Literal("global"), Schema.Literal("project")]),
+  team: Schema.String,
+  enabled: Schema.Boolean,
+  updated: Schema.String,
+})
+
+const V2Record = Schema.Union([V2Customization, V2Split, V2Team])
 
 const V2Header = Schema.Struct({
   version: Schema.Literal(2),
@@ -209,6 +221,9 @@ function parseFile(text: string | undefined): ParsedFile {
   return { revision: v1?.revision ?? 0, records: lines.slice(1).flatMap(migrateLine), migrated: true }
 }
 
+// Teams route by level like any other record: project teams to the project
+// file, global teams to the global file. Teams can never be defaults-level
+// (V2Team rejects it on decode), so no team ever lands in a defaults bucket.
 function route(records: readonly StoredRecord[]): { project: StoredRecord[]; global: StoredRecord[] } {
   const project = records.filter((record) => record.level === "project")
   const global = records.filter((record) => record.level !== "project")
@@ -219,6 +234,16 @@ function parseV2(lines: string[]): StoredRecord[] {
   return lines.flatMap((line): StoredRecord[] => {
     const record = Option.getOrUndefined(decodeV2Record(line))
     if (record === undefined) return []
+    if (record.type === "team")
+      return [
+        {
+          type: "team",
+          level: record.level,
+          team: record.team,
+          enabled: record.enabled,
+          updated: record.updated,
+        },
+      ]
     if (record.type === "split")
       return [
         {
@@ -310,8 +335,16 @@ function canonical(records: readonly StoredRecord[]): StoredRecord[] {
 }
 
 function compareRecords(left: StoredRecord, right: StoredRecord): number {
-  const order = [left.type, right.type]
-  if (order[0] !== order[1]) return order[0] < order[1] ? -1 : 1
+  if (left.type !== right.type) return left.type < right.type ? -1 : 1
+  // Teams have no item/agent/section, so they order by team name first, then
+  // level; enabled and updated last keep the order total for identical keys.
+  if (left.type === "team" && right.type === "team") {
+    if (left.team !== right.team) return left.team < right.team ? -1 : 1
+    if (left.level !== right.level) return left.level < right.level ? -1 : 1
+    if (left.enabled !== right.enabled) return left.enabled ? 1 : -1
+    if (left.updated !== right.updated) return left.updated < right.updated ? -1 : 1
+    return 0
+  }
   if (left.item !== right.item) return left.item < right.item ? -1 : 1
   if (String(left.agent) !== String(right.agent)) return String(left.agent) < String(right.agent) ? -1 : 1
   if (left.level !== right.level) return left.level < right.level ? -1 : 1
@@ -322,6 +355,14 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 }
 
 function stable(record: StoredRecord): StoredRecord {
+  if (record.type === "team")
+    return {
+      type: "team",
+      level: record.level,
+      team: record.team,
+      enabled: record.enabled,
+      updated: record.updated,
+    }
   if (record.type === "split")
     return {
       type: "split",
