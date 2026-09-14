@@ -201,7 +201,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addInstruction(): Promise<void> {
     if (disposed) return
-    const name = await context.ui.dialog.prompt({ title: "Instruction name", placeholder: "guide.md" })
+    const name = await context.ui.dialog.prompt({ title: "AGENTS.md", placeholder: "AGENTS.md" })
     if (disposed) return
     if (name === undefined) return
     const text = await context.ui.dialog.prompt({ title: "Instruction text", placeholder: "Instruction text" })
@@ -223,7 +223,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     const name = await context.ui.dialog.prompt({ title: "MCP server name", placeholder: "my-server" })
     if (disposed) return
     if (name === undefined) return
-    const raw = await context.ui.dialog.prompt({ title: "MCP config JSON", placeholder: '{"command":"npx"}' })
+    const raw = await context.ui.dialog.prompt({ title: "MCP config JSON", placeholder: '{"type":"local","command":["npx"]}' })
     if (disposed) return
     if (raw === undefined) return
     let config: Record<string, unknown>
