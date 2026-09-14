@@ -176,6 +176,41 @@ test("section exclusion removes that text from what is installed", async () => {
   expect(installed).not.toContain("b")
 })
 
+test("section text edit installs for that agent, including an inherited Defaults edit", async () => {
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  const edited = "# Two\n\nb edited\n"
+  const items = [makeItem({ id: "system:role", kind: "system", text, title: "role" })]
+  const agents = agentHarness([agentInfo("alpha", text), agentInfo("beta", text)])
+  const records = [
+    makeRecord({
+      item: "system:role",
+      agent: "alpha",
+      level: "project",
+      section: "two",
+      text: edited,
+      basedOn: fingerprint("# Two\n\nb\n"),
+      basedOnText: "# Two\n\nb\n",
+    }),
+  ]
+  const ctx = context({ agent: agents.domain })
+  const applied = await apply(
+    ctx,
+    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("alpha")?.system ?? "").toContain("b edited")
+  expect(agents.state.get("beta")?.system ?? "").not.toContain("b edited")
+  const shared = [makeRecord({ item: "system:role", agent: null, level: "defaults", section: "two", text: edited })]
+  const probe = resolve({
+    upstream: items[0] as Item,
+    records: shared,
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: new Set<string>() },
+    address: { level: "project", agent: "alpha", item: "system:role", section: null },
+  })
+  expect(probe.assembled).toContain("b edited")
+})
+
 test("tool description reaches the target agent and disablement deletes the tool", async () => {
   const items = [
     makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),

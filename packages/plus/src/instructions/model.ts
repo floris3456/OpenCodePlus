@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { assemble, derive, manual, slice, type Split } from "./sections.js"
+import { assembleWithOverrides, derive, manual, slice, type Split } from "./sections.js"
 
 export type Level = "defaults" | "global" | "project"
 
@@ -151,6 +151,15 @@ export function threeWay(input: ChainInput): ThreeWay | undefined {
   return { original: own.basedOnText, mine: own.text, upstream: aboveWholeText(input, whole) }
 }
 
+// The resolved baseline for a new text edit at one address, exported so
+// initial saves and acknowledgements can use the same upstream the review
+// comparison uses: whole-item text from above, or the section text resolved
+// down the same chain.
+export function upstreamForEdit(input: ChainInput): string {
+  if (input.address.section === null) return aboveWholeText(input, wholeRecords(input))
+  return aboveSectionText(input, input.address.section)
+}
+
 export function resolveResolution(
   input: ChainInput,
   resolution: Resolution,
@@ -159,9 +168,11 @@ export function resolveResolution(
   const records = [...input.records]
   const index = records.findIndex((record) => sameNode(record, input.address))
   const existing = index === -1 ? undefined : records[index]
+  const upstream = upstreamForEdit(input)
+  const fingerprintOf = fingerprint(upstream)
   if (resolution === "keep") {
     if (existing === undefined) return records
-    records[index] = { ...withoutUndefined(existing), acknowledged: input.upstream.fingerprint, updated: now() }
+    records[index] = { ...withoutUndefined(existing), acknowledged: fingerprintOf, updated: now() }
     return records
   }
   if (resolution === "take") {
@@ -175,7 +186,6 @@ export function resolveResolution(
     return records
   }
   if (edited === undefined) return records
-  const current = threeWay(input)
   const record: CustomizationRecord = {
     ...withoutUndefined(
       existing ?? {
@@ -193,9 +203,9 @@ export function resolveResolution(
     item: input.address.item,
     section: input.address.section,
     text: edited,
-    basedOn: input.upstream.fingerprint,
-    basedOnText: current?.upstream ?? input.upstream.text,
-    acknowledged: input.upstream.fingerprint,
+    basedOn: fingerprintOf,
+    basedOnText: upstream,
+    acknowledged: fingerprintOf,
     updated: now(),
   }
   records[index === -1 ? records.length : index] = record
@@ -207,6 +217,8 @@ export function merge(
   address: Address,
   fields: MergeFields,
   upstream: Pick<Item, "fingerprint" | "text">,
+  scopes?: Scopes,
+  splits?: readonly SplitRecord[],
 ): CustomizationRecord[] {
   const rest = records.filter((record) => !sameNode(record, address))
   const existing = records.find((record) => sameNode(record, address))
@@ -214,6 +226,7 @@ export function merge(
   const state = fields.state === undefined ? existing?.state : (fields.state ?? undefined)
   const acknowledged = fields.acknowledged === undefined ? existing?.acknowledged : (fields.acknowledged ?? undefined)
   if (text === undefined && state === undefined) return [...rest]
+  const baseline = baselineForMerge(records, address, upstream, scopes, splits)
   const next: CustomizationRecord = {
     type: "customization",
     level: address.level,
@@ -222,8 +235,8 @@ export function merge(
     section: address.section,
     ...(text === undefined ? {} : { text }),
     ...(state === undefined ? {} : { state }),
-    basedOn: existing?.basedOn ?? upstream.fingerprint,
-    ...(existing?.basedOnText === undefined && text === undefined ? {} : { basedOnText: existing?.basedOnText ?? upstream.text }),
+    basedOn: existing?.basedOn ?? baseline.fingerprint,
+    ...(existing?.basedOnText === undefined && text === undefined ? {} : { basedOnText: existing?.basedOnText ?? baseline.text }),
     ...(acknowledged === undefined ? {} : { acknowledged }),
     updated: now(),
   }
@@ -277,11 +290,12 @@ function resolveWhole(input: ChainInput): Resolved {
   const excluded = new Set(
     split.sections.map((section) => section.id).filter((id) => sectionState(input, chain, id) === "off"),
   )
+  const overridden = sectionOverrides(input, chain)
   const modified = own?.text !== undefined
   const source = chain.find((node) => at(whole, node)?.text !== undefined || at(whole, node)?.state !== undefined)
   return {
     text,
-    assembled: assemble(text, split, excluded),
+    assembled: assembleWithOverrides(text, split, excluded, overridden),
     enabled,
     source: source?.level ?? "upstream",
     overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined),
@@ -291,7 +305,9 @@ function resolveWhole(input: ChainInput): Resolved {
 }
 
 function resolveSection(input: ChainInput): Resolved {
-  const id = input.address.section ?? ""
+  const id = input.address.section
+  if (id === null) return resolveWhole(input)
+  const chain = resolutionChain(input.address, input.scopes)
   const whole = resolveWhole({ ...input, address: { ...input.address, section: null } })
   const split = resolveSplit({
     text: whole.text,
@@ -302,9 +318,10 @@ function resolveSection(input: ChainInput): Resolved {
   })
   const definition = split.sections.find((section) => section.id === id)
   const sectioned = sectionRecords(input, id)
-  const chain = resolutionChain(input.address, input.scopes)
   const winner = chain.find((node) => at(sectioned, node)?.text !== undefined)
-  const text = winner === undefined ? (definition === undefined ? "" : slice(whole.text, definition)) : (at(sectioned, winner)?.text ?? "")
+  const upstreamSlice = definition === undefined ? "" : slice(whole.text, definition)
+  const winnerText = winner === undefined ? undefined : (at(sectioned, winner)?.text ?? "")
+  const text = winnerText ?? upstreamSlice
   const stateWinner = chain.find((node) => at(sectioned, node)?.state !== undefined)
   const own = at(sectioned, input.address)
   const modified = own?.text !== undefined
@@ -320,9 +337,11 @@ function resolveSection(input: ChainInput): Resolved {
 }
 
 function threeWaySection(input: ChainInput): ThreeWay | undefined {
-  const id = input.address.section ?? ""
+  const id = input.address.section
+  if (id === null) return undefined
   const own = at(sectionRecords(input, id), input.address)
-  if (own?.text === undefined || own.basedOnText === undefined) return undefined
+  if (own?.text === undefined) return undefined
+  if (own.basedOnText === undefined) return undefined
   return { original: own.basedOnText, mine: own.text, upstream: aboveSectionText(input, id) }
 }
 
@@ -353,6 +372,12 @@ function aboveWholeFingerprint(input: ChainInput, whole: readonly CustomizationR
 }
 
 function aboveSectionText(input: ChainInput, id: string): string {
+  const chain = resolutionChain(input.address, input.scopes)
+  const ancestor = chain
+    .slice(1)
+    .map((node) => sectionTextAt(input, node, id))
+    .find((text) => text !== undefined)
+  if (ancestor !== undefined) return ancestor
   const text = aboveWholeText(input, wholeRecords(input))
   const split = resolveSplit({
     text,
@@ -366,15 +391,89 @@ function aboveSectionText(input: ChainInput, id: string): string {
   return slice(text, definition)
 }
 
+function resolvedUpstreamText(input: ChainInput): string {
+  if (input.address.section === null) return aboveWholeText(input, wholeRecords(input))
+  const id = input.address.section
+  return aboveSectionText(input, id)
+}
+
 function aboveSectionFingerprint(input: ChainInput, id: string): string {
   return fingerprint(aboveSectionText(input, id))
 }
 
-function sectionState(
-  input: ChainInput,
-  chain: readonly { level: Level; agent: string | null }[],
-  id: string,
-): "on" | "off" | undefined {
+// Section textOverrides compose into the whole-item assembled body. The
+// winning text for each section down the chain replaces that section's
+// upstream slice; exclusions still drop a parent with its children, and a
+// child edit cannot resurrect an excluded parent.
+function sectionOverrides(input: ChainInput, chain: readonly ChainNode[]): Map<string, string> {
+  const split = resolveSplit({
+    text: effectiveWholeText(input),
+    title: input.upstream.title,
+    splits: input.splits,
+    scopes: input.scopes,
+    address: input.address,
+  })
+  const out = new Map<string, string>()
+  for (const section of split.sections) {
+    const winner = chain.find((node) => sectionTextAt(input, node, section.id) !== undefined)
+    if (winner === undefined) continue
+    const override = sectionTextAt(input, winner, section.id)
+    if (override === undefined) continue
+    out.set(section.id, override)
+  }
+  return out
+}
+
+function sectionTextAt(input: ChainInput, node: ChainNode | Address, id: string): string | undefined {
+  return sectionRecords(input, id).find((record) => record.level === node.level && record.agent === node.agent)?.text
+}
+
+function effectiveWholeText(input: ChainInput): string {
+  const whole = wholeRecords(input)
+  const winner = resolutionChain(input.address, input.scopes).find((node) => at(whole, node)?.text !== undefined)
+  if (winner === undefined) return input.upstream.text
+  return at(whole, winner)?.text ?? ""
+}
+
+function baselineForMerge(
+  records: readonly CustomizationRecord[],
+  address: Address,
+  upstream: Pick<Item, "fingerprint" | "text">,
+  scopes?: Scopes,
+  splits?: readonly SplitRecord[],
+): { text: string; fingerprint: string } {
+  if (scopes === undefined) return { text: upstream.text, fingerprint: upstream.fingerprint }
+  if (splits === undefined) return { text: upstream.text, fingerprint: upstream.fingerprint }
+  const text = resolvedUpstreamText(upstreamInput(records, address, upstream, scopes, splits))
+  return { text, fingerprint: fingerprint(text) }
+}
+
+function upstreamInput(
+  records: readonly CustomizationRecord[],
+  address: Address,
+  upstream: Pick<Item, "fingerprint" | "text">,
+  scopes: Scopes,
+  splits: readonly SplitRecord[],
+): ChainInput {
+  const found = upstream as Partial<Item>
+  return {
+    upstream: {
+      id: address.item,
+      kind: found.kind ?? "system",
+      group: found.group ?? "none",
+      title: found.title ?? address.item,
+      text: upstream.text,
+      enabled: found.enabled ?? true,
+      fingerprint: upstream.fingerprint,
+    },
+    records,
+    splits,
+    scopes,
+    address,
+  }
+}
+
+function sectionState(input: ChainInput, chain: readonly ChainNode[], id: string): "on" | "off" | undefined {
   return chain
     .map((node) => sectionRecords(input, id).find((record) => record.level === node.level && record.agent === node.agent)?.state)
     .find((state) => state !== undefined)
