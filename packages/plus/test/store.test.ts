@@ -354,3 +354,36 @@ test("load skips malformed or ineligible team lines", async () => {
   expect(loaded.records).toHaveLength(1)
   expect(loaded.records[0]).toEqual(team({ team: "kept" }))
 })
+
+test("canonical order sorts mixed customization, split, and team records through save and load", async () => {
+  const { project } = await isolated()
+  const customRec: StoredRecord = customization({ level: "project", agent: "alpha", item: "tool:bash" })
+  const splitRec: StoredRecord = {
+    type: "split",
+    level: "project",
+    agent: "alpha",
+    item: "tool:bash",
+    boundaries: [{ id: "flags", name: "Flags", start: 0 }],
+    updated: UPDATED,
+  }
+  const teamRec: StoredRecord = team({ level: "project", team: "crew", enabled: true })
+
+  // Save in arbitrary non-canonical order: team, split, customization
+  await save(project, {
+    expectedProjectRevision: 0,
+    expectedGlobalRevision: 0,
+    records: [teamRec, splitRec, customRec],
+  })
+
+  // Loaded records preserve canonical order: customization < split < team
+  const loaded = await load(project)
+  expect(loaded.records).toEqual([customRec, splitRec, teamRec])
+
+  // Saving again in loaded order is an unchanged no-op
+  const reSave = await save(project, {
+    expectedProjectRevision: 1,
+    expectedGlobalRevision: 0,
+    records: loaded.records,
+  })
+  expect(reSave).toEqual({ ok: true, projectRevision: 1, globalRevision: 0 })
+})

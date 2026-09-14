@@ -335,23 +335,19 @@ function canonical(records: readonly StoredRecord[]): StoredRecord[] {
 }
 
 function compareRecords(left: StoredRecord, right: StoredRecord): number {
-  if (left.type !== right.type) return left.type < right.type ? -1 : 1
-  // Teams have no item/agent/section, so they order by team name first, then
-  // level; enabled and updated last keep the order total for identical keys.
-  if (left.type === "team" && right.type === "team") {
-    if (left.team !== right.team) return left.team < right.team ? -1 : 1
-    if (left.level !== right.level) return left.level < right.level ? -1 : 1
-    if (left.enabled !== right.enabled) return left.enabled ? 1 : -1
-    if (left.updated !== right.updated) return left.updated < right.updated ? -1 : 1
-    return 0
+  const leftKey = sortKey(left)
+  const rightKey = sortKey(right)
+  for (let i = 0; i < leftKey.length; i++) {
+    if (leftKey[i] !== rightKey[i]) return leftKey[i] < rightKey[i] ? -1 : 1
   }
-  if (left.item !== right.item) return left.item < right.item ? -1 : 1
-  if (String(left.agent) !== String(right.agent)) return String(left.agent) < String(right.agent) ? -1 : 1
-  if (left.level !== right.level) return left.level < right.level ? -1 : 1
-  const leftSection = left.type === "customization" ? String(left.section) : ""
-  const rightSection = right.type === "customization" ? String(right.section) : ""
-  if (leftSection !== rightSection) return leftSection < rightSection ? -1 : 1
   return 0
+}
+
+// Teams have no item/agent/section, so they order by team name first, then
+// level; enabled and updated last keep the order total for identical keys.
+function sortKey(record: StoredRecord): string[] {
+  if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
+  return [record.type, record.item, String(record.agent), record.level, record.type === "customization" ? String(record.section) : ""]
 }
 
 function stable(record: StoredRecord): StoredRecord {
