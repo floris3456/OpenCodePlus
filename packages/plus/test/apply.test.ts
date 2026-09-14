@@ -693,7 +693,13 @@ test("a request model switch gets the request model's customization, not the con
     makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
     makeRecord({ item: "base:kimi", agent: "alpha", level: "project", text: "custom kimi" }),
   ]
-  const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
+  // The pin mirrors production: publishFresh always threads discover's
+  // configured-model classification as agent.base, so the request model must
+  // win over it rather than the pin short-circuiting classification.
+  const applied = await apply(
+    ctx,
+    makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+  )
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
@@ -706,13 +712,14 @@ test("a request model switch gets the request model's customization, not the con
 })
 
 test("a customized raw base template renders tool guidance instead of the placeholder", async () => {
-  // DEFECT B: raw template text carries ${OPENCODE_TOOL_GUIDANCE} and core's
-  // optimize plugin renders it before Plus runs. Stored custom text must be
-  // rendered through the same seam instead of overwriting system[0] with raw
-  // placeholders. Uses a trailing-newline template so a byte compare against
-  // assembled text cannot pass as a no-op.
-  const raw = "custom base\n${OPENCODE_TOOL_GUIDANCE}\n"
-  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: raw }]
+  // DEFECT B (before branch): the user edits the opening text, so the
+  // customized surroundings no longer match live. Aligning the UPSTREAM
+  // surroundings against live must still recover the rendered guidance.
+  const upstream = "base header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const guidance = "GUIDANCE-WRITE-EDIT-SHELL-123"
+  const live = `base header\n${guidance}\nbase footer`
+  const customized = "edited header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: upstream }]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "")])
   const ctx = context({
@@ -727,7 +734,7 @@ test("a customized raw base template renders tool guidance instead of the placeh
     },
   })
   const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
-  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: `${raw}edited\n` })]
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: customized })]
   const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
@@ -735,12 +742,53 @@ test("a customized raw base template renders tool guidance instead of the placeh
   const event = sessionEvent(
     "alpha",
     { write: { description: "write", input: { type: "object" } } },
-    [{ type: "text", text: "rendered family default" }],
+    [{ type: "text", text: live }],
     { providerID: "openai", id: "gpt-4o" },
   )
   await Effect.runPromise(run(event))
   expect(event.system[0]?.text).not.toContain("${OPENCODE_TOOL_GUIDANCE}")
-  expect(event.system[0]?.text).toContain("edited")
+  expect(event.system[0]?.text).toContain("edited header")
+  expect(event.system[0]?.text).toContain(guidance)
+})
+
+test("appending after a customized base template preserves rendered tool guidance", async () => {
+  // DEFECT B (after branch): the user appends after the template, so the
+  // customized trailing text no longer matches live. Upstream alignment must
+  // still recover the rendered guidance span.
+  const upstream = "base header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const guidance = "GUIDANCE-WRITE-EDIT-SHELL-123"
+  const live = `base header\n${guidance}\nbase footer`
+  const customized = "base header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer appended"
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: upstream }]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: customized })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent(
+    "alpha",
+    { write: { description: "write", input: { type: "object" } } },
+    [{ type: "text", text: live }],
+    { providerID: "openai", id: "gpt-4o" },
+  )
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).not.toContain("${OPENCODE_TOOL_GUIDANCE}")
+  expect(event.system[0]?.text).toContain("appended")
+  expect(event.system[0]?.text).toContain(guidance)
 })
 
 test("an untouched base template with a trailing newline installs no base plan", async () => {
