@@ -13,7 +13,7 @@ import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "..
 import type { ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve } from "../src/instructions/model.js"
 import type { CustomizationRecord, Item, Level } from "../src/instructions/model.js"
-import { agentHarness, context, skillHarness } from "./harness.js"
+import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -63,8 +63,8 @@ function skillInfo(id: string, content: string): Skill.Info {
   })
 }
 
-function agentInfo(id: string, system: string): Agent.Info {
-  return { ...Agent.Info.default(Agent.ID.make(id)), system }
+function agentInfo(id: string, system: string, model?: Model.Ref): Agent.Info {
+  return { ...Agent.Info.default(Agent.ID.make(id)), system, ...(model === undefined ? {} : { model }) }
 }
 
 function sessionEvent(
@@ -419,14 +419,92 @@ test("mcp text alone registers nothing", async () => {
 test("only the active base template is applied", async () => {
   const items = [
     makeItem({ id: "base:gpt", kind: "base", text: "gpt upstream", title: "gpt" }),
-    makeItem({ id: "base:claude", kind: "base", text: "claude upstream", title: "claude" }),
+    makeItem({ id: "base:general", kind: "base", text: "general upstream", title: "general" }),
   ]
   const records = [
     makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
-    makeRecord({ item: "base:claude", agent: "alpha", level: "project", text: "custom claude" }),
+    makeRecord({ item: "base:general", agent: "alpha", level: "project", text: "custom general" }),
   ]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
   const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([
+      { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+      { id: "general", title: "General.txt", text: "general base prompt" },
+    ]),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const gpt = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
+    providerID: "openai",
+    id: "gpt-4o",
+  })
+  await Effect.runPromise(run(gpt))
+  expect(gpt.system[0]?.text).toBe("custom gpt")
+})
+
+test("a stored base edit for a non-active template leaves system[0] alone", async () => {
+  const items = [makeItem({ id: "base:general", kind: "base", text: "general upstream", title: "general" })]
+  const records = [makeRecord({ item: "base:general", agent: "alpha", level: "project", text: "custom general" })]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([
+      { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+      { id: "general", title: "General.txt", text: "general base prompt" },
+    ]),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
+    providerID: "openai",
+    id: "gpt-4o",
+  })
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("family default")
+})
+
+test("a non-obvious model id takes the host classification, not a provider guess", async () => {
+  const items = [
+    makeItem({ id: "base:trinity", kind: "base", text: "trinity upstream", title: "trinity" }),
+    makeItem({ id: "base:general", kind: "base", text: "general upstream", title: "general" }),
+  ]
+  const records = [makeRecord({ item: "base:trinity", agent: "alpha", level: "project", text: "custom trinity" })]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "", modelRef("acme", "trinity-ultra"))])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([
+      { id: "trinity", title: "Trinity.txt", text: "trinity base prompt" },
+      { id: "general", title: "General.txt", text: "general base prompt" },
+    ]),
+    catalog: catalogHarness([modelInfo("acme", "trinity-ultra")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -438,24 +516,43 @@ test("only the active base template is applied", async () => {
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
-  const gpt = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
+    providerID: "acme",
+    id: "trinity-ultra",
+  })
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("custom trinity")
+})
+
+test("a custom-system agent keeps its own system[0]", async () => {
+  const items = [makeItem({ id: "base:gpt", kind: "base", text: "gpt upstream", title: "gpt" })]
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" })]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "my own prompt")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([{ id: "gpt", title: "GPT.txt", text: "gpt base prompt" }]),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: "my own prompt" }], {
     providerID: "openai",
     id: "gpt-4o",
   })
-  await Effect.runPromise(run(gpt))
-  expect(gpt.system[0]?.text).toBe("custom gpt")
-  const claude = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
-    providerID: "anthropic",
-    id: "claude-3",
-  })
-  await Effect.runPromise(run(claude))
-  expect(claude.system[0]?.text).toBe("custom claude")
-  const other = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
-    providerID: "test",
-    id: "unknown-model",
-  })
-  await Effect.runPromise(run(other))
-  expect(other.system[0]?.text).toBe("family default")
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("my own prompt")
 })
 
 test("per-file instructions drop or replace one part by path", async () => {

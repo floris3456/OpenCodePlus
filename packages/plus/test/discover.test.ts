@@ -19,7 +19,8 @@ import path from "node:path"
 import { agentBody, discover, type BaseTemplate } from "../src/instructions/discover.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
-import { agentHarness, context, skillHarness } from "./harness.js"
+import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
+import type { Model as ModelNamespace } from "@opencode/schema/model"
 
 const roots: string[] = []
 const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -51,7 +52,7 @@ function location(directory: string, projectDirectory: string = directory): Loca
   })
 }
 
-function agent(id: string, system: string): Agent.Info {
+function agent(id: string, system: string, model?: ModelNamespace.Ref): Agent.Info {
   return {
     id: Agent.ID.make(id),
     name: Agent.Name.make(id),
@@ -60,6 +61,7 @@ function agent(id: string, system: string): Agent.Info {
     mode: "primary",
     hidden: false,
     permissions: [],
+    ...(model === undefined ? {} : { model }),
   }
 }
 
@@ -115,6 +117,8 @@ function fullContext(options: {
   skills?: SkillEntry[]
   tools?: ToolEntry[]
   servers?: [string, Types.DeepMutable<Mcp.ServerConfig>][]
+  templates?: { id: string; title: string; text: string }[]
+  models?: ModelNamespace.Info[]
 }): Context {
   const loc = location(options.directory, options.projectDirectory ?? options.directory)
   const agents = options.agents ?? []
@@ -129,6 +133,8 @@ function fullContext(options: {
       transform: () => Effect.die("unused agent.transform"),
       reload: () => Effect.die("unused agent.reload"),
     },
+    catalog: catalogHarness(options.models ?? []),
+    prompt: promptHarness(options.templates ?? []),
     skill: {
       list: () => Effect.succeed({ location: loc, data: skills }),
       transform: () => Effect.die("unused skill.transform"),
@@ -159,8 +165,8 @@ const noBase = () => undefined
 const noTemplates: BaseTemplate[] = []
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
-function agentInfo(id: string, system: string): Agent.Info {
-  return { ...Agent.Info.default(Agent.ID.make(id)), system }
+function agentInfo(id: string, system: string, model?: ModelNamespace.Ref): Agent.Info {
+  return { ...Agent.Info.default(Agent.ID.make(id)), system, ...(model === undefined ? {} : { model }) }
 }
 
 function skillInfo(id: string, content: string): Skill.Info {
@@ -621,6 +627,104 @@ test("a project agent shadowing a builtin keeps the defaults identity", async ()
   ])
   const scopes = scopesOf(discovered.agents)
   expect(scopes.defaults.has("build")).toBe(true)
+})
+
+test("a zero-template host still yields a coherent fallback list", async () => {
+  const directory = await tempDir("plus-discover-")
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("alpha", "alpha prompt")], templates: [], models: [] }),
+    records: [],
+    baseTemplates: [],
+    activeBase: noBase,
+  })
+  expect(discovered.items.filter((item) => item.kind === "base")).toEqual([])
+  expect(discovered.agents.map((entry) => entry.id)).toContain("alpha")
+})
+
+test("discover -> apply through a real host honors the host base classification", async () => {
+  const directory = await tempDir("plus-discover-")
+  const locationPath = path.join(directory, "skills", "notes", "SKILL.md")
+  const model = modelRef("acme", "trinity-ultra")
+  const templates = [
+    { id: "trinity", title: "Trinity.txt", text: "trinity base" },
+    { id: "general", title: "General.txt", text: "general base" },
+  ]
+  const models = [modelInfo("acme", "trinity-ultra")]
+  const discoverCtx = fullContext({
+    directory,
+    agents: [{ ...agent("alpha", ""), model }],
+    skills: [skill("notes", "skill body", locationPath)],
+    tools: [tool("reader", "read things")],
+    templates,
+    models,
+  })
+  const discovered = await discover({
+    ctx: discoverCtx,
+    records: [],
+    baseTemplates: templates,
+    activeBase: (candidate) => (candidate.id === "alpha" ? "trinity" : undefined),
+  })
+  const alpha = discovered.agents.find((entry) => entry.id === "alpha")
+  if (alpha === undefined) throw new Error("expected alpha agent")
+  expect(alpha.base).toBe("trinity")
+  const trinity = discovered.items.find((entry) => entry.id === "base:trinity")
+  if (trinity === undefined) throw new Error("expected base:trinity")
+  const general = discovered.items.find((entry) => entry.id === "base:general")
+  if (general === undefined) throw new Error("expected base:general")
+  const records: CustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "base:trinity",
+      section: null,
+      text: "custom trinity",
+      basedOn: fingerprint("trinity base"),
+      updated: UPDATED,
+    },
+    {
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "base:general",
+      section: null,
+      text: "custom general",
+      basedOn: fingerprint("general base"),
+      updated: UPDATED,
+    },
+  ]
+  const skills = skillHarness([skillInfo("notes", "skill body")])
+  const agents = agentHarness([{ ...agentInfo("alpha", ""), model }])
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    location: discoverCtx.location,
+    agent: agents.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(templates),
+    skill: skills.domain,
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      records,
+      scopes: scopesOf(discovered.agents),
+      agents: [{ id: "alpha", level: "project", base: alpha.base }],
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (run === undefined) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }])
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("custom trinity")
 })
 
 test("agentBody matches core's trimmed markdown content for frontmatter and body-only files", () => {

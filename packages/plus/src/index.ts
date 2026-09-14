@@ -4,6 +4,7 @@ import type { Registration } from "@opencode/plugin/effect/registration"
 import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
 import { Agent } from "@opencode/schema/agent"
 import { Config } from "@opencode/schema/config"
+import { Model } from "@opencode/schema/model"
 import { Skill } from "@opencode/schema/skill"
 import { Effect, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
@@ -466,15 +467,46 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`); the
 // local table below is only the fallback when the host reports none. User
 // templates created via `base.create` are layered on top so discover lists
-// them alongside the built-ins.
-function resolveBaseTemplates(ctx: Context): { templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined } {
-  const templates = Effect.runSync(ctx.prompt.templates())
-  if (templates.length > 0)
+// them alongside the built-ins. Templates pass through verbatim: the text
+// already carries core's rendered tool guidance.
+async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
+  const templates = await Effect.runPromise(ctx.prompt.templates())
+  if (templates.length === 0)
     return {
-      templates: templates.map((template) => ({ ...template })),
-      active: (agent) => Effect.runSync(ctx.prompt.active({ id: String(agent.id), name: String(agent.name) })),
+      templates: [...fallbackBaseTemplates(), ...readUserBaseTemplates()],
+      active: (agent) => fallbackActiveBase(agent),
     }
-  return { templates: [...fallbackBaseTemplates(), ...readUserBaseTemplates()], active: (agent) => fallbackActiveBase(agent) }
+  const listed = templates.map((template) => ({ ...template }))
+  const catalog = await Effect.runPromise(
+    ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+  )
+  const fallback = await Effect.runPromise(
+    ctx.catalog.model
+      .default()
+      .pipe(Effect.catchCause(() => Effect.succeed({ data: undefined as Model.Info | undefined }))),
+  )
+  const active = (agent: Agent.Info): string | undefined => {
+    const model = resolveCatalogModel(agent, catalog.data, fallback.data)
+    return Effect.runSync(ctx.prompt.active(model))
+  }
+  return { templates: listed, active }
+}
+
+// Resolve an agent's configured model the way the core optimize plugin does
+// (core/src/plugin/optimize.ts lines 59-62): look the agent's model ref up in
+// the catalog list, defaulting to a bare ref (name = id, like
+// `Model.Info.default`) when the catalog has no entry. The result matches the
+// host's `active` input shape `{ id, name }`.
+function resolveCatalogModel(
+  agent: Agent.Info,
+  models: readonly Model.Info[],
+  fallback?: Model.Info | undefined,
+): { id: string; name: string } {
+  const ref = agent.model ?? fallback
+  if (ref === undefined) return { id: "", name: "" }
+  const found = models.find((model) => model.providerID === ref.providerID && model.id === ref.id)
+  if (found !== undefined) return { id: found.id, name: found.name }
+  return { id: ref.id, name: ref.id }
 }
 
 const FALLBACK_BASE_IDS = ["gpt", "claude", "muse", "gemini", "general", "kimi", "trinity"] as const
@@ -524,7 +556,7 @@ function fallbackActiveBase(agent: { model?: { providerID: string; id: string } 
 }
 
 async function discoverAll(ctx: Context, loaded: LoadedStores, baselines: ReadonlyMap<string, PromptBaseline>): Promise<Discovered> {
-  const resolved = resolveBaseTemplates(ctx)
+  const resolved = await resolveBaseTemplates(ctx)
   return discover({
     ctx,
     records: customizationsOf(loaded.records),
@@ -758,7 +790,7 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       const applied = yield* Effect.promise(() =>
         apply(ctx, {
           items: discovered.items,
-          agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+          agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope), base: agent.base })),
           records: customizations,
           splits,
           scopes: scopesOf(discovered.agents),
