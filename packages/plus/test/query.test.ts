@@ -43,7 +43,7 @@ function makeRecord(overrides?: Partial<CustomizationRecord> & { type?: "customi
 function agents(): AgentSource[] {
   return [
     { id: "Implementer", scope: "project", base: "gpt", path: "/agents/Implementer.md" },
-    { id: "CrewMate", scope: "project", base: "gpt", team: "crew" },
+    { id: "CrewMate", scope: "project", base: "gpt" },
     { id: "Helper", scope: "global", base: "claude" },
     { id: "Template", scope: "defaults", base: "gpt" },
   ]
@@ -157,6 +157,18 @@ test("agent matches the row owner and _ the shared rows", () => {
   expect(ids("agent:Implementer")).not.toContain("item:global:Helper:tool:bash")
   expect(ids("agent:_")).toContain(sharedPlus)
   expect(ids("agent:_")).not.toContain(bash)
+})
+
+test("agent is an exact case-insensitive match, not a substring", () => {
+  expect(ids("agent:IMPLEMENTER")).toContain(bash)
+  expect(ids("agent:impl")).not.toContain(bash)
+  expect(ids("agent:impl")).toHaveLength(0)
+})
+
+test("sections projection survives structural filtering", () => {
+  const whole = ["section:project:Implementer:tool:bash:whole"]
+  expect(query(input(), { where: "kind:item", fields: ["id", "sections"] }).rows.find((row) => row.id === bash)?.sections).toEqual(whole)
+  expect(query(input(), { where: "can:split", fields: ["id", "sections"] }).rows.find((row) => row.id === bash)?.sections).toEqual(whole)
 })
 
 test("state reads the resolved on/off badge", () => {
@@ -345,6 +357,15 @@ test("text and upstream search resolved and upstream bodies", () => {
   expect(ids("text:zzz")).toHaveLength(0)
   expect(ids('upstream:"run commands"')).toContain(bash)
   expect(ids("upstream:zzz")).toHaveLength(0)
+})
+
+test("quoted values honor backslash escapes", () => {
+  const quoted = input({
+    items: [...items(), makeItem({ id: "tool:quoted", kind: "tool", group: "native", title: "quoted", text: 'say "hi" now' })],
+  })
+  const found = query(quoted, { where: 'text:"say \\"hi\\" now"' }).rows.map((row) => row.id)
+  expect(found.some((id) => id.endsWith("tool:quoted"))).toBe(true)
+  expect(query(quoted, { where: 'text:"say \\"hi\\" now" kind:item' }).rows.map((row) => row.id).some((id) => id.endsWith("tool:quoted"))).toBe(true)
 })
 
 test("bare words match label or id exactly like the TUI filter", () => {
