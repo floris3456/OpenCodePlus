@@ -1,1157 +1,678 @@
-import type { Plugin } from "@opencode/plugin/tui"
-import type { MutateInput, Snapshot } from "../src/rpc.js"
 import { expect, test } from "bun:test"
-import { createComponent } from "solid-js"
-import { InstructionsRoute, WIDE_THRESHOLD } from "../src/tui/instructions/route.js"
-import { createInstructionsState } from "../src/tui/instructions/state.js"
-import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
+import type { Snapshot } from "../src/rpc.js"
+import { createSnapshot, renderInstructionsRoute } from "./tui.js"
+import type { TestFixture } from "./tui.js"
 
-test("instructions route retries initial-agent selection across sequential snapshots", async () => {
-  const targetAgentId = "target-agent"
-
-  const firstSnapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-  })
-
-  const secondSnapshot = createSnapshot({
-    revision: 2,
-    agents: [
-      { id: "alpha", scope: "project", fileBacked: true },
-      { id: targetAgentId, scope: "project", fileBacked: true },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [firstSnapshot, secondSnapshot],
-    data: { agent: targetAgentId },
-  })
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    const initialFrame = fixture.captureCharFrame()
-    expect(initialFrame).not.toContain(targetAgentId)
-    expect(initialFrame).toContain("›- Project agents (1)")
-
-    await fixture.emitChanged()
-
-    await fixture.waitForFrame((frame) => frame.includes(targetAgentId))
-    const updatedFrame = fixture.captureCharFrame()
-
-    expect(updatedFrame).toContain(`›  + ${targetAgentId}`)
-    expect(updatedFrame).not.toContain("›- Project agents")
-    expect(updatedFrame).toContain(" - Project agents (2)")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("defect A: editing does not survive unmounting on terminal shrink below WIDE_THRESHOLD", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "hello world",
-        agents: ["alpha"],
-        fingerprint: "fp-1",
-        available: true,
-      },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 120,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
+function dispatch(fixture: TestFixture, key: string): boolean {
+  for (const cmd of fixture.commands()) {
+    if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
+      void cmd.run()
+      return true
     }
-    return false
   }
+  return false
+}
 
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    // Expand alpha to reveal Prompt
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    // Move to Prompt
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("hello world"))
-    // Start editing Prompt
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
 
-    // Shrink below WIDE_THRESHOLD (100)
-    fixture.resize(WIDE_THRESHOLD - 10, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
-
-    const narrowFrame = fixture.captureCharFrame()
-    expect(narrowFrame).not.toContain("ctrl+s save")
-    // Footer should advertise regular narrow leaf hints instead
-    expect(narrowFrame).toContain("up/down move")
-
-    // Keymap should be restored (we can navigate again)
-    const canMove = dispatch("up")
-    expect(canMove).toBe(true)
-
-    // Widen back above WIDE_THRESHOLD
-    fixture.resize(120, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Scope: project"))
-    const widenedFrame = fixture.captureCharFrame()
-    // Fresh DetailPane should not carry active editing
-    expect(widenedFrame).not.toContain("ctrl+s save")
-  } finally {
-    fixture.destroy()
+async function moveDown(fixture: TestFixture, n: number): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    dispatch(fixture, "down")
+    await sleep(20)
   }
-})
+}
 
-test("defect B: space, a, and x are registered in keymap only when honoured by row", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    tools: [{ id: "alpha", native: true }],
-    items: [
-      {
-        id: "prompt-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "prompt text",
-        agents: ["alpha"],
-        fingerprint: "fp-prompt",
-        available: true,
-      },
-      {
-        id: "tool-1",
-        kind: "tool",
-        owner: "alpha",
-        title: "Tool",
-        text: "tool text",
-        agents: ["alpha"],
-        fingerprint: "fp-tool-revised",
-        available: true,
-      },
-    ],
-    customizations: [
-      {
-        item: "tool-1",
-        agent: "alpha",
-        state: "disabled",
-        basedOn: "fp-tool-initial",
-        updated: "2026-09-01T00:00:00Z",
-      },
-    ],
-  })
+function binds(fixture: TestFixture): string[] {
+  return fixture.commands().map((cmd) => cmd.bind as string)
+}
 
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 120,
-    height: 40,
-  })
-
-  function getRouteCommands() {
-    return fixture.commands().map((c) => c.bind)
-  }
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    // 1. Agent header selected (structural row)
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    const agentCommands = getRouteCommands()
-    expect(agentCommands).toContain("up,k")
-    expect(agentCommands).toContain("return")
-    expect(agentCommands).not.toContain("space")
-    expect(agentCommands).not.toContain("a")
-    expect(agentCommands).not.toContain("x")
-
-    // Expand agent
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-
-    // 2. Prompt row selected (non-togglable, not customized, no review)
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("prompt text"))
-    const promptCommands = getRouteCommands()
-    expect(promptCommands).not.toContain("space")
-    expect(promptCommands).not.toContain("a")
-    expect(promptCommands).not.toContain("x")
-
-    // 3. Tool row selected (togglable, needs review, customized)
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("tool text"))
-    const toolCommands = getRouteCommands()
-    expect(toolCommands).toContain("space")
-    expect(toolCommands).toContain("a")
-    expect(toolCommands).toContain("x")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("defect C: navigation hints advertise enter detail only for narrow leaf rows and left/right expand only when expandable", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "prompt-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "prompt text",
-        agents: ["alpha"],
-        fingerprint: "fp-prompt",
-        available: true,
-      },
-    ],
-  })
-
-  // Start in narrow mode (80 cols)
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 80,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    // Narrow structural row (alpha agent header)
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    const narrowAgentFrame = fixture.captureCharFrame()
-    expect(narrowAgentFrame).toContain("up/down move")
-    expect(narrowAgentFrame).toContain("left/right expand")
-    expect(narrowAgentFrame).not.toContain("enter detail")
-
-    // Expand agent and move to Prompt (narrow leaf row)
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
-    const narrowPromptFrame = fixture.captureCharFrame()
-    expect(narrowPromptFrame).toContain("up/down move")
-    expect(narrowPromptFrame).toContain("enter detail")
-    expect(narrowPromptFrame).not.toContain("left/right expand")
-
-    // Switch to wide mode
-    fixture.resize(120, 40)
-    await fixture.waitForFrame((frame) => frame.includes("prompt text"))
-    const widePromptFrame = fixture.captureCharFrame()
-    // Wide leaf row: up/down move, no left/right expand, no enter detail
-    expect(widePromptFrame).toContain("up/down move")
-    expect(widePromptFrame).not.toContain("left/right expand")
-    expect(widePromptFrame).not.toContain("enter detail")
-
-    // Move back up to agent header (wide structural row)
-    dispatch("up")
-    await fixture.waitForFrame((frame) => frame.includes("Scope: project"))
-    const wideAgentFrame = fixture.captureCharFrame()
-    expect(wideAgentFrame).toContain("up/down move")
-    expect(wideAgentFrame).toContain("left/right expand")
-    expect(wideAgentFrame).not.toContain("enter detail")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("defect D: MCP review flag can be acknowledged when reset is allowed and toggle and edit are not", async () => {
-  const mcpItem = {
-    id: "mcp-server-1",
+function mcpItem(overrides?: Record<string, unknown>) {
+  return {
+    id: "mcp:sample",
     kind: "mcp" as const,
-    owner: "server",
-    title: "MCPServer",
-    text: "mcp-config",
-    agents: [] as string[],
-    fingerprint: "fp-mcp-revised",
-    available: false,
+    group: "none" as const,
+    title: "sample",
+    text: "sample-config",
+    enabled: true,
+    fingerprint: "fp-sample",
+    ...overrides,
   }
-
-  const initialSnapshot = createSnapshot({
-    revision: 1,
-    items: [mcpItem],
-    customizations: [
-      {
-        item: "mcp-server-1",
-        agent: "*",
-        state: "enabled",
-        basedOn: "fp-mcp-initial",
-        updated: "2026-09-01T00:00:00Z",
-      },
-    ],
-  })
-
-  const acknowledgedSnapshot = createSnapshot({
-    revision: 2,
-    items: [mcpItem],
-    customizations: [
-      {
-        item: "mcp-server-1",
-        agent: "*",
-        state: "enabled",
-        basedOn: "fp-mcp-initial",
-        reviewed: "fp-mcp-revised",
-        updated: "2026-09-01T00:00:00Z",
-      },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [initialSnapshot, acknowledgedSnapshot],
-    width: 120,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    // Defaults is expanded by default; select Defaults -> Project
-    await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Navigate down to Project under Defaults
-    // Nodes: Project agents (0), Global agents (0), Defaults, Project
-    dispatch("down") // Global agents
-    dispatch("down") // Defaults
-    dispatch("down") // Project
-    await fixture.waitForFrame((frame) => frame.includes("Project (default)"))
-
-    // Expand Project under Defaults to reveal MCPServer
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("MCPServer"))
-
-    // Move to MCPServer
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("MCPServer (mcp)"))
-
-    const mcpFrame = fixture.captureCharFrame()
-    expect(mcpFrame).toContain("needs review")
-    expect(mcpFrame).toContain("a acknowledge")
-    expect(mcpFrame).toContain("x reset")
-    expect(mcpFrame).not.toContain("space toggle")
-
-    // Dispatch "a" to acknowledge
-    dispatch("a")
-
-    await fixture.waitForFrame((frame) => frame.includes('Acknowledged "MCPServer"'))
-    const acknowledgedFrame = fixture.captureCharFrame()
-    expect(acknowledgedFrame).toContain('Acknowledged "MCPServer"')
-    expect(acknowledgedFrame).not.toContain("needs review")
-    expect(acknowledgedFrame).not.toContain("a acknowledge")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("defect D: non-actionable rows still refuse acknowledgement in state", async () => {
-  const instructionItem = {
-    id: "inst-1",
-    kind: "instruction" as const,
-    owner: "project",
-    title: "Project Instructions",
-    text: "instructions text",
-    agents: ["alpha"],
-    fingerprint: "fp-inst-2",
-    available: true,
-  }
-
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [instructionItem],
-  })
-
-  type InstructionsStateType = ReturnType<typeof createInstructionsState>
-  let testState: InstructionsStateType | undefined
-  const fixture = await renderPlusFixture({
-    snapshots: [snapshot],
-    render: (context) => {
-      testState = createInstructionsState(context)
-      return createComponent(InstructionsRoute, { context, onClose: () => {} })
-    },
-  })
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Project Instructions") || frame.includes("alpha"))
-    const state = testState
-    expect(state).toBeDefined()
-    if (!state) return
-    state.toggleExpanded("agent:alpha")
-    const instNode = state.nodes().find((n) => n.itemId === "inst-1")
-    expect(instNode).toBeDefined()
-    if (!instNode) return
-    await state.acknowledge(instNode)
-    expect(state.status()).toContain('cannot be acknowledged: the public plugin API does not expose source-aware instruction customization')
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("stops offering actions and keybindings when project mode is disabled", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    tools: [{ id: "alpha", native: true }],
-    items: [
-      {
-        id: "tool-1",
-        kind: "tool",
-        owner: "alpha",
-        title: "Tool",
-        text: "tool text",
-        agents: ["alpha"],
-        fingerprint: "fp-tool-revised",
-        available: true,
-      },
-    ],
-    customizations: [
-      {
-        item: "tool-1",
-        agent: "alpha",
-        state: "disabled",
-        basedOn: "fp-tool-initial",
-        updated: "2026-09-01T00:00:00Z",
-      },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 120,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Tool"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("tool text"))
-
-    const initialFrame = fixture.captureCharFrame()
-    expect(initialFrame).toContain("space toggle")
-    expect(initialFrame).toContain("a acknowledge")
-    expect(initialFrame).toContain("x reset")
-
-    const initialCommands = fixture.commands().map((cmd) => cmd.bind)
-    expect(initialCommands).toContain("space")
-    expect(initialCommands).toContain("a")
-    expect(initialCommands).toContain("x")
-
-    await fixture.emitProjectChanged({ enabled: false })
-
-    await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled for this directory"))
-
-    const disabledFrame = fixture.captureCharFrame()
-    expect(disabledFrame).not.toContain("space toggle")
-    expect(disabledFrame).not.toContain("a acknowledge")
-    expect(disabledFrame).not.toContain("x reset")
-
-    const disabledCommands = fixture.commands().map((cmd) => cmd.bind)
-    expect(disabledCommands).not.toContain("space")
-    expect(disabledCommands).not.toContain("a")
-    expect(disabledCommands).not.toContain("x")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("editing does not survive detail pane remount on terminal widen above WIDE_THRESHOLD", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "hello world",
-        agents: ["alpha"],
-        fingerprint: "fp-1",
-        available: true,
-      },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 80,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    // Expand alpha to reveal Prompt
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    // Move to Prompt
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
-    // Open leaf detail in narrow mode (sets showDetail to true)
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("hello world"))
-    // Start editing Prompt
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
-
-    // Widen terminal above WIDE_THRESHOLD
-    fixture.resize(120, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
-
-    const widenedFrame = fixture.captureCharFrame()
-    expect(widenedFrame).not.toContain("ctrl+s save")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("editing does not survive detail pane remount on terminal shrink when showDetail is true", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "hello world",
-        agents: ["alpha"],
-        fingerprint: "fp-1",
-        available: true,
-      },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 80,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    // Expand alpha to reveal Prompt
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    // Move to Prompt
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
-    // Open leaf detail in narrow mode to establish showDetail() === true
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("hello world"))
-
-    // Widen to establish wide mode with detail open and showDetail() true
-    fixture.resize(120, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Project agents") && frame.includes("hello world"))
-
-    // Start editing in wide mode while showDetail() is true
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
-
-    // Shrink back to narrow while showDetail() is true
-    fixture.resize(80, 40)
-    await fixture.waitForFrame((frame) => frame.includes("esc back to tree") && !frame.includes("ctrl+s save"))
-
-    const narrowFrame = fixture.captureCharFrame()
-    expect(narrowFrame).not.toContain("ctrl+s save")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-function createDelayedContext(
-  context: Plugin.Context,
-  snapshotPromise: () => Promise<Snapshot>,
-): Plugin.Context {
-  return new Proxy(context, {
-    get(target, prop, receiver) {
-      if (prop === "client") {
-        const client = target.client
-        return new Proxy(client, {
-          get(clientTarget, clientProp, clientReceiver) {
-            if (clientProp === "rpc") {
-              return (...args: Parameters<typeof clientTarget.rpc>) => {
-                const rpc = clientTarget.rpc(...args)
-                return new Proxy(rpc, {
-                  get(rpcTarget, rpcProp, rpcReceiver) {
-                    if (rpcProp === "instructions.snapshot") {
-                      return snapshotPromise
-                    }
-                    return Reflect.get(rpcTarget, rpcProp, rpcReceiver)
-                  },
-                })
-              }
-            }
-            return Reflect.get(clientTarget, clientProp, clientReceiver)
-          },
-        })
-      }
-      return Reflect.get(target, prop, receiver)
-    },
-  })
 }
 
-test("defect A: in-progress draft survives layout change across WIDE_THRESHOLD", async () => {
+function toolItem(overrides?: Record<string, unknown>) {
+  return {
+    id: "tool:bash",
+    kind: "tool" as const,
+    group: "native" as const,
+    title: "bash",
+    text: "run commands",
+    enabled: true,
+    fingerprint: "fp-bash",
+    ...overrides,
+  }
+}
+
+function projectAgent(id: string) {
+  return { id, scope: "project" as const, fileBacked: true }
+}
+
+test("roots render with agents and subtree groups", async () => {
   const snapshot = createSnapshot({
     revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "hello world",
-        agents: ["alpha"],
-        fingerprint: "fp-1",
-        available: true,
-      },
+    globalRevision: 1,
+    agents: [
+      projectAgent("Implementer"),
+      { id: "Helper", scope: "global" as const, fileBacked: true },
+      { id: "Template", scope: "defaults" as const, fileBacked: true },
     ],
+    items: [toolItem()],
   })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 80,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("hello world"))
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-
-    const editor = fixture.renderer.currentFocusedEditor
-    expect(editor).toBeDefined()
-    editor?.setText("hello world customized draft")
-    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft"))
-
-    fixture.resize(WIDE_THRESHOLD + 20, 40)
     await fixture.waitForFrame((frame) => frame.includes("Project agents"))
-
-    const widenedFrame = fixture.captureCharFrame()
-    expect(widenedFrame).toContain("ctrl+s save · esc cancel")
-    expect(widenedFrame).toContain("hello world customized draft")
-    expect(fixture.renderer.currentFocusedEditor?.plainText).toBe("hello world customized draft")
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Project agents")
+    expect(frame).toContain("Global agents")
+    expect(frame).toContain("Defaults")
+    expect(frame).toContain("Implementer")
+    expect(frame).toContain("Helper")
+    expect(frame).toContain("Agents")
+    // Expand the project agent to reveal its identical subtree.
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("Tools"))
+    const expanded = fixture.captureCharFrame()
+    expect(expanded).toContain("Tools")
+    expect(expanded).toContain("Base")
+    expect(expanded).toContain("Skills")
+    expect(expanded).toContain("System")
   } finally {
     fixture.destroy()
   }
 })
 
-test("defect B: late snapshot response cannot repopulate screen after project mode is disabled", async () => {
+test("filter narrows visible rows", async () => {
   const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    tools: [{ id: "alpha", native: true }],
+    agents: [projectAgent("Implementer"), projectAgent("Helper")],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["Implementer"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Filter:")
+    expect(frame).toContain("Implementer")
+    expect(frame).not.toContain("Helper")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("help overlay lists keys and closes", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [createSnapshot()], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    dispatch(fixture, "?")
+    await fixture.waitForFrame((frame) => frame.includes("space toggle include/exclude"))
+    expect(fixture.captureCharFrame()).toContain("space toggle include/exclude")
+    dispatch(fixture, "escape")
+    await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("space toggle include/exclude"))
+    expect(fixture.captureCharFrame()).not.toContain("space toggle include/exclude")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("add agent chooses Defaults template then id and scope", async () => {
+  const snapshot = createSnapshot({
+    agents: [{ id: "Template", scope: "defaults" as const, fileBacked: true }],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["Template", "project"], prompts: ["my-agent", "hello prompt"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    expect(dispatch(fixture, "a")).toBe(true)
+    await sleep(200)
+    expect(fixture.fake.agentCreates.length).toBe(1)
+    expect(fixture.fake.agentCreates[0]).toMatchObject({ scope: "project", id: "my-agent", template: "Template" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("add base prompts for id, title, and text", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["gpt", "gpt.txt", "base text"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // group:defaults::base is index 5 from root:project.
+    await moveDown(fixture, 5)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await sleep(200)
+    expect(fixture.fake.baseCreates.length).toBe(1)
+    expect(fixture.fake.baseCreates[0]).toMatchObject({ id: "gpt", title: "gpt.txt", text: "base text" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("add skill offers create with name and body", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["skill", "create"], prompts: ["my-skill", "skill body"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // group:defaults::tools has no add, so a opens the generic picker.
+    await moveDown(fixture, 4)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await sleep(200)
+    expect(fixture.fake.skillCreates.length).toBe(1)
+    expect(fixture.fake.skillCreates[0]).toMatchObject({ name: "my-skill", body: "skill body" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("add skill offers import from SKILL.md path", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["skill", "import"], prompts: ["path/to/SKILL.md"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 4)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await sleep(200)
+    expect(fixture.fake.skillImports.length).toBe(1)
+    expect(fixture.fake.skillImports[0]).toMatchObject({ path: "path/to/SKILL.md" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("add instruction prompts for name and text", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["instruction"], prompts: ["guide.md", "guide text"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 4)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await sleep(200)
+    expect(fixture.fake.instructionCreates.length).toBe(1)
+    expect(fixture.fake.instructionCreates[0]).toMatchObject({ name: "guide.md", text: "guide text" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("add mcp prompts for name and JSON config", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["srv", '{"command":"npx"}'] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await sleep(200)
+    expect(fixture.fake.mcpAdds.length).toBe(1)
+    expect(fixture.fake.mcpAdds[0].name).toBe("srv")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("delete agent asks for confirmation", async () => {
+  const snapshot = createSnapshot({ agents: [projectAgent("Implementer")] })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { confirms: [true] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    await moveDown(fixture, 1)
+    expect(binds(fixture)).toContain("d")
+    expect(dispatch(fixture, "d")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Deleted agent Implementer"))
+    expect(fixture.fake.agentDeletes.length).toBe(1)
+    expect(fixture.fake.dialogConfirms.length).toBe(1)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("delete file-backed item surfaces the RPC contract limitation", async () => {
+  const snapshot = createSnapshot({
     items: [
       {
-        id: "tool-1",
-        kind: "tool",
-        owner: "alpha",
-        title: "Tool",
-        text: "tool text",
-        agents: ["alpha"],
-        fingerprint: "fp-tool-revised",
-        available: true,
-      },
-    ],
-    customizations: [
-      {
-        item: "tool-1",
-        agent: "alpha",
-        state: "disabled",
-        basedOn: "fp-tool-initial",
-        updated: "2026-09-01T00:00:00Z",
+        id: "skill:proj-one",
+        kind: "skill" as const,
+        group: "project" as const,
+        title: "proj-one",
+        text: "project skill",
+        enabled: true,
+        fingerprint: "fp-proj",
       },
     ],
   })
-
-  let resolveSnapshot: (() => void) | undefined
-  const delayedPromise = new Promise<Snapshot>((resolve) => {
-    resolveSnapshot = () => resolve(snapshot)
-  })
-
-  let requestStarted = false
-  const fixture = await renderPlusFixture({
-    snapshots: [snapshot],
-    render: (context) => {
-      const wrapped = createDelayedContext(context, async () => {
-        requestStarted = true
-        return delayedPromise
-      })
-      return createComponent(InstructionsRoute, { context: wrapped, onClose: () => {} })
-    },
-  })
-
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame(() => requestStarted)
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // Navigate the Defaults shared-skills branch: group:defaults::skills is
+    // index 6, expand, Project subgroup (index 3 within skills), expand, item.
+    await moveDown(fixture, 6)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 4)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("project skill"))
+    expect(binds(fixture)).toContain("d")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("no delete RPC"))
+    expect(fixture.fake.agentDeletes.length).toBe(0)
+    expect(fixture.fake.mcpRemoves.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
 
+test("reset asks for confirmation and clears the override", async () => {
+  const snapshot = createSnapshot({
+    items: [mcpItem()],
+    records: [
+      {
+        type: "customization" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "mcp:sample",
+        section: null,
+        state: "off" as const,
+        basedOn: "fp-sample",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { confirms: [true] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    expect(binds(fixture)).toContain("r")
+    dispatch(fixture, "r")
+    await fixture.waitForFrame((frame) => frame.includes('Reset "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("space toggle sends both expected revisions", async () => {
+  const snapshot = createSnapshot({
+    revision: 3,
+    globalRevision: 7,
+    items: [mcpItem()],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].expectedRevision).toBe(3)
+    expect(fixture.fake.mutateInputs[0].expectedGlobalRevision).toBe(7)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("stale dual revisions adopt the snapshot and ask to retry", async () => {
+  const initial = createSnapshot({ revision: 1, globalRevision: 1, items: [mcpItem()] })
+  const latest: Snapshot = createSnapshot({
+    revision: 2,
+    globalRevision: 2,
+    items: [mcpItem({ text: "newer-config" })],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [initial],
+    width: 120,
+    height: 40,
+    mutateResult: { ok: false, reason: "stale", snapshot: latest },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes("Revision changed"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("1/1")
+    expect(frame).toContain("2/2")
+    expect(frame).toContain("retry")
+    await fixture.waitForFrame((frame) => frame.includes("newer-config"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("key availability follows the selected row", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [mcpItem()],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    // Root row: structural, no space/d/r/s.
+    const rootBinds = binds(fixture)
+    expect(rootBinds).toContain("a")
+    expect(rootBinds).not.toContain("space")
+    expect(rootBinds).not.toContain("d")
+    expect(rootBinds).not.toContain("r")
+    expect(rootBinds).not.toContain("s")
+    // Agent row: removable, so d appears but space still does not.
+    await moveDown(fixture, 1)
+    const agentBinds = binds(fixture)
+    expect(agentBinds).toContain("d")
+    expect(agentBinds).not.toContain("space")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("disabled project mode hides actions and keys", async () => {
+  const snapshot = createSnapshot({ agents: [projectAgent("Implementer")], items: [toolItem()] })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
     await fixture.emitProjectChanged({ enabled: false })
-    await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled for this directory"))
-
-    resolveSnapshot?.()
-    await delayedPromise
-    await new Promise((resolve) => setTimeout(resolve, 50))
-
-    const disabledFrame = fixture.captureCharFrame()
-    expect(disabledFrame).toContain("Project mode is disabled for this directory")
-    expect(disabledFrame).not.toContain("Tool")
-    expect(disabledFrame).not.toContain("alpha")
-
-    const commands = fixture.commands().map((cmd) => cmd.bind)
-    expect(commands).not.toContain("space")
-    expect(commands).not.toContain("a")
-    expect(commands).not.toContain("x")
-
-    await fixture.emitProjectChanged({ enabled: true })
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    const recoveredFrame = fixture.captureCharFrame()
-    expect(recoveredFrame).not.toContain("Project mode is disabled for this directory")
+    await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Project mode is disabled for this directory")
+    const after = binds(fixture)
+    expect(after).not.toContain("space")
+    expect(after).not.toContain("a")
+    expect(after).not.toContain("d")
+    expect(after).not.toContain("r")
+    expect(after).not.toContain("s")
   } finally {
     fixture.destroy()
   }
 })
 
-test("defect C: leaf rows omit expand commands in wide mode and narrow detail aligns with footer", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
+function reviewSnapshot(): Snapshot {
+  return createSnapshot({
+    items: [mcpItem({ text: "new-upstream" })],
+    records: [
       {
-        id: "prompt-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "prompt text",
-        agents: ["alpha"],
-        fingerprint: "fp-prompt",
-        available: true,
+        type: "customization" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "mcp:sample",
+        section: null,
+        text: "mine",
+        basedOn: "fp-old",
+        basedOnText: "old-upstream",
+        updated: "2026-09-14T00:00:00.000Z",
       },
     ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 120,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    // Alpha agent row (expandable structural row in wide mode)
-    const agentCommands = fixture.commands().map((c) => c.bind)
-    expect(agentCommands).toContain("up,k")
-    expect(agentCommands).toContain("return")
-    expect(agentCommands).toContain("right,l")
-    expect(agentCommands).toContain("r")
-
-    // Expand agent and select Prompt (leaf row in wide mode)
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("prompt text"))
-
-    const wideLeafCommands = fixture.commands().map((c) => c.bind)
-    expect(wideLeafCommands).not.toContain("right,l")
-    expect(wideLeafCommands).not.toContain("return")
-    expect(wideLeafCommands).toContain("up,k")
-    expect(wideLeafCommands).toContain("down,j")
-    expect(wideLeafCommands).toContain("left,h")
-    expect(wideLeafCommands).toContain("r")
-
-    // Switch to narrow mode with detail open
-    fixture.resize(80, 40)
-    // Open detail for leaf in narrow mode
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("esc back to tree"))
-
-    const narrowDetailCommands = fixture.commands().map((c) => c.bind)
-    expect(narrowDetailCommands).not.toContain("up,k")
-    expect(narrowDetailCommands).not.toContain("down,j")
-    expect(narrowDetailCommands).not.toContain("left,h")
-    expect(narrowDetailCommands).not.toContain("right,l")
-    expect(narrowDetailCommands).not.toContain("return")
-    expect(narrowDetailCommands).not.toContain("r")
-    expect(narrowDetailCommands).toContain("escape")
-
-    const narrowDetailFrame = fixture.captureCharFrame()
-    expect(narrowDetailFrame).not.toContain("up/down move")
-    expect(narrowDetailFrame).not.toContain("r refresh")
-    expect(narrowDetailFrame).toContain("esc back to tree")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("defect A: in-progress draft survives terminal shrink below WIDE_THRESHOLD and detail reopen", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "hello world",
-        agents: ["alpha"],
-        fingerprint: "fp-1",
-        available: true,
-      },
-    ],
-  })
-
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
-    width: 120,
-    height: 40,
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("hello world"))
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-
-    const editor = fixture.renderer.currentFocusedEditor
-    expect(editor).toBeDefined()
-    editor?.setText("hello world customized draft")
-    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft"))
-
-    // Shrink below WIDE_THRESHOLD with showDetail false: detail pane unmounts
-    fixture.resize(WIDE_THRESHOLD - 10, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
-
-    const narrowTreeFrame = fixture.captureCharFrame()
-    expect(narrowTreeFrame).not.toContain("ctrl+s save")
-    expect(narrowTreeFrame).toContain("enter detail")
-
-    // Reopen detail pane in narrow mode: dirty draft must still be present and editing active
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft"))
-
-    const narrowDetailFrame = fixture.captureCharFrame()
-    expect(narrowDetailFrame).toContain("ctrl+s save · esc cancel")
-    expect(narrowDetailFrame).toContain("hello world customized draft")
-    expect(fixture.renderer.currentFocusedEditor?.plainText).toBe("hello world customized draft")
-
-    // Editing can continue: type further
-    const reopenedEditor = fixture.renderer.currentFocusedEditor
-    expect(reopenedEditor).toBeDefined()
-    reopenedEditor?.setText("hello world customized draft extended")
-    await fixture.waitForFrame((frame) => frame.includes("hello world customized draft extended"))
-    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
-  } finally {
-    fixture.destroy()
-  }
-})
-
-function createMutateRecordingContext(
-  context: Plugin.Context,
-  onMutate: (input: MutateInput) => void,
-): Plugin.Context {
-  return new Proxy(context, {
-    get(target, prop, receiver) {
-      if (prop !== "client") return Reflect.get(target, prop, receiver)
-      const client = target.client
-      return new Proxy(client, {
-        get(clientTarget, clientProp, clientReceiver) {
-          if (clientProp !== "rpc") return Reflect.get(clientTarget, clientProp, clientReceiver)
-          return (...args: Parameters<typeof clientTarget.rpc>) => {
-            const rpc = clientTarget.rpc(...args)
-            return new Proxy(rpc, {
-              get(rpcTarget, rpcProp, rpcReceiver) {
-                if (rpcProp !== "instructions.mutate") return Reflect.get(rpcTarget, rpcProp, rpcReceiver)
-                const original = Reflect.get(rpcTarget, rpcProp, rpcReceiver)
-                if (typeof original !== "function") return original
-                return (input: MutateInput, opts: unknown) => {
-                  onMutate(input)
-                  return Reflect.apply(original, rpcTarget, [input, opts])
-                }
-              },
-            })
-          }
-        },
-      })
-    },
   })
 }
 
-test("empty resolved text preserves typed draft across threshold resize and saves typed text", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-empty",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "",
-        agents: ["alpha"],
-        fingerprint: "fp-empty",
-        available: true,
-      },
-    ],
-  })
+async function gotoReviewRow(fixture: TestFixture): Promise<void> {
+  await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+  await moveDown(fixture, 8)
+  dispatch(fixture, "right")
+  await sleep(50)
+  await moveDown(fixture, 1)
+  await fixture.waitForFrame((frame) => frame.includes("sample"))
+}
 
-  const mutations: MutateInput[] = []
-  const fixture = await renderPlusFixture({
-    snapshots: [snapshot],
-    routeData: { agent: "alpha" },
-    width: 80,
-    height: 40,
-    render: (context) => {
-      const wrapped = createMutateRecordingContext(context, (input) => {
-        mutations.push(input)
-      })
-      return createComponent(InstructionsRoute, {
-        context: wrapped,
-        onClose: () => {},
-        data: { agent: "alpha" },
-      })
-    },
-  })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
+test("narrow detail opens with right and closes with escape", async () => {
+  const snapshot = createSnapshot({ items: [mcpItem()] })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 80, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("enter detail"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Agent: alpha"))
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-
-    const editor = fixture.renderer.currentFocusedEditor
-    expect(editor).toBeDefined()
-    editor?.setText("newly saved prompt text")
-    await fixture.waitForFrame((frame) => frame.includes("newly saved prompt text"))
-
-    // Resize across threshold to wide mode
-    fixture.resize(120, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Project agents") && frame.includes("ctrl+s save"))
-
-    const widenedFrame = fixture.captureCharFrame()
-    expect(widenedFrame).toContain("ctrl+s save · esc cancel")
-    expect(widenedFrame).toContain("newly saved prompt text")
-
-    // Save with ctrl+s: assert the typed text is saved (not empty, not old value)
-    dispatch("ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes('Saved "Prompt"'))
-
-    expect(mutations.length).toBe(1)
-    const savedCustomization = mutations[0].customizations.find((entry) => entry.item === "item-empty")
-    expect(savedCustomization).toBeDefined()
-    expect(savedCustomization?.text).toBe("newly saved prompt text")
-    expect(savedCustomization?.text).not.toBe("")
-    expect(savedCustomization?.text).not.toBe(snapshot.items[0].text)
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("sample"))
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("back to tree"))
+    expect(fixture.captureCharFrame()).toContain("sample-config")
+    dispatch(fixture, "escape")
+    await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("back to tree"))
+    expect(fixture.captureCharFrame()).not.toContain("back to tree")
   } finally {
     fixture.destroy()
   }
 })
 
-test("unedited editor still cancels on terminal shrink below WIDE_THRESHOLD when showDetail is false", async () => {
-  const snapshot = createSnapshot({
-    revision: 1,
-    agents: [{ id: "alpha", scope: "project", fileBacked: true }],
-    items: [
-      {
-        id: "item-1",
-        kind: "prompt",
-        owner: "alpha",
-        title: "Prompt",
-        text: "hello world",
-        agents: ["alpha"],
-        fingerprint: "fp-1",
-        available: true,
-      },
-    ],
-  })
+test("enter on a yellow node opens the three-pane diff and k keeps mine", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("review"))
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Original upstream")
+    expect(frame).toContain("Yours")
+    expect(frame).toContain("New upstream")
+    expect(frame).toContain("k keep mine")
+    dispatch(fixture, "k")
+    await fixture.waitForFrame((frame) => frame.includes('Kept "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", item: "mcp:sample" })
+  } finally {
+    fixture.destroy()
+  }
+})
 
+test("enter on a yellow node resolves t take upstream", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("review"))
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    dispatch(fixture, "t")
+    await fixture.waitForFrame((frame) => frame.includes("Took upstream"))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("enter on a yellow node resolves e edit through the route", async () => {
   const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    data: { agent: "alpha" },
+    snapshots: [reviewSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["merged text"] },
+  })
+  try {
+    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("review"))
+    // The diff pane mounts its own e edit editor; wait for it before typing.
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    dispatch(fixture, "e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor).toBeDefined()
+    expect(editor?.plainText).toBe("mine")
+    editor?.setText("merged text")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Edited "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "merged text" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("s opens the manual splitter and saves two named sections", async () => {
+  const text = "Purpose tells when.\n\nQuoting details here.\n"
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ items: [mcpItem({ text })] })],
     width: 120,
     height: 40,
   })
-
-  function dispatch(key: string) {
-    for (const cmd of fixture.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
   try {
-    await fixture.waitForFrame((frame) => frame.includes("alpha"))
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("Prompt"))
-    dispatch("down")
-    await fixture.waitForFrame((frame) => frame.includes("hello world"))
-    dispatch("e")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    expect(fixture.captureCharFrame()).toContain("ctrl+s save · esc cancel")
+    await gotoReviewRow(fixture)
+    expect(binds(fixture)).toContain("s")
+    dispatch(fixture, "s")
+    await fixture.waitForFrame((frame) => frame.includes("split into sections"))
+    dispatch(fixture, "b")
+    await fixture.waitForFrame((frame) => frame.includes("Name section"))
+    fixture.renderer.currentFocusedEditor?.setText("Purpose")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes("Purpose") && !frame.includes("Name section"))
+    dispatch(fixture, "down")
+    dispatch(fixture, "down")
+    dispatch(fixture, "b")
+    await fixture.waitForFrame((frame) => frame.includes("Name section"))
+    fixture.renderer.currentFocusedEditor?.setText("Quoting")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes("Quoting"))
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Split "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const split = fixture.fake.mutateInputs[0].records.find((record) => record.type === "split")
+    expect(split).toMatchObject({ type: "split", item: "mcp:sample" })
+    if (split?.type !== "split") throw new Error("expected a split record")
+    expect(split.boundaries.map((boundary) => boundary.name)).toEqual(["Purpose", "Quoting"])
+    expect(split.boundaries.map((boundary) => boundary.start)).toEqual([0, text.indexOf("Quoting")])
+  } finally {
+    fixture.destroy()
+  }
+})
 
-    // Shrink below WIDE_THRESHOLD without editing (draft is clean): must cancel editing
-    fixture.resize(WIDE_THRESHOLD - 10, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Project agents") && !frame.includes("ctrl+s save"))
+test("mutation leaves an untouched split record updated unchanged", async () => {
+  const splitUpdated = "2026-01-02T00:00:00.000Z"
+  const snapshot = createSnapshot({
+    items: [mcpItem(), toolItem()],
+    records: [
+      {
+        type: "split" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "tool:bash",
+        boundaries: [{ id: "a", name: "A", start: 0 }],
+        updated: splitUpdated,
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const split = fixture.fake.mutateInputs[0].records.find((record) => record.type === "split")
+    expect(split).toMatchObject({ type: "split", item: "tool:bash", updated: splitUpdated })
+  } finally {
+    fixture.destroy()
+  }
+})
 
-    const narrowTreeFrame = fixture.captureCharFrame()
-    expect(narrowTreeFrame).not.toContain("ctrl+s save")
-    expect(narrowTreeFrame).toContain("enter detail")
+test("normal-mode keys are arrows without j/k/h/l aliases", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [createSnapshot()], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    const all = binds(fixture)
+    expect(all).toContain("up")
+    expect(all).toContain("down")
+    expect(all).toContain("left")
+    expect(all).toContain("right")
+    for (const key of ["j", "k", "h", "l"]) {
+      expect(dispatch(fixture, key)).toBe(false)
+    }
+    const full = all.join(",")
+    expect(full).not.toContain("up,k")
+    expect(full).not.toContain("left,h")
+  } finally {
+    fixture.destroy()
+  }
+})
 
-    // Keymap is restored to normal tree navigation
-    const canMove = dispatch("up")
-    expect(canMove).toBe(true)
-    dispatch("down")
-
-    // Reopen detail in narrow mode: must NOT be in edit mode
-    dispatch("return")
-    await fixture.waitForFrame((frame) => frame.includes("hello world") && frame.includes("e edit"))
-
-    const narrowDetailFrame = fixture.captureCharFrame()
-    expect(narrowDetailFrame).not.toContain("ctrl+s save")
-    expect(narrowDetailFrame).toContain("e edit")
-    expect(fixture.renderer.currentFocusedEditor).toBeNull()
-
-    // Widen back above WIDE_THRESHOLD: must still NOT be in edit mode
-    fixture.resize(120, 40)
-    await fixture.waitForFrame((frame) => frame.includes("Agent: alpha") && frame.includes("e edit"))
-
-    const widenedFrame = fixture.captureCharFrame()
-    expect(widenedFrame).not.toContain("ctrl+s save")
-    expect(widenedFrame).toContain("e edit")
-    expect(fixture.renderer.currentFocusedEditor).toBeNull()
+test("filter reveals a match nested under collapsed ancestors", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [toolItem({ title: "zz-unique-tool", id: "tool:zz-unique", text: "zz-unique-body" })],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["zz-unique"] },
+  })
+  try {
+    // The tool row starts hidden under collapsed ancestors; filtering must
+    // reveal it with its ancestor chain.
+    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    expect(fixture.captureCharFrame()).not.toContain("zz-unique-tool")
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Filter:")
+    expect(frame).toContain("zz-unique-tool")
+    expect(frame).toContain("Implementer")
   } finally {
     fixture.destroy()
   }

@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import type { TreeNode } from "../../instructions/tree.js"
 
-interface TreePaneProps {
+export interface TreePaneProps {
   context: Plugin.Context
   nodes: () => TreeNode[]
   expanded: () => ReadonlySet<string>
@@ -10,33 +10,48 @@ interface TreePaneProps {
   loading: () => boolean
 }
 
-function marker(node: TreeNode, expanded: ReadonlySet<string>): string {
-  if (!isExpandable(node)) return " "
+// Visible children come straight from the flat list: the next row is deeper.
+export function hasVisibleChildren(nodes: readonly TreeNode[], index: number): boolean {
+  const node = nodes[index]
+  const next = nodes[index + 1]
+  if (node === undefined || next === undefined) return false
+  return next.depth > node.depth
+}
+
+// Sections are always leaves. Every other row owns logical children (an item
+// always has its split sections), so a collapsed non-section row keeps its
+// "+" marker even though the children are hidden from the flat list.
+export function isExpandableRow(node: TreeNode, visibleChildren: boolean, expanded: ReadonlySet<string>): boolean {
+  if (node.kind === "section") return false
+  if (visibleChildren) return true
+  if (expanded.has(node.id)) return false
+  return true
+}
+
+export function rowMarker(node: TreeNode, visibleChildren: boolean, expanded: ReadonlySet<string>): string {
+  if (!isExpandableRow(node, visibleChildren, expanded)) return " "
   return expanded.has(node.id) ? "-" : "+"
 }
 
-function isExpandable(node: TreeNode): boolean {
-  return node.kind === "group" || node.kind === "agent" || node.kind === "default"
-}
-
-function badgeLabels(node: TreeNode): string[] {
-  // Group / agent / default headers carry only structural badges; the
-  // enabled | customized | review triple belongs to item rows. Enabled
-  // shows only where it can be toggled; elsewhere it would read as an
-  // action that does not exist.
-  if (node.badges.readOnly === true) return ["protected"]
-  if (node.itemId === undefined) return []
+export function badgeLabels(node: TreeNode): string[] {
   const labels: string[] = []
-  if (node.action?.toggle.allowed === true) labels.push(node.badges.enabled === false ? "disabled" : "enabled")
-  if (node.badges.customized === true) labels.push("customized")
-  if (node.badges.review === true) labels.push("needs review")
+  if (node.address !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
+  if (node.badges.modified === true) labels.push("modified")
+  if (node.badges.active === true) labels.push("active")
+  const count = node.badges.reviewCount ?? 0
+  if (count > 0) labels.push(`${count} to review`)
+  else if (node.badges.review === true) labels.push("review")
   return labels
 }
 
-function badgeColor(context: Plugin.Context, label: string) {
+export function isReviewLabel(label: string): boolean {
+  return label === "review" || label.endsWith(" to review")
+}
+
+export function badgeColor(context: Plugin.Context, label: string) {
   // The review warning owns the feedback token; every other badge is plain
-  // subdued body text. No token borrows a neighbouring role for decor.
-  if (label === "needs review") return context.theme.text.feedback.warning.default
+  // subdued body text. Yellow is used only for review.
+  if (isReviewLabel(label)) return context.theme.text.feedback.warning.default
   return context.theme.text.subdued
 }
 
@@ -64,27 +79,26 @@ export function TreePane(props: TreePaneProps) {
         >
           <scrollbox flexGrow={1}>
             <For each={props.nodes()}>
-              {(node) => (
-                <box
-                  flexDirection="row"
-                  backgroundColor={
-                    node.id === props.selectedId()
-                      ? props.context.theme.background.formfield.selected
-                      : undefined
-                  }
-                >
-                  <text fg={props.context.theme.text.formfield.selected}>
-                    {node.id === props.selectedId() ? "›" : " "}
-                  </text>
-                  <text fg={props.context.theme.text.default}>
-                    {"  ".repeat(node.depth)}
-                    {marker(node, props.expanded())} {node.label}
-                  </text>
-                  <For each={badgeLabels(node)}>
-                    {(label) => <text fg={badgeColor(props.context, label)}> [{label}]</text>}
-                  </For>
-                </box>
-              )}
+              {(node, index) => {
+                const visible = () => hasVisibleChildren(props.nodes(), index())
+                const marker = () => rowMarker(node, visible(), props.expanded())
+                const selected = () => node.id === props.selectedId()
+                return (
+                  <box
+                    flexDirection="row"
+                    backgroundColor={selected() ? props.context.theme.background.formfield.selected : undefined}
+                  >
+                    <text fg={props.context.theme.text.formfield.selected}>{selected() ? "›" : " "}</text>
+                    <text fg={props.context.theme.text.default}>
+                      {"  ".repeat(node.depth)}
+                      {marker()} {node.label}
+                    </text>
+                    <For each={badgeLabels(node)}>
+                      {(label) => <text fg={badgeColor(props.context, label)}> [{label}]</text>}
+                    </For>
+                  </box>
+                )
+              }}
             </For>
           </scrollbox>
         </Show>
