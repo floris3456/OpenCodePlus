@@ -457,7 +457,7 @@ async function discoverInstructionFiles(
   })
 }
 
-function instructionCandidates(directory: string, projectDirectory: string): string[] {
+export function instructionCandidates(directory: string, projectDirectory: string): string[] {
   const start = path.resolve(directory)
   const root = path.resolve(projectDirectory)
   const home = path.resolve(process.env.OPENCODE_TEST_HOME ?? os.homedir())

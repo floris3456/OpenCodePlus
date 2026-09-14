@@ -10,7 +10,7 @@ import type { Scope } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
-import { agentBody, discover, type BaseTemplate, type Discovered } from "./instructions/discover.js"
+import { agentBody, discover, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir } from "./agents/base.js"
 import { addMcp, removeMcp } from "./agents/mcp.js"
@@ -344,7 +344,12 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
         const result = yield* Effect.promise(() =>
-          createInstruction({ projectDirectory: directory, name: input.name, text: input.text }),
+          createInstruction({
+            sessionDirectory: directory,
+            projectDirectory: ctx.location.project.directory,
+            name: input.name,
+            text: input.text,
+          }),
         )
         if (!result.ok && result.reason === "exists")
           return yield* Effect.fail(
@@ -657,16 +662,36 @@ interface CreateInstructionInvalid {
 
 type CreateInstructionResult = CreateInstructionSuccess | CreateInstructionExists | CreateInstructionInvalid
 
-async function createInstruction(input: { projectDirectory: string; name: string; text: string }): Promise<CreateInstructionResult> {
+async function createInstruction(input: {
+  sessionDirectory: string
+  projectDirectory: string
+  name: string
+  text: string
+}): Promise<CreateInstructionResult> {
   const name = input.name.trim()
   if (name.length === 0) return { ok: false, reason: "invalid", id: input.name, path: "", message: "Instruction name cannot be empty" }
   if (name.includes("\0") || name.includes(".."))
     return { ok: false, reason: "invalid", id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
   const relative = name.endsWith(".md") ? name : `${name}.md`
+  const session = path.resolve(input.sessionDirectory)
   const root = path.resolve(input.projectDirectory)
-  const target = path.resolve(root, relative)
+  const target = path.resolve(session, relative)
   if (target === root || !target.startsWith(`${root}${path.sep}`))
     return { ok: false, reason: "invalid", id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
+  // Validate the resolved file against discovery's own candidate list: core
+  // only ever delivers the global config AGENTS.md plus AGENTS.md files
+  // walking from the session directory up to the stop directory, so any other
+  // name would report success yet never be observed. instructionCandidates is
+  // the single source of truth — do not duplicate the AGENTS.md rule here.
+  const observable = new Set(instructionCandidates(session, root).map((candidate) => path.resolve(candidate)))
+  if (!observable.has(target))
+    return {
+      ok: false,
+      reason: "invalid",
+      id: input.name,
+      path: "",
+      message: `Only AGENTS.md files on the session ancestor path are discovered; "${input.name}" would never be delivered. Accepted names: AGENTS.md`,
+    }
   if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: relative, path: target }
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, input.text.endsWith("\n") ? input.text : `${input.text}\n`)
