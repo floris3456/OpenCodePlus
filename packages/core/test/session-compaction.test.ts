@@ -2,7 +2,6 @@ import { expect, test } from "bun:test"
 import { LLMClient, LLMEvent, LanguageModel, ToolDefinition, type LLMRequest } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
@@ -78,7 +77,7 @@ const resolved = SessionRunnerModel.resolved(model, {
   limit: { context: 200_000, output: 32_000 },
 })
 const it = testEffect(
-  AppNodeBuilder.build(
+  LayerNode.compile(
     LayerNode.group([
       Database.node,
       Bus.node,
@@ -88,7 +87,9 @@ const it = testEffect(
       SessionModelRequest.node,
       PluginHooks.node,
     ]),
-    [Bus.node.replace(Bus.configured({ persist: true })), llmClient.replace(client)],
+    {
+      replacements: [Bus.node.replace(Bus.configured({ persist: true })), llmClient.replace(client)],
+    },
   ),
 )
 
@@ -193,7 +194,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
             id: Agent.defaultID,
             info: { ...Agent.Info.default(Agent.defaultID), system: "You are a helpful assistant." },
           },
-          initial: "Project instructions.",
+          initial: ["Project instructions."],
           tools: {
             definitions: [
               ToolDefinition.make({ name: "read", description: "Read files", inputSchema: { type: "object" } }),
@@ -329,7 +330,7 @@ const loaded = (session: Session.Info, messages: readonly SessionMessage.Info[])
   messages,
   model: resolved,
   agent: { id: Agent.defaultID, info: Agent.Info.default(Agent.defaultID) },
-  initial: "Session instructions",
+  initial: ["Session instructions"],
   instructionUpdate: "",
   tools: { definitions: [], execute: () => Effect.die("Compaction must not execute tools") },
 })
