@@ -1,0 +1,153 @@
+#!/bin/sh
+set -e
+
+# Capture the caller's working directory before any path resolution or cd.
+CALLER_DIR="${PWD:-$(pwd)}"
+
+# Resolve the real path of this script, following symlinks.
+TARGET="$0"
+case "$TARGET" in
+  */*) ;;
+  *)
+    TARGET=$(command -v "$TARGET" 2>/dev/null || echo "./$TARGET")
+    ;;
+esac
+
+RESOLVED=""
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED=$(readlink -f "$TARGET" 2>/dev/null || true)
+fi
+
+if [ -n "$RESOLVED" ] && [ -e "$RESOLVED" ]; then
+  TARGET="$RESOLVED"
+else
+  while [ -L "$TARGET" ]; do
+    DIR=$(cd -P "$(dirname "$TARGET")" >/dev/null 2>&1 && pwd)
+    LINK=$(readlink "$TARGET")
+    case "$LINK" in
+      /*) TARGET="$LINK" ;;
+      *) TARGET="$DIR/$LINK" ;;
+    esac
+  done
+fi
+
+SCRIPT_DIR=$(cd -P "$(dirname "$TARGET")" >/dev/null 2>&1 && pwd)
+REPO=$(cd -P "$SCRIPT_DIR/../../.." >/dev/null 2>&1 && pwd)
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "opencodeplus: 'bun' was not found on PATH. Please install Bun to use opencodeplus." >&2
+  exit 1
+fi
+
+if [ ! -f "$REPO/packages/cli/src/index.ts" ]; then
+  echo "opencodeplus: CLI entrypoint not found at $REPO/packages/cli/src/index.ts (script must be run from or symlinked to the repository)" >&2
+  exit 1
+fi
+
+PRELOAD="$SCRIPT_DIR/restore-cwd.ts"
+if [ ! -f "$PRELOAD" ]; then
+  echo "opencodeplus: Preload script not found at $PRELOAD" >&2
+  exit 1
+fi
+
+# Use the 'plus' storage channel unless overridden by caller, keeping client-local
+# state (like tabs) isolated from installed opencode2.
+export OPENCODE_TUI_CHANNEL="${OPENCODE_TUI_CHANNEL:-plus}"
+
+# Plus is gated on project configuration; if OPENCODE_CONFIG_PROJECT_DISABLE is set,
+# the Instructions screen silently has nothing to work with.
+unset OPENCODE_CONFIG_PROJECT_DISABLE
+
+# --cwd "$REPO/packages/cli" is strictly required because running bun directly
+# against the CLI entrypoint from another directory fails JSX runtime resolution
+# ('react/jsx-dev-runtime'). However, --cwd changes process.cwd() for the child,
+# which causes cwd-sensitive subcommands (such as 'mcp add' or 'mcp list') to target
+# the fork's packages/cli directory instead of the user's project.
+#
+# To prevent silent misdirection:
+# 1. Refuse any invocation naming a subcommand; subcommands must be run from
+#    the repository via 'bun run dev <subcommand>'.
+#    Because the CLI accepts global flags before subcommands, refusal checks every
+#    argument against an explicit list of the CLI's subcommands.
+# 2. For the default TUI invocation, recognise an existing directory positional
+#    anywhere in the arguments, normalise it to absolute in place, and append
+#    nothing; if none is supplied, pass the caller's directory explicitly.
+# 3. Restore the target directory before the CLI entrypoint executes via a Bun
+#    --preload module (restore-cwd.ts) using OPENCODEPLUS_CALLER_CWD, so the CLI
+#    and Plus plugin bind to the caller project rather than the fork.
+#
+# Residual ambiguity and safe failures:
+# - If a value-taking flag's value happens to name an existing directory (for
+#   example '--prompt src' run where 'src/' exists), it is indistinguishable from
+#   a directory positional in POSIX sh without encoding flag arity, so it is
+#   treated as the directory. Note that encoding upstream flag arity was deliberately
+#   avoided because it would silently drift from upstream. Do not add complexity
+#   to chase this case.
+# - If a flag value happens to match a subcommand name (for example '--prompt run'),
+#   it is refused. This fails safe: refusing is recoverable and instructs the user
+#   to run from the repository, whereas silently targeting the wrong project is not.
+
+# Pinned CLI subcommands from 'opencode --help'. Subcommands must be run from
+# the repository via 'bun run dev <subcommand>'; running them through opencodeplus
+# would misdirect cwd-sensitive handlers. This list mirrors the pinned CLI's
+# subcommands and must be updated if upstream adds one.
+for arg in "$@"; do
+  case "$arg" in
+    upgrade | update | uninstall | acp | api | debug | auth | mcp | plugin | models | stats | mini | run | session | service | pair | serve)
+      echo "opencodeplus: '$arg' is not a directory. opencodeplus runs the Instructions TUI only; cwd-sensitive subcommands such as 'mcp add' would write to the wrong project. Run subcommands from the repository with 'bun run dev <subcommand>'." >&2
+      exit 1
+      ;;
+  esac
+done
+
+has_dir=0
+TARGET_DIR=""
+total="$#"
+i=1
+while [ "$i" -le "$total" ]; do
+  arg="$1"
+  shift
+  if [ "$has_dir" -eq 0 ]; then
+    case "$arg" in
+      -*)
+        set -- "$@" "$arg"
+        ;;
+      *)
+        if [ -n "$arg" ] && [ -d "$arg" ]; then
+          has_dir=1
+          case "$arg" in
+            /*)
+              TARGET_DIR="$arg"
+              ;;
+            *)
+              abs_dir=$(cd "$arg" 2>/dev/null && pwd || true)
+              if [ -n "$abs_dir" ]; then
+                TARGET_DIR="$abs_dir"
+              else
+                TARGET_DIR="$arg"
+              fi
+              ;;
+          esac
+          set -- "$@" "$TARGET_DIR"
+        else
+          set -- "$@" "$arg"
+        fi
+        ;;
+    esac
+  else
+    set -- "$@" "$arg"
+  fi
+  i=$((i + 1))
+done
+
+if [ "$has_dir" -eq 0 ]; then
+  TARGET_DIR="$CALLER_DIR"
+fi
+
+export OPENCODEPLUS_CALLER_CWD="$TARGET_DIR"
+
+if [ "$has_dir" -eq 1 ]; then
+  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/index.ts" "$@"
+else
+  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/index.ts" "$@" "$TARGET_DIR"
+fi

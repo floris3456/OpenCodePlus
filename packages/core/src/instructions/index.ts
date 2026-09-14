@@ -32,6 +32,8 @@ export type Removed = typeof removed
  */
 export interface Source {
   readonly key: Key
+  /** Canonical file identity for file-backed sources; baseline parts carry it. */
+  readonly path?: string
   readonly read: Effect.Effect<Schema.Json | Unavailable | Removed>
   readonly initial: (value: Schema.Json) => string | undefined
   readonly changed: (previous: Schema.Json, current: Schema.Json) => string | undefined
@@ -42,6 +44,8 @@ export declare namespace Source {
   /** The typed definition supplied when constructing a source. */
   export interface Definition<A> {
     readonly key: Key
+    /** Canonical file identity for file-backed sources; baseline parts carry it. */
+    readonly path?: string
     readonly codec: Schema.Codec<A, Schema.Json>
     readonly read: Effect.Effect<A | Unavailable | Removed>
     readonly render: {
@@ -93,6 +97,7 @@ export function make<A>(source: Source.Definition<A>): List {
   return [
     {
       key: source.key,
+      ...(source.path === undefined ? {} : { path: source.path }),
       read: source.read.pipe(
         Effect.map((value) => {
           if (isUnavailable(value)) return unavailable
@@ -159,13 +164,33 @@ export function diff(observed: ReadResult, previous?: Values): Effect.Effect<Adm
 }
 
 export function renderInitial(value: List, values: Readonly<Record<string, Schema.Json>>) {
-  return render(
-    value.flatMap((source) => {
-      if (!Object.hasOwn(values, source.key)) return []
-      const text = source.initial(values[source.key])
-      return text === undefined ? [] : [text]
-    }),
-  )
+  return render(renderInitialParts(value, values).map((part) => (typeof part === "string" ? part : part.text)))
+}
+
+/** One baseline part per source, in source order; joining texts equals `renderInitial`. */
+export interface Part {
+  readonly text: string
+  /** Canonical file identity, present only on file-backed sources. */
+  readonly path: string
+}
+
+/**
+ * File-backed sources render as a `Part` carrying the canonical file path;
+ * all other sources render as plain strings, so existing string consumers
+ * keep working unchanged.
+ */
+export function renderInitialParts(
+  value: List,
+  values: Readonly<Record<string, Schema.Json>>,
+): ReadonlyArray<string | Part> {
+  const parts: Array<string | Part> = []
+  for (const source of value) {
+    if (!Object.hasOwn(values, source.key)) continue
+    const text = source.initial(values[source.key])
+    if (text === undefined) continue
+    parts.push(source.path === undefined ? text : { text, path: source.path })
+  }
+  return parts
 }
 
 export function renderUpdate(

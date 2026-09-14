@@ -1,0 +1,957 @@
+import { Plugin } from "@opencode/plugin/effect"
+import type { Context } from "@opencode/plugin/effect/plugin"
+import type { Registration } from "@opencode/plugin/effect/registration"
+import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
+import { Agent } from "@opencode/schema/agent"
+import { Config } from "@opencode/schema/config"
+import { Skill } from "@opencode/schema/skill"
+import { Effect, Semaphore, Stream } from "effect"
+import type { Scope } from "effect"
+import fs from "node:fs/promises"
+import fsSync from "node:fs"
+import path from "node:path"
+import { agentBody, discover, type BaseTemplate, type Discovered } from "./instructions/discover.js"
+import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
+import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir } from "./agents/base.js"
+import { addMcp, removeMcp } from "./agents/mcp.js"
+import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
+import { apply } from "./instructions/apply.js"
+import { assembled } from "./instructions/assembled.js"
+import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
+import { globalConfigDir, resolveInstructionPath } from "./instructions/paths.js"
+import { load, save, type StoredRecord } from "./instructions/store.js"
+import type { PromptBaseline } from "./instructions/inventory.js"
+import { disable, enable, read } from "./project.js"
+import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
+
+export interface PlusState {
+  registration: RpcRegistration<typeof Definition> | undefined
+  applied: Registration[]
+  fingerprint: string | undefined
+  projectRevision: number | undefined
+  globalRevision: number | undefined
+  baselines: Map<string, PromptBaseline>
+  semaphore: Semaphore.Semaphore
+}
+
+export function createState(): PlusState {
+  return {
+    registration: undefined,
+    applied: [],
+    fingerprint: undefined,
+    projectRevision: undefined,
+    globalRevision: undefined,
+    baselines: new Map(),
+    semaphore: Effect.runSync(Semaphore.make(1)),
+  }
+}
+
+export default Plugin.define({
+  id: "opencode.plus",
+  effect: (ctx) =>
+    Effect.gen(function* () {
+      const state = createState()
+      // Applied registrations live on detached scopes, so without this
+      // finalizer they outlive the plugin when core unloads or reactivates it.
+      yield* Effect.addFinalizer(() => deactivate(state))
+      const registration = yield* ctx.rpc.register(Definition, createHandlers(ctx, state)).pipe(Effect.orDie)
+      state.registration = registration
+      yield* activate(ctx, state).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
+      )
+      yield* watchHostEvents(ctx, state)
+    }),
+})
+
+export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<typeof Definition> {
+  return {
+    "project.status": () =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const config = yield* Effect.promise(() => read(directory))
+        return {
+          enabled: config !== undefined,
+          directory,
+        }
+      }),
+    "project.enable": () =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* Effect.promise(() => enable(directory))
+        const status: Plus.Status = {
+          enabled: true,
+          directory,
+        }
+        if (state.registration) {
+          yield* state.registration.events.emit("project.changed", status).pipe(Effect.orDie)
+        }
+        yield* activate(ctx, state)
+        return status
+      }),
+    "project.disable": () =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* Effect.promise(() => disable(directory))
+        const status: Plus.Status = {
+          enabled: false,
+          directory,
+        }
+        if (state.registration) {
+          yield* state.registration.events.emit("project.changed", status).pipe(Effect.orDie)
+        }
+        yield* deactivate(state)
+        return status
+      }),
+    "instructions.snapshot": (_input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const loaded = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
+        return toSnapshot(discovered, loaded)
+      }),
+    "instructions.refresh": (_input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const loaded = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const discovered = yield* publishFresh(ctx, state, loaded)
+        return toSnapshot(discovered, loaded)
+      }),
+    "instructions.mutate": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const loaded = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        if (input.expectedRevision !== loaded.projectRevision || input.expectedGlobalRevision !== loaded.globalRevision) {
+          const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
+          return { ok: false as const, reason: "stale" as const, snapshot: toSnapshot(discovered, loaded) }
+        }
+        const saved = yield* Effect.promise(() =>
+          save(directory, { expectedRevision: loaded.revision, records: input.records.map(toRecord) }),
+        )
+        if (!saved.ok) {
+          const refreshed = { ...saved.current, ...revisionsOf(saved.current), protectedAgents: loaded.protectedAgents }
+          const discovered = yield* Effect.promise(() => discoverAll(ctx, refreshed, state.baselines))
+          return { ok: false as const, reason: "stale" as const, snapshot: toSnapshot(discovered, refreshed) }
+        }
+        const reloaded = yield* Effect.promise(() => load(directory))
+        const next = { ...reloaded, ...revisionsOf(reloaded), protectedAgents: loaded.protectedAgents }
+        const discovered = yield* publishFresh(ctx, state, next)
+        const snapshot = toSnapshot(discovered, next)
+        return { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot }
+      }),
+    "instructions.assembled": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const loaded = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
+        const result = yield* Effect.promise(() =>
+          assembled({
+            ctx,
+            agent: input.agent,
+            items: discovered.items,
+            agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+            records: customizationsOf(loaded.records),
+            splits: splitsOf(loaded.records),
+            scopes: scopesOf(discovered.agents),
+          }),
+        )
+        if ("ok" in result)
+          return yield* Effect.fail(context.error("agent.unknown", `Unknown agent ${input.agent}`, { agent: input.agent }))
+        return result
+      }),
+    "agent.create": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const validated = validateAgentId(input.id)
+        if (!validated.ok)
+          return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
+        const seed = input.template === undefined ? undefined : yield* Effect.promise(() => readTemplate(ctx, directory, input.template as string))
+        if (input.template !== undefined && seed === undefined)
+          return yield* Effect.fail(
+            context.error("agent.invalid", `Unknown template ${input.template}`, { id: input.id, reason: `Unknown template ${input.template}` }),
+          )
+        const created = yield* Effect.promise(() =>
+          create({
+            scope: input.scope,
+            projectDirectory: directory,
+            id: validated.id,
+            // Creating from a template must NOT copy records: the new agent
+            // simply inherits through the resolution chain. Template only
+            // selects the prompt/frontmatter seed below.
+            fields: seed?.fields ?? toAgentFields(input.fields),
+            prompt: seed?.prompt ?? input.prompt,
+          }),
+        )
+        if (!created.ok)
+          return yield* Effect.fail(
+            context.error("agent.exists", `Agent ${validated.id} already exists at ${created.path}`, {
+              path: created.path,
+            }),
+          )
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: validated.id, path: created.path }
+      }),
+    "agent.rename": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const from = validateAgentId(input.from)
+        if (!from.ok)
+          return yield* Effect.fail(context.error("agent.invalid", from.reason, { id: input.from, reason: from.reason }))
+        const to = validateAgentId(input.to)
+        if (!to.ok)
+          return yield* Effect.fail(context.error("agent.invalid", to.reason, { id: input.to, reason: to.reason }))
+        const renamed = yield* Effect.promise(() =>
+          rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id }),
+        )
+        if (!renamed.ok && renamed.reason === "missing-source")
+          return yield* Effect.fail(
+            context.error("agent.missing", `Agent ${from.id} does not exist at ${renamed.path}`, {
+              path: renamed.path,
+            }),
+          )
+        if (!renamed.ok)
+          return yield* Effect.fail(
+            context.error("agent.exists", `Agent ${to.id} already exists at ${renamed.path}`, {
+              path: renamed.path,
+            }),
+          )
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { from: from.id, to: to.id, path: renamed.toPath }
+      }),
+    "agent.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const validated = validateAgentId(input.id)
+        if (!validated.ok)
+          return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
+        const removed = yield* Effect.promise(() =>
+          remove({ scope: input.scope, projectDirectory: directory, id: validated.id }),
+        )
+        if (!removed.ok)
+          return yield* Effect.fail(
+            context.error("agent.missing", `Agent ${validated.id} does not exist at ${removed.path}`, {
+              path: removed.path,
+            }),
+          )
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: validated.id, path: removed.path }
+      }),
+    "skill.create": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() =>
+          createSkill({ projectDirectory: directory, name: input.name, body: input.body }),
+        )
+        if (!result.ok && result.reason === "exists")
+          return yield* Effect.fail(context.error("skill.exists", `Skill ${result.id} already exists`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
+    "skill.import": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => importSkill({ projectDirectory: directory, path: input.path }))
+        if (!result.ok && result.reason === "exists")
+          return yield* Effect.fail(context.error("skill.exists", `Skill ${result.id} already exists`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
+    "skill.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => deleteSkill({ projectDirectory: directory, id: input.id }))
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(context.error("skill.missing", `Skill ${result.id} does not exist`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
+    "base.create": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => createBaseTemplate(input.id, input.title, input.text))
+        if (!result.ok && result.reason === "exists")
+          return yield* Effect.fail(context.error("base.exists", `Base template ${result.id} already exists`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id }
+      }),
+    "base.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => deleteBaseTemplate(input.id))
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(context.error("base.missing", `Base template ${result.id} does not exist`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id }
+      }),
+    "instruction.create": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() =>
+          createInstruction({ projectDirectory: directory, name: input.name, text: input.text }),
+        )
+        if (!result.ok && result.reason === "exists")
+          return yield* Effect.fail(
+            context.error("instruction.exists", `Instruction already exists at ${result.path}`, { path: result.path }),
+          )
+        if (!result.ok)
+          return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: input.name, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
+    "instruction.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() =>
+          deleteInstruction({ projectDirectory: directory, name: input.name }),
+        )
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(
+            context.error("instruction.missing", `Instruction ${result.name} does not exist`, { name: result.name }),
+          )
+        if (!result.ok)
+          return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
+    "mcp.add": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() =>
+          addMcp({ projectDirectory: directory, name: input.name, config: { ...input.config } }),
+        )
+        if (!result.ok && result.reason === "exists")
+          return yield* Effect.fail(context.error("mcp.exists", `MCP server ${result.name} already exists`, { name: result.name }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("mcp.invalid", result.message, { name: result.name, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { name: result.name }
+      }),
+    "mcp.remove": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => removeMcp({ projectDirectory: directory, name: input.name }))
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(context.error("mcp.missing", `MCP server ${result.name} does not exist`, { name: result.name }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("mcp.invalid", result.message, { name: result.name, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { name: result.name }
+      }),
+  }
+}
+
+interface LoadedStores {
+  readonly revision: number
+  readonly projectRevision: number
+  readonly globalRevision: number
+  readonly records: readonly StoredRecord[]
+  readonly protectedAgents: readonly string[]
+}
+
+function disabledMessage(directory: string): string {
+  return `Project mode is not enabled for ${directory}`
+}
+
+function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<readonly string[], E> {
+  return Effect.gen(function* () {
+    const config = yield* Effect.promise(() => read(directory))
+    if (config === undefined) return yield* Effect.fail(disabled())
+    return config.protectedAgents
+  })
+}
+
+function revisionsOf(stored: { revision: number }): { projectRevision: number; globalRevision: number } {
+  // The two-store backend currently tracks one combined revision (the max of
+  // both store headers; every save bumps both files together), so both RPC
+  // revisions equal it. Optimistic checks on either field still conflict
+  // correctly because any write moves the shared revision.
+  return { projectRevision: stored.revision, globalRevision: stored.revision }
+}
+
+function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<LoadedStores, E> {
+  return Effect.gen(function* () {
+    const protectedAgents = yield* requireProject(directory, disabled)
+    const stored = yield* Effect.promise(() => load(directory))
+    return { ...stored, ...revisionsOf(stored), protectedAgents }
+  })
+}
+
+function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
+  return records.filter((record): record is CustomizationRecord => record.type === "customization")
+}
+
+function splitsOf(records: readonly StoredRecord[]): SplitRecord[] {
+  return records.filter((record): record is SplitRecord => record.type === "split")
+}
+
+function toRecord(record: Plus.SnapshotRecord): StoredRecord {
+  if (record.type === "split")
+    return {
+      type: "split",
+      level: record.level,
+      agent: record.agent,
+      item: record.item,
+      boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+      updated: record.updated,
+    }
+  return {
+    type: "customization",
+    level: record.level,
+    agent: record.agent,
+    item: record.item,
+    section: record.section,
+    ...(record.text === undefined ? {} : { text: record.text }),
+    ...(record.state === undefined ? {} : { state: record.state }),
+    basedOn: record.basedOn,
+    ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+    ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+    updated: record.updated,
+  }
+}
+
+// The plugin Context prompt domain exposes the host's base prompt
+// templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`); the
+// local table below is only the fallback when the host reports none. User
+// templates created via `base.create` are layered on top so discover lists
+// them alongside the built-ins.
+function resolveBaseTemplates(ctx: Context): { templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined } {
+  const templates = Effect.runSync(ctx.prompt.templates())
+  if (templates.length > 0)
+    return {
+      templates: templates.map((template) => ({ ...template })),
+      active: (agent) => Effect.runSync(ctx.prompt.active({ id: String(agent.id), name: String(agent.name) })),
+    }
+  return { templates: [...fallbackBaseTemplates(), ...readUserBaseTemplates()], active: (agent) => fallbackActiveBase(agent) }
+}
+
+const FALLBACK_BASE_IDS = ["gpt", "claude", "muse", "gemini", "general", "kimi", "trinity"] as const
+
+function fallbackBaseTemplates(): BaseTemplate[] {
+  return FALLBACK_BASE_IDS.map((id) => ({ id, title: `${id}.txt`, text: `${id} base prompt` }))
+}
+
+function readUserBaseTemplates(): BaseTemplate[] {
+  return readUserBaseTemplatesSync()
+}
+
+function readUserBaseTemplatesSync(): BaseTemplate[] {
+  // Synchronous read: discover runs inside publishFresh where every caller
+  // already awaits, and the directory is tiny. A missing dir means none.
+  const dir = userBaseDir()
+  let entries: string[]
+  try {
+    entries = fsSync.readdirSync(dir)
+  } catch {
+    return []
+  }
+  return entries
+    .filter((entry) => entry.endsWith(".txt"))
+    .toSorted()
+    .map((entry) => {
+      const id = entry.slice(0, -".txt".length)
+      const text = readUserBaseTextSync(path.join(dir, entry))
+      if (text === undefined) return undefined
+      const title = readUserBaseTitleSync(path.join(dir, "index.json"), id)
+      return { id, title, text }
+    })
+    .filter((template): template is BaseTemplate => template !== undefined)
+}
+
+function fallbackActiveBase(agent: { model?: { providerID: string; id: string } }): string | undefined {
+  const model = agent.model
+  if (model === undefined) return undefined
+  const hay = `${model.providerID} ${model.id}`.toLowerCase()
+  if (hay.includes("gpt")) return "gpt"
+  if (hay.includes("kimi")) return "kimi"
+  if (hay.includes("trinity")) return "trinity"
+  if (hay.includes("muse")) return "muse"
+  if (hay.includes("claude")) return "claude"
+  if (hay.includes("gemini")) return "gemini"
+  return "general"
+}
+
+async function discoverAll(ctx: Context, loaded: LoadedStores, baselines: ReadonlyMap<string, PromptBaseline>): Promise<Discovered> {
+  const resolved = resolveBaseTemplates(ctx)
+  return discover({
+    ctx,
+    records: customizationsOf(loaded.records),
+    baselines,
+    baseTemplates: resolved.templates,
+    activeBase: (agent) => resolved.active(agent),
+  })
+}
+
+function scopeLevel(scope: "project" | "global" | "defaults"): Level {
+  if (scope === "global") return "global"
+  if (scope === "defaults") return "defaults"
+  return "project"
+}
+
+async function readTemplate(
+  ctx: Context,
+  directory: string,
+  template: string,
+): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
+  const validated = validateAgentId(template)
+  if (!validated.ok) return undefined
+  const candidates = [
+    path.join(directory, ".opencode", "agent", `${validated.id}.md`),
+    path.join(directory, ".opencode", "agents", `${validated.id}.md`),
+    path.join(globalConfigDir(), "agent", `${validated.id}.md`),
+    path.join(globalConfigDir(), "agents", `${validated.id}.md`),
+  ]
+  for (const candidate of candidates) {
+    const file = Bun.file(candidate)
+    if (!(await file.exists())) continue
+    const text = await file.text()
+    return { fields: templateFields(text), prompt: agentBody(text) }
+  }
+  return readDefaultsTemplate(ctx, validated.id)
+}
+
+// Defaults-tree agents are built-ins with no backing file, so seeding from
+// one reads the discovered host view: prompt from the live system text and
+// frontmatter fields from the same data discover reports for that agent.
+// Records are never copied; the new agent inherits through the chain.
+async function readDefaultsTemplate(
+  ctx: Context,
+  id: string,
+): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const current = listed.data.find((entry) => String(entry.id) === id) as Agent.Info | undefined
+  if (current === undefined) return undefined
+  const fields: AgentFields = {
+    ...(current.model === undefined ? {} : { model: formatModel(current.model) }),
+    ...(current.description === undefined ? {} : { description: current.description }),
+    ...(current.mode === undefined ? {} : { mode: current.mode }),
+  }
+  return {
+    ...(Object.keys(fields).length === 0 ? {} : { fields }),
+    prompt: current.system ?? "",
+  }
+}
+
+function formatModel(model: { readonly providerID: string; readonly id: string; readonly variant?: string }): string {
+  if (model.variant === undefined) return `${model.providerID}/${model.id}`
+  return `${model.providerID}/${model.id}#${model.variant}`
+}
+
+function templateFields(markdown: string): AgentFields | undefined {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  if (!match) return undefined
+  try {
+    const data = Bun.YAML.parse(match[1] ?? "")
+    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
+    const fields = data as Record<string, unknown>
+    const picked: AgentFields = {
+      ...(typeof fields.model === "string" ? { model: fields.model } : {}),
+      ...(typeof fields.description === "string" ? { description: fields.description } : {}),
+      ...(fields.mode === "subagent" || fields.mode === "primary" || fields.mode === "all" ? { mode: fields.mode } : {}),
+    }
+    if (Object.keys(picked).length === 0) return undefined
+    return picked
+  } catch {
+    return undefined
+  }
+}
+
+interface BaseTemplateSuccess {
+  readonly ok: true
+  readonly id: string
+}
+
+interface BaseTemplateExists {
+  readonly ok: false
+  readonly reason: "exists"
+  readonly id: string
+}
+
+interface BaseTemplateInvalid {
+  readonly ok: false
+  readonly reason: "invalid"
+  readonly id: string
+  readonly message: string
+}
+
+type BaseTemplateResult = BaseTemplateSuccess | BaseTemplateExists | BaseTemplateInvalid
+
+// Instruction create result types stay local to index.ts; deletion reuses the
+// path-confined helpers from instructions/paths.ts.
+interface CreateInstructionSuccess {
+  readonly ok: true
+  readonly id: string
+  readonly path: string
+}
+
+interface CreateInstructionExists {
+  readonly ok: false
+  readonly reason: "exists"
+  readonly id: string
+  readonly path: string
+}
+
+interface CreateInstructionInvalid {
+  readonly ok: false
+  readonly reason: "invalid"
+  readonly id: string
+  readonly path: string
+  readonly message: string
+}
+
+type CreateInstructionResult = CreateInstructionSuccess | CreateInstructionExists | CreateInstructionInvalid
+
+async function createInstruction(input: { projectDirectory: string; name: string; text: string }): Promise<CreateInstructionResult> {
+  const name = input.name.trim()
+  if (name.length === 0) return { ok: false, reason: "invalid", id: input.name, path: "", message: "Instruction name cannot be empty" }
+  if (name.includes("\0") || name.includes(".."))
+    return { ok: false, reason: "invalid", id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
+  const relative = name.endsWith(".md") ? name : `${name}.md`
+  const root = path.resolve(input.projectDirectory)
+  const target = path.resolve(root, relative)
+  if (target === root || !target.startsWith(`${root}${path.sep}`))
+    return { ok: false, reason: "invalid", id: input.name, path: "", message: `Invalid instruction name "${input.name}"` }
+  if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: relative, path: target }
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await Bun.write(target, input.text.endsWith("\n") ? input.text : `${input.text}\n`)
+  return { ok: true, id: `system:${path.relative(root, target)}`, path: target }
+}
+
+interface InstructionMissing {
+  readonly ok: false
+  readonly reason: "missing"
+  readonly id: string
+  readonly path: string
+  readonly name: string
+}
+
+interface InstructionDeleteInvalid {
+  readonly ok: false
+  readonly reason: "invalid"
+  readonly id: string
+  readonly path: string
+  readonly message: string
+}
+
+type InstructionDeleteResult = CreateInstructionSuccess | InstructionMissing | InstructionDeleteInvalid
+
+async function deleteInstruction(input: { projectDirectory: string; name: string }): Promise<InstructionDeleteResult> {
+  const resolved = resolveInstructionPath(input.projectDirectory, input.name)
+  if (!resolved.ok) return { ok: false, reason: "invalid", id: input.name, path: "", message: resolved.message }
+  if (!(await Bun.file(resolved.path).exists()))
+    return { ok: false, reason: "missing", id: `system:${resolved.relative}`, path: resolved.path, name: input.name }
+  await fs.rm(resolved.path, { force: true })
+  return { ok: true, id: `system:${resolved.relative}`, path: resolved.path }
+}
+
+function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
+  return Effect.gen(function* () {
+    const config = yield* Effect.promise(() => read(ctx.location.directory))
+    if (config === undefined) return
+    const stored = yield* Effect.promise(() => loadCurrent(ctx.location.directory))
+    yield* publishFresh(ctx, state, stored)
+  })
+}
+
+async function loadCurrent(directory: string): Promise<LoadedStores> {
+  const config = await read(directory)
+  const stored = await load(directory)
+  return { ...stored, ...revisionsOf(stored), protectedAgents: config?.protectedAgents ?? [] }
+}
+
+function deactivate(state: PlusState): Effect.Effect<void> {
+  return state.semaphore.withPermits(1)(
+    Effect.gen(function* () {
+      yield* disposeApplied(state)
+      state.fingerprint = undefined
+      state.projectRevision = undefined
+      state.globalRevision = undefined
+      state.baselines = new Map()
+    }),
+  )
+}
+
+function refreshAfterFileChange(ctx: Context, state: PlusState, directory: string): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const stored = yield* Effect.promise(() => loadCurrent(directory))
+    yield* publishFresh(ctx, state, stored)
+  })
+}
+
+// Only publishFresh and deactivate acquire the semaphore, and neither calls the
+// other, so a caller never blocks on a permit it already holds.
+function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Effect.Effect<Discovered> {
+  return state.semaphore.withPermits(1)(
+    Effect.gen(function* () {
+      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines))
+      // A newer publish already won; this read is stale, so leave the applied
+      // registrations and the last emitted revision untouched.
+      if (state.projectRevision !== undefined && stored.projectRevision < state.projectRevision) return discovered
+      if (state.globalRevision !== undefined && stored.globalRevision < state.globalRevision) return discovered
+      const customizations = customizationsOf(stored.records)
+      const splits = splitsOf(stored.records)
+      const fingerprint = fingerprintPublish(discovered, stored.records)
+      if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
+        return discovered
+      }
+      // Install the replacement before disposing the superseded registrations.
+      // Core rebuilds and reconciles on every registration change, so disposing
+      // first would expose the un-transformed upstream state between the two
+      // steps: an MCP server Plus keeps disabled would genuinely start, then
+      // stop again once the replacement reinstalls disabled = true. Core replays
+      // transforms in registration order with last write wins; every Plus
+      // transform overwrites the same key (agent.system, disabled = true, skill
+      // rules with a presence check, session tools by agent), so the briefly
+      // doubled callback ends with the new value.
+      const applied = yield* Effect.promise(() =>
+        apply(ctx, {
+          items: discovered.items,
+          agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+          records: customizations,
+          splits,
+          scopes: scopesOf(discovered.agents),
+        }),
+      )
+      const previous = state.applied
+      state.applied = [...applied.registrations]
+      state.fingerprint = fingerprint
+      state.projectRevision = stored.projectRevision
+      state.globalRevision = stored.globalRevision
+      captureBaselines(ctx, state, discovered, customizations, splits)
+      yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
+      yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
+      return discovered
+    }),
+  )
+}
+
+// Capture what Plus just installed: read the host back after apply and
+// retain (applied, upstream) pairs wherever the host now shows Plus output.
+// The next discovery unmasks those keys back to upstream via unmaskText, so
+// the publish fingerprint stays stable instead of storming. Agent roles key
+// by agent id (file-backed agents additionally reread their markdown body);
+// tools and skills key by item id.
+function captureBaselines(
+  ctx: Context,
+  state: PlusState,
+  discovered: Discovered,
+  records: readonly CustomizationRecord[],
+  splits: readonly SplitRecord[],
+): void {
+  void ctx
+  void splits
+  const next = new Map<string, PromptBaseline>()
+  const scopes = scopesOf(discovered.agents)
+  for (const item of discovered.items) {
+    const key = baselineKey(item)
+    if (item.id === "system:role") {
+      const owner = item.agents?.[0]
+      if (owner === undefined) continue
+      const level = scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
+      const resolved = resolve({ upstream: item, records, splits, scopes, address: { level, agent: owner, item: item.id, section: null } })
+      if (resolved.assembled === item.text) continue
+      const source = discovered.agents.find((agent) => agent.id === owner)
+      next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: source?.path !== undefined })
+      continue
+    }
+    if (item.kind !== "tool" && item.kind !== "skill") continue
+    const resolved = resolve({ upstream: item, records, splits, scopes, address: { level: "defaults", agent: null, item: item.id, section: null } })
+    if (resolved.assembled === item.text) continue
+    next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: false })
+  }
+  state.baselines = next
+}
+
+function baselineKey(item: { id: string; agents?: readonly string[] }): string {
+  if (item.id === "system:role") return item.agents?.[0] ?? item.id
+  return item.id
+}
+
+function disposeApplied(state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const registrations = state.applied
+    state.applied = []
+    yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
+  })
+}
+
+function emitChanged(state: PlusState, revision: number, globalRevision: number): Effect.Effect<void> {
+  const registration = state.registration
+  if (!registration) return Effect.void
+  return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
+}
+
+// The publish fingerprint covers what apply consumes: the unmasked upstream
+// discovery plus the customization and split records (and the scopes derived
+// from the discovered agents). Discovery already unmasks Plus's own output
+// back to upstream, so a self-triggered refresh keeps an identical
+// fingerprint and stays a no-op instead of a dispose/reinstall loop.
+function fingerprintPublish(discovered: Discovered, records: readonly StoredRecord[]): string {
+  const scopes = scopesOf(discovered.agents)
+  return JSON.stringify({
+    items: discovered.items,
+    agents: discovered.agents,
+    servers: discovered.servers,
+    records,
+    scopes: { global: [...scopes.global].toSorted(), defaults: [...scopes.defaults].toSorted() },
+  })
+}
+
+// The canonical event names, not string guesses: agent and skill reloads
+// publish their Updated events, and config reloads publish Updated whenever
+// the merged config changes. Tool and MCP-config drift arrives through the
+// same config reloads, so these three cover every host change we snapshot.
+// Our own apply calls reload(), which republishes agent.updated, but the
+// fingerprint above is unchanged then, so the refresh is a no-op instead of
+// a loop.
+const RefreshEvents: Set<string> = new Set([
+  Agent.Event.Updated.type,
+  Skill.Event.Updated.type,
+  Config.Event.Updated.type,
+])
+
+function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
+  return ctx.event.subscribe().pipe(
+    Stream.filter((event) => RefreshEvents.has(event.type)),
+    Stream.runForEach((event) =>
+      refreshFromHost(ctx, state).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus refresh failed", { cause, type: event.type })),
+      ),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
+}
+
+function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const directory = ctx.location.directory
+    const config = yield* Effect.promise(() => read(directory))
+    if (config === undefined) {
+      yield* deactivate(state)
+      return
+    }
+    const stored = yield* Effect.promise(() => loadCurrent(directory))
+    yield* publishFresh(ctx, state, stored)
+  })
+}
+
+function toSnapshot(discovered: Discovered, loaded: LoadedStores): Plus.Snapshot {
+  return {
+    revision: loaded.projectRevision,
+    globalRevision: loaded.globalRevision,
+    agents: discovered.agents.map((agent) => ({
+      id: agent.id,
+      scope: agent.scope,
+      ...(agent.path === undefined ? {} : { path: agent.path }),
+      ...(agent.base === undefined ? {} : { base: agent.base }),
+      fileBacked: agent.path !== undefined,
+    })),
+    items: discovered.items.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      group: item.group,
+      ...(item.server === undefined ? {} : { server: item.server }),
+      title: item.title,
+      text: item.text,
+      enabled: item.enabled,
+      fingerprint: item.fingerprint,
+      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
+      ...(item.order === undefined ? {} : { order: item.order }),
+    })),
+    records: loaded.records.map((record) => {
+      if (record.type === "split")
+        return {
+          type: "split" as const,
+          level: record.level,
+          agent: record.agent,
+          item: record.item,
+          boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+          updated: record.updated,
+        }
+      return {
+        type: "customization" as const,
+        level: record.level,
+        agent: record.agent,
+        item: record.item,
+        section: record.section,
+        ...(record.text === undefined ? {} : { text: record.text }),
+        ...(record.state === undefined ? {} : { state: record.state }),
+        basedOn: record.basedOn,
+        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+        updated: record.updated,
+      }
+    }),
+    servers: discovered.servers.map((server) => ({ name: server.name, enabled: server.enabled })),
+    protectedAgents: [...loaded.protectedAgents],
+  }
+}
+
+function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | undefined {
+  if (fields === undefined) return undefined
+  return {
+    ...(fields.model === undefined ? {} : { model: fields.model }),
+    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
+    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
+    ...(fields.description === undefined ? {} : { description: fields.description }),
+    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
+    ...(fields.color === undefined ? {} : { color: fields.color }),
+    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
+    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
+    ...(fields.permissions === undefined ? {} : { permissions: fields.permissions }),
+  }
+}

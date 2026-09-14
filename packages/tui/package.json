@@ -81,6 +81,7 @@
     "@opencode/latex": "workspace:*",
     "@opencode/merman": "workspace:*",
     "@opencode/plugin": "workspace:*",
+    "@opencode/plus": "workspace:*",
     "@opencode/schema": "workspace:*",
     "@opencode/simulation": "workspace:*",
     "@opencode/theme": "workspace:*",

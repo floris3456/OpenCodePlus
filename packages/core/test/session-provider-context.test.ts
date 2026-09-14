@@ -3,7 +3,6 @@ import { CompactionPart, LanguageModel, Message, ToolCallPart } from "@opencode/
 import { OpenAIResponses } from "@opencode/ai/protocols"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { EventTable } from "@opencode/core/event/sql"
 import { Instructions } from "@opencode/core/instructions/index"
 import { Project } from "@opencode/core/project"
@@ -47,9 +46,11 @@ const providerContext = SessionProviderContext.encode(target, replacement)
 const sessionID = SessionSchema.ID.make("ses_provider_context")
 
 const it = testEffect(
-  AppNodeBuilder.build(
+  LayerNode.compile(
     LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionInbox.node, SessionStore.node]),
-    [Bus.node.replace(Bus.configured({ persist: true }))],
+    {
+      replacements: [Bus.node.replace(Bus.configured({ persist: true }))],
+    },
   ),
 )
 
@@ -193,7 +194,7 @@ it.effect(
           current_values: { "test/context": Instructions.hash("newest instructions") },
         })
         const native = yield* s.load(target)
-        expect(native.initial).toBe("changed instructions")
+        expect(native.initial).toEqual(["changed instructions"])
         expect(
           toLLMMessages(
             native.entries.map((entry) => entry.message),
@@ -210,7 +211,7 @@ it.effect(
           { ...providerContext.provenance, provider: "other" },
         ]) {
           const expanded = yield* s.load(incompatible)
-          expect(expanded.initial).toBe("changed instructions")
+          expect(expanded.initial).toEqual(["changed instructions"])
           expect(
             toLLMMessages(
               expanded.entries.map((entry) => entry.message),
@@ -223,7 +224,7 @@ it.effect(
           ])
         }
         const preview = yield* SessionHistory.preview(s.db, sessionID, s.instructions, target)
-        expect(preview.initial).toBe("changed instructions")
+        expect(preview.initial).toEqual(["changed instructions"])
         expect(preview.messages).toEqual(native.entries.map((entry) => entry.message))
         const store = yield* SessionStore.Service
         expect((yield* store.messages({ sessionID })).map((message) => message.type)).toEqual([
@@ -274,7 +275,7 @@ it.effect("falls back to an earlier compatible native or local checkpoint", () =
     s.state.value = "post-epoch update"
     yield* s.prepare
     const native = yield* s.load(target)
-    expect(native.initial).toBe("new native baseline")
+    expect(native.initial).toEqual(["new native baseline"])
     expect(native.entries.map((entry) => entry.message.type)).toEqual(["compaction", "user", "system"])
     expect(native.entries[0]?.message).toMatchObject({ providerContext })
     expect(
@@ -284,7 +285,7 @@ it.effect("falls back to an earlier compatible native or local checkpoint", () =
       ).filter((message) => message.role === "system"),
     ).toEqual([Message.system("post-epoch update")])
     const local = yield* s.load("local")
-    expect(local.initial).toBe("new native baseline")
+    expect(local.initial).toEqual(["new native baseline"])
     expect(local.entries.map((entry) => entry.message.type)).toEqual(["compaction", "user", "user", "system"])
     expect(local.entries[0]?.message).toMatchObject({ summary: "local summary" })
   }),

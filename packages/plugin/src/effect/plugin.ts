@@ -9,8 +9,10 @@ import type { CatalogDomain } from "./catalog.js"
 import type { CommandDomain } from "./command.js"
 import type { EventDomain } from "./event.js"
 import type { IntegrationDomain } from "./integration.js"
+import type { InstructionDomain } from "./instruction.js"
 import type { MCPDomain } from "./mcp.js"
 import type { PermissionDomain } from "./permission.js"
+import type { PromptDomain } from "./prompt.js"
 import type { ReferenceDomain } from "./reference.js"
 import type { RpcDomain } from "./rpc.js"
 import type { SessionDomain } from "./session.js"
@@ -35,10 +37,12 @@ export interface Context {
     readonly terminal: Pick<ExperimentalApi<unknown>["persistentPty"], "read">
   }
   readonly integration: IntegrationDomain
+  readonly instruction: InstructionDomain
   readonly mcp: MCPDomain
   readonly generate: GenerateApi<unknown>
   readonly permission: PermissionDomain
   readonly plugin: Pick<PluginApi<unknown>, "list">
+  readonly prompt: PromptDomain
   readonly reference: ReferenceDomain
   readonly rpc: RpcDomain
   readonly session: SessionDomain

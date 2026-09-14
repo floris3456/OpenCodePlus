@@ -19,6 +19,7 @@ import { Location } from "../location.js"
 import { LocationServiceMap } from "../location-service-map.js"
 import { Model } from "../model.js"
 import { Mcp } from "../mcp/index.js"
+import { PromptTemplate } from "../prompt-template.js"
 import { Session } from "../session.js"
 import { PersistentPty } from "../persistent-pty.js"
 import { Provider } from "../provider.js"
@@ -32,6 +33,7 @@ import { Vcs } from "../vcs.js"
 import { WebSearch } from "../websearch.js"
 import { Worktree } from "../worktree.js"
 import { Generate } from "../generate.js"
+import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "./hooks.js"
 import type { Interface } from "../plugin.js"
@@ -65,6 +67,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const vcs = yield* Vcs.Service
   const websearch = yield* WebSearch.Service
   const generate = yield* Generate.Service
+  const discovery = yield* InstructionDiscovery.Service
   const permission = yield* Permission.Service
   const hooks = yield* PluginHooks.Service
   const sessions = yield* Session.Service
@@ -351,6 +354,26 @@ export const make = Effect.fn("PluginHost.make")(function* (
           })
         }),
     },
+    instruction: {
+      reload: discovery.reload,
+      transform: (callback) =>
+        discovery.transform((editor) => {
+          callback({
+            list: () => editor.list().map((file) => ({ path: file.path, content: file.content })),
+            add: (file) =>
+              editor.add(
+                new InstructionDiscovery.File({ path: AbsolutePath.make(file.path), content: file.content }),
+              ),
+            update: (path, update) =>
+              editor.update(path, (current) => {
+                const draft = { path: current.path, content: current.content }
+                update(draft)
+                current.content = draft.content
+              }),
+            remove: (path) => editor.remove(path),
+          })
+        }),
+    },
     mcp: {
       list: (input) => {
         const ref = locationRef(input)
@@ -408,6 +431,10 @@ export const make = Effect.fn("PluginHost.make")(function* (
     },
     plugin: {
       list: () => response(plugin.list()),
+    },
+    prompt: {
+      templates: () => Effect.succeed(PromptTemplate.templates),
+      active: (model) => Effect.succeed(PromptTemplate.active(model)),
     },
     reference: {
       list: () => response(reference.list()),
@@ -542,6 +569,7 @@ export const requirements = LayerNode.group([
   Catalog.node,
   Command.node,
   Bus.node,
+  InstructionDiscovery.node,
   Integration.node,
   KV.node,
   Mcp.node,

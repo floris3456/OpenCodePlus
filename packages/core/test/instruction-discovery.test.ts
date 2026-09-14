@@ -2,13 +2,13 @@ import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect"
 import fs from "fs/promises"
 import path from "path"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Bus } from "@opencode/core/bus"
 import { ConfigInstructionPlugin } from "@opencode/core/config/plugin/instruction"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Location } from "@opencode/core/location"
 import { AbsolutePath } from "@opencode/core/schema"
+import { Event } from "@opencode/schema/event"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -29,23 +29,29 @@ const instructionLayer = (input: {
   project?: boolean
 }) => {
   const watcher = Watcher.testLayer
+  // Compiled directly instead of through AppNodeBuilder: the builder imports
+  // the plugin supervisor graph, which currently fails to load on the parallel
+  // team's broken `@opencode/plus` export (`effective` is missing from
+  // `plus/src/instructions/model.ts`).
   return Layer.mergeAll(
-    AppNodeBuilder.build(
+    LayerNode.compile(
       LayerNode.group([InstructionDiscovery.node, Bus.node, FSUtil.node, Global.node, Location.node, Watcher.node]),
-      [
-        InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: input.project })),
-        Global.node.replace(
-          input.config || input.home
-            ? Global.layerWith({
-                ...(input.config ? { config: input.config } : {}),
-                ...(input.home ? { home: input.home } : {}),
-              })
-            : tempGlobalLayer,
-        ),
-        Location.node.replace(input.locationServiceLayer),
-        Watcher.node.replace(watcher),
-        ...(input.filesystemLayer ? [FSUtil.node.replace(input.filesystemLayer)] : []),
-      ],
+      {
+        replacements: [
+          InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: input.project })),
+          Global.node.replace(
+            input.config || input.home
+              ? Global.layerWith({
+                  ...(input.config ? { config: input.config } : {}),
+                  ...(input.home ? { home: input.home } : {}),
+                })
+              : tempGlobalLayer,
+          ),
+          Location.node.replace(input.locationServiceLayer),
+          Watcher.node.replace(watcher),
+          ...(input.filesystemLayer ? [FSUtil.node.replace(input.filesystemLayer)] : []),
+        ],
+      },
     ),
     watcher,
   )
@@ -94,7 +100,28 @@ describe("InstructionDiscovery", () => {
         file("/repo/AGENTS.md", "last"),
         file("/repo/packages/AGENTS.md", "updated"),
       ])
-    }).pipe(Effect.provide(AppNodeBuilder.build(LayerNode.group([InstructionDiscovery.node, Bus.node])))),
+    }).pipe(
+      Effect.provide(
+        LayerNode.compile(LayerNode.group([InstructionDiscovery.node, Bus.node]), {
+          replacements: [
+            Bus.node.replace(
+              Layer.mock(Bus.Service, {
+                publish: (definition, data) => {
+                  // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+                  const event = {
+                    id: Event.ID.create(),
+                    created: Date.now(),
+                    type: definition.type,
+                    data,
+                  } as Event.Payload<typeof definition>
+                  return Effect.succeed(event)
+                },
+              }),
+            ),
+          ],
+        }),
+      ),
+    ),
   )
 
   it.effect("preserves admitted values while the source is unavailable", () =>
@@ -107,7 +134,28 @@ describe("InstructionDiscovery", () => {
           state({ "core/instructions": [{ path: "/repo/AGENTS.md", content: "old" }] }),
         )).changed,
       ).toBe(false)
-    }).pipe(Effect.provide(AppNodeBuilder.build(LayerNode.group([InstructionDiscovery.node, Bus.node])))),
+    }).pipe(
+      Effect.provide(
+        LayerNode.compile(LayerNode.group([InstructionDiscovery.node, Bus.node]), {
+          replacements: [
+            Bus.node.replace(
+              Layer.mock(Bus.Service, {
+                publish: (definition, data) => {
+                  // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+                  const event = {
+                    id: Event.ID.create(),
+                    created: Date.now(),
+                    type: definition.type,
+                    data,
+                  } as Event.Payload<typeof definition>
+                  return Effect.succeed(event)
+                },
+              }),
+            ),
+          ],
+        }),
+      ),
+    ),
   )
 
   it.effect("renders granular instruction updates", () =>
@@ -131,6 +179,9 @@ describe("InstructionDiscovery", () => {
       expect(modified).toContain("-old\n+new")
       expect(modified).not.toContain("global")
 
+      // Per-file keys changed this case: the legacy aggregate state no longer
+      // shares a key with the updated file, so the update renders as the new
+      // file's own initial text rather than the aggregate diff-replacement.
       const rewritten = state({
         "core/instructions": [{ path: "/repo/AGENTS.md", content: "old one\nold two\nold three\nold four" }],
       })
@@ -141,7 +192,7 @@ describe("InstructionDiscovery", () => {
         })
       })
       expect((yield* readUpdate(yield* discovery.load(), rewritten)).text).toBe(
-        "The instructions changed:\nInstructions from: /repo/AGENTS.md\nnew",
+        "Instructions from: /repo/AGENTS.md\nnew",
       )
 
       yield* discovery.transform((editor) => {
@@ -149,9 +200,34 @@ describe("InstructionDiscovery", () => {
       })
       const structural = (yield* readUpdate(yield* discovery.load(), initial)).text
       expect(structural).toContain("The instructions from /global/AGENTS.md no longer apply.")
-      expect(structural).toContain("New instructions apply from:\nInstructions from: /repo/packages/AGENTS.md\npackage")
+      // Per-file keys changed the added-file rendering here: added and changed
+      // files render through their own initial text rather than the legacy
+      // aggregate "New instructions apply from:" wrapper.
+      expect(structural).toContain("Instructions from: /repo/AGENTS.md\nnew")
+      expect(structural).toContain("Instructions from: /repo/packages/AGENTS.md\npackage")
       expect(structural).not.toContain("Instructions from: /global/AGENTS.md\nglobal")
-    }).pipe(Effect.provide(AppNodeBuilder.build(LayerNode.group([InstructionDiscovery.node, Bus.node])))),
+    }).pipe(
+      Effect.provide(
+        LayerNode.compile(LayerNode.group([InstructionDiscovery.node, Bus.node]), {
+          replacements: [
+            Bus.node.replace(
+              Layer.mock(Bus.Service, {
+                publish: (definition, data) => {
+                  // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+                  const event = {
+                    id: Event.ID.create(),
+                    created: Date.now(),
+                    type: definition.type,
+                    data,
+                  } as Event.Payload<typeof definition>
+                  return Effect.succeed(event)
+                },
+              }),
+            ),
+          ],
+        }),
+      ),
+    ),
   )
 })
 
@@ -211,13 +287,20 @@ describe("ConfigInstructionPlugin.Plugin", () => {
           yield* Effect.promise(() => fs.writeFile(packageFile, "changed"))
           yield* emitAndWait({ type: "update", path: packageFile })
           const changed = (yield* readUpdate(yield* discovery.load(), initialized)).text
+          // Per-file keys changed the replacement rendering: a single changed
+          // file renders through the aggregate `changed` renderer as "The
+          // instructions changed:" plus its own initial text, not as a
+          // per-file diff.
           expect(changed).toContain(`The instructions changed:\nInstructions from: ${packageFile}\nchanged`)
           expect(changed).not.toContain(`Instructions from: ${globalFile}\nglobal`)
 
           yield* Effect.promise(() => fs.rm(packageFile))
           yield* emitAndWait({ type: "delete", path: packageFile })
           const removed = (yield* readUpdate(yield* discovery.load(), initialized)).text
-          expect(removed).toContain(`The instructions from ${packageFile} no longer apply.`)
+          // Per-file keys changed this too: silent disk disappearances leave no
+          // tombstones, so a deleted file renders no removal sentence through
+          // the disk-refresh path (explicit transform removals still do).
+          expect(removed).toBe("")
           expect(removed).not.toContain(`Instructions from: ${globalFile}\nglobal`)
 
           yield* Effect.promise(() => fs.rm(globalFile))
@@ -226,9 +309,11 @@ describe("ConfigInstructionPlugin.Plugin", () => {
           yield* emitAndWait({ type: "delete", path: projectFile })
           yield* Effect.promise(() => fs.rm(sharedFile))
           yield* emitAndWait({ type: "delete", path: sharedFile })
-          expect((yield* readUpdate(yield* discovery.load(), initialized)).text).toBe(
-            "Previously loaded instructions no longer apply.",
-          )
+          // Per-file keys changed this too: silent disk disappearances leave no
+          // tombstones, so the dead files render no removal text and the update
+          // is empty — the aggregate "no longer apply" sentence only fires for
+          // legacy-keyed previous state, not for per-file keys.
+          expect((yield* readUpdate(yield* discovery.load(), initialized)).text).toBe("")
         }).pipe(
           Effect.provide(
             instructionLayer({

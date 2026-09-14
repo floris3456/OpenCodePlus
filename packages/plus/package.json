@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@opencode/plus",
+  "version": "0.0.0",
+  "description": "OpenCode Plus plugin",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "opencodeplus": "./bin/opencodeplus"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anomalyco/opencode.git",
+    "directory": "packages/plus"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./tui": "./src/tui/index.tsx",
+    "./rpc": "./src/rpc.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsgo --noEmit -p tsconfig.test.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opencode/plugin": "workspace:*",
+    "@opencode/schema": "workspace:*",
+    "@opentui/solid": "catalog:",
+    "effect": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "devDependencies": {
+    "@opentui/core": "catalog:",
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "typescript": "catalog:"
+  }
+}

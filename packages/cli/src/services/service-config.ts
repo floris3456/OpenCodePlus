@@ -5,7 +5,7 @@ import { Service } from "@opencode/client/effect/service"
 import { Effect, FileSystem, Option, Schema } from "effect"
 import { randomBytes } from "crypto"
 import path from "path"
-import { selfCommand } from "../util/process"
+import { selfCommand, serviceDirectory } from "../util/process"
 
 // The CLI's service configuration file, plus the Service.EnsureOptions binding that
 // points the client package's service operations at this CLI: which
@@ -107,6 +107,7 @@ export const options = Effect.fnUntraced(function* (input: { readonly checkVersi
     file,
     version: input.checkVersion ? OPENCODE_VERSION : undefined,
     env: (yield* read()).env,
+    directory: serviceDirectory(),
     command: [
       ...selfCommand(),
       "serve",

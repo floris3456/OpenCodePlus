@@ -14,11 +14,13 @@ export function spawnServiceContender(
   command: string,
   args: ReadonlyArray<string>,
   env?: Readonly<Record<string, string | undefined>>,
+  directory?: string,
 ): ServiceContender {
   const child = spawn(command, args, {
     detached: true,
     stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, ...env },
+    cwd: directory,
   })
   let error: Error | undefined
   let closed = false

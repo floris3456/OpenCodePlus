@@ -36,6 +36,7 @@ import { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
 import { SessionSystemPrompt } from "./system-prompt.js"
 import { toLLMMessages } from "./runner/to-llm-message.js"
+import { Instructions } from "../instructions/index.js"
 import type { SessionMessage } from "./message.js"
 
 const IMAGE_BYTES_TRIGGER = 25 * 1024 * 1024 // 25 MiB
@@ -74,7 +75,13 @@ export const baseTranscript = (input: {
   readonly agent: Agent.Info
   readonly model: SessionRunnerModel.Resolved
   readonly tools: Tool.Snapshot
-  readonly initial: string
+  // Ordered instruction parts; one SystemPart per part, so each instruction
+  // source file keeps its own part boundary. A file-backed baseline part is an
+  // `Instructions.Part` carrying its canonical absolute file path, which the
+  // model request carries as `metadata.instruction.path` for file matching;
+  // other sources stay plain strings. The agent's own system prompt stays the
+  // first part.
+  readonly initial: ReadonlyArray<string | Instructions.Part>
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
@@ -82,15 +89,16 @@ export const baseTranscript = (input: {
     providerMetadataKey,
     system: [
       input.agent.system
-        ? input.agent.system
-        : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
-      input.initial,
-    ]
-      .filter((part) => part.length > 0)
-      .map(SystemPart.make),
+        ? SystemPart.make(input.agent.system)
+        : SystemPart.make(SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name))),
+      ...input.initial.map((part) => (typeof part === "string" ? SystemPart.make(part) : instructionPart(part))),
+    ].filter((part) => part.text.length > 0),
     messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey),
   }
 }
+
+const instructionPart = (part: Instructions.Part): SystemPart =>
+  SystemPart.make(part.text, { instruction: { path: part.path } })
 
 const mimeToModality = (mime: string) => {
   if (mime.startsWith("image/")) return "image"

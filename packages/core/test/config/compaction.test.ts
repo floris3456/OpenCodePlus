@@ -4,7 +4,6 @@ import { OpenAIChat } from "@opencode/ai/protocols"
 import { Bus } from "@opencode/core/bus"
 import { Config } from "@opencode/core/config"
 import { ConfigCompactionPlugin } from "@opencode/core/config/plugin/compaction"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { SessionCompaction } from "@opencode/core/session/compaction"
 import { SessionEvent } from "@opencode/core/session/event"
@@ -39,14 +38,19 @@ const config = Config.testLayer()
 const it = testEffect(
   Layer.merge(
     config,
-    AppNodeBuilder.build(LayerNode.group([SessionCompaction.node, SessionModelRequest.node, Config.node, Bus.node]), [
-      llmClient.replace(
-        Layer.mock(LLMClient.Service)({
-          stream: () => Stream.make(LLMEvent.textDelta({ id: "summary", text: "## Objective\n- summary" })),
-        }),
-      ),
-      Config.node.replace(config),
-    ]),
+    LayerNode.compile(
+      LayerNode.group([SessionCompaction.node, SessionModelRequest.node, Config.node, Bus.node]),
+      {
+        replacements: [
+          llmClient.replace(
+            Layer.mock(LLMClient.Service)({
+              stream: () => Stream.make(LLMEvent.textDelta({ id: "summary", text: "## Objective\n- summary" })),
+            }),
+          ),
+          Config.node.replace(config),
+        ],
+      },
+    ),
   ),
 )
 describe("ConfigCompactionPlugin.Plugin", () => {
@@ -167,7 +171,7 @@ const input = (tokens: number) => {
       model: resolved,
       messages,
       agent: { id: Agent.defaultID, info: Agent.Info.default(Agent.defaultID) },
-      initial: "",
+      initial: [],
       tools: { definitions: [], execute: () => Effect.die("unused") },
     },
   }
