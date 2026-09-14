@@ -12,6 +12,7 @@ import { FileSystem } from "@opencode/core/filesystem"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Form } from "@opencode/core/form"
 import { Generate } from "@opencode/core/generate"
+import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Integration } from "@opencode/core/integration"
 import { KV } from "@opencode/core/kv"
 import { Location } from "@opencode/core/location"
@@ -73,6 +74,7 @@ export const PluginTestLayer = AppNodeBuilder.build(
     Bus.node,
     Form.node,
     Generate.node,
+    InstructionDiscovery.node,
     LayerNodePlatform.httpClient,
     Plugin.node,
     Agent.node,

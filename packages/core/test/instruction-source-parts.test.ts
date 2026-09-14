@@ -16,6 +16,7 @@ import { SessionTable } from "@opencode/core/session/sql"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { Tool } from "@opencode/core/tool"
 import { Agent } from "@opencode/schema/agent"
+import { Event } from "@opencode/schema/event"
 import { Project } from "@opencode/schema/project"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Effect, Layer } from "effect"
@@ -34,7 +35,22 @@ const resolved = SessionRunnerModel.resolved(model, {
 // `@opencode/plus` import. These nodes need no Location provisioning.
 const discoveryOnly = testEffect(
   LayerNode.compile(LayerNode.group([InstructionDiscovery.node]), {
-    replacements: [Bus.node.replace(Layer.mock(Bus.Service, { publish: () => Effect.void }))],
+    replacements: [
+      Bus.node.replace(
+        Layer.mock(Bus.Service, {
+          publish: (definition, data) => {
+            // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+            const event = {
+              id: Event.ID.create(),
+              created: Date.now(),
+              type: definition.type,
+              data,
+            } as Event.Payload<typeof definition>
+            return Effect.succeed(event)
+          },
+        }),
+      ),
+    ],
   }),
 )
 

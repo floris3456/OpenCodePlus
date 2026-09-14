@@ -8,6 +8,7 @@ import { Watcher } from "@opencode/core/filesystem/watcher"
 import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Location } from "@opencode/core/location"
 import { AbsolutePath } from "@opencode/core/schema"
+import { Event } from "@opencode/schema/event"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -102,7 +103,22 @@ describe("InstructionDiscovery", () => {
     }).pipe(
       Effect.provide(
         LayerNode.compile(LayerNode.group([InstructionDiscovery.node, Bus.node]), {
-          replacements: [Bus.node.replace(Layer.mock(Bus.Service, { publish: () => Effect.void }))],
+          replacements: [
+            Bus.node.replace(
+              Layer.mock(Bus.Service, {
+                publish: (definition, data) => {
+                  // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+                  const event = {
+                    id: Event.ID.create(),
+                    created: Date.now(),
+                    type: definition.type,
+                    data,
+                  } as Event.Payload<typeof definition>
+                  return Effect.succeed(event)
+                },
+              }),
+            ),
+          ],
         }),
       ),
     ),
@@ -121,7 +137,22 @@ describe("InstructionDiscovery", () => {
     }).pipe(
       Effect.provide(
         LayerNode.compile(LayerNode.group([InstructionDiscovery.node, Bus.node]), {
-          replacements: [Bus.node.replace(Layer.mock(Bus.Service, { publish: () => Effect.void }))],
+          replacements: [
+            Bus.node.replace(
+              Layer.mock(Bus.Service, {
+                publish: (definition, data) => {
+                  // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+                  const event = {
+                    id: Event.ID.create(),
+                    created: Date.now(),
+                    type: definition.type,
+                    data,
+                  } as Event.Payload<typeof definition>
+                  return Effect.succeed(event)
+                },
+              }),
+            ),
+          ],
         }),
       ),
     ),
@@ -178,7 +209,22 @@ describe("InstructionDiscovery", () => {
     }).pipe(
       Effect.provide(
         LayerNode.compile(LayerNode.group([InstructionDiscovery.node, Bus.node]), {
-          replacements: [Bus.node.replace(Layer.mock(Bus.Service, { publish: () => Effect.void }))],
+          replacements: [
+            Bus.node.replace(
+              Layer.mock(Bus.Service, {
+                publish: (definition, data) => {
+                  // `Payload<D>` is per-call-site; a generic mock body cannot produce it without a cast.
+                  const event = {
+                    id: Event.ID.create(),
+                    created: Date.now(),
+                    type: definition.type,
+                    data,
+                  } as Event.Payload<typeof definition>
+                  return Effect.succeed(event)
+                },
+              }),
+            ),
+          ],
         }),
       ),
     ),
