@@ -33,6 +33,21 @@ Three top-level roots in this order: `Project agents`, `Global agents`,
 `[a: add agent template]`) and then the shared inventories: `Tools`, `Base`
 `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
 
+Agent sources and scopes (`model.ts`)
+
+```ts
+export type AgentScope = "project" | "global" | "defaults"
+export interface AgentSource {
+  readonly id: string
+  readonly scope: AgentScope
+  readonly path?: string
+  /** id of the base prompt template active for this agent's model, e.g. "gpt" */
+  readonly base?: string
+}
+/** { global: ids with scope "global", defaults: ids with scope "defaults" } */
+export function scopesOf(agents: readonly AgentSource[]): Scopes
+```
+
 ## Sections engine (`sections.ts`)
 
 ```ts

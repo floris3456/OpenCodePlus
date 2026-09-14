@@ -39,6 +39,24 @@ export interface Scopes {
   readonly defaults: ReadonlySet<string>
 }
 
+export type AgentScope = "project" | "global" | "defaults"
+
+export interface AgentSource {
+  readonly id: string
+  readonly scope: AgentScope
+  readonly path?: string
+  /** id of the base prompt template active for this agent's model, e.g. "gpt" */
+  readonly base?: string
+}
+
+/** { global: ids with scope "global", defaults: ids with scope "defaults" } */
+export function scopesOf(agents: readonly AgentSource[]): Scopes {
+  return {
+    global: new Set(agents.filter((agent) => agent.scope === "global").map((agent) => agent.id)),
+    defaults: new Set(agents.filter((agent) => agent.scope === "defaults").map((agent) => agent.id)),
+  }
+}
+
 export interface CustomizationRecord {
   readonly level: Level
   readonly agent: string | null
