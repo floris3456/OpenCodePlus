@@ -453,6 +453,103 @@ test("instructions.assembled reports the registry tool description for a per-age
   expect(reader.description).toBe("read things")
 })
 
+test("instructions.assembled prefers the agent's private skill copy over the original", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agents = agentHarness([agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")])
+  for (const id of ["alpha", "beta"]) {
+    const agentPath = path.join(project, ".opencode", "agent", `${id}.md`)
+    await fs.mkdir(path.dirname(agentPath), { recursive: true })
+    await Bun.write(agentPath, "upstream role")
+  }
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([skillInfo("notes", "upstream body")])
+  const tools = toolHarness([])
+  // The harness registry is shared between discovery, apply, and the
+  // assembled readback, exactly like core's registry: discovery filters
+  // plus/ copies out of inventory itself, apply installs through the
+  // transform seam, and assembled observes the full registry including any
+  // installed private copies. The pre-mutate assembled check below pins the
+  // data flow: discovery reports upstream, assembled reports upstream.
+  // NOTE: skill content here carries no headings on purpose. Headed text
+  // derives sections, and skillCustomized treats an assembled body that
+  // differs beyond whitespace normalization as customized — which is exactly
+  // what the section-exclusion test covers.
+  // (A trailing newline alone would also make the copy body differ from the
+  // record text after assemble trims, masking what this test pins.)
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "skill:notes")
+  if (!item) throw new Error("expected skill:notes")
+  expect(item.text).toBe("upstream body")
+  const fingerprintOf = (text: string) => fingerprint(text)
+  expect(item.fingerprint).toBe(fingerprintOf("upstream body"))
+  expect(fingerprintOf("custom body")).not.toBe(item.fingerprint)
+  expect(skillState.added).toEqual([])
+  const before = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(before.skills.find((entry) => entry.id === "notes")?.content).toBe("upstream body")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [{
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "skill:notes",
+        section: null,
+        text: "custom body",
+        basedOn: item.fingerprint,
+        updated: UPDATED,
+      }],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(mutated.snapshot.records).toHaveLength(1)
+  expect(skillState.added.map((entry) => String(entry.id))).toEqual(["plus/alpha/notes"])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.skills.find((entry) => entry.id === "notes")?.content).toBe("custom body")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.skills.find((entry) => entry.id === "notes")?.content).toBe("upstream body")
+  expectRpcBody(forAlpha)
+})
+
+test("agent.create from a non-file-backed Defaults template seeds prompt and fields without copying records", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const template = {
+    ...agentInfo("build", "Build the thing."),
+    description: "The default agent.",
+    mode: "primary" as const,
+  }
+  const agents = agentHarness([template])
+  const skillState = skillHarness([])
+  const location = fullContext({ directory: project }).location
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const entry = snapshot.agents.find((agent) => agent.id === "build")
+  expect(entry?.scope).toBe("defaults")
+  expect(entry?.fileBacked).toBe(false)
+  const created = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "from-defaults", template: "build", prompt: "ignored" }, throwingContext({})),
+  )
+  expect(created).toEqual({ id: "from-defaults", path: path.join(project, ".opencode", "agent", "from-defaults.md") })
+  const written = await Bun.file(created.path).text()
+  expect(written).toContain("Build the thing.")
+  expect(written).toContain("The default agent.")
+  expectRpcBody(created)
+  const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(after.records).toEqual([])
+})
+
 test("agent create/rename/delete work at both scopes and create accepts a template seed", async () => {
   const { project, config } = await tempRoot()
   await enable(project)
