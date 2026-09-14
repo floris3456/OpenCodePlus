@@ -120,6 +120,24 @@ export const ServerEntry = Schema.Struct({
   enabled: Schema.Boolean,
 }).annotate({ identifier: "Plus.ServerEntry" })
 
+export type FileScope = typeof FileScope.Type
+export const FileScope = Schema.Union([Schema.Literal("project"), Schema.Literal("global")]).annotate({
+  identifier: "Plus.FileScope",
+})
+
+// Teams surface: membership comes from disk discovery, enablement from team
+// records. Snapshot.teams keeps those two sources distinct exactly as
+// resolveTeams does — agents lists on-disk member ids whether or not the
+// team is enabled. This stays a SEPARATE field: team records are deliberately
+// excluded from SnapshotRecord so instructions.mutate cannot delete them.
+export interface TeamEntry extends Schema.Schema.Type<typeof TeamEntry> {}
+export const TeamEntry = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+  enabled: Schema.Boolean,
+  agents: Schema.Array(Schema.String),
+}).annotate({ identifier: "Plus.TeamEntry" })
+
 export interface Snapshot extends Schema.Schema.Type<typeof Snapshot> {}
 export const Snapshot = Schema.Struct({
   revision: Schema.Number,
@@ -127,6 +145,9 @@ export const Snapshot = Schema.Struct({
   agents: Schema.Array(AgentEntry),
   items: Schema.Array(SnapshotItem),
   records: Schema.Array(SnapshotRecord),
+  // Optional so older clients and existing fixtures without teams still
+  // decode; the server always emits it (possibly empty).
+  teams: Schema.optionalKey(Schema.Array(TeamEntry)),
   servers: Schema.Array(ServerEntry),
   protectedAgents: Schema.Array(Schema.String),
 }).annotate({ identifier: "Plus.Snapshot" })
@@ -189,11 +210,6 @@ export const Assembled = Schema.Struct({
   tools: Schema.Array(AssembledTool),
   skills: Schema.Array(AssembledSkill),
 }).annotate({ identifier: "Plus.Assembled" })
-
-export type FileScope = typeof FileScope.Type
-export const FileScope = Schema.Union([Schema.Literal("project"), Schema.Literal("global")]).annotate({
-  identifier: "Plus.FileScope",
-})
 
 export interface AgentPermissionRule extends Schema.Schema.Type<typeof AgentPermissionRule> {}
 export const AgentPermissionRule = Schema.Struct({
@@ -318,6 +334,25 @@ export const McpRef = Schema.Struct({
   name: Schema.String,
 }).annotate({ identifier: "Plus.McpRef" })
 
+// Toggle one team as a unit. Level scopes the record store (project vs
+// global file); team names the on-disk team directory; enabled is the desired
+// state. Unknown-but-valid names write a real record — a team with no record
+// at all reads as DISABLED, so toggling a name with no directory yet still
+// records intent. Invalid names fail before touching the store.
+export interface SetTeamEnabledInput extends Schema.Schema.Type<typeof SetTeamEnabledInput> {}
+export const SetTeamEnabledInput = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+  enabled: Schema.Boolean,
+}).annotate({ identifier: "Plus.SetTeamEnabledInput" })
+
+export interface TeamRef extends Schema.Schema.Type<typeof TeamRef> {}
+export const TeamRef = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+  enabled: Schema.Boolean,
+}).annotate({ identifier: "Plus.TeamRef" })
+
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
 export const ProjectDisabled = Schema.Struct({
   directory: Schema.String,
@@ -408,6 +443,18 @@ export const McpInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.McpInvalid" })
 
+export interface TeamInvalid extends Schema.Schema.Type<typeof TeamInvalid> {}
+export const TeamInvalid = Schema.Struct({
+  team: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.TeamInvalid" })
+
+export interface TeamUnknown extends Schema.Schema.Type<typeof TeamUnknown> {}
+export const TeamUnknown = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+}).annotate({ identifier: "Plus.TeamUnknown" })
+
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
@@ -464,6 +511,10 @@ const PortableInstructionRef = Schema.toStandardSchemaV1(
 )
 const PortableAddMcpInput = Schema.toStandardSchemaV1(AddMcpInput.annotate({ identifier: "Plus.AddMcpInput" }))
 const PortableMcpRef = Schema.toStandardSchemaV1(McpRef.annotate({ identifier: "Plus.McpRef" }))
+const PortableSetTeamEnabledInput = Schema.toStandardSchemaV1(
+  SetTeamEnabledInput.annotate({ identifier: "Plus.SetTeamEnabledInput" }),
+)
+const PortableTeamRef = Schema.toStandardSchemaV1(TeamRef.annotate({ identifier: "Plus.TeamRef" }))
 
 const PortableProjectDisabled = Schema.toStandardSchemaV1(
   ProjectDisabled.annotate({ identifier: "Plus.ProjectDisabled" }),
@@ -490,6 +541,8 @@ const PortableInstructionInvalid = Schema.toStandardSchemaV1(
 const PortableMcpExists = Schema.toStandardSchemaV1(McpExists.annotate({ identifier: "Plus.McpExists" }))
 const PortableMcpMissing = Schema.toStandardSchemaV1(McpMissing.annotate({ identifier: "Plus.McpMissing" }))
 const PortableMcpInvalid = Schema.toStandardSchemaV1(McpInvalid.annotate({ identifier: "Plus.McpInvalid" }))
+const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ identifier: "Plus.TeamInvalid" }))
+const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
 
 export const Definition = Rpc.define({
   id: "opencode.plus",
@@ -642,6 +695,15 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "mcp.missing": PortableMcpMissing,
         "mcp.invalid": PortableMcpInvalid,
+      },
+    },
+    "team.setEnabled": {
+      input: PortableSetTeamEnabledInput,
+      output: PortableTeamRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "team.unknown": PortableTeamUnknown,
+        "team.invalid": PortableTeamInvalid,
       },
     },
   },

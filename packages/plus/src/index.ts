@@ -21,6 +21,7 @@ import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { globalConfigDir, resolveInstructionPath } from "./instructions/paths.js"
 import { load, save, type StoredRecord } from "./instructions/store.js"
+import { discoverTeams, isTeamEnabled, validateTeamName, type TeamRecord } from "./instructions/teams.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
@@ -110,7 +111,8 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
         const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
-        return toSnapshot(discovered, loaded)
+        const teams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
+        return toSnapshot(discovered, loaded, teams)
       }),
     "instructions.refresh": (_input, context) =>
       Effect.gen(function* () {
@@ -119,7 +121,8 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
         const discovered = yield* publishFresh(ctx, state, loaded)
-        return toSnapshot(discovered, loaded)
+        const teams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
+        return toSnapshot(discovered, loaded, teams)
       }),
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
@@ -135,7 +138,8 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
               : undefined
         if (staleStore !== undefined) {
           const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
-          return { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded) }
+          const staleTeams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
+          return { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) }
         }
         const saved = yield* Effect.promise(() =>
           save(
@@ -154,12 +158,14 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!saved.ok) {
           const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
           const discovered = yield* Effect.promise(() => discoverAll(ctx, refreshed, state.baselines))
-          return { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed) }
+          const staleTeams = yield* Effect.promise(() => snapshotTeams(directory, refreshed.records))
+          return { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) }
         }
         const reloaded = yield* Effect.promise(() => load(directory))
         const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
         const discovered = yield* publishFresh(ctx, state, next)
-        const snapshot = toSnapshot(discovered, next)
+        const teams = yield* Effect.promise(() => snapshotTeams(directory, next.records))
+        const snapshot = toSnapshot(discovered, next, teams)
         return { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot }
       }),
     "instructions.assembled": (input, context) =>
@@ -413,6 +419,33 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         yield* refreshAfterFileChange(ctx, state, directory)
         return { name: result.name }
       }),
+    "team.setEnabled": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        const loaded = yield* loadStored(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const validated = validateTeamName(input.team)
+        if (!validated.ok)
+          return yield* Effect.fail(context.error("team.invalid", validated.reason, { team: input.team, reason: validated.reason }))
+        const known = yield* Effect.promise(() => discoverTeams(input.level, directory))
+        if (!known.some((team) => team.team === validated.team))
+          return yield* Effect.fail(
+            context.error("team.unknown", `Unknown team ${validated.team}`, { level: input.level, team: validated.team }),
+          )
+        const saved = yield* Effect.promise(() =>
+          saveTeamRecord(directory, loaded, input.level, validated.team, input.enabled),
+        )
+        if (!saved.ok)
+          return yield* Effect.fail(
+            context.error("team.unknown", `Team ${validated.team} changed concurrently; retry`, {
+              level: input.level,
+              team: validated.team,
+            }),
+          )
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { level: input.level, team: validated.team, enabled: input.enabled }
+      }),
   }
 }
 
@@ -441,6 +474,51 @@ function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<Load
     const stored = yield* Effect.promise(() => load(directory))
     return { ...stored, protectedAgents }
   })
+}
+
+// Write one team record through the same save() path instructions.mutate
+// uses, with the caller's expected revisions. Only the matching (level,
+// team) record is replaced; every other record passes through unchanged, so
+// customization and split records are never clobbered and an unchanged toggle
+// stays a no-op. A stale save retries once against a fresh read — the toggle
+// intent is an absolute value, so re-applying it onto fresh records is safe —
+// and a second stale result reports failure to the caller.
+async function saveTeamRecord(
+  directory: string,
+  loaded: LoadedStores,
+  level: TeamRecord["level"],
+  team: string,
+  enabled: boolean,
+): Promise<{ ok: true } | { ok: false }> {
+  const attempt = (records: readonly StoredRecord[]) => {
+    const existing = records.find(
+      (record): record is TeamRecord => record.type === "team" && record.level === level && record.team === team,
+    )
+    if (existing !== undefined && existing.enabled === enabled) return undefined
+    const next: TeamRecord = { type: "team", level, team, enabled, updated: new Date().toISOString() }
+    return [
+      ...records.filter((record) => !(record.type === "team" && record.level === level && record.team === team)),
+      next,
+    ] as readonly StoredRecord[]
+  }
+  const first = attempt(loaded.records)
+  if (first === undefined) return { ok: true }
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: first,
+  })
+  if (saved.ok) return { ok: true }
+  const fresh = await load(directory)
+  const second = attempt(fresh.records)
+  if (second === undefined) return { ok: true }
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: second,
+  })
+  if (retried.ok) return { ok: true }
+  return { ok: false }
 }
 
 function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
@@ -951,7 +1029,7 @@ function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   })
 }
 
-function toSnapshot(discovered: Discovered, loaded: LoadedStores): Plus.Snapshot {
+function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonly Plus.TeamEntry[]): Plus.Snapshot {
   return {
     revision: loaded.projectRevision,
     globalRevision: loaded.globalRevision,
@@ -986,7 +1064,9 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores): Plus.Snapshot
             updated: record.updated,
           },
         ]
-      // Teams are not part of the RPC surface yet.
+      // Team records stay out of `records`: clients read enablement through
+      // `teams` instead, and instructions.mutate re-merges stored team
+      // records so a client that cannot see them cannot delete them.
       if (record.type === "team") return []
       return [
         {
@@ -1004,9 +1084,34 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores): Plus.Snapshot
         },
       ]
     }),
+    teams: teams.map((team) => ({ level: team.level, team: team.team, enabled: team.enabled, agents: [...team.agents] })),
     servers: discovered.servers.map((server) => ({ name: server.name, enabled: server.enabled })),
     protectedAgents: [...loaded.protectedAgents],
   }
+}
+
+// Snapshot.teams keeps membership and enablement on their separate sources:
+// disk discovery lists the members, stored team records decide enabled. A
+// discovered team with no record reads DISABLED; a record with no matching
+// directory never surfaces — the toggle requires a known directory first.
+async function snapshotTeams(directory: string, records: readonly StoredRecord[]): Promise<Plus.TeamEntry[]> {
+  const teamRecords = records.filter((record): record is TeamRecord => record.type === "team")
+  const discovered = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
+  return discovered
+    .flat()
+    .map((team): Plus.TeamEntry => ({
+      level: team.level,
+      team: team.team,
+      enabled: isTeamEnabled(teamRecords, team.level, team.team),
+      agents: team.agents.map((agent) => agent.id),
+    }))
+    .toSorted(compareTeams)
+}
+
+function compareTeams(left: Plus.TeamEntry, right: Plus.TeamEntry): number {
+  if (left.level !== right.level) return left.level < right.level ? -1 : 1
+  if (left.team !== right.team) return left.team < right.team ? -1 : 1
+  return 0
 }
 
 function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | undefined {

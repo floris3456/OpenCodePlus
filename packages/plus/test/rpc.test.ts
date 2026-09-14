@@ -36,6 +36,7 @@ test("instructions and agent methods and the instructions.changed event are pres
   expect("instruction.delete" in Plus.Definition.methods).toBe(true)
   expect("mcp.add" in Plus.Definition.methods).toBe(true)
   expect("mcp.remove" in Plus.Definition.methods).toBe(true)
+  expect("team.setEnabled" in Plus.Definition.methods).toBe(true)
   expect("instructions.changed" in Plus.Definition.events).toBe(true)
 })
 
@@ -173,6 +174,7 @@ test("gated methods fail with project.disabled when project mode is off", async 
   await expectDeclaredError(handlers["instruction.delete"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["mcp.add"]({ name: "x", config: { type: "remote", url: "https://x.test" } }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["mcp.remove"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["team.setEnabled"]({ level: "project", team: "x", enabled: true }, throwingContext(captured)), captured, "project.disabled")
   const status = await Effect.runPromise(handlers["project.status"](undefined, throwingContext(captured)))
   expect(status).toEqual({ enabled: false, directory: project })
 })
@@ -187,6 +189,7 @@ test("snapshot shape carries both revisions, agents, items, records, servers, an
   expect(snapshot.agents.map((agent) => agent.id)).toContain("alpha")
   expect(snapshot.items.length).toBeGreaterThan(0)
   expect(snapshot.records).toEqual([])
+  expect(snapshot.teams).toEqual([])
   expect(snapshot.servers).toEqual([])
   expect(snapshot.protectedAgents).toEqual([])
   expectRpcBody(snapshot)

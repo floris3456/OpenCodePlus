@@ -1,0 +1,229 @@
+import { afterEach, expect, test } from "bun:test"
+import { Effect, Exit, Schema } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { formatMarkdown } from "../src/agents/files.js"
+import { createHandlers, createState } from "../src/index.js"
+import { fingerprint } from "../src/instructions/model.js"
+import { projectTeamsPath } from "../src/instructions/paths.js"
+import { load, type StoredRecord } from "../src/instructions/store.js"
+import { enable } from "../src/project.js"
+import { Plus } from "../src/rpc.js"
+import { fullContext } from "./harness.js"
+
+const UPDATED = "2026-01-01T00:00:00.000Z"
+
+const roots: string[] = []
+const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+
+afterEach(async () => {
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
+})
+
+async function tempRoot(): Promise<{ project: string }> {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-teams-rpc-"))
+  roots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  return { project: path.join(root, "project") }
+}
+
+async function writeTeamAgent(teamDir: string, id: string): Promise<string> {
+  const target = path.join(teamDir, `${id}.md`)
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await Bun.write(target, formatMarkdown({ description: `${path.basename(teamDir)}/${id}` }, "role"))
+  return target
+}
+
+interface CapturedError {
+  type: string
+  message: string
+  data?: unknown
+}
+
+function throwingContext(captured: { current?: CapturedError }): {
+  error: (type: string, message: string, data?: unknown) => never
+} {
+  return {
+    error: (type, message, data) => {
+      const failure: CapturedError = data === undefined ? { type, message } : { type, message, data }
+      captured.current = failure
+      throw failure
+    },
+  }
+}
+
+async function expectDeclaredError(
+  effect: Effect.Effect<unknown, unknown>,
+  captured: { current?: CapturedError },
+  type: string,
+): Promise<void> {
+  const exit = await Effect.runPromiseExit(effect)
+  expect(Exit.isFailure(exit)).toBe(true)
+  expect(captured.current?.type).toBe(type)
+}
+
+const RpcBody = Schema.toCodecJson(Schema.Struct({ output: Schema.optionalKey(Schema.Unknown) }))
+
+function expectRpcBody(value: unknown) {
+  expect(() => Schema.encodeUnknownSync(RpcBody)({ output: value })).not.toThrow()
+}
+
+test("snapshot lists a disk team as disabled with member ids when no record exists", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "nested/beta")
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: ["alpha", "nested/beta"] }])
+  expect(snapshot.records).toEqual([])
+  expectRpcBody(snapshot)
+})
+
+test("toggling a team on writes a real TeamRecord and the next snapshot reports it enabled", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const toggled = await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
+  expectRpcBody(toggled)
+  const stored = await load(project)
+  expect(stored.records).toHaveLength(1)
+  expect(stored.records[0]).toMatchObject({ type: "team", level: "project", team: "crew", enabled: true })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams).toEqual([{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }])
+  // Team records stay out of `records`.
+  expect(snapshot.records).toEqual([])
+})
+
+test("toggling an unknown team name raises team.unknown and an invalid name raises team.invalid", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const unknown: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.setEnabled"]({ level: "project", team: "ghost", enabled: true }, throwingContext(unknown)),
+    unknown,
+    "team.unknown",
+  )
+  expect(unknown.current?.type).toBe("team.unknown")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.setEnabled"]({ level: "project", team: "../evil", enabled: true }, throwingContext(invalid)),
+    invalid,
+    "team.invalid",
+  )
+  expect((await load(project)).records).toEqual([])
+})
+
+test("team.setEnabled is gated on project mode with project.disabled", async () => {
+  const { project } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const captured: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext(captured)),
+    captured,
+    "project.disabled",
+  )
+})
+
+test("a toggle does not disturb existing customization or split records", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const customization: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "tool:reader",
+    section: null,
+    text: "project text",
+    basedOn: fingerprint("upstream"),
+    updated: UPDATED,
+  }
+  const split: Plus.SnapshotSplitRecord = {
+    type: "split",
+    level: "project",
+    agent: "alpha",
+    item: "tool:reader",
+    boundaries: [{ id: "a", name: "A", start: 0 }],
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: before.revision, expectedGlobalRevision: before.globalRevision, records: [customization, split] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const toggled = await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+  expect(toggled.enabled).toBe(true)
+  const stored = await load(project)
+  const kept = stored.records.filter((record): record is Extract<StoredRecord, { type: "customization" | "split" }> =>
+    record.type !== "team",
+  )
+  expect(kept).toHaveLength(2)
+  expect(stored.records.filter((record) => record.type === "team")).toHaveLength(1)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.records).toHaveLength(2)
+  expect(snapshot.teams?.find((team) => team.team === "crew")?.enabled).toBe(true)
+  // Toggling back off keeps both non-team records in place.
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
+  const after = await load(project)
+  expect(after.records.filter((record) => record.type !== "team")).toHaveLength(2)
+  expect(after.records.find((record) => record.type === "team")).toMatchObject({ team: "crew", enabled: false })
+})
+
+test("an unchanged toggle stays a no-op without moving revisions", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const stored = await load(project)
+  const toggled = await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
+  const reread = await load(project)
+  expect(reread.projectRevision).toBe(stored.projectRevision)
+  expect(reread.globalRevision).toBe(stored.globalRevision)
+  expect(reread.records).toEqual(stored.records)
+})
+
+test("a normal instructions.mutate round-trip does not delete team records", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.records.some((record) => (record as { type: string }).type === "team")).toBe(false)
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [...(snapshot.records ?? [])] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // Preserved teams keep an otherwise unchanged save a no-op.
+  expect(mutated.revision).toBe(snapshot.revision)
+  expect(mutated.globalRevision).toBe(snapshot.globalRevision)
+  const stored = await load(project)
+  expect(stored.records.find((record) => record.type === "team")).toMatchObject({ team: "crew", enabled: true })
+  const resnapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(resnapshot.teams?.find((team) => team.team === "crew")?.enabled).toBe(true)
+})

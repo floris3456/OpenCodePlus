@@ -33,6 +33,7 @@ test("every method and event is declared", () => {
     "instruction.delete",
     "mcp.add",
     "mcp.remove",
+    "team.setEnabled",
   ]
 
   for (const name of expectedMethods) {
@@ -81,6 +82,8 @@ test("every declared error is reachable through the definition", () => {
     "mcp.exists",
     "mcp.missing",
     "mcp.invalid",
+    "team.unknown",
+    "team.invalid",
   ]
 
   const reachableErrors = new Set<string>()
@@ -115,6 +118,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "instruction.delete",
     "mcp.add",
     "mcp.remove",
+    "team.setEnabled",
   ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
 
   for (const method of instructionsAndMutatingMethods) {
@@ -160,6 +164,9 @@ test("error schemas are correctly bound to their corresponding methods", () => {
 
   expect("mcp.missing" in errorsOf("mcp.remove")).toBe(true)
   expect("mcp.invalid" in errorsOf("mcp.remove")).toBe(true)
+
+  expect("team.unknown" in errorsOf("team.setEnabled")).toBe(true)
+  expect("team.invalid" in errorsOf("team.setEnabled")).toBe(true)
 })
 
 function errorsOf(method: keyof typeof Plus.Definition.methods): Record<string, unknown> {
@@ -227,6 +234,14 @@ test("representative Snapshot with omitted optional fields encodes without undef
         updated: "2026-09-14T00:00:00.000Z",
       },
     ],
+    teams: [
+      {
+        level: "project",
+        team: "crew",
+        enabled: true,
+        agents: ["alpha", "nested/beta"],
+      },
+    ],
     servers: [
       {
         name: "test-server",
@@ -266,6 +281,30 @@ test("representative Snapshot with omitted optional fields encodes without undef
 
   const decoded = Schema.decodeUnknownSync(Plus.Snapshot)(encoded)
   expect(decoded).toEqual(representative)
+})
+
+test("Snapshot without teams still decodes and team schemas round-trip", () => {
+  const withoutTeams = {
+    revision: 1,
+    globalRevision: 1,
+    agents: [],
+    items: [],
+    records: [],
+    servers: [],
+    protectedAgents: [],
+  }
+  const decoded = Schema.decodeUnknownSync(Plus.Snapshot)(withoutTeams)
+  expect(decoded.teams).toBeUndefined()
+
+  const entry: Plus.TeamEntry = { level: "global", team: "ops", enabled: false, agents: [] }
+  const encodedEntry = Schema.encodeSync(Plus.TeamEntry)(entry)
+  expectRpcBody(encodedEntry)
+  expect(Schema.decodeUnknownSync(Plus.TeamEntry)(encodedEntry)).toEqual(entry)
+
+  const toggle: Plus.SetTeamEnabledInput = { level: "project", team: "crew", enabled: true }
+  expect(Schema.decodeUnknownSync(Plus.SetTeamEnabledInput)(Schema.encodeSync(Plus.SetTeamEnabledInput)(toggle))).toEqual(toggle)
+  const ref: Plus.TeamRef = { level: "project", team: "crew", enabled: true }
+  expect(Schema.decodeUnknownSync(Plus.TeamRef)(Schema.encodeSync(Plus.TeamRef)(ref))).toEqual(ref)
 })
 
 test("Snapshot with populated optional fields round-trips correctly", () => {
@@ -370,6 +409,7 @@ test("MutateInput and MutateResult schemas round-trip correctly", () => {
     agents: [],
     items: [],
     records: [],
+    teams: [],
     servers: [],
     protectedAgents: [],
   }
