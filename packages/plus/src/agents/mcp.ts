@@ -45,6 +45,17 @@ export function projectConfigPath(projectDirectory: string): string {
   return path.join(projectDirectory, ".opencode", "opencode.json")
 }
 
+export async function projectConfigCandidates(projectDirectory: string): Promise<readonly string[]> {
+  const root = path.resolve(projectDirectory)
+  const existing: string[] = []
+  for (const name of ["opencode.json", "opencode.jsonc"]) {
+    const candidate = path.join(root, ".opencode", name)
+    if (await Bun.file(candidate).exists()) existing.push(candidate)
+  }
+  if (existing.length > 0) return existing
+  return [path.join(root, ".opencode", "opencode.json")]
+}
+
 export function validateMcpConfig(config: Record<string, unknown>): { ok: true } | { ok: false; reason: string } {
   if (config.type !== "local" && config.type !== "remote")
     return { ok: false, reason: `Invalid MCP config: type must be "local" or "remote"` }
@@ -69,6 +80,8 @@ export async function addMcp(input: {
   if (!configCheck.ok) return { ok: false, reason: "invalid", name: validated.name, message: configCheck.reason }
   const target = await resolveProjectConfig(input.projectDirectory)
   const document = await readDocument(target)
+  if (document === undefined)
+    return { ok: false, reason: "invalid", name: validated.name, message: `Project config at ${target} is not valid JSON` }
   const servers = serversOf(document)
   if (Object.hasOwn(servers, validated.name)) return { ok: false, reason: "exists", name: validated.name }
   servers[validated.name] = { ...input.config }
@@ -81,6 +94,8 @@ export async function removeMcp(input: { projectDirectory: string; name: string 
   if (!validated.ok) return { ok: false, reason: "invalid", name: input.name, message: validated.reason }
   const target = await resolveProjectConfig(input.projectDirectory)
   const document = await readDocument(target)
+  if (document === undefined)
+    return { ok: false, reason: "invalid", name: validated.name, message: `Project config at ${target} is not valid JSON` }
   const servers = serversOf(document)
   if (!Object.hasOwn(servers, validated.name)) return { ok: false, reason: "missing", name: validated.name }
   delete servers[validated.name]
@@ -97,17 +112,19 @@ async function resolveProjectConfig(projectDirectory: string): Promise<string> {
   return path.join(root, ".opencode", "opencode.json")
 }
 
-async function readDocument(target: string): Promise<Record<string, unknown>> {
+// A malformed or non-object config file is never silently replaced: the
+// caller surfaces mcp.invalid instead of destroying user-owned content.
+async function readDocument(target: string): Promise<Record<string, unknown> | undefined> {
   const file = Bun.file(target)
   if (!(await file.exists())) return {}
   const text = await file.text()
   if (text.trim().length === 0) return {}
   try {
     const parsed: unknown = JSON.parse(text)
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {}
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined
     return parsed as Record<string, unknown>
   } catch {
-    return {}
+    return undefined
   }
 }
 

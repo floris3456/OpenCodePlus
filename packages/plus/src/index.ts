@@ -8,6 +8,7 @@ import { Skill } from "@opencode/schema/skill"
 import { Effect, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
 import fs from "node:fs/promises"
+import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
@@ -15,7 +16,7 @@ import { addMcp, removeMcp } from "./agents/mcp.js"
 import { createSkill, importSkill } from "./agents/skills.js"
 import { apply } from "./instructions/apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { scopesOf, type Level } from "./instructions/model.js"
+import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { globalConfigDir } from "./instructions/paths.js"
 import { load, save, type Record } from "./instructions/store.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
@@ -132,12 +133,12 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           save(directory, { expectedRevision: loaded.revision, records: input.records.map(toRecord) }),
         )
         if (!saved.ok) {
-          const refreshed = { ...saved.current, ...revisionsOf(saved.current.records), protectedAgents: loaded.protectedAgents }
+          const refreshed = { ...saved.current, ...revisionsOf(saved.current), protectedAgents: loaded.protectedAgents }
           const discovered = yield* Effect.promise(() => discoverAll(ctx, refreshed, state.baselines))
           return { ok: false as const, reason: "stale" as const, snapshot: toSnapshot(discovered, refreshed) }
         }
         const reloaded = yield* Effect.promise(() => load(directory))
-        const next = { ...reloaded, ...revisionsOf(reloaded.records), protectedAgents: loaded.protectedAgents }
+        const next = { ...reloaded, ...revisionsOf(reloaded), protectedAgents: loaded.protectedAgents }
         const discovered = yield* publishFresh(ctx, state, next)
         const snapshot = toSnapshot(discovered, next)
         return { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot }
@@ -365,15 +366,19 @@ function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<
   })
 }
 
-function revisionsOf(records: readonly Record[]): { projectRevision: number; globalRevision: number } {
-  return { projectRevision: records.length, globalRevision: records.length }
+function revisionsOf(stored: { revision: number }): { projectRevision: number; globalRevision: number } {
+  // The two-store backend currently tracks one combined revision (the max of
+  // both store headers; every save bumps both files together), so both RPC
+  // revisions equal it. Optimistic checks on either field still conflict
+  // correctly because any write moves the shared revision.
+  return { projectRevision: stored.revision, globalRevision: stored.revision }
 }
 
 function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<LoadedStores, E> {
   return Effect.gen(function* () {
     const protectedAgents = yield* requireProject(directory, disabled)
     const stored = yield* Effect.promise(() => load(directory))
-    return { ...stored, ...revisionsOf(stored.records), protectedAgents }
+    return { ...stored, ...revisionsOf(stored), protectedAgents }
   })
 }
 
@@ -430,7 +435,54 @@ function fallbackBaseTemplates(): BaseTemplate[] {
 }
 
 function readUserBaseTemplates(): BaseTemplate[] {
-  return []
+  return readUserBaseTemplatesSync()
+}
+
+function userBaseDir(): string {
+  return path.join(globalConfigDir(), "opencodeplus", "instructions", "base")
+}
+
+function readUserBaseTemplatesSync(): BaseTemplate[] {
+  // Synchronous read: discover runs inside publishFresh where every caller
+  // already awaits, and the directory is tiny. A missing dir means none.
+  const dir = userBaseDir()
+  let entries: string[]
+  try {
+    entries = fsSync.readdirSync(dir)
+  } catch {
+    return []
+  }
+  return entries
+    .filter((entry) => entry.endsWith(".txt"))
+    .toSorted()
+    .map((entry) => {
+      const id = entry.slice(0, -".txt".length)
+      const text = readUserBaseText(path.join(dir, entry))
+      if (text === undefined) return undefined
+      const title = readUserBaseTitle(path.join(dir, "index.json"), id)
+      return { id, title, text }
+    })
+    .filter((template): template is BaseTemplate => template !== undefined)
+}
+
+function readUserBaseText(target: string): string | undefined {
+  try {
+    return fsSync.readFileSync(target, "utf8")
+  } catch {
+    return undefined
+  }
+}
+
+function readUserBaseTitle(index: string, id: string): string {
+  try {
+    const parsed: unknown = JSON.parse(fsSync.readFileSync(index, "utf8"))
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return `${id}.txt`
+    const title = (parsed as Record<string, unknown>)[id]
+    if (typeof title !== "string" || title.length === 0) return `${id}.txt`
+    return title
+  } catch {
+    return `${id}.txt`
+  }
 }
 
 function fallbackActiveBase(agent: { model?: { providerID: string; id: string } }): string | undefined {
@@ -463,7 +515,7 @@ function scopeLevel(scope: "project" | "global" | "defaults"): Level {
   return "project"
 }
 
-async function readTemplate(directory: string, template: string): Promise<{ fields?: AgentFields; prompt: string } | undefined> {
+async function readTemplate(directory: string, template: string): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
   const validated = validateAgentId(template)
   if (!validated.ok) return undefined
   const candidates = [
@@ -475,9 +527,29 @@ async function readTemplate(directory: string, template: string): Promise<{ fiel
   for (const candidate of candidates) {
     const file = Bun.file(candidate)
     if (!(await file.exists())) continue
-    return { prompt: agentBody(await file.text()) }
+    const text = await file.text()
+    return { fields: templateFields(text), prompt: agentBody(text) }
   }
   return undefined
+}
+
+function templateFields(markdown: string): AgentFields | undefined {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  if (!match) return undefined
+  try {
+    const data = Bun.YAML.parse(match[1] ?? "")
+    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
+    const fields = data as Record<string, unknown>
+    const picked: AgentFields = {
+      ...(typeof fields.model === "string" ? { model: fields.model } : {}),
+      ...(typeof fields.description === "string" ? { description: fields.description } : {}),
+      ...(fields.mode === "subagent" || fields.mode === "primary" || fields.mode === "all" ? { mode: fields.mode } : {}),
+    }
+    if (Object.keys(picked).length === 0) return undefined
+    return picked
+  } catch {
+    return undefined
+  }
 }
 
 interface BaseTemplateResult {
@@ -492,11 +564,37 @@ async function createBaseTemplate(id: string, title: string, text: string): Prom
   if (trimmed.length === 0) return { ok: false, id, message: "Base template id cannot be empty" }
   if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0"))
     return { ok: false, id, message: `Invalid base template id "${id}"` }
-  const target = path.join(globalConfigDir(), "opencodeplus", "instructions", "base", `${trimmed}.txt`)
+  const target = path.join(userBaseDir(), `${trimmed}.txt`)
   if (await Bun.file(target).exists()) return { ok: false, id: trimmed, reason: "exists" }
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, text)
+  await appendBaseIndex(trimmed, title)
   return { ok: true, id: trimmed }
+}
+
+// The small index next to the <id>.txt files so discover (and a future core
+// prompt domain) can list user templates with their titles alongside the
+// built-ins. Best-effort: a missing index only loses titles, never templates.
+async function appendBaseIndex(id: string, title: string): Promise<void> {
+  const target = path.join(userBaseDir(), "index.json")
+  const current = await readBaseIndex(target)
+  current[id] = title
+  await Bun.write(target, `${JSON.stringify(current, undefined, 2)}\n`)
+}
+
+async function readBaseIndex(target: string): Promise<Record<string, string>> {
+  const file = Bun.file(target)
+  if (!(await file.exists())) return {}
+  try {
+    const parsed: unknown = await file.json()
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {}
+    const entries = Object.entries(parsed as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    )
+    return Object.fromEntries(entries)
+  } catch {
+    return {}
+  }
 }
 
 interface InstructionResult {
@@ -535,7 +633,7 @@ function activate(ctx: Context, state: PlusState): Effect.Effect<void> {
 async function loadCurrent(directory: string): Promise<LoadedStores> {
   const config = await read(directory)
   const stored = await load(directory)
-  return { ...stored, ...revisionsOf(stored.records), protectedAgents: config?.protectedAgents ?? [] }
+  return { ...stored, ...revisionsOf(stored), protectedAgents: config?.protectedAgents ?? [] }
 }
 
 function deactivate(state: PlusState): Effect.Effect<void> {
@@ -569,7 +667,6 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       if (state.globalRevision !== undefined && stored.globalRevision < state.globalRevision) return discovered
       const fingerprint = fingerprintDiscovered(discovered)
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
-        refreshBaselines(state, discovered)
         return discovered
       }
       // Install the replacement before disposing the superseded registrations.
@@ -597,7 +694,7 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
-      refreshBaselines(state, discovered)
+      captureBaselines(ctx, state, discovered, customizations, splits)
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       return discovered
@@ -605,19 +702,39 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
   )
 }
 
-// Plus's own transforms rewrite the host text that the next discovery reads
-// back from ctx.agent.list() and the tool/skill domains. Retain, per key,
-// what Plus last wrote and the upstream text it replaced so discovery can
-// report upstream while the host still shows Plus's output. The map is
-// rebuilt from the just-published snapshot on every pass so removed
-// overrides drop out instead of pinning a stale value forever.
-function refreshBaselines(state: PlusState, discovered: Discovered): void {
+// Capture what Plus just installed: read the host back after apply and
+// retain (applied, upstream) pairs wherever the host now shows Plus output.
+// The next discovery unmasks those keys back to upstream via unmaskText, so
+// the publish fingerprint stays stable instead of storming. Agent roles key
+// by agent id (file-backed agents additionally reread their markdown body);
+// tools and skills key by item id.
+function captureBaselines(
+  ctx: Context,
+  state: PlusState,
+  discovered: Discovered,
+  records: readonly CustomizationRecord[],
+  splits: readonly SplitRecord[],
+): void {
+  void ctx
+  void splits
   const next = new Map<string, PromptBaseline>()
-  for (const [key, baseline] of state.baselines) {
-    const live = discovered.items.find((item) => baselineKey(item) === key)
-    if (live === undefined) continue
-    if (live.text !== baseline.applied) continue
-    next.set(key, baseline)
+  const scopes = scopesOf(discovered.agents)
+  for (const item of discovered.items) {
+    const key = baselineKey(item)
+    if (item.id === "system:role") {
+      const owner = item.agents?.[0]
+      if (owner === undefined) continue
+      const level = scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
+      const resolved = resolve({ upstream: item, records, splits, scopes, address: { level, agent: owner, item: item.id, section: null } })
+      if (resolved.assembled === item.text) continue
+      const source = discovered.agents.find((agent) => agent.id === owner)
+      next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: source?.path !== undefined })
+      continue
+    }
+    if (item.kind !== "tool" && item.kind !== "skill") continue
+    const resolved = resolve({ upstream: item, records, splits, scopes, address: { level: "defaults", agent: null, item: item.id, section: null } })
+    if (resolved.assembled === item.text) continue
+    next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: false })
   }
   state.baselines = next
 }

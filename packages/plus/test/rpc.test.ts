@@ -377,6 +377,9 @@ test("base create stores a user template and raises declared errors", async () =
   const created = await Effect.runPromise(handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwingContext({})))
   expect(created).toEqual({ id: "custom" })
   expectRpcBody(created)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.some((item) => item.id === "base:custom")).toBe(true)
+  expect(snapshot.items.find((item) => item.id === "base:custom")?.text).toBe("custom base")
   const duplicate: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["base.create"]({ id: "custom", title: "X", text: "y" }, throwingContext(duplicate)), duplicate, "base.exists")
   const invalid: { current?: CapturedError } = {}
@@ -423,6 +426,27 @@ test("mcp add and remove edit the project config and raise declared errors", asy
   await expectDeclaredError(handlers["mcp.add"]({ name: "", config: { type: "remote", url: "https://x.test" } }, throwingContext(invalid)), invalid, "mcp.invalid")
   const removed = await Effect.runPromise(handlers["mcp.remove"]({ name: "search" }, throwingContext({})))
   expect(removed).toEqual({ name: "search" })
+  expect(await Bun.file(path.join(project, ".opencode", "opencode.json")).text()).not.toContain(`"search"`)
   const missing: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["mcp.remove"]({ name: "ghost" }, throwingContext(missing)), missing, "mcp.missing")
+  const invalidRemove: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["mcp.remove"]({ name: "" }, throwingContext(invalidRemove)), invalidRemove, "mcp.invalid")
+})
+
+test("mcp methods refuse to destroy an unparseable project config", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const target = path.join(project, ".opencode", "opencode.json")
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await Bun.write(target, "{not json\n")
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const addBad: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["mcp.add"]({ name: "search", config: { type: "remote", url: "https://example.test" } }, throwingContext(addBad)),
+    addBad,
+    "mcp.invalid",
+  )
+  const removeBad: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["mcp.remove"]({ name: "search" }, throwingContext(removeBad)), removeBad, "mcp.invalid")
+  expect(await Bun.file(target).text()).toBe("{not json\n")
 })
