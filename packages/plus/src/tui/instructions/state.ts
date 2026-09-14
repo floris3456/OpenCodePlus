@@ -38,14 +38,25 @@ function customizationsOf(records: readonly SnapshotRecord[]): CustomizationReco
   })
 }
 
-function splitsOf(records: readonly SnapshotRecord[]): SplitRecord[] {
-  return records.flatMap((record): SplitRecord[] => {
+function splitsOf(records: readonly SnapshotRecord[]): (SplitRecord & { updated: string })[] {
+  return records.flatMap((record): (SplitRecord & { updated: string })[] => {
     if (record.type !== "split") return []
-    return [{ level: record.level, agent: record.agent, item: record.item, boundaries: [...record.boundaries] }]
+    return [
+      {
+        level: record.level,
+        agent: record.agent,
+        item: record.item,
+        boundaries: [...record.boundaries],
+        updated: record.updated,
+      },
+    ]
   })
 }
 
-function toRpcRecords(customizations: readonly CustomizationRecord[], splits: readonly SplitRecord[]): SnapshotRecord[] {
+function toRpcRecords(
+  customizations: readonly CustomizationRecord[],
+  splits: readonly (SplitRecord & { updated?: string })[],
+): SnapshotRecord[] {
   return [
     ...customizations.map(
       (record): SnapshotRecord => ({
@@ -62,16 +73,17 @@ function toRpcRecords(customizations: readonly CustomizationRecord[], splits: re
         updated: record.updated,
       }),
     ),
-    ...splits.map(
-      (record): SnapshotRecord => ({
+    ...splits.map((record): SnapshotRecord => {
+      const known = record.updated ?? now()
+      return {
         type: "split",
         level: record.level,
         agent: record.agent,
         item: record.item,
         boundaries: [...record.boundaries],
-        updated: now(),
-      }),
-    ),
+        updated: known,
+      }
+    }),
   ]
 }
 
@@ -87,37 +99,93 @@ export function createInstructionsState(context: Plugin.Context) {
   let disabled = false
   let generation = 0
 
+  function itemsForTree(): Item[] {
+    const current = snapshot()
+    if (!current) return []
+    return current.items.map(
+      (entry): Item => ({
+        id: entry.id,
+        kind: entry.kind,
+        group: entry.group,
+        ...(entry.server === undefined ? {} : { server: entry.server }),
+        title: entry.title,
+        text: entry.text,
+        enabled: entry.enabled,
+        fingerprint: entry.fingerprint,
+        ...(entry.agents === undefined ? {} : { agents: [...entry.agents] }),
+        ...(entry.order === undefined ? {} : { order: entry.order }),
+      }),
+    )
+  }
+
+  function recordsForTree(): (CustomizationRecord | SplitRecord)[] {
+    const current = snapshot()
+    if (!current) return []
+    return [...customizationsOf(current.records), ...splitsOf(current.records)]
+  }
+
+  function agentsForTree(): AgentSource[] {
+    const current = snapshot()
+    if (!current) return []
+    return agentSourcesOf(current)
+  }
+
   function allNodes(): TreeNode[] {
     const current = snapshot()
     if (!current) return []
     return tree({
-      items: current.items.map(
-        (entry): Item => ({
-          id: entry.id,
-          kind: entry.kind,
-          group: entry.group,
-          ...(entry.server === undefined ? {} : { server: entry.server }),
-          title: entry.title,
-          text: entry.text,
-          enabled: entry.enabled,
-          fingerprint: entry.fingerprint,
-          ...(entry.agents === undefined ? {} : { agents: [...entry.agents] }),
-          ...(entry.order === undefined ? {} : { order: entry.order }),
-        }),
-      ),
-      records: [...customizationsOf(current.records), ...splitsOf(current.records)],
-      agents: agentSourcesOf(current),
+      items: itemsForTree(),
+      records: recordsForTree(),
+      agents: agentsForTree(),
       expanded: expanded(),
     })
   }
 
+  function fullTree(): TreeNode[] {
+    const current = snapshot()
+    if (!current) return []
+    return tree({
+      items: itemsForTree(),
+      records: recordsForTree(),
+      agents: agentsForTree(),
+    })
+  }
+
+  function ancestorsOf(all: readonly TreeNode[], byId: ReadonlyMap<string, TreeNode>, node: TreeNode): TreeNode[] {
+    // tree() emits the full logical pre-order list: ancestors of node are the
+    // nearest preceding rows with strictly smaller depth.
+    const index = all.findIndex((entry) => entry.id === node.id)
+    if (index === -1) return []
+    const out: TreeNode[] = []
+    let depth = node.depth
+    for (let at = index - 1; at >= 0; at--) {
+      const candidate = all[at]
+      if (candidate === undefined) break
+      if (candidate.depth < depth) {
+        out.unshift(byId.get(candidate.id) ?? candidate)
+        depth = candidate.depth
+        if (depth <= 0) break
+      }
+    }
+    return out
+  }
+
   function nodes(): TreeNode[] {
-    const all = allNodes()
     const query = filter().trim().toLowerCase()
-    if (query.length === 0) return all
-    return all.filter(
+    if (query.length === 0) return allNodes()
+    // Reveal matches hidden inside collapsed ancestors: match against the
+    // full logical tree and include each match with its ancestor chain.
+    const full = fullTree()
+    const byId = new Map(full.map((node) => [node.id, node]))
+    const matched = full.filter(
       (node) => node.label.toLowerCase().includes(query) || node.id.toLowerCase().includes(query),
     )
+    const included = new Map<string, TreeNode>()
+    for (const node of matched) {
+      for (const ancestor of ancestorsOf(full, byId, node)) included.set(ancestor.id, ancestor)
+      included.set(node.id, node)
+    }
+    return [...included.values()]
   }
 
   function selected(): TreeNode | undefined {
@@ -222,7 +290,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function chainFor(node: TreeNode):
-    | { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] }
+    | { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: (SplitRecord & { updated: string })[] }
     | undefined {
     const current = snapshot()
     const address = node.address
@@ -282,7 +350,7 @@ export function createInstructionsState(context: Plugin.Context) {
 
   async function persist(
     nextCustomizations: readonly CustomizationRecord[],
-    nextSplits: readonly SplitRecord[],
+    nextSplits: readonly (SplitRecord & { updated?: string })[],
     successStatus: string,
     retryHint: string,
   ): Promise<boolean> {
@@ -455,9 +523,9 @@ export function createInstructionsState(context: Plugin.Context) {
     const rest = chain.splits.filter(
       (record) => !(record.level === address.level && record.agent === address.agent && record.item === address.item),
     )
-    const nextSplits: SplitRecord[] = [
+    const nextSplits: (SplitRecord & { updated: string })[] = [
       ...rest,
-      { level: address.level, agent: address.agent, item: address.item, boundaries: [...boundaries] },
+      { level: address.level, agent: address.agent, item: address.item, boundaries: [...boundaries], updated: now() },
     ]
     return persist(
       chain.customizations,

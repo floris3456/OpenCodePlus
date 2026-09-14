@@ -272,7 +272,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         clear: () => {},
         alert: async () => {},
         confirm: async (input: unknown) => {
-          fake.dialogConfirms.push(input)
+          fake.dialogConfirms.push([input])
           if (confirmScript.length > 0) return confirmScript.shift()
           return true
         },
