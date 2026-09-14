@@ -347,8 +347,10 @@ function itemKindOf(state: QueryState, candidate: Candidate): string | undefined
 
 function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
   if (candidate.kind === "agent") {
-    const team = state.agents.get(agentOf(candidate) ?? "")?.team
-    return team === undefined ? [] : [team]
+    const id = agentOf(candidate) ?? ""
+    const fromTeams = state.memo.ctx.teams.filter((entry) => entry.agents.includes(id)).map((entry) => entry.team)
+    const direct = state.agents.get(id)?.team
+    return [...new Set(direct === undefined ? fromTeams : [...fromTeams, direct])]
   }
   if (candidate.kind !== "team") return []
   const level = levelOf(candidate)
@@ -550,6 +552,11 @@ function splitTerms(where: string): string[] {
   for (let index = 0; index < where.length; index++) {
     const ch = where[index] ?? ""
     if (quote !== undefined) {
+      if (ch === "\\" && index + 1 < where.length) {
+        current += ch + (where[index + 1] ?? "")
+        index += 1
+        continue
+      }
       current += ch
       if (ch === quote) quote = undefined
       continue
@@ -580,6 +587,10 @@ function indexOfColon(body: string): number {
   for (let index = 0; index < body.length; index++) {
     const ch = body[index] ?? ""
     if (quote !== undefined) {
+      if (ch === "\\") {
+        index += 1
+        continue
+      }
       if (ch === quote) quote = undefined
       continue
     }
@@ -603,6 +614,11 @@ function splitValue(raw: string, term: string): string[] {
   for (let index = 0; index < raw.length; index++) {
     const ch = raw[index] ?? ""
     if (quote !== undefined) {
+      if (ch === "\\" && index + 1 < raw.length) {
+        current += ch + (raw[index + 1] ?? "")
+        index += 1
+        continue
+      }
       current += ch
       if (ch === quote) quote = undefined
       continue
@@ -978,7 +994,13 @@ function project(state: QueryState, candidate: Candidate, fields: readonly Field
       continue
     }
     if (field === "sections") {
-      if (candidate.kind === "item" && candidate.address !== undefined && !candidate.orphan) row.sections = candidate.sectionIds
+      // Section result rows may be skipped by structural filtering, but a
+      // requested projection must still report them: resolve on demand for
+      // the returned rows instead of trusting the enumeration cache.
+      if (candidate.kind === "item" && candidate.address !== undefined && !candidate.orphan) {
+        const lazy = candidate.lazy
+        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(state, lazy).map((section) => section.id)
+      }
     }
   }
   return row as unknown as QueryRow

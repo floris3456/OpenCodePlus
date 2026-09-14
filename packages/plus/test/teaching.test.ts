@@ -6,6 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { discover } from "../src/instructions/discover.js"
+import { query } from "../src/instructions/query.js"
 import { teachingFilePath, teachingItemId, teachingSkillId } from "../src/instructions/paths.js"
 import { installTeaching, seedSystemInstruction, teachingContent, teachingSkillContent } from "../src/instructions/teaching.js"
 import { context } from "./harness.js"
@@ -88,6 +89,17 @@ test("the skill content covers the tool surface", async () => {
     expect(teachingSkillContent).toContain(phrase)
   }
   expect(teachingSkillContent.length).toBeGreaterThan(2000)
+})
+
+test("every filter expression in the skill parses in the real query engine", async () => {
+  const wheres = [...teachingSkillContent.matchAll(/where:\s*"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1] ?? "")
+  expect(wheres.length).toBeGreaterThan(0)
+  const snapshot = { items: [], records: [], agents: [], teams: [] }
+  for (const where of wheres) {
+    const result = query(snapshot, { where })
+    expect(result.rows).toEqual([])
+    expect(result.total).toBe(0)
+  }
 })
 
 test("installTeaching registers the instruction file and the skill", async () => {
