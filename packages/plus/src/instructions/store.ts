@@ -30,6 +30,9 @@ export interface SaveSuccess {
   readonly ok: true
   readonly projectRevision: number
   readonly globalRevision: number
+  // Which stores the write actually moved. An unchanged save moves neither
+  // and touches no file; callers use this to log one line per changed store.
+  readonly changed: { readonly project: boolean; readonly global: boolean }
 }
 
 export interface SaveStale {
@@ -164,12 +167,22 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
   const globalChanged = current.migrated || !same(currentGlobalRecords(current.records), routed.global)
   // An unchanged save is a no-op: neither file is touched, neither revision moves.
   if (!projectChanged && !globalChanged)
-    return { ok: true, projectRevision: current.projectRevision, globalRevision: current.globalRevision }
+    return {
+      ok: true,
+      projectRevision: current.projectRevision,
+      globalRevision: current.globalRevision,
+      changed: { project: false, global: false },
+    }
   const nextProject = projectChanged ? current.projectRevision + 1 : current.projectRevision
   const nextGlobal = globalChanged ? current.globalRevision + 1 : current.globalRevision
   if (projectChanged) await writeStore(projectRecordsPath(projectDir), nextProject, routed.project)
   if (globalChanged) await writeStore(globalRecordsPath(), nextGlobal, routed.global)
-  return { ok: true, projectRevision: nextProject, globalRevision: nextGlobal }
+  return {
+    ok: true,
+    projectRevision: nextProject,
+    globalRevision: nextGlobal,
+    changed: { project: projectChanged, global: globalChanged },
+  }
 }
 
 async function writeStore(target: string, revision: number, records: readonly StoredRecord[]): Promise<void> {

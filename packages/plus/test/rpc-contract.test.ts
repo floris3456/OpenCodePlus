@@ -20,6 +20,7 @@ test("every method and event is declared", () => {
     "instructions.snapshot",
     "instructions.refresh",
     "instructions.mutate",
+    "instructions.log",
     "instructions.assembled",
     "agent.create",
     "agent.rename",
@@ -105,6 +106,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "instructions.snapshot",
     "instructions.refresh",
     "instructions.mutate",
+    "instructions.log",
     "instructions.assembled",
     "agent.create",
     "agent.rename",
@@ -451,6 +453,52 @@ test("MutateInput and MutateResult schemas round-trip correctly", () => {
   const encodedConflict = Schema.encodeSync(Plus.MutateResult)(conflict)
   expectRpcBody(encodedConflict)
   expect(Schema.decodeUnknownSync(Plus.MutateResult)(encodedConflict)).toEqual(conflict)
+})
+
+test("MutateInput with actor and Log schemas round-trip without undefined keys", () => {
+  const withActor: Plus.MutateInput = {
+    expectedRevision: 1,
+    expectedGlobalRevision: 2,
+    records: [],
+    actor: { type: "tool", agent: "alpha", sessionID: "ses_1", messageID: "msg_1" },
+  }
+  const encodedActor = Schema.encodeSync(Plus.MutateInput)(withActor)
+  expect(Schema.decodeUnknownSync(Plus.MutateInput)(encodedActor)).toEqual(withActor)
+  expectRpcBody(encodedActor)
+  assertNoUndefinedValues(encodedActor)
+
+  const withoutActor: Plus.MutateInput = { expectedRevision: 1, expectedGlobalRevision: 2, records: [] }
+  const encodedBare = Schema.encodeSync(Plus.MutateInput)(withoutActor)
+  expect("actor" in encodedBare).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.MutateInput)(encodedBare)).toEqual(withoutActor)
+
+  const entry: Plus.LogEntry = {
+    ts: "2026-09-14T00:00:00.000Z",
+    actor: { type: "tui" },
+    op: "mutate",
+    target: "item:project:alpha:tool:bash",
+    summary: "mutate item:project:alpha:tool:bash",
+    revision: 1,
+  }
+  const encodedEntry = Schema.encodeSync(Plus.LogEntry)(entry)
+  expectRpcBody(encodedEntry)
+  assertNoUndefinedValues(encodedEntry)
+  expect(Schema.decodeUnknownSync(Plus.LogEntry)(encodedEntry)).toEqual(entry)
+
+  const output: Plus.LogOutput = { entries: [entry], total: 1 }
+  const encodedOutput = Schema.encodeSync(Plus.LogOutput)(output)
+  expectRpcBody(encodedOutput)
+  assertNoUndefinedValues(encodedOutput)
+  expect(Schema.decodeUnknownSync(Plus.LogOutput)(encodedOutput)).toEqual(output)
+
+  const filtered: Plus.LogInput = { where: "op:mutate", limit: 10, offset: 0 }
+  expect(Schema.decodeUnknownSync(Plus.LogInput)(Schema.encodeSync(Plus.LogInput)(filtered))).toEqual(filtered)
+  const empty: Plus.LogInput = {}
+  const encodedEmpty = Schema.encodeSync(Plus.LogInput)(empty)
+  expect("where" in encodedEmpty).toBe(false)
+  expect("limit" in encodedEmpty).toBe(false)
+  expect("offset" in encodedEmpty).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.LogInput)(encodedEmpty)).toEqual(empty)
 })
 
 test("agent.create input with template round-trips correctly", () => {

@@ -19,6 +19,14 @@ export function globalRecordsPath(configDir: string = globalConfigDir()): string
   return path.join(configDir, "opencodeplus", "instructions", "records.jsonl")
 }
 
+export function projectLogPath(directory: string): string {
+  return path.join(directory, ".opencodeplus", "instructions", "log.jsonl")
+}
+
+export function globalLogPath(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "opencodeplus", "instructions", "log.jsonl")
+}
+
 export function projectTeamsPath(directory: string): string {
   return path.join(directory, ".opencodeplus", "teams")
 }

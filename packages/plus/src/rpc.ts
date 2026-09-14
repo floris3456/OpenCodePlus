@@ -154,11 +154,46 @@ export const Snapshot = Schema.Struct({
   protectedAgents: Schema.Array(Schema.String),
 }).annotate({ identifier: "Plus.Snapshot" })
 
+export interface Actor extends Schema.Schema.Type<typeof Actor> {}
+export const Actor = Schema.Struct({
+  type: Schema.Union([Schema.Literal("tui"), Schema.Literal("tool")]),
+  agent: Schema.optionalKey(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+  messageID: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.Actor" })
+
+export interface LogEntry extends Schema.Schema.Type<typeof LogEntry> {}
+export const LogEntry = Schema.Struct({
+  ts: Schema.String,
+  actor: Actor,
+  op: Schema.String,
+  target: Schema.String,
+  summary: Schema.String,
+  revision: Schema.Number,
+}).annotate({ identifier: "Plus.LogEntry" })
+
+export interface LogInput extends Schema.Schema.Type<typeof LogInput> {}
+export const LogInput = Schema.Struct({
+  where: Schema.optionalKey(Schema.String),
+  limit: Schema.optionalKey(Schema.Number),
+  offset: Schema.optionalKey(Schema.Number),
+}).annotate({ identifier: "Plus.LogInput" })
+
+export interface LogOutput extends Schema.Schema.Type<typeof LogOutput> {}
+export const LogOutput = Schema.Struct({
+  entries: Schema.Array(LogEntry),
+  total: Schema.Number,
+}).annotate({ identifier: "Plus.LogOutput" })
+
 export interface MutateInput extends Schema.Schema.Type<typeof MutateInput> {}
 export const MutateInput = Schema.Struct({
   expectedRevision: Schema.Number,
   expectedGlobalRevision: Schema.Number,
   records: Schema.Array(SnapshotRecord),
+  // Who performed the mutation. Callers omit the key when unknown (an
+  // explicit undefined fails JSON encoding); the handler treats a missing
+  // actor as { type: "tui" }.
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.MutateInput" })
 
 export interface MutateSuccess extends Schema.Schema.Type<typeof MutateSuccess> {}
@@ -517,6 +552,8 @@ const PortableSetTeamEnabledInput = Schema.toStandardSchemaV1(
   SetTeamEnabledInput.annotate({ identifier: "Plus.SetTeamEnabledInput" }),
 )
 const PortableTeamRef = Schema.toStandardSchemaV1(TeamRef.annotate({ identifier: "Plus.TeamRef" }))
+const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
+const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
 const PortableProjectDisabled = Schema.toStandardSchemaV1(
   ProjectDisabled.annotate({ identifier: "Plus.ProjectDisabled" }),
@@ -578,6 +615,13 @@ export const Definition = Rpc.define({
     "instructions.mutate": {
       input: PortableMutateInput,
       output: PortableMutateResult,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+      },
+    },
+    "instructions.log": {
+      input: PortableLogInput,
+      output: PortableLogOutput,
       errors: {
         "project.disabled": PortableProjectDisabled,
       },
