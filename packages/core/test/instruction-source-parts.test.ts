@@ -79,7 +79,7 @@ const tools: Tool.Snapshot = {
   execute: () => Effect.die(new Error("assembly never dispatches tools")),
 }
 
-const assemble = (initial: ReadonlyArray<string>) =>
+const assemble = (initial: ReadonlyArray<string | Instructions.Part>) =>
   SessionModelRequest.baseTranscript({ agent, model: resolved, tools, initial, messages: [] }).system
 
 const setupSession = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
@@ -115,7 +115,9 @@ const parts = (instructions: Instructions.List) =>
       ),
     )
     // Same mapping the model request applies: one SystemPart per instruction source.
-    return Instructions.renderInitialParts(instructions, values).map(SystemPart.make)
+    return Instructions.renderInitialParts(instructions, values).map((part) =>
+      typeof part === "string" ? SystemPart.make(part) : SystemPart.make(part.text, { instruction: { path: part.path } }),
+    )
   })
 
 describe("InstructionDiscovery per-file parts", () => {
@@ -209,6 +211,52 @@ describe("InstructionDiscovery per-file parts", () => {
           )
         ).changed,
       ).toBe(false)
+    }),
+  )
+
+  assembledOnly.effect("an unavailable read retains admitted per-file instructions in the request", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.create()
+      const { db, bus } = yield* setupSession(sessionID)
+      const discovery = yield* InstructionDiscovery.Service
+      yield* discovery.transform((editor) => {
+        editor.add(file("/repo/AGENTS.md", "root"))
+        editor.add(file("/repo/packages/AGENTS.md", "package"))
+      })
+      yield* InstructionState.prepare(db, bus, yield* discovery.load(), sessionID)
+      const before = yield* SessionHistory.entriesForRunner(db, sessionID, yield* discovery.load(), "local")
+
+      yield* discovery.transform((editor) => {
+        editor.unavailable()
+      })
+      const history = yield* SessionHistory.entriesForRunner(db, sessionID, yield* discovery.load(), "local")
+      const system = assemble(history.initial)
+      expect(system.map((part) => part.text)).toEqual(assemble(before.initial).map((part) => part.text))
+      expect(system.map((part) => part.text)).toEqual([
+        "agent",
+        "Instructions from: /repo/AGENTS.md\nroot",
+        "Instructions from: /repo/packages/AGENTS.md\npackage",
+      ])
+    }),
+  )
+
+  assembledOnly.effect("instruction parts carry their source file identity", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.create()
+      const { db, bus } = yield* setupSession(sessionID)
+      const discovery = yield* InstructionDiscovery.Service
+      yield* discovery.transform((editor) => {
+        editor.add(file("/repo/AGENTS.md", "root"))
+        editor.add(file("/repo/packages/AGENTS.md", "package"))
+      })
+      yield* InstructionState.prepare(db, bus, yield* discovery.load(), sessionID)
+
+      const history = yield* SessionHistory.entriesForRunner(db, sessionID, yield* discovery.load(), "local")
+      const system = assemble(history.initial)
+      expect(system.slice(1).map((part) => part.metadata)).toEqual([
+        { instruction: { path: "/repo/AGENTS.md" } },
+        { instruction: { path: "/repo/packages/AGENTS.md" } },
+      ])
     }),
   )
 })

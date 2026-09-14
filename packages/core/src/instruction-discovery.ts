@@ -109,9 +109,24 @@ export const layer = (options?: Options) =>
         notify: () => bus.publish(Event.Updated, {}).pipe(Effect.asVoid),
       })
 
-      // The aggregate key survives only for outages: an unavailable read retains the
-      // stored value and blocks only the initial complete delta, exactly as before.
-      const unavailable = Instructions.make<ReadonlyArray<File>>({
+      // An outage keeps every per-file source and its last value: each source
+      // reads unavailable, `diff` retains the stored hashes, and the per-file
+      // renderers still resolve those values. The legacy aggregate key covers
+      // no-longer-served rows admitted before per-file keys existed.
+      const unavailable = (value: File) =>
+        Instructions.make<File>({
+          key: keyFor(value.path),
+          path: value.path,
+          codec: Schema.toCodecJson(File),
+          read: Effect.succeed(Instructions.unavailable),
+          render: {
+            initial: (current) => render([current]),
+            changed: (previous, current) => renderFileUpdate(previous, current),
+            removed: (previous) => `The instructions from ${previous.path} no longer apply.`,
+          },
+        })
+
+      const legacyUnavailable = Instructions.make<ReadonlyArray<File>>({
         key: legacy,
         codec: Schema.toCodecJson(Files),
         read: Effect.succeed(Instructions.unavailable),
@@ -125,6 +140,7 @@ export const layer = (options?: Options) =>
       const file = (value: File) =>
         Instructions.make<File>({
           key: keyFor(value.path),
+          path: value.path,
           codec: Schema.toCodecJson(File),
           read: Effect.succeed(value),
           render: {
@@ -136,6 +152,7 @@ export const layer = (options?: Options) =>
 
       const tombstone = (path: string): Instructions.Source => ({
         key: keyFor(path),
+        path,
         read: Effect.succeed(Instructions.removed),
         initial: () => undefined,
         changed: () => undefined,
@@ -156,7 +173,12 @@ export const layer = (options?: Options) =>
         list,
         load: Effect.fn("InstructionDiscovery.load")(function* () {
           const current = state.get()
-          if (!current.available) return unavailable
+          if (!current.available)
+            return [
+              ...Array.from(current.removed).map(tombstone),
+              ...Array.from(current.files.values()).flatMap(unavailable),
+              ...legacyUnavailable,
+            ]
           return [
             ...Array.from(current.removed).map(tombstone),
             ...Array.from(current.files.values()).flatMap(file),

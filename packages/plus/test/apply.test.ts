@@ -483,9 +483,10 @@ test("per-file instructions drop or replace one part by path", async () => {
   const event = sessionEvent(
     "alpha",
     {},
+    // Parts as production produces them: canonical absolute paths on metadata.
     [
-      { type: "text", text: "upstream guide", metadata: { path: "AGENTS.md" } },
-      { type: "text", text: "other upstream", metadata: { path: "OTHER.md" } },
+      { type: "text", text: "upstream guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
+      { type: "text", text: "other upstream", metadata: { instruction: { path: "/repo/OTHER.md" } } },
     ],
   )
   await Effect.runPromise(run(event))
@@ -494,6 +495,26 @@ test("per-file instructions drop or replace one part by path", async () => {
   const direct: SessionHooks["context"]["system"] = [{ type: "text", text: "merged blob" }]
   applyInstructions(direct, [])
   expect(direct).toHaveLength(1)
+})
+
+test("excluding one instruction removes exactly that production part", async () => {
+  const system: SessionHooks["context"]["system"] = [
+    { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
+    { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
+  ]
+  applyInstructions(system, [{ agent: "alpha", path: "OTHER.md", text: "other", enabled: false }])
+  expect(system.map((part) => part.text)).toEqual(["guide"])
+})
+
+test("editing one instruction replaces its production part rather than appending", async () => {
+  const system: SessionHooks["context"]["system"] = [
+    { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
+    { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
+  ]
+  applyInstructions(system, [{ agent: "alpha", path: "AGENTS.md", text: "custom guide", enabled: true }])
+  expect(system).toHaveLength(2)
+  expect(system.map((part) => part.text)).toEqual(["custom guide", "other"])
+  expect(system[0]?.metadata).toEqual({ instruction: { path: "/repo/AGENTS.md" } })
 })
 
 test("no-op updates install nothing and reload nothing", async () => {

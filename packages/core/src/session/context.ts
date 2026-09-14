@@ -38,7 +38,7 @@ export interface Loaded {
   readonly session: SessionSchema.Info
   readonly agent: Agent.Selection & { readonly info: Agent.Info }
   readonly model: SessionRunnerModel.Resolved
-  readonly initial: ReadonlyArray<string>
+  readonly initial: ReadonlyArray<string | Instructions.Part>
   readonly messages: ReadonlyArray<SessionMessage.Info>
   readonly tools: Tool.Snapshot
 }

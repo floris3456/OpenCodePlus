@@ -428,18 +428,17 @@ function applyToolPlan(event: SessionContext, plans: readonly ToolPlan[]) {
   }
 }
 
-// Core per-file instruction seam (one system part per instruction source file
-// carrying its path) is not yet present in this worktree: SessionContext.system
-// parts currently carry no path. Implemented against the documented contract —
-// a part whose metadata.path (or top-level path) equals the instruction path —
-// so drop/replace needs no string surgery on a merged blob. Do NOT fall back
-// to editing merged text by matching.
+// Core per-file instruction seam: one baseline part per instruction source
+// file, with the canonical absolute file path on `metadata.instruction.path`.
+// Match parts to plans by comparing that canonical path; a relative plan path
+// also matches the trailing segments of the absolute part path.
 export function applyInstructions(
   system: SessionContext["system"],
   plans: readonly InstructionPlan[],
 ): void {
   for (const plan of plans) {
-    const index = system.findIndex((part) => partPath(part) === plan.path)
+    const relative = plan.path.replace(/^\/+/, "")
+    const index = system.findIndex((part) => matchesPart(partPath(part), plan.path, relative))
     if (!plan.enabled) {
       if (index !== -1) system.splice(index, 1)
       continue
@@ -450,8 +449,15 @@ export function applyInstructions(
       if (current.text !== plan.text) system[index] = { ...current, text: plan.text }
       continue
     }
-    system.push({ type: "text", text: plan.text, metadata: { path: plan.path } })
+    system.push({ type: "text", text: plan.text, metadata: { instruction: { path: plan.path } } })
   }
+}
+
+function matchesPart(candidate: string | undefined, absolute: string, relative: string): boolean {
+  if (candidate === undefined) return false
+  if (candidate === absolute || candidate === relative) return true
+  if (candidate.endsWith(`/${relative}`)) return true
+  return false
 }
 
 function partPath(part: SessionContext["system"][number]): string | undefined {
