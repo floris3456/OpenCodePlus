@@ -1,8 +1,6 @@
 # @opencode/plus
 
-A thin OpenCode V2 plugin adding an opt-in per-directory "Project mode" that reveals additional Project screens. The package provides a server plugin exposing RPC methods to query and toggle project status, and a TUI plugin exposing keybindings and command palette entries.
-
-The package implements project mode toggling, an interactive Instructions screen for viewing and customizing agent prompts and capabilities, dialog workflows for creating, renaming, and deleting agents, and server RPC handlers that persist and apply project-local customizations.
+An OpenCode V2 plugin adding an opt-in per-directory "Project mode" plus an Instructions screen for viewing and customizing what each agent sees: tools, base prompts, skills, and system instructions. The server plugin (`src/index.ts`, RPC id `opencode.plus`) discovers inventory, persists customizations across two stores, and applies them through the public plugin API; the TUI plugin (`src/tui`) renders the tree, detail, diff, and splitter panes.
 
 ## Running it
 
@@ -18,69 +16,71 @@ The launcher executes this fork directly from source (the installed `opencode2` 
 
 ## Layout
 
+Three top-level trees, in order: `Project agents`, `Global agents`, `Defaults`. Every agent in all three roots has the identical subtree:
+
 ```
-src/
-├── index.ts                 # Server plugin entrypoint defining "opencode.plus" and registering RPC handlers
-├── project.ts               # Project-mode filesystem operations for .opencodeplus/project.json
-├── rpc.ts                   # Public RPC definition, method and event contracts, and portable schemas
-├── agents/
-│   └── files.ts             # Agent markdown creation, renaming, frontmatter serialization, and removal
-├── instructions/
-│   ├── apply.ts             # Customization application to agent prompts, skills, tools, and MCP servers
-│   ├── discover.ts          # Discovery of customizable items and agent scopes across the workspace
-│   ├── model.ts             # Instruction customization domain model, overrides, and fingerprinting
-│   ├── store.ts             # JSONL persistence for instruction records with optimistic revision locking
-│   └── tree.ts              # Hierarchical navigation tree projection for agents, items, and status badges
-└── tui/
-    ├── index.tsx            # TUI plugin entrypoint registering commands and keybindings
-    ├── project-mode.tsx     # Solid-based project mode controller, RPC client, and confirmation dialogs
-    ├── agents/
-    │   └── create.tsx       # Interactive dialog workflows for creating, renaming, and deleting agents
-    └── instructions/
-        ├── detail-pane.tsx  # Detail pane displaying selected item text, scope, and status badges
-        ├── route.tsx        # Instructions screen route with adaptive dual-pane layout and navigation
-        ├── state.ts         # Reactive state management for instructions snapshots, selection, and mutations
-        └── tree-pane.tsx    # Tree pane rendering collapsible agent groups, item nodes, and badges
+<Agent>
+  Tools                      Native / OpenCodePlus / MCP > <server>
+    <tool>
+      <section>
+  Base                       [a: add base prompt]
+    <template>.txt           (the one matching the agent's model is marked "active")
+      <section>
+  Skills                     Native / OpenCodePlus / MCP > <server> / Project [a: add skill]
+    <skill>
+      <section>
+  System                     [a: add instruction]
+    Role/persona             (always first)
+    <instruction>
+      <section>
 ```
+
+`Defaults` holds `Agents` (template agents with the full subtree, `[a: add agent template]`) followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on a project or global root adds an agent there. `d` deletes project/global agents and shared MCP servers; file-backed skill, instruction, and base rows report that no delete RPC exists for them.
+
+## Inheritance
+
+Resolution runs Defaults → Global → Project, most specific first: `project/A → global/A → defaults/A → shared → upstream` (the global and template steps apply only when that agent exists at that level). Text and state resolve independently: the first level supplying each field wins. `r` removes the override at the current level only. A state-only override never marks a node modified and never raises review, so a disabled-but-unmodified copy keeps taking upstream text silently. Unmodified nodes store nothing, so they re-resolve on every read and upstream edits propagate live with no user action.
+
+## Review and diff
+
+A modified copy whose upstream moved turns yellow, rolls up to collapsed ancestors as "N to review", and resolves through a three-way diff (original upstream / mine / new upstream): `k` keep mine, `t` take new, `e` edit merged text. Sections warn independently without raising siblings.
+
+## Sections
+
+Derived from markdown headings, else XML-style blocks, else the whole text. `s` cuts a manual split (arrows move, `b` boundary, `e` rename, `x` remove, `ctrl+s` save). A split belongs to the item at the level where it was made and resolves down the same chain; include/exclude belongs to the agent.
+
+## Keys
+
+Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude, `a` add, `d` delete, `r` reset override, `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
 
 ## Storage
 
-Durable state lives directly in the target project folder under `.opencodeplus/`:
+Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl` (`level === "project"` only), global scope and Defaults in `<configDir>/opencodeplus/instructions/records.jsonl` (global and defaults levels). Mutations carry both expected revisions against one combined revision (the max of both headers) and lose on stale. Format is v2 JSONL: a `{"version":2,"revision":n}` header line, then one canonical record per line. A v1 `records.jsonl` header (no `version`) is migrated on load and the first save writes v2 to both stores, so v1 is never written and the two formats never sit side by side.
 
-- `.opencodeplus/project.json` — the project-mode marker file (`{ "version": 1, "protectedAgents": [] }`). Its existence marks the directory as having project mode enabled.
-- `.opencodeplus/instructions/records.jsonl` — instruction customizations stored as line-delimited JSON, with a first-line `{"revision": n}` header followed by canonical customization records.
-
-Disposable caches belong in OpenCode's own storage via the plugin `storage` domain (`ctx.storage`). There is deliberately no second database.
+RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import`, `base.create`, `instruction.create`, `mcp.add/remove`; events `project.changed`, `instructions.changed`. The binding contract is `SPEC.md`.
 
 ## Fork touch surface
 
-The package uses only the public plugin API so it stays loadable as an external plugin. The complete list of files changed outside `packages/plus` is:
+Every place core changed for this feature, and why the plugin API could not do it:
 
-- `packages/core/src/plugin/internal.ts` — imports `PlusPlugin` from `@opencode/plus` and appends it as the last entry of the `post` plugin array.
-- `packages/tui/src/plugin/builtins.ts` — imports `Plus` from `@opencode/plus/tui` and appends it to `builtins`.
-- `packages/core/package.json` — adds `"@opencode/plus": "workspace:*"` to dependencies.
-- `packages/tui/package.json` — adds `"@opencode/plus": "workspace:*"` to dependencies.
-- `bun.lock` — workspace dependency resolution entries.
+- `packages/schema/src/tool.ts` — `Tool.Info.origin?: { type: "mcp" | "plugin"; name }`. Registration keeps only whitelisted fields and the namespace sanitizes the server name irreversibly, so no plugin could recover the real server for grouping. (`packages/core/test/tool-origin.test.ts`)
+- `packages/core/src/tool/mcp.ts` — passes the real server name as `origin` at registration. (same test)
+- `packages/core/src/instruction-discovery.ts` + `packages/core/src/session/context.ts` — one `Instructions.Source` per file keyed by path and one system part per file, instead of every file merged into a single part with no source identity. The plugin editor alone could not restore boundaries core had already erased. (`packages/core/test/instruction-source-parts.test.ts`)
+- `packages/core/src/prompt-template.ts` + `packages/core/src/plugin/*` — a `PromptTemplate` registry (templates plus active-for-model) exposed as `ctx.prompt`, so the active base prompt is knowable and selectable; it used to live only inside core internals. (`packages/core/test/prompt-template.test.ts`)
+- `packages/plugin/src/effect/instruction.ts`, `prompt.ts` — the public plugin surface for the two above (`ctx.instruction.transform`, `ctx.prompt`).
+- `packages/cli/src/util/process.ts` + `packages/cli/src/services/standalone.ts` — a real bug fix, not a feature seam: a background server inherited the caller's working directory, breaking `opencodeplus` and `bun run dev <dir>`; `serviceDirectory()` returns the package root holding `tsconfig.json`. (`packages/cli/test/self-command.test.ts`, `packages/client/test/service-contender.test.ts`)
+- Loading wiring only: `PlusPlugin` appended last in `post` (`packages/core/src/plugin/internal.ts`), `Plus` in the TUI `builtins`, workspace deps in `core`/`tui` `package.json`.
 
 ## Boundaries and known limits
 
-- **Per-server MCP tool checklist: closed, not deferred.** The public plugin API exposes no authoritative link from a tool back to its originating MCP server. Core's internal MCP tool record carries a `server` field (`packages/core/src/mcp/index.ts`), but tool registration passes only name, namespace, mode, schemas, description and executor (`packages/core/src/tool/mcp.ts`), and the public `Tool.Info` (`packages/schema/src/tool.ts`) has no MCP origin field. The tool namespace is a sanitized server name, so matching it would be name inference, which this package forbids. `Mcp.ServerConfig` (`packages/schema/src/mcp.ts`) has server-wide `disabled` and `codemode` but no per-tool enablement. What remains supported is the flat tool list plus a whole-server toggle.
-- **Native vs Code Mode tools.** Core partitions tools in `Tool.snapshot` (`packages/core/src/tool.ts`): `options.codemode === false` means native and appears as an individual key of the session tool list; anything else, including absent options, is Code Mode and is reached only through the aggregated `execute` inventory. Plus applies tool changes through the session context, so it can only toggle or re-describe native tools. Code Mode rows are therefore marked non-actionable rather than silently doing nothing. Note the partition happens after the tool registry, so `ctx.tool.transform` itself can reach both kinds — the limit is Plus's application path, not the whole plugin API.
-- **Discovery must not observe Plus's own applied output.** `discover()` reads the host after Plus's transforms are installed, so treating that as upstream makes the publish fingerprint flip every pass and produces a permanent dispose/reinstall loop. Prompt discovery avoids this by retaining a per-agent baseline and, for file-backed agents, rereading the markdown body (core decodes agent markdown as `{...frontmatter, system: body}` with the body trimmed). Anything that starts mutating the tool registry would need the same treatment — tools currently have no baseline unmasking.
-- **Every client-facing RPC error must be declared** in the `Definition`, because core's `encodeError` fails on undeclared ones.
-- **Never send an optional key whose value is `undefined` across the RPC boundary.** Core validates each RPC result as a JSON value, so a present-but-`undefined` property makes the whole call fail with HTTP 400. Omit the key instead. `expectRpcBody` in `test/rpc.test.ts` guards this.
-- **Instruction customization: closed at the plugin boundary.** The public plugin API does not expose source-aware instruction customization. Core builds instruction system parts with `SystemPart.make(text)`, giving only `{ type, text }` with no source identity (`packages/core/src/session/model-request.ts`). Core renders files as `Instructions from: <path>\n<content>`, joins them, then merges them with environment, skills, MCP and session sources into ONE combined part, not one per file (`packages/core/src/instruction-discovery.ts`, `packages/core/src/session/context.ts`). File content is inserted unescaped with no end marker, so no reliable span identity exists. Furthermore, core's path-keyed `InstructionDiscovery.Editor` is not exposed on the public plugin `Context` (`packages/plugin/src/effect/plugin.ts`). Instruction rows therefore refuse toggle and edit as non-actionable. Reopening it would need a public source-aware instruction application contract covering session selection and instruction history.
-- **Instruction discovery inventory mismatch.** `readProjectInstructions` in `src/instructions/discover.ts` walks DOWNWARD collecting `AGENTS.md` recursively, whereas core's ambient discovery loads global config plus project files UPWARD (`packages/core/src/config/plugin/instruction.ts`), and descendant files instead arrive as synthetic messages when a file is read (`packages/core/src/tool/plugin/read.ts`). Because of this, the instruction rows Plus lists are not the same set core applies to a session.
-- **Instruction customizations are project-local only: closed, not deferred.** Plus instruction customizations are stored in `.opencodeplus/instructions/records.jsonl` within the target project directory. Plus does not implement global-scope customization storage or cross-project mutation; the shared Defaults target configures settings shared across agents within the active project rather than a cross-project global scope.
-- **Remaining known limits**, listed plainly: builtin agents have no backing file, so an upstream prompt edit stays masked while a customization is active; MCP server configuration is file-owned, so MCP text edits are not applied.
-- **Plugin unload disposes applied registrations.** `applied` registrations in `packages/plus/src/instructions/apply.ts` are created on detached scopes (`Scope.make()` driven by `Effect.runPromise`) because application runs through asynchronous helpers outside the activation effect. To prevent these registrations from surviving plugin unload or hot-replacement, `packages/plus/src/index.ts` registers a teardown finalizer (`deactivate(state)`) on the owning plugin activation scope. When core closes the plugin activation scope on unload (such as via `-opencode.plus` in `packages/core/src/config/plugin/source.ts`) or when `packages/core/src/plugin.ts` closes and reactivates the changed plugin suffix, the finalizer disposes successful registrations stored in `state.applied`. On failure, `apply.ts` now unwinds installations in reverse order and closes detached scopes so partial failures do not leave unowned registrations behind.
-- **MCP tools that return asynchronously do not regain their customizations until the next publish.** Plus watches `agent.updated`, `skill.updated` and `config.updated`. Core reconciles MCP tool inventory behind a 100 ms debounce and a `tools.reload()` (`packages/core/src/tool/mcp.ts`) that emits none of those events. So after disabling an MCP server through Plus and then resetting that override, a tool customization belonging to that server is reinstalled only on the next publish, not the moment the tool reappears. Closing this would require a public post-reconciliation tool-inventory notification; subscribing to the earlier MCP event would still race the debounced rebuild.
-- **A reset MCP row reports stale availability in the mutation response only.** `publishFresh` in `packages/plus/src/index.ts` discovers using the newly saved records while the previous transform is still installed, so immediately after clearing an MCP override the `upstreamMcpAvailable` inference in `packages/plus/src/instructions/discover.ts` falls through to reading Plus's own still-applied `disabled` flag. Disposal then restores the host correctly and the next discovery reports the right value; only the returned snapshot and the cached publication fingerprint are transiently wrong.
-- **An MCP customization carrying `text` renders content that is never applied.** The public `instructions.mutate` schema accepts an optional `text` on any customization, and `packages/plus/src/instructions/apply.ts` applies only enablement for MCP rows, because server configuration is file-owned. The current TUI never creates such a record, but a client that wrote one directly would see the stored text rendered as the resolved configuration while the host kept using the upstream config. `resetFields` deliberately clears only `state` for MCP rows.
-- **Upstream permission denials are not reflected in discovered availability.** `skillItems` and `toolItems` in `packages/plus/src/instructions/discover.ts` construct items with the default `available: true`, because the public plugin API surfaces the whole inventory: `ctx.skill.list()` and the `ctx.tool.transform` editor list return every skill and tool for the location without applying any agent's permission rules. Core, however, filters denied skills in `packages/core/src/skill.ts` and drops wholly denied tools in `packages/core/src/tool.ts` before session context hooks run. An agent that upstream denies a skill or native tool therefore still shows that row as `[enabled]`, and toggling it off and back on reports success while the agent remains unable to use it, because for original skills `applySkills` in `packages/plus/src/instructions/apply.ts` only ever adds denials and cannot lift an upstream denial (while for Plus's own private copies it does append allows). Only MCP rows compute availability from upstream state. Closing this is not a local patch: `Item.available` in `packages/plus/src/instructions/model.ts` is a single per-item boolean with `agents: []`, so it cannot represent one agent allowing and another denying the same skill; per-agent availability would have to be threaded through `discover.ts`, `model.ts`, `tree.ts` and the snapshot schema in `packages/plus/src/rpc.ts`. The behaviour is pinned by the test `discovery reports an upstream-denied skill as available (known limitation)` in `packages/plus/test/discover.test.ts`.
-- **MCP upstream drift can normalize a toggle away.** `upstreamMcpAvailable` in `packages/plus/src/instructions/discover.ts` infers pre-transform MCP availability from the shared customization record. If the user disables a server through Plus and the upstream configuration is then independently edited to also disable it, the inference still reports upstream as enabled, because a shared record saying `disabled` is taken to mean upstream was enabled. `mergeCustomization` in `packages/plus/src/instructions/model.ts` then treats a subsequent request to enable as redundant and drops the record, so Plus removes its own disable while the upstream disable remains and the row reports success. The symmetric case exists when an upstream-disabled server is enabled through Plus and upstream is then enabled independently. Overridden MCP rows now refuse the toggle and direct the user to reset, which is the honest narrowing; recovering from drift is possible by resetting the row and refreshing.
-- **Inherited review provenance and acknowledgement precedence.** When an agent row inherits customized text from a shared Defaults record, `basedOn` binds to the shared record supplying the text so a state-only toggle does not clear pending reviews. Review determination preserves both the agent's own acknowledgement and the shared acknowledgement: review clears if either acknowledgement matches the current upstream fingerprint, preventing a stale agent acknowledgement from masking a newer shared one (and vice versa) while ensuring new upstream changes still raise review.
-- **Launcher working directory and JSX resolution.** `--cwd` is needed for JSX resolution, and the preload restores the target directory so the plugin binds to the user's project rather than the fork.
+Only what is provably impossible, with what was tried:
+
+- **Code Mode tools: toggle and re-describe only.** Core partitions the snapshot (`packages/core/src/tool.ts`): `codemode === false` is a native tool; everything else is reachable only through the aggregated `execute` inventory. Plus applies tool edits through the session context hook, whose tool record carries only description and input, so Code Mode candidates are filtered out (`isCodeModeTool` in `src/instructions/apply.ts`). There is nothing addressable to write to.
+- **Discovery unmasks Plus's own output.** Discovery reads the host after Plus's transforms are installed, so reporting that text as upstream flips the publish fingerprint every pass into a dispose/reinstall loop. Plus retains per-item applied/upstream baselines (`src/instructions/inventory.ts`, captured in `src/index.ts`) and rereads file-backed agent bodies instead.
+- **Every client-facing RPC error must be declared** in the `Definition`, because core's `encodeError` dies on undeclared ones (`packages/core/src/rpc.ts`).
+- **Never send an optional key whose value is `undefined` across the RPC boundary.** Results are validated as JSON, so the whole call fails with HTTP 400. Omit the key instead. `expectRpcBody` in `test/rpc.test.ts` guards this.
+- **Upstream permission denials are invisible.** `ctx.skill.list()` and the tool editor list return the full inventory without agent permission evaluation (core filters later in `packages/core/src/skill.ts` and `packages/core/src/tool.ts`), and `Item.available` is one boolean per item, not per agent. A denied row shows `[enabled]` and toggling it is a no-op upstream. Threading per-agent availability through discover, model, tree, and RPC was cut as disproportionate. No test currently pins this.
+- **Async MCP tools regain customizations at the next publish, not on reappearance.** Core reconciles MCP tools behind a 100 ms debounce plus `tools.reload()` (`packages/core/src/tool/mcp.ts`), which emits none of the events Plus watches (`agent.updated`, `skill.updated`, `config.updated`). Closing it needs a public post-reconciliation inventory notification.
 
 ## Shortcut
 
@@ -88,6 +88,7 @@ The package uses only the public plugin API so it stays loadable as an external 
 - Commands live in the `Project` group and are reachable from the command palette:
   - `plus.project.toggle` ("Toggle project mode"): prompts for confirmation and enables or disables project mode for the current directory.
   - `plus.project.status` ("Show project mode status"): shows a toast with the active project mode directory (enabled only when project mode is active).
+  - `plus.instructions.open` ("Instructions", slash `/instructions`): opens the Instructions screen (enabled only when project mode is active).
 
 ## Development notes
 
@@ -100,13 +101,11 @@ Tests must be run from `packages/plus`, never from the repository root (a root e
 
 ```sh
 # Run focused tests
-bun test test/model.test.ts
-bun test test/store.test.ts
-bun test test/agents.test.ts
-bun test test/rpc.test.ts
-bun test test/apply.test.ts
-bun test test/discover.test.ts
-bun test test/tree.test.ts
+bun test test/model.test.ts test/tree.test.ts
+bun test test/store.test.ts test/sections.test.ts
+bun test test/agents.test.ts test/rpc.test.ts test/rpc-contract.test.ts
+bun test test/apply.test.ts test/discover.test.ts
+bun test test/route.test.tsx test/instructions-panes.test.tsx test/instructions-diff-split.test.tsx
 
 # Run package typecheck
 bun run typecheck
