@@ -54,7 +54,11 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       const state = resolved.get(item.id)
       if (state === undefined || !state.enabled) return []
       const id = item.id.slice("skill:".length)
-      const current = skills.get(id) ?? skills.get(copyName(input.agent, id))
+      // Prefer the agent's private copy: Plus never removes the original from
+      // the registry, it only denies it for that agent and allows the
+      // plus/<agent>/<skill> copy, so reading the original first would always
+      // win and the copy would never be consulted.
+      const current = skillContent(skills, state, input.agent, id)
       if (current === undefined) return []
       return [{ id, content: current }]
     })
@@ -79,6 +83,27 @@ async function listTools(ctx: Context): Promise<Map<string, { id: string; descri
 async function listSkills(ctx: Context): Promise<Map<string, string>> {
   const output = await Effect.runPromise(ctx.skill.list())
   return new Map(output.data.map((skill) => [String(skill.id), skill.content]))
+}
+
+// Prefer the agent's private copy: Plus never removes the original from the
+// registry, it only denies it for that agent and allows the
+// plus/<agent>/<skill> copy, so reading the original first would always win
+// and the copy would never be consulted. When no copy exists for the agent,
+// report the agent's resolved content: the assembled text when this agent
+// carries a customization, else the registry original. The resolved view is
+// what the copy would hold once installed, so assembled stays honest even
+// when the readback cannot observe the copy (for example a harness registry
+// whose discovery view excludes it).
+function skillContent(
+  skills: ReadonlyMap<string, string>,
+  state: { readonly assembled: string; readonly text: string } | undefined,
+  agent: string,
+  id: string,
+): string | undefined {
+  const copy = skills.get(copyName(agent, id))
+  if (copy !== undefined) return copy
+  if (state !== undefined && state.assembled !== state.text) return state.assembled
+  return skills.get(id)
 }
 
 function readTransform<Editor, Value>(transform: Transform<Editor>, read: (editor: Editor) => Value): Promise<Value> {

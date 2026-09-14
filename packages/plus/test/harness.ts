@@ -183,23 +183,35 @@ export interface SkillHarness {
   readonly added: Skill.Info[]
 }
 
+// A stateful skill domain on the shared recording editor: Plus's private
+// copies persist in the visible registry (core filters plus/ ids out of
+// discovery itself), exactly like the agent harness's live map.
+export function skillHarness(initial: Skill.Info[] = []): SkillHarness {
+  const state = new Map(
+    initial.map((skill) => [skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>]),
+  )
+  const added: Skill.Info[] = []
+  return { domain: recordingSkillDomain(state, added), state, added }
+}
+
 export function recordingSkillDomain(
   state: Map<string, Types.DeepMutable<Skill.Info>> = new Map(),
   added: Skill.Info[] = [],
 ): SkillDomain {
+  const live = state
   const editor = {
-    list: () => Array.from(state.values()),
-    get: (id: string) => state.get(id),
+    list: () => Array.from(live.values()),
+    get: (id: string) => live.get(id),
     add: (skill: Skill.Info) => {
       added.push(skill)
-      state.set(skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>)
+      live.set(skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>)
     },
     update: (id: string, update: (skill: Types.DeepMutable<Skill.Info>) => void) => {
-      const current = state.get(id)
+      const current = live.get(id)
       if (current) update(current)
     },
     remove: (id: string) => {
-      state.delete(id)
+      live.delete(id)
     },
   }
   return {
@@ -211,14 +223,6 @@ export function recordingSkillDomain(
       }),
     reload: () => Effect.void,
   }
-}
-
-export function skillHarness(initial: Skill.Info[] = []): SkillHarness {
-  const state = new Map(
-    initial.map((skill) => [skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>]),
-  )
-  const added: Skill.Info[] = []
-  return { domain: recordingSkillDomain(state, added), state, added }
 }
 
 export interface AgentHarness {

@@ -110,21 +110,26 @@ function isNoop(item: Item, resolved: { assembled: string; enabled: boolean }): 
   return resolved.assembled === item.text && resolved.enabled === item.enabled
 }
 
-// A skill installs a copy, denial or rule only when this agent's address
-// carries a whole-item record: at this agent's level or at the shared
-// Defaults row both levels inherit from. Comparing assembled output against
-// raw upstream text cannot decide this, because assemble normalizes
-// whitespace and never round-trips byte-identically. A section-only record
-// leaves the whole-item address unowned, so it installs nothing on its own:
-// enabling or disabling one section cannot be expressed through a private
-// whole-skill copy without also denying the remaining sections.
-function skillCustomized(input: ApplyInput, agent: ApplyAgent, item: Item): boolean {
-  return input.records.some((record) => {
-    if (record.item !== item.id || record.section !== null) return false
-    if (record.level === agent.level && record.agent === agent.id) return true
-    if (record.level === "defaults" && record.agent === null) return true
-    return false
-  })
+// A skill installs a copy, denial or rule only when its resolved view for
+// that agent differs from upstream: changed text, changed enablement, or a
+// changed assembled body (section exclusions). Comparing the assembled body
+// alone cannot decide this, because assemble also normalizes whitespace —
+// so an unchanged resolution with lossy text must install nothing, while a
+// section exclusion that changes the assembled body beyond normalization
+// still installs its private copy.
+function skillCustomized(item: Item, resolved: { text: string; assembled: string; enabled: boolean }): boolean {
+  if (resolved.text !== item.text) return true
+  if (resolved.enabled !== item.enabled) return true
+  if (normalizeLossless(resolved.assembled) !== normalizeLossless(item.text)) return true
+  return false
+}
+
+// The assemble normalization applied to text that carries no sections and no
+// exclusions: whitespace collapsing plus trim. When the assembled body equals
+// this, the difference from raw upstream is formatting loss, not a user
+// customization.
+function normalizeLossless(text: string): string {
+  return text.replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
 }
 
 function parseId(id: string, prefix: string): string {
@@ -171,7 +176,7 @@ async function applySkills(
       if (item.kind !== "skill") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (!skillCustomized(input, agent, item)) return []
+      if (!skillCustomized(item, resolved)) return []
       if (resolved.enabled) return []
       return [{ agent: agent.id, skill: parseId(item.id, "skill:") }]
     }),
@@ -181,12 +186,14 @@ async function applySkills(
       if (item.kind !== "skill") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (!skillCustomized(input, agent, item)) return []
+      if (!skillCustomized(item, resolved)) return []
       if (!resolved.enabled) return []
-      // A whole-item record with unchanged text needs no copy, even when a
-      // section exclusion changes the assembled view: the exclusion is
-      // enforced by denying the original, and a copy would reintroduce it.
-      if (resolved.text === item.text) return []
+      // A copy identical to upstream adds nothing. Note this compares the
+      // assembled body (what the copy would hold) against the raw upstream:
+      // the one case where they differ without a user customization is
+      // assemble's whitespace normalization, and skillCustomized already
+      // excluded that, so any remaining difference is a real customization.
+      if (resolved.assembled === item.text) return []
       return [{ agent: agent.id, skill: parseId(item.id, "skill:"), text: resolved.assembled }]
     }),
   )
