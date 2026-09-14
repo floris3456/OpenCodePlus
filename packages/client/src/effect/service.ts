@@ -57,12 +57,18 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
   let announced = false
   let lastSpawn = 0
   let spawnDelay = timing.spawnDelay
+  let pendingFailure: Error | undefined
   const announce = (reason: "missing" | "version-mismatch", previousVersion?: string) =>
     Effect.sync(() => {
       if (announced) return
       announced = true
       options.onStart?.(reason, previousVersion)
     })
+  // A contender's stderr tail is the only copy of its startup error: the
+  // spawning client keeps just stderr, while the child's fatal dump lands on
+  // the child's stdout. contenderFailure() folds the tail into the surfaced
+  // Error message, so failures below name the real cause (for example the
+  // port-conflict line) instead of just the exit code.
   const spawnContender = Effect.gen(function* () {
     const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
     if (command === undefined) return yield* Effect.fail(new Error("Missing service command"))
@@ -93,6 +99,7 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
       }
     } else timeouts = undefined
     if (service !== undefined) {
+      pendingFailure = undefined
       spawnDelay = timing.spawnDelay
       const compatible = !service.legacy && matchesVersion(service.version, options)
       if (compatible && service.state === "ready") {
@@ -114,12 +121,24 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
     } else if (lastSpawn === 0 && info !== undefined) lastSpawn = Date.now()
 
     const finished = [...contenders].filter(contenderFinished)
-    const failure = finished.map(contenderFailure).find((error): error is Error => error !== undefined)
     if (finished.some((item) => item.child.exitCode === 0)) {
       spawnDelay = Math.min(spawnDelay * 2, timing.maxSpawnDelay)
     }
+    // Zero exits are elected losers in a legitimate race: back off above and
+    // keep retrying without spawning extra replacements. A non-zero failure
+    // is a real startup error (for example a port conflict) that the pending
+    // record below stops replacing, so it surfaces once live contenders
+    // drain — without killing a slow winner the way contender.release would.
+    const expectedFailures = finished.filter((item) => item.child.exitCode === 0)
+    const unexpected = finished.filter((item) => !expectedFailures.includes(item))
+    const realFailure =
+      unexpected.length === 0
+        ? undefined
+        : unexpected.map(contenderFailure).find((error): error is Error => error !== undefined)
+    if (realFailure !== undefined) pendingFailure = realFailure
     finished.forEach((item) => contenders.delete(item))
-    if (failure !== undefined && contenders.size === 0) return yield* Effect.fail(failure)
+    if (pendingFailure !== undefined && contenders.size === 0) return yield* Effect.fail(pendingFailure)
+    if (pendingFailure !== undefined) return Option.none<LocalService>()
     // Keep one candidate plus one lock probe so a pre-lock stall cannot block recovery.
     if (contenders.size < 2 && Date.now() - lastSpawn >= spawnDelay) {
       yield* announce("missing")

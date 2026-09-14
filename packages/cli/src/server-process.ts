@@ -2,6 +2,7 @@ export * as ServerProcess from "./server-process"
 
 import { NodeServices } from "@effect/platform-node"
 import { Service, type DiscoverOptions } from "@opencode/client/effect/service"
+import { ServiceStatus } from "@opencode/protocol/groups/health"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_VERSION } from "./version"
@@ -138,20 +139,20 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             },
         transform,
       ).pipe(
-        Effect.catch((error) => {
+        Effect.catch((error: unknown) => {
           if (serviceOptions === undefined || port === undefined || !addressInUse(error)) return Effect.fail(error)
           return recognizeIncumbent(serviceOptions, hostname, port).pipe(
-            Effect.flatMap((found) =>
-              found
-                ? Effect.void
-                : Effect.fail(
-                    new Error(
-                      `Managed service port ${port} on ${hostname} is already in use by another process. ` +
-                        "Configure another port with `opencode service set port <port>` and start the service again.",
-                      { cause: error },
-                    ),
-                  ),
-            ),
+            Effect.flatMap((found) => {
+              if (found) return Effect.void
+              // Echo the conflict on stderr for the spawning parent, whose
+              // contender capture only keeps the child's stderr tail.
+              const failure = new Error(
+                `Managed service port ${port} on ${hostname} is already in use by another process. ` +
+                  "Configure another port with `opencode service set port <port>` and start the service again.",
+                { cause: error },
+              )
+              return Effect.flatMap(Effect.sync(() => console.error(failure.message)), () => Effect.fail(failure))
+            }),
           )
         }),
       )
@@ -184,12 +185,35 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
 })
 
 const recognizeIncumbent = Effect.fnUntraced(function* (options: DiscoverOptions, hostname: string, port: number) {
+  // Probe once: a 200 body that is provably not opencode-shaped means a
+  // foreign occupant, so fail fast without the incumbent retry below.
+  // Anything else (connection refused, hanging listener, opencode-shaped
+  // health, opencode auth/status codes) keeps retrying for slow starters.
+  if (yield* foreignOccupant(hostname, port)) return false
   const found = yield* Service.incumbent({ ...options, url: serviceURL(hostname, port) }).pipe(
     Effect.filterOrFail((value) => value !== undefined),
     Effect.retry(Schedule.spaced("100 millis")),
     Effect.timeoutOption("15 seconds"),
   )
   return Option.isSome(found)
+})
+
+const decodeHealthProbe = Schema.decodeUnknownOption(ServiceStatus.Health)
+
+const foreignOccupant = Effect.fnUntraced(function* (hostname: string, port: number) {
+  const url = serviceURL(hostname, port)
+  return yield* Effect.promise(() =>
+    fetch(new URL("/api/health", url), { signal: AbortSignal.timeout(2_000) }).then(
+      (response) =>
+        response
+          .json()
+          .then((body) => !Option.isSome(decodeHealthProbe(body)) && response.status === 200)
+          .catch(() => response.status === 200),
+      // Connection refused and other fetch failures are not proof of a
+      // foreign occupant: a slow starter may simply not be listening yet.
+      () => false,
+    ),
+  )
 })
 
 function serviceURL(hostname: string, port: number) {

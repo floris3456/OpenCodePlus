@@ -106,16 +106,7 @@ test(
   20_000,
 )
 
-// Known hang (skipped): with the configured port held by an unrelated process,
-// `service start` stays silent past 60s instead of failing fast. The first
-// contender spends ~15s in the child's incumbent retry, while the parent keeps
-// spawning replacements every 5s, so the port-conflict error is discarded and
-// never surfaces until the ~120s attempt budget expires. Fixing it requires
-// the contender failure to surface (packages/client/src/effect/service.ts,
-// packages/client/src/promise/service.ts) or the child to fail fast on a
-// foreign occupant (packages/cli/src/server-process.ts) — all outside this
-// task's allowed paths. Kept as a skipped repro so the fix can enable it.
-test.skip(
+test(
   "service start fails fast with a clear error when the port is occupied",
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-readiness-occupied-"))
