@@ -112,8 +112,24 @@ export interface ChainInput {
   readonly address: Address
 }
 
+// Content-keyed sha256 cache: tree rebuilds resolve every item per agent,
+// rehashing identical text thousands of times. Map preserves insertion order,
+// so evicting the oldest entry bounds memory over long sessions. 2048 entries
+// comfortably covers real inventories (tens of items × agents) while keeping
+// worst-case retention to a few MB of text keys.
+const fingerprintCacheLimit = 2048
+const fingerprintCache = new Map<string, string>()
+
 export function fingerprint(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex")
+  const cached = fingerprintCache.get(text)
+  if (cached !== undefined) return cached
+  const digest = createHash("sha256").update(text, "utf8").digest("hex")
+  if (fingerprintCache.size >= fingerprintCacheLimit) {
+    const oldest = fingerprintCache.keys().next()
+    if (!oldest.done) fingerprintCache.delete(oldest.value)
+  }
+  fingerprintCache.set(text, digest)
+  return digest
 }
 
 export function resolve(input: ChainInput): Resolved {
@@ -300,7 +316,7 @@ function resolveWhole(input: ChainInput): Resolved {
     source: source?.level ?? "upstream",
     overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined),
     modified,
-    review: isReview(own, aboveWholeFingerprint(input, whole)),
+    review: isReview(own, aboveWholeFingerprint(input, whole, chain)),
   }
 }
 
@@ -362,9 +378,13 @@ function aboveWholeText(input: ChainInput, whole: readonly CustomizationRecord[]
   return above ?? input.upstream.text
 }
 
-function aboveWholeFingerprint(input: ChainInput, whole: readonly CustomizationRecord[]): string {
-  const chain = resolutionChain(input.address, input.scopes)
-  const above = chain
+function aboveWholeFingerprint(
+  input: ChainInput,
+  whole: readonly CustomizationRecord[],
+  chain?: readonly ChainNode[],
+): string {
+  const nodes = chain ?? resolutionChain(input.address, input.scopes)
+  const above = nodes
     .slice(1)
     .map((node) => at(whole, node)?.text)
     .find((text) => text !== undefined)
