@@ -6,12 +6,18 @@ import type { SessionContext, SessionHooks } from "@opencode/plugin/effect/sessi
 import type { SkillEditor } from "@opencode/plugin/effect/skill"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Skill } from "@opencode/schema/skill"
+import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
 import { Deferred, Effect, Exit, Scope } from "effect"
 import { applies, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
 
 export interface ApplyAgent {
   readonly id: string
   readonly level: Level
+  /** Host classification of the base template active for this agent. Threaded from discover; never re-derived. */
+  readonly base?: string | undefined
+  /** True when the agent defines its own custom system prompt. Base edits never touch such agents. */
+  readonly customSystem?: boolean | undefined
 }
 
 export interface ApplyInput {
@@ -354,33 +360,96 @@ async function applySession(ctx: Context, input: ApplyInput): Promise<Registrati
     tools = candidates.filter((plan) => !isCodeModeTool(inventory, plan.tool))
   }
   if (base.length === 0 && tools.length === 0 && instructions.length === 0) return undefined
+  const activeByAgent = await readActiveBase(ctx, input.agents)
+  const customByAgent = await readCustomSystem(ctx, input.agents)
   return runHook(ctx.session.hook, "context", (event) => {
-    applyBasePlan(event, base)
+    applyBasePlan(event, base, activeByAgent, customByAgent)
     applyToolPlan(event, tools.filter((plan) => plan.agent === String(event.agent)))
     applyInstructions(event.system, instructions.filter((plan) => plan.agent === String(event.agent)))
     return Effect.void
   })
 }
 
-function templateForModel(model: { readonly providerID: string; readonly id: string }): string {
-  const hay = `${model.providerID} ${model.id}`.toLowerCase()
-  if (hay.includes("gpt")) return "gpt"
-  if (hay.includes("claude")) return "claude"
-  if (hay.includes("muse")) return "muse"
-  if (hay.includes("gemini")) return "gemini"
-  return "general"
+// The one host-sourced classification: resolve each agent's model through the
+// catalog exactly like the core optimize plugin, then ask `ctx.prompt.active`.
+// An explicit per-agent base threaded from discover wins; otherwise the
+// agent's configured model (or the catalog default) classifies it. Custom
+// agents are classified too — the caller skips them — so the map stays total.
+async function readActiveBase(
+  ctx: Context,
+  agents: readonly ApplyAgent[],
+): Promise<ReadonlyMap<string, string | undefined>> {
+  const catalog = await Effect.runPromise(
+    ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+  )
+  const fallback = await Effect.runPromise(
+    ctx.catalog.model
+      .default()
+      .pipe(Effect.catchCause(() => Effect.succeed({ data: undefined as Model.Info | undefined }))),
+  )
+  const listed = await Effect.runPromise(
+    ctx.agent.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Agent.Info[] }))),
+  )
+  return new Map(
+    agents.map((agent) => {
+      if (agent.base !== undefined) return [agent.id, agent.base] as const
+      const info = listed.data.find((entry) => String(entry.id) === agent.id)
+      const ref = info?.model ?? fallback.data
+      const model =
+        ref === undefined
+          ? { id: "", name: "" }
+          : (catalog.data.find((entry) => entry.providerID === ref.providerID && entry.id === ref.id) ?? {
+              id: ref.id,
+              name: ref.id,
+            })
+      const active = Effect.runSync(
+        ctx.prompt.active(model).pipe(Effect.catchCause(() => Effect.succeed(undefined as string | undefined))),
+      )
+      return [agent.id, active] as const
+    }),
+  )
 }
 
-function applyBasePlan(event: SessionContext, plans: readonly BasePlan[]) {
+// "Custom system" comes from real agent info in the context hook's host:
+// `ctx.agent.list()` reports the live system prompt, and an agent with one
+// defined owns its own base — Plus must not overwrite `system[0]` for it. An
+// explicit per-agent flag threaded from the caller wins. Hosts without an
+// agent list (older tests) report no custom systems.
+async function readCustomSystem(
+  ctx: Context,
+  agents: readonly ApplyAgent[],
+): Promise<ReadonlySet<string>> {
+  const explicit = new Set(agents.filter((agent) => agent.customSystem === true).map((agent) => agent.id))
+  const listed = await Effect.runPromise(
+    ctx.agent.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Agent.Info[] }))),
+  )
+  for (const entry of listed.data) {
+    if ((entry.system ?? "") !== "") explicit.add(String(entry.id))
+  }
+  return explicit
+}
+
+function applyBasePlan(
+  event: SessionContext,
+  plans: readonly BasePlan[],
+  activeByAgent: ReadonlyMap<string, string | undefined>,
+  customByAgent: ReadonlySet<string>,
+) {
+  if (customByAgent.has(String(event.agent))) return
   const candidates = plans.filter((plan) => plan.agent === String(event.agent))
   if (candidates.length === 0) return
   // Only the template active for this request's model changes what the model
   // sees; stored edits for other templates wait until the agent switches model.
-  const active = templateForModel(event.model)
+  const active = activeByAgent.get(String(event.agent))
+  if (active === undefined) return
   const match = candidates.find((plan) => plan.template === active)
   if (match === undefined) return
-  // Same seam as core's optimize plugin (session context hook): Plus registers
-  // later, so this unconditional overwrite wins over the model-family default.
+  // Host templates already carry core's rendered tool guidance: the plugin
+// host serves `PromptTemplate.templates` (raw bundled text), the core
+// optimize plugins run first (`pre`) and overwrite `system[0]` with the
+// rendered family template, and Plus runs last (`post`) after the rendered
+// text is already in place. Stored custom text replaces it verbatim — there
+// is no second render seam to call.
   const first = event.system[0]
   if (first === undefined) {
     event.system.push({ type: "text", text: match.text })

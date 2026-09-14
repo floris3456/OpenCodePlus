@@ -23,12 +23,16 @@ import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Skill } from "@opencode/schema/skill"
 import type { Tool } from "@opencode/schema/tool"
 import { Effect, Schema, Stream, type Types } from "effect"
 
-export type Overrides = Partial<Omit<Context, "options" | "session">> & {
+export type Overrides = Partial<Omit<Context, "options" | "session" | "catalog" | "prompt">> & {
   readonly session?: Partial<Context["session"]>
+  readonly catalog?: Context["catalog"]
+  readonly prompt?: Context["prompt"]
 }
 
 function die(message: string) {
@@ -48,15 +52,37 @@ function aisdkDomain(): AISDKDomain {
   return { hook: die("unused aisdk.hook") }
 }
 
-function catalogDomain(): CatalogDomain {
+function catalogDomain(models: Model.Info[] = []): CatalogDomain {
   return {
     provider: {
       list: die("unused catalog.provider.list"),
       get: die("unused catalog.provider.get"),
     },
     model: {
-      list: die("unused catalog.model.list"),
-      default: die("unused catalog.model.default"),
+      list: () =>
+        Effect.succeed({
+          location: new Location.Info({
+            directory: AbsolutePath.make("/workspace"),
+            project: {
+              id: Project.ID.global,
+              directory: AbsolutePath.make("/workspace"),
+              canonical: AbsolutePath.make("/workspace"),
+            },
+          }),
+          data: models,
+        }),
+      default: () =>
+        Effect.succeed({
+          location: new Location.Info({
+            directory: AbsolutePath.make("/workspace"),
+            project: {
+              id: Project.ID.global,
+              directory: AbsolutePath.make("/workspace"),
+              canonical: AbsolutePath.make("/workspace"),
+            },
+          }),
+          data: models[0],
+        }),
     },
     transform: die("unused catalog.transform"),
     reload: die("unused catalog.reload"),
@@ -145,11 +171,24 @@ function permissionDomain(): PermissionDomain {
   }
 }
 
-function promptDomain(): PromptDomain {
+function promptDomain(templates: readonly { id: string; title: string; text: string }[] = []): PromptDomain {
+  const listed = templates.map((template) => ({ ...template }))
   return {
-    templates: () => Effect.succeed([]),
-    active: () => Effect.succeed("general"),
+    templates: () => Effect.succeed(listed),
+    active: (model) => Effect.succeed(classify(model)),
   }
+}
+
+// Mirror of the host classifier (core/src/prompt-template.ts `active`): the
+// model id alone decides, and a non-obvious id can land anywhere. Tests use a
+// real model-aware registry instead of guessing from the provider.
+function classify(model: { id: string; name: string }): string {
+  const id = model.id.toLowerCase()
+  if (id.includes("gpt")) return "gpt"
+  if (id.includes("kimi")) return "kimi"
+  if (id.includes("trinity")) return "trinity"
+  if (id.includes("muse")) return "muse"
+  return "general"
 }
 
 function referenceDomain(): ReferenceDomain {
@@ -232,7 +271,6 @@ export interface AgentHarness {
   readonly disposes: number
   readonly reloads: number
 }
-
 // A stateful agent domain mirroring core's transform/rebuild semantics: each
 // transform installs one callback, and every read rebuilds the visible state
 // from upstream plus the installed callbacks. While a callback overwrites a
@@ -439,6 +477,14 @@ export function mcpHarness(initial: [string, { type: "remote"; url: string; disa
   }
 }
 
+export function promptHarness(templates: { id: string; title: string; text: string }[]): PromptDomain {
+  return promptDomain(templates)
+}
+
+export function catalogHarness(models: Model.Info[]): CatalogDomain {
+  return catalogDomain(models)
+}
+
 export function skillInfo(id: string, content: string, locationPath = `/skills/${id}.md`): Skill.Info {
   return Skill.Info.make({
     id: Skill.ID.make(id),
@@ -448,8 +494,21 @@ export function skillInfo(id: string, content: string, locationPath = `/skills/$
   })
 }
 
-export function agentInfo(id: string, system: string): Agent.Info {
-  return { ...Agent.Info.default(Agent.ID.make(id)), system }
+export function agentInfo(id: string, system = "", model?: Model.Ref): Agent.Info {
+  return {
+    ...Agent.Info.default(Agent.ID.make(id)),
+    system,
+    ...(model === undefined ? {} : { model }),
+  }
+}
+
+export function modelInfo(providerID: string, id: string, name?: string): Model.Info {
+  const base = Model.Info.default(Provider.ID.make(providerID), Model.ID.make(id))
+  return name === undefined ? base : { ...base, name }
+}
+
+export function modelRef(providerID: string, id: string): Model.Ref {
+  return Model.Ref.make({ providerID: Provider.ID.make(providerID), id: Model.ID.make(id) })
 }
 
 export function fullContext(options: {
@@ -459,11 +518,21 @@ export function fullContext(options: {
   tools?: { id: string; description: string; options?: Tool.Info["options"] }[]
   servers?: [string, { type: "remote"; url: string; disabled?: boolean }][]
   hooks?: { current: number }
+  models?: Model.Info[]
+  templates?: { id: string; title: string; text: string }[]
 }): Context {
   const agents = options.agents ?? []
   const skills = options.skills ?? []
   const entries = options.tools ?? []
   const servers = options.servers ?? []
+  const models = options.models ?? []
+  const templates = options.templates ?? [
+    { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+    { id: "general", title: "General.txt", text: "general base prompt" },
+    { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
+    { id: "trinity", title: "Trinity.txt", text: "trinity base prompt" },
+    { id: "muse", title: "Muse.txt", text: "muse base prompt" },
+  ]
   const location = new Location.Info({
     directory: AbsolutePath.make(options.directory),
     project: {
@@ -483,6 +552,8 @@ export function fullContext(options: {
   return context({
     location,
     agent: agentState.domain,
+    catalog: catalogDomain(models),
+    prompt: promptDomain(templates),
     skill: skillDomain,
     tool: tools.domain,
     mcp: mcp.domain,
@@ -580,7 +651,7 @@ export function context(overrides: Overrides = {}): Context {
     options: {},
     agent: overrides.agent ?? agentDomain(),
     aisdk: overrides.aisdk ?? aisdkDomain(),
-    catalog: overrides.catalog ?? catalogDomain(),
+    catalog: overrides.catalog ?? catalogDomain([]),
     command: overrides.command ?? commandDomain(),
     event: overrides.event ?? eventDomain(),
     experimental: overrides.experimental ?? {
@@ -592,7 +663,7 @@ export function context(overrides: Overrides = {}): Context {
     mcp: overrides.mcp ?? mcpDomain(),
     permission: overrides.permission ?? permissionDomain(),
     plugin: overrides.plugin ?? { list: die("unused plugin.list") },
-    prompt: overrides.prompt ?? promptDomain(),
+    prompt: overrides.prompt ?? promptDomain([]),
     reference: overrides.reference ?? referenceDomain(),
     rpc: overrides.rpc ?? rpcDomain(),
     session: sessionDomain(overrides.session),
