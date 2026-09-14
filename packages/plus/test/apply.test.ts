@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
@@ -9,6 +9,11 @@ import type { Tool } from "@opencode/schema/tool"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Effect, Schema } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { Location } from "@opencode/schema/location"
+import { Project } from "@opencode/schema/project"
 import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "../src/instructions/apply.js"
 import type { ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve } from "../src/instructions/model.js"
@@ -555,7 +560,7 @@ test("a custom-system agent keeps its own system[0]", async () => {
   expect(event.system[0]?.text).toBe("my own prompt")
 })
 
-test("per-file instructions drop or replace one part by path", async () => {
+test("per-file instructions drop or replace one part by canonical path", async () => {
   const items = [
     makeItem({ id: "system:AGENTS.md", kind: "system", text: "upstream guide", title: "AGENTS.md" }),
     makeItem({ id: "system:OTHER.md", kind: "system", text: "other upstream", title: "OTHER.md" }),
@@ -566,6 +571,10 @@ test("per-file instructions drop or replace one part by path", async () => {
   ]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
+    location: new Location.Info({
+      directory: AbsolutePath.make("/repo"),
+      project: { id: Project.ID.global, directory: AbsolutePath.make("/repo"), canonical: AbsolutePath.make("/repo") },
+    }),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -590,7 +599,7 @@ test("per-file instructions drop or replace one part by path", async () => {
   expect(event.system.map((part) => part.text)).toEqual(["custom guide"])
   // Direct unit path: no string surgery on a merged blob.
   const direct: SessionHooks["context"]["system"] = [{ type: "text", text: "merged blob" }]
-  applyInstructions(direct, [])
+  applyInstructions({ system: direct }, [])
   expect(direct).toHaveLength(1)
 })
 
@@ -599,7 +608,7 @@ test("excluding one instruction removes exactly that production part", async () 
     { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
     { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
   ]
-  applyInstructions(system, [{ agent: "alpha", path: "OTHER.md", text: "other", enabled: false }])
+  applyInstructions({ system }, [{ agent: "alpha", path: "/repo/OTHER.md", text: "other", enabled: false }])
   expect(system.map((part) => part.text)).toEqual(["guide"])
 })
 
@@ -608,10 +617,216 @@ test("editing one instruction replaces its production part rather than appending
     { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
     { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
   ]
-  applyInstructions(system, [{ agent: "alpha", path: "AGENTS.md", text: "custom guide", enabled: true }])
+  applyInstructions({ system }, [{ agent: "alpha", path: "/repo/AGENTS.md", text: "custom guide", enabled: true }])
   expect(system).toHaveLength(2)
   expect(system.map((part) => part.text)).toEqual(["custom guide", "other"])
   expect(system[0]?.metadata).toEqual({ instruction: { path: "/repo/AGENTS.md" } })
+})
+
+test("a request model switch gets the request model's customization, not the configured one", async () => {
+  // DEFECT A: the agent's configured model is gpt (base "gpt"), but the
+  // request arrives on a kimi model. Per-request classification must apply
+  // the kimi customization, not the configured gpt one. Items use real host
+  // template text, matching what discovery passes through verbatim.
+  const items = [
+    makeItem({ id: "base:gpt", kind: "base", text: "gpt base prompt", title: "GPT.txt" }),
+    makeItem({ id: "base:kimi", kind: "base", text: "kimi base prompt", title: "Kimi.txt" }),
+  ]
+  const records = [
+    makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
+    makeRecord({ item: "base:kimi", agent: "alpha", level: "project", text: "custom kimi" }),
+  ]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "", modelRef("openai", "gpt-4o"))])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([
+      { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+      { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
+    ]),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(ctx, makeInput({ items, records }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], {
+    providerID: "moonshot",
+    id: "kimi-k2",
+  })
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("custom kimi")
+})
+
+test("a customized raw base template renders tool guidance instead of the placeholder", async () => {
+  // DEFECT B: raw template text carries ${OPENCODE_TOOL_GUIDANCE} and core's
+  // optimize plugin renders it before Plus runs. Stored custom text must be
+  // rendered through the same seam instead of overwriting system[0] with raw
+  // placeholders. Uses a trailing-newline template so a byte compare against
+  // assembled text cannot pass as a no-op.
+  const raw = "custom base\n${OPENCODE_TOOL_GUIDANCE}\n"
+  const items = [makeItem({ id: "base:gpt", kind: "base", text: raw, title: "gpt" })]
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: `${raw}edited\n` })]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([{ id: "gpt", title: "GPT.txt", text: raw }]),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent(
+    "alpha",
+    { write: { description: "write", input: { type: "object" } } },
+    [{ type: "text", text: "rendered family default" }],
+    { providerID: "openai", id: "gpt-4o" },
+  )
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).not.toContain("${OPENCODE_TOOL_GUIDANCE}")
+  expect(event.system[0]?.text).toContain("edited")
+})
+
+test("an untouched base template with a trailing newline installs no base plan", async () => {
+  // DEFECT B (no-op half): assemble trims, so a raw template ending in a
+  // newline never round-trips byte-identically. With records present for an
+  // unrelated item but none for the base, Plus must leave system[0] alone —
+  // pre-fix it overwrites system[0] with trimmed RAW text (restoring the
+  // placeholder) during an unrelated save.
+  const raw = "gpt base prompt\n${OPENCODE_TOOL_GUIDANCE}\n"
+  const items = [
+    makeItem({ id: "base:gpt", kind: "base", text: raw, title: "gpt" }),
+    makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),
+  ]
+  const records = [makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" })]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness([{ id: "gpt", title: "GPT.txt", text: raw }]),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent(
+    "alpha",
+    { reader: { description: "read things", input: { type: "object" } } },
+    [{ type: "text", text: "rendered family default" }],
+    { providerID: "openai", id: "gpt-4o" },
+  )
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("rendered family default")
+  expect(event.tools.reader?.description).toBe("custom description")
+})
+
+const applyRoots: string[] = []
+
+afterEach(async () => {
+  await Promise.all(applyRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
+})
+
+test("disabling the global instruction file removes that part, not the project one", async () => {
+  // DEFECT C: discovery yields location-relative ids (see
+  // test/discover.test.ts "instruction files follow core order": "system:AGENTS.md"
+  // for the session file, "system:../AGENTS.md"-style for ancestors, and a long
+  // relative climb for the global file) while core delivers canonical absolute
+  // paths. Disabling the global file must remove the global part, and editing
+  // an ancestor file must replace that part. The ids below mirror that real
+  // discovery shape; the temp files pin the absolute side.
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-instructions-"))
+  applyRoots.push(parent)
+  const root = path.join(parent, "repo")
+  const project = path.join(root, "session")
+  await fs.mkdir(project, { recursive: true })
+  const config = path.join(parent, "config")
+  const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = config
+  try {
+    await fs.writeFile(path.join(root, "AGENTS.md"), "ancestor guide\n")
+    await fs.writeFile(path.join(project, "AGENTS.md"), "project guide\n")
+    await fs.mkdir(config, { recursive: true })
+    await fs.writeFile(path.join(config, "AGENTS.md"), "global guide\n")
+    const globalId = `system:${path.relative(project, path.join(config, "AGENTS.md"))}`
+    const globalPath = path.join(config, "AGENTS.md")
+    const ancestorPath = path.join(root, "AGENTS.md")
+    const projectPath = path.join(project, "AGENTS.md")
+    // Direct unit path with canonical absolute plan paths (the shape
+    // applyInstructionPlans produces after resolving discovery ids).
+    const direct: SessionHooks["context"]["system"] = [
+      { type: "text", text: "ancestor guide\n", metadata: { instruction: { path: ancestorPath } } },
+      { type: "text", text: "project guide\n", metadata: { instruction: { path: projectPath } } },
+    ]
+    applyInstructions({ system: direct }, [{ agent: "alpha", path: ancestorPath, text: "custom ancestor\n", enabled: true }])
+    expect(direct.map((part) => part.text)).toEqual(["custom ancestor\n", "project guide\n"])
+    // Full hook path: records keyed by real discovery ids resolve against the
+    // owning session directory to the same canonical paths.
+    const items = [
+      makeItem({ id: "system:AGENTS.md", kind: "system", text: "project guide\n", title: "AGENTS.md" }),
+      makeItem({ id: "system:../AGENTS.md", kind: "system", text: "ancestor guide\n", title: "../AGENTS.md" }),
+      makeItem({ id: globalId, kind: "system", text: "global guide\n", title: path.relative(project, path.join(config, "AGENTS.md")) }),
+    ]
+    const records = [
+      makeRecord({ item: globalId, agent: "alpha", level: "project", state: "off" }),
+      makeRecord({ item: "system:../AGENTS.md", agent: "alpha", level: "project", text: "custom ancestor\n" }),
+    ]
+    const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+    const ctx = context({
+      location: new Location.Info({
+        directory: AbsolutePath.make(project),
+        project: { id: Project.ID.global, directory: AbsolutePath.make(root), canonical: AbsolutePath.make(root) },
+      }),
+      session: {
+        hook: (name, callback) => {
+          if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+          return Effect.succeed({ dispose: Effect.void })
+        },
+      },
+    })
+    const applied = await apply(ctx, makeInput({ items, records }))
+    expect(applied.registrations).toHaveLength(1)
+    const run = callbacks[0]
+    if (!run) throw new Error("missing context hook")
+    const event = sessionEvent(
+      "alpha",
+      {},
+      [
+        { type: "text", text: "global guide\n", metadata: { instruction: { path: globalPath } } },
+        { type: "text", text: "ancestor guide\n", metadata: { instruction: { path: ancestorPath } } },
+        { type: "text", text: "project guide\n", metadata: { instruction: { path: projectPath } } },
+      ],
+    )
+    await Effect.runPromise(run(event))
+    // Global part removed; ancestor part replaced in place (assembled text is
+    // trimmed by resolve) with no duplicate appended.
+    expect(event.system.map((part) => part.text)).toEqual(["custom ancestor", "project guide\n"])
+    expect(event.system).toHaveLength(2)
+  } finally {
+    if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  }
 })
 
 test("no-op updates install nothing and reload nothing", async () => {
