@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core"
+import { RGBA, TextAttributes } from "@opentui/core"
 import { expect, test } from "bun:test"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { tree } from "../src/instructions/tree.js"
@@ -57,9 +57,10 @@ function items(): Item[] {
   return [role, bash, gpt]
 }
 
-function record(overrides?: Partial<CustomizationRecord>): CustomizationRecord {
+function record(overrides?: Partial<CustomizationRecord> & { type?: "customization" }): CustomizationRecord {
   const text = "default text"
   return {
+    type: "customization",
     level: "project",
     agent: "Implementer",
     item: "tool:bash",
@@ -242,15 +243,17 @@ test("provenance wording and resolved text through resolve", () => {
 })
 
 test("review badge owns yellow and nothing else borrows it", () => {
+  const yellow = RGBA.fromHex("#ffff00")
+  const gray = RGBA.fromHex("#888888")
   const context = {
     theme: {
-      text: { feedback: { warning: { default: "yellow" } }, subdued: "gray" },
+      text: { feedback: { warning: { default: yellow } }, subdued: gray },
     },
   } as unknown as Parameters<typeof badgeColor>[0]
-  expect(badgeColor(context, "review")).toBe("yellow")
-  expect(badgeColor(context, "1 to review")).toBe("yellow")
+  expect(badgeColor(context, "review")).toBe(yellow)
+  expect(badgeColor(context, "1 to review")).toBe(yellow)
   for (const label of ["on", "off", "modified", "active"]) {
-    expect(badgeColor(context, label)).toBe("gray")
+    expect(badgeColor(context, label)).toBe(gray)
   }
 })
 

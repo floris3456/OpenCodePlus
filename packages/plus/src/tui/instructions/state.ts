@@ -33,8 +33,21 @@ function agentSourcesOf(snapshot: Snapshot): AgentSource[] {
 function customizationsOf(records: readonly SnapshotRecord[]): CustomizationRecord[] {
   return records.flatMap((record): CustomizationRecord[] => {
     if (record.type !== "customization") return []
-    const { type: _type, ...rest } = record
-    return [{ ...rest }]
+    return [
+      {
+        type: "customization",
+        level: record.level,
+        agent: record.agent,
+        item: record.item,
+        section: record.section,
+        ...(record.text === undefined ? {} : { text: record.text }),
+        ...(record.state === undefined ? {} : { state: record.state }),
+        basedOn: record.basedOn,
+        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+        updated: record.updated,
+      },
+    ]
   })
 }
 
@@ -43,6 +56,7 @@ function splitsOf(records: readonly SnapshotRecord[]): (SplitRecord & { updated:
     if (record.type !== "split") return []
     return [
       {
+        type: "split",
         level: record.level,
         agent: record.agent,
         item: record.item,
@@ -539,7 +553,7 @@ export function createInstructionsState(context: Plugin.Context) {
     )
     const nextSplits: (SplitRecord & { updated: string })[] = [
       ...rest,
-      { level: address.level, agent: address.agent, item: address.item, boundaries: [...boundaries], updated: now() },
+      { type: "split", level: address.level, agent: address.agent, item: address.item, boundaries: [...boundaries], updated: now() },
     ]
     return persist(
       chain.customizations,
@@ -645,15 +659,15 @@ export function createInstructionsState(context: Plugin.Context) {
         title: `Delete agent ${agentId}?`,
         message: `Delete ${scope} agent "${agentId}"? This cannot be undone.`,
       })
-      if (!confirmed) {
+      if (confirmed !== true) {
         setStatus(`Delete of "${node.label}" cancelled`)
         return false
       }
       try {
         await plus["agent.delete"]({ scope, id: agentId }, { location: context.location })
-        if (disposed) return
+        if (disposed) return false
         await refresh()
-        if (disposed) return
+        if (disposed) return false
         setStatus(`Deleted agent ${agentId}`)
         return true
       } catch (error: unknown) {
@@ -668,15 +682,15 @@ export function createInstructionsState(context: Plugin.Context) {
         title: `Remove MCP server ${name}?`,
         message: `Remove MCP server "${name}"? This cannot be undone.`,
       })
-      if (!confirmed) {
+      if (confirmed !== true) {
         setStatus(`Delete of "${node.label}" cancelled`)
         return false
       }
       try {
         await plus["mcp.remove"]({ name }, { location: context.location })
-        if (disposed) return
+        if (disposed) return false
         await refresh()
-        if (disposed) return
+        if (disposed) return false
         setStatus(`Removed MCP server ${name}`)
         return true
       } catch (error: unknown) {

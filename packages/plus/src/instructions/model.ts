@@ -58,6 +58,7 @@ export function scopesOf(agents: readonly AgentSource[]): Scopes {
 }
 
 export interface CustomizationRecord {
+  readonly type: "customization"
   readonly level: Level
   readonly agent: string | null
   readonly item: string
@@ -71,10 +72,12 @@ export interface CustomizationRecord {
 }
 
 export interface SplitRecord {
+  readonly type: "split"
   readonly level: Level
   readonly agent: string | null
   readonly item: string
   readonly boundaries: readonly { id: string; name: string; start: number }[]
+  readonly updated: string
 }
 
 export interface Resolved {
@@ -174,7 +177,17 @@ export function resolveResolution(
   if (edited === undefined) return records
   const current = threeWay(input)
   const record: CustomizationRecord = {
-    ...withoutUndefined(existing ?? { level: input.address.level, agent: input.address.agent, item: input.address.item, section: input.address.section, basedOn: "", updated: "" }),
+    ...withoutUndefined(
+      existing ?? {
+        type: "customization",
+        level: input.address.level,
+        agent: input.address.agent,
+        item: input.address.item,
+        section: input.address.section,
+        basedOn: "",
+        updated: "",
+      },
+    ),
     level: input.address.level,
     agent: input.address.agent,
     item: input.address.item,
@@ -202,6 +215,7 @@ export function merge(
   const acknowledged = fields.acknowledged === undefined ? existing?.acknowledged : (fields.acknowledged ?? undefined)
   if (text === undefined && state === undefined) return [...rest]
   const next: CustomizationRecord = {
+    type: "customization",
     level: address.level,
     agent: address.agent,
     item: address.item,

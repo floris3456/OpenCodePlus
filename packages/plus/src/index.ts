@@ -415,16 +415,18 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
   }
 }
 
-// The parallel core change adds a plugin Context domain exposing base prompt
-// templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`). This
-// worktree does not have that domain yet (Context has no `prompt`), so this
-// takes the fallback path: a local table of the seven ids with placeholder
-// text plus the same id-matching rule. User templates created via
-// `base.create` are layered on top so discover lists them alongside the
-// built-ins.
-function resolveBaseTemplates(ctx: Context): { templates: BaseTemplate[]; active: (agent: { model?: { providerID: string; id: string } }) => string | undefined } {
-  const prompt = (ctx as unknown as { prompt?: { templates(): unknown; active(model: unknown): unknown } }).prompt
-  if (prompt !== undefined) return { templates: [], active: () => undefined }
+// The plugin Context prompt domain exposes the host's base prompt
+// templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`); the
+// local table below is only the fallback when the host reports none. User
+// templates created via `base.create` are layered on top so discover lists
+// them alongside the built-ins.
+function resolveBaseTemplates(ctx: Context): { templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined } {
+  const templates = Effect.runSync(ctx.prompt.templates())
+  if (templates.length > 0)
+    return {
+      templates: templates.map((template) => ({ ...template })),
+      active: (agent) => Effect.runSync(ctx.prompt.active({ id: String(agent.id), name: String(agent.name) })),
+    }
   return { templates: [...fallbackBaseTemplates(), ...readUserBaseTemplates()], active: (agent) => fallbackActiveBase(agent) }
 }
 
@@ -649,11 +651,11 @@ async function createInstruction(input: { projectDirectory: string; name: string
   return { ok: true, id: `system:${path.relative(root, target)}`, path: target }
 }
 
-function activate(ctx: Context, state: PlusState): Effect.Effect<void> {
+function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
   return Effect.gen(function* () {
     const config = yield* Effect.promise(() => read(ctx.location.directory))
     if (config === undefined) return
-    const stored = yield* loadCurrent(ctx.location.directory)
+    const stored = yield* Effect.promise(() => loadCurrent(ctx.location.directory))
     yield* publishFresh(ctx, state, stored)
   })
 }

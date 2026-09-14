@@ -155,6 +155,7 @@ const noTemplates: BaseTemplate[] = []
 
 function record(item: string, state: "on" | "off", agent: string | null = null): CustomizationRecord {
   return {
+    type: "customization",
     level: agent === null ? "defaults" : "project",
     agent,
     item,

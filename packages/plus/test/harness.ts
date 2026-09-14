@@ -14,6 +14,8 @@ import type { ShellDomain } from "@opencode/plugin/effect/shell"
 import type { SkillDomain } from "@opencode/plugin/effect/skill"
 import type { StorageDomain } from "@opencode/plugin/effect/storage"
 import type { ToolDomain } from "@opencode/plugin/effect/tool"
+import type { InstructionDomain } from "@opencode/plugin/effect/instruction"
+import type { PromptDomain } from "@opencode/plugin/effect/prompt"
 import type { VcsDomain } from "@opencode/plugin/effect/vcs"
 import type { WebSearchDomain } from "@opencode/plugin/effect/websearch"
 import type { WorktreeDomain } from "@opencode/plugin/effect/worktree"
@@ -73,6 +75,33 @@ function eventDomain(): EventDomain {
   return { subscribe: () => Stream.empty }
 }
 
+function instructionDomain(): InstructionDomain {
+  const files = new Map<string, { path: string; content: string }>()
+  return {
+    transform: (callback) =>
+      Effect.sync(() => {
+        callback({
+          list: () => Array.from(files.values()),
+          add: (file) => {
+            files.set(file.path, { ...file })
+          },
+          update: (target, update) => {
+            const current = files.get(target)
+            if (current === undefined) return
+            const draft = { ...current }
+            update(draft)
+            files.set(target, { path: current.path, content: draft.content })
+          },
+          remove: (target) => {
+            files.delete(target)
+          },
+        })
+        return { dispose: Effect.void }
+      }),
+    reload: () => Effect.void,
+  }
+}
+
 function integrationDomain(): IntegrationDomain {
   return {
     list: die("unused integration.list"),
@@ -113,6 +142,13 @@ function permissionDomain(): PermissionDomain {
     reply: die("unused permission.reply"),
     rules: die("unused permission.rules"),
     hook: die("unused permission.hook"),
+  }
+}
+
+function promptDomain(): PromptDomain {
+  return {
+    templates: () => Effect.succeed([]),
+    active: () => Effect.succeed("general"),
   }
 }
 
@@ -548,9 +584,11 @@ export function context(overrides: Overrides = {}): Context {
     },
     generate: overrides.generate ?? { text: die("unused generate.text") },
     integration: overrides.integration ?? integrationDomain(),
+    instruction: overrides.instruction ?? instructionDomain(),
     mcp: overrides.mcp ?? mcpDomain(),
     permission: overrides.permission ?? permissionDomain(),
     plugin: overrides.plugin ?? { list: die("unused plugin.list") },
+    prompt: overrides.prompt ?? promptDomain(),
     reference: overrides.reference ?? referenceDomain(),
     rpc: overrides.rpc ?? rpcDomain(),
     session: sessionDomain(overrides.session),

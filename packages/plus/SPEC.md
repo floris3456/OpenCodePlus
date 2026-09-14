@@ -192,7 +192,7 @@ seen with no user action.
 
 ```ts
 export type RecordState = "on" | "off"
-export interface Customization {
+export interface CustomizationRecord {
   readonly type: "customization"
   readonly level: Level
   readonly agent: string | null
@@ -213,7 +213,7 @@ export interface SplitRecord {
   readonly boundaries: readonly Boundary[]
   readonly updated: string
 }
-export type StoredRecord = Customization | SplitRecord
+export type StoredRecord = CustomizationRecord | SplitRecord
 ```
 
 Splits belong to the **item**, not the agent, and are stored at the level they

@@ -48,9 +48,9 @@ test("every method input, output, error, and event schema is portable", () => {
   for (const [name, method] of Object.entries(Plus.Definition.methods)) {
     expect("~standard" in method.input, `${name} input`).toBe(true)
     expect("~standard" in method.output, `${name} output`).toBe(true)
-    if (method.errors) {
+    if ("errors" in method && method.errors !== undefined) {
       for (const [error, schema] of Object.entries(method.errors)) {
-        expect("~standard" in schema, `${name} error ${error}`).toBe(true)
+        expect("~standard" in (schema as object), `${name} error ${error}`).toBe(true)
       }
     }
   }
@@ -79,7 +79,7 @@ test("every declared error is reachable through the definition", () => {
 
   const reachableErrors = new Set<string>()
   for (const method of Object.values(Plus.Definition.methods)) {
-    if (method.errors) {
+    if ("errors" in method && method.errors !== undefined) {
       for (const errorName of Object.keys(method.errors)) {
         reachableErrors.add(errorName)
       }
@@ -106,42 +106,49 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "instruction.create",
     "mcp.add",
     "mcp.remove",
-  ]
+  ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
 
   for (const method of instructionsAndMutatingMethods) {
-    expect(Plus.Definition.methods[method].errors).toBeDefined()
-    expect("project.disabled" in (Plus.Definition.methods[method].errors ?? {})).toBe(true)
+    const entry = Plus.Definition.methods[method]
+    expect("errors" in entry ? entry.errors : undefined).toBeDefined()
+    expect("project.disabled" in ("errors" in entry && entry.errors !== undefined ? entry.errors : {})).toBe(true)
   }
 
-  expect("agent.unknown" in (Plus.Definition.methods["instructions.assembled"].errors ?? {})).toBe(true)
+  expect("agent.unknown" in errorsOf("instructions.assembled")).toBe(true)
 
-  expect("agent.exists" in (Plus.Definition.methods["agent.create"].errors ?? {})).toBe(true)
-  expect("agent.invalid" in (Plus.Definition.methods["agent.create"].errors ?? {})).toBe(true)
+  expect("agent.exists" in errorsOf("agent.create")).toBe(true)
+  expect("agent.invalid" in errorsOf("agent.create")).toBe(true)
 
-  expect("agent.missing" in (Plus.Definition.methods["agent.rename"].errors ?? {})).toBe(true)
-  expect("agent.exists" in (Plus.Definition.methods["agent.rename"].errors ?? {})).toBe(true)
-  expect("agent.invalid" in (Plus.Definition.methods["agent.rename"].errors ?? {})).toBe(true)
+  expect("agent.missing" in errorsOf("agent.rename")).toBe(true)
+  expect("agent.exists" in errorsOf("agent.rename")).toBe(true)
+  expect("agent.invalid" in errorsOf("agent.rename")).toBe(true)
 
-  expect("agent.missing" in (Plus.Definition.methods["agent.delete"].errors ?? {})).toBe(true)
-  expect("agent.invalid" in (Plus.Definition.methods["agent.delete"].errors ?? {})).toBe(true)
+  expect("agent.missing" in errorsOf("agent.delete")).toBe(true)
+  expect("agent.invalid" in errorsOf("agent.delete")).toBe(true)
 
-  expect("skill.exists" in (Plus.Definition.methods["skill.create"].errors ?? {})).toBe(true)
-  expect("skill.invalid" in (Plus.Definition.methods["skill.create"].errors ?? {})).toBe(true)
-  expect("skill.exists" in (Plus.Definition.methods["skill.import"].errors ?? {})).toBe(true)
-  expect("skill.invalid" in (Plus.Definition.methods["skill.import"].errors ?? {})).toBe(true)
+  expect("skill.exists" in errorsOf("skill.create")).toBe(true)
+  expect("skill.invalid" in errorsOf("skill.create")).toBe(true)
+  expect("skill.exists" in errorsOf("skill.import")).toBe(true)
+  expect("skill.invalid" in errorsOf("skill.import")).toBe(true)
 
-  expect("base.exists" in (Plus.Definition.methods["base.create"].errors ?? {})).toBe(true)
-  expect("base.invalid" in (Plus.Definition.methods["base.create"].errors ?? {})).toBe(true)
+  expect("base.exists" in errorsOf("base.create")).toBe(true)
+  expect("base.invalid" in errorsOf("base.create")).toBe(true)
 
-  expect("instruction.exists" in (Plus.Definition.methods["instruction.create"].errors ?? {})).toBe(true)
-  expect("instruction.invalid" in (Plus.Definition.methods["instruction.create"].errors ?? {})).toBe(true)
+  expect("instruction.exists" in errorsOf("instruction.create")).toBe(true)
+  expect("instruction.invalid" in errorsOf("instruction.create")).toBe(true)
 
-  expect("mcp.exists" in (Plus.Definition.methods["mcp.add"].errors ?? {})).toBe(true)
-  expect("mcp.invalid" in (Plus.Definition.methods["mcp.add"].errors ?? {})).toBe(true)
+  expect("mcp.exists" in errorsOf("mcp.add")).toBe(true)
+  expect("mcp.invalid" in errorsOf("mcp.add")).toBe(true)
 
-  expect("mcp.missing" in (Plus.Definition.methods["mcp.remove"].errors ?? {})).toBe(true)
-  expect("mcp.invalid" in (Plus.Definition.methods["mcp.remove"].errors ?? {})).toBe(true)
+  expect("mcp.missing" in errorsOf("mcp.remove")).toBe(true)
+  expect("mcp.invalid" in errorsOf("mcp.remove")).toBe(true)
 })
+
+function errorsOf(method: keyof typeof Plus.Definition.methods): Record<string, unknown> {
+  const entry = Plus.Definition.methods[method]
+  if (!("errors" in entry) || entry.errors === undefined) return {}
+  return entry.errors as Record<string, unknown>
+}
 
 // Core serves RPC results as JSON through HttpApi, whose success schema is
 // the canonical JSON codec of RpcOutput. Unknown encodes to Json on that
