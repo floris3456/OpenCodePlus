@@ -448,33 +448,78 @@ export function toolInfo(id: string, description: string, options?: Tool.Info["o
 
 export interface ToolHarness {
   readonly domain: ToolDomain
-  readonly tools: Map<string, { description: string; options?: Tool.Info["options"] }>
+  readonly tools: Map<string, Tool.Info & { readonly id: string }>
+}
+
+function effectiveToolId(name: string, namespace: string | undefined): string {
+  const normalized = name.replace(/[^A-Za-z0-9_-]/g, "_")
+  if (namespace === undefined) return normalized
+  return `${namespace.replaceAll(".", "_")}_${normalized}`
 }
 
 export function toolHarness(entries: readonly { id: string; description: string; options?: Tool.Info["options"] }[] = []): ToolHarness {
-  const tools = new Map(entries.map((entry) => [entry.id, { description: entry.description, ...(entry.options === undefined ? {} : { options: entry.options }) }]))
+  const upstream = new Map(
+    entries.map((entry) => {
+      const info = toolInfo(entry.id, entry.description, entry.options)
+      const id = effectiveToolId(info.name, info.options?.namespace)
+      return [id, { ...info, id }] as const
+    }),
+  )
+  const live = new Map<string, Tool.Info & { readonly id: string }>(upstream)
+  const namespaces = new Map<string, { name: string; description: string }>()
+  const installed: Array<Parameters<ToolDomain["transform"]>[0]> = []
+  function rebuild() {
+    live.clear()
+    for (const [id, info] of upstream) live.set(id, { ...info, id })
+    namespaces.clear()
+    const editor = {
+      list: () => Array.from(live.values()),
+      get: (id: string) => live.get(id),
+      namespace: (namespace: { name: string; description: string }) => {
+        namespaces.set(namespace.name, { ...namespace })
+      },
+      add: (tool: Tool.Info) => {
+        const id = effectiveToolId(tool.name, tool.options?.namespace)
+        live.set(id, { ...tool, id } as Tool.Info & { readonly id: string })
+      },
+      update: (id: string, update: (tool: Types.Mutable<Tool.Info>) => void) => {
+        const current = live.get(id)
+        if (current === undefined) return
+        const draft = { ...current, options: current.options && { ...current.options } } as Types.Mutable<Tool.Info> & { id: string }
+        update(draft)
+        draft.name = current.name
+        if (draft.options?.namespace !== current.options?.namespace)
+          draft.options = { ...draft.options, namespace: current.options?.namespace } as Tool.Info["options"]
+        live.set(id, { ...draft, id } as Tool.Info & { readonly id: string })
+      },
+      remove: (id: string) => {
+        live.delete(id)
+      },
+    }
+    for (const transform of installed) transform(editor)
+  }
   return {
     domain: {
       transform: (callback) =>
         Effect.sync(() => {
-          callback({
-            list: () => Array.from(tools.entries()).map(([id, tool]) => toolInfo(id, tool.description, tool.options)),
-            get: (id) => {
-              const tool = tools.get(id)
-              if (!tool) return undefined
-              return toolInfo(id, tool.description, tool.options)
-            },
-            namespace: () => undefined,
-            add: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
+          installed.push(callback)
+          rebuild()
+          return {
+            dispose: Effect.sync(() => {
+              const index = installed.indexOf(callback)
+              if (index === -1) return
+              installed.splice(index, 1)
+              rebuild()
+            }),
+          }
         }),
-      reload: () => Effect.void,
+      reload: () =>
+        Effect.sync(() => {
+          rebuild()
+        }),
       hook: die("unused tool.hook"),
     },
-    tools,
+    tools: live,
   }
 }
 
