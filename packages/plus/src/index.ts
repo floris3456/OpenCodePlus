@@ -695,7 +695,9 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       // registrations and the last emitted revision untouched.
       if (state.projectRevision !== undefined && stored.projectRevision < state.projectRevision) return discovered
       if (state.globalRevision !== undefined && stored.globalRevision < state.globalRevision) return discovered
-      const fingerprint = fingerprintDiscovered(discovered)
+      const customizations = customizationsOf(stored.records)
+      const splits = splitsOf(stored.records)
+      const fingerprint = fingerprintPublish(discovered, stored.records)
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
         return discovered
       }
@@ -708,8 +710,6 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       // transform overwrites the same key (agent.system, disabled = true, skill
       // rules with a presence check, session tools by agent), so the briefly
       // doubled callback ends with the new value.
-      const customizations = customizationsOf(stored.records)
-      const splits = splitsOf(stored.records)
       const applied = yield* Effect.promise(() =>
         apply(ctx, {
           items: discovered.items,
@@ -788,11 +788,19 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
   return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
 }
 
-function fingerprintDiscovered(discovered: Discovered): string {
+// The publish fingerprint covers what apply consumes: the unmasked upstream
+// discovery plus the customization and split records (and the scopes derived
+// from the discovered agents). Discovery already unmasks Plus's own output
+// back to upstream, so a self-triggered refresh keeps an identical
+// fingerprint and stays a no-op instead of a dispose/reinstall loop.
+function fingerprintPublish(discovered: Discovered, records: readonly StoredRecord[]): string {
+  const scopes = scopesOf(discovered.agents)
   return JSON.stringify({
     items: discovered.items,
     agents: discovered.agents,
     servers: discovered.servers,
+    records,
+    scopes: { global: [...scopes.global].toSorted(), defaults: [...scopes.defaults].toSorted() },
   })
 }
 

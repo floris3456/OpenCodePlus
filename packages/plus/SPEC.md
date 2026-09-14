@@ -273,7 +273,14 @@ Events: `project.changed`, `instructions.changed`.
 
 ### `Assembled` Shape
 
-Host-applied assembled instructions read back after application:
+`system` is the agent's installed system text read back from the host after
+application (agent transforms are registry-level, so `agent.list` reflects
+them). Tool entries reflect what is true at registry level
+(enablement/visibility): per-agent tool text installs through a session
+context hook, which is session-scoped for a specific agent, so `assembled`
+cannot produce a session-scoped tool view for an arbitrary agent without
+creating a session and reports the registry (upstream) description even when
+the override applies correctly inside that agent's sessions.
 
 ```ts
 export interface Assembled {

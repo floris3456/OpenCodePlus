@@ -17,8 +17,14 @@ interface AssembledInput {
   readonly scopes: Scopes
 }
 
-// Read back the host after application: the agent's installed system text
-// plus the skill and tool domains filtered to what this agent can use.
+// Assembled view for one agent: the agent's installed system text read back
+// from the host (agent transforms are registry-level, so agent.list reflects
+// application), plus the skill and tool domains filtered to what this agent
+// can use. Tool descriptions are a registry-level read: per-agent tool text
+// installs through a session context hook, which is session-scoped for a
+// specific agent, so assembled reports the registry (upstream) description
+// even when the override applies correctly inside that agent's sessions.
+// Tool membership reflects resolved enablement and registry visibility.
 export async function assembled(input: AssembledInput): Promise<Plus.Assembled | { ok: false; agent: string }> {
   const owner = input.agents.find((entry) => entry.id === input.agent)
   if (owner === undefined) return { ok: false, agent: input.agent }
