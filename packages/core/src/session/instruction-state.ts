@@ -170,7 +170,7 @@ export const initial = Effect.fn("InstructionState.initial")(function* (
   const state = yield* find(db, sessionID)
   if (!state) return yield* Effect.die(new Error(`Instruction state not found during assembly: ${sessionID}`))
   const blobs = yield* loadBlobs(db, Object.values(state.initial_values))
-  return Instructions.renderInitial(instructions, dereference(state.initial_values, blobs))
+  return Instructions.renderInitialParts(instructions, dereference(state.initial_values, blobs))
 })
 
 /** The current instruction values, used to seed a fork's baseline. */
@@ -194,11 +194,11 @@ export const preview = Effect.fn("InstructionState.preview")(function* (
   )
   if (!state) {
     const values = dereference(result.current, observedBlobs)
-    return { initial: Instructions.renderInitial(instructions, values), update: "" }
+    return { initial: Instructions.renderInitialParts(instructions, values), update: "" }
   }
   const stored = yield* loadBlobs(db, [...Object.values(state.initial_values), ...Object.values(state.current_values)])
   return {
-    initial: Instructions.renderInitial(instructions, dereference(state.initial_values, stored)),
+    initial: Instructions.renderInitialParts(instructions, dereference(state.initial_values, stored)),
     update: Instructions.renderUpdate(
       instructions,
       dereference(state.current_values, stored),

@@ -4,6 +4,7 @@ import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Model } from "@opencode/schema/model"
 import { Effect } from "effect"
+import { PromptTemplate } from "../prompt-template.js"
 import { SessionSystemPrompt } from "../session/system-prompt.js"
 
 import PROMPT_GPT from "./system-prompt/gpt.txt"
@@ -13,9 +14,8 @@ import PROMPT_META from "./system-prompt/meta.txt"
 import PROMPT_TRINITY from "./system-prompt/trinity.txt"
 
 export const OpenAIPlugin = make("opencode.prompt.openai", (model) => {
-  const id = model.id.toLowerCase()
-  if (!id.includes("gpt")) return undefined
-  return id.includes("gpt-6") ? PROMPT_ASTRA : PROMPT_GPT
+  if (PromptTemplate.active(model) !== "gpt") return undefined
+  return model.id.toLowerCase().includes("gpt-6") ? PROMPT_ASTRA : PROMPT_GPT
 })
 
 export const OpenAIToolsPlugin = make("opencode.optimize.openai.tools", (model, tools) => {
@@ -35,13 +35,13 @@ export const AnthropicToolsPlugin = make("opencode.optimize.anthropic.tools", (m
 })
 
 export const KimiPlugin = make("opencode.prompt.kimi", (model) =>
-  model.id.toLowerCase().includes("kimi") ? PROMPT_KIMI : undefined,
+  PromptTemplate.active(model) === "kimi" ? PROMPT_KIMI : undefined,
 )
 export const ArceePlugin = make("opencode.prompt.arcee", (model) =>
-  model.id.toLowerCase().includes("trinity") ? PROMPT_TRINITY : undefined,
+  PromptTemplate.active(model) === "trinity" ? PROMPT_TRINITY : undefined,
 )
 export const MetaPlugin = make("opencode.prompt.meta", (model) => {
-  if (!model.id.toLowerCase().includes("muse")) return undefined
+  if (PromptTemplate.active(model) !== "muse") return undefined
   return PROMPT_META.replaceAll("{{MODEL_NAME}}", model.name)
 })
 

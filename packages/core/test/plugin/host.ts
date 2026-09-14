@@ -98,6 +98,14 @@ export function host(overrides: Overrides = {}): Plugin.Context {
         resolve: () => Effect.die("unused integration.connection.resolve"),
       },
     },
+    instruction: overrides.instruction ?? {
+      transform: () => Effect.die("unused instruction.transform"),
+      reload: () => Effect.die("unused instruction.reload"),
+    },
+    prompt: overrides.prompt ?? {
+      templates: () => Effect.die("unused prompt.templates"),
+      active: () => Effect.die("unused prompt.active"),
+    },
     mcp: overrides.mcp ?? {
       list: () => Effect.die("unused mcp.list"),
       transform: () => Effect.die("unused mcp.transform"),

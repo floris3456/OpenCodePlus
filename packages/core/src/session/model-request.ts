@@ -74,7 +74,10 @@ export const baseTranscript = (input: {
   readonly agent: Agent.Info
   readonly model: SessionRunnerModel.Resolved
   readonly tools: Tool.Snapshot
-  readonly initial: string
+  // Ordered instruction parts; one SystemPart per part, so each instruction
+  // source file keeps its own part boundary and identity. The agent's own
+  // system prompt stays the first part.
+  readonly initial: ReadonlyArray<string>
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
@@ -84,7 +87,7 @@ export const baseTranscript = (input: {
       input.agent.system
         ? input.agent.system
         : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
-      input.initial,
+      ...input.initial,
     ]
       .filter((part) => part.length > 0)
       .map(SystemPart.make),

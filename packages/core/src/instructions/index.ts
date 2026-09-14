@@ -159,13 +159,16 @@ export function diff(observed: ReadResult, previous?: Values): Effect.Effect<Adm
 }
 
 export function renderInitial(value: List, values: Readonly<Record<string, Schema.Json>>) {
-  return render(
-    value.flatMap((source) => {
-      if (!Object.hasOwn(values, source.key)) return []
-      const text = source.initial(values[source.key])
-      return text === undefined ? [] : [text]
-    }),
-  )
+  return render(renderInitialParts(value, values))
+}
+
+/** One baseline text per source, in source order; joining them equals `renderInitial`. */
+export function renderInitialParts(value: List, values: Readonly<Record<string, Schema.Json>>) {
+  return value.flatMap((source) => {
+    if (!Object.hasOwn(values, source.key)) return []
+    const text = source.initial(values[source.key])
+    return text === undefined ? [] : [text]
+  })
 }
 
 export function renderUpdate(
