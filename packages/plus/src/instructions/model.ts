@@ -530,14 +530,14 @@ function isReview(own: CustomizationRecord | undefined, current: string): boolea
   return true
 }
 
-interface ChainNode {
+export interface ChainNode {
   readonly level: Level
   readonly agent: string | null
 }
 
 // Resolution chain, most specific first, resolving text and state
 // independently: the first level supplying that field wins.
-function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
+export function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
   const nodes: ChainNode[] = [{ level: address.level, agent: address.agent }]
   if (address.level === "project") {
     if (address.agent !== null && scopes.global.has(address.agent)) nodes.push({ level: "global", agent: address.agent })
