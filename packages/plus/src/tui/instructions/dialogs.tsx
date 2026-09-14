@@ -24,18 +24,43 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       })
       if (disposed) return
       if (picked === undefined) return
-      await addKind(picked)
+      await addKind(picked, node)
       return
     }
-    await addKind(kind)
+    await addKind(kind, node)
   }
 
-  async function addKind(kind: AddKind): Promise<void> {
+  async function addKind(kind: AddKind, node?: TreeNode): Promise<void> {
     if (kind === "agent") return addAgent()
     if (kind === "base") return addBase()
     if (kind === "skill") return addSkill()
     if (kind === "instruction") return addInstruction()
+    if (kind === "section") return addSection(node)
     return addMcp()
+  }
+
+  // a on an item row appends a section to that item: prompt for the name and
+  // body, reuse the manual splitter boundary path in state.addSection, then
+  // persist both halves of the boundary contract (the SplitRecord boundary
+  // and the CustomizationRecord text) in one mutate.
+  async function addSection(node: TreeNode | undefined): Promise<void> {
+    if (disposed) return
+    if (!node || node.kind !== "item" || node.address === undefined || node.actions?.split !== true) {
+      context.ui.toast.show({ variant: "error", message: "This row does not support sections" })
+      return
+    }
+    const raw = await context.ui.dialog.prompt({ title: "Section name", placeholder: "New section" })
+    if (disposed) return
+    if (raw === undefined) return
+    const name = raw.trim()
+    if (name.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Section name cannot be empty" })
+      return
+    }
+    const text = await context.ui.dialog.prompt({ title: "Section text", placeholder: "Section content" })
+    if (disposed) return
+    if (text === undefined) return
+    await state.addSection(node, name, text)
   }
 
   async function addAgent(): Promise<void> {

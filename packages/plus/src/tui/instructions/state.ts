@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
 import {
   applies,
+  fingerprint,
   merge,
   reset,
   resolve,
@@ -10,6 +11,7 @@ import {
   scopesOf,
   threeWay,
 } from "../../instructions/model.js"
+import { manual, slice, type Split } from "../../instructions/sections.js"
 import type {
   Address,
   AgentSource,
@@ -559,6 +561,78 @@ export function createInstructionsState(context: Plugin.Context) {
     )
   }
 
+  // a on an item row: append one section through the manual splitter path.
+  // Both halves persist in one mutate: the SplitRecord boundary for the item
+  // and the CustomizationRecord text for the new section. Appending at the
+  // end keeps existing offsets stable, so the first add on an unsplit item
+  // coherently splits its existing text plus the new section.
+  async function addSection(node: TreeNode, name: string, text: string): Promise<boolean> {
+    const address = node.address
+    if (!address || node.kind !== "item") {
+      setStatus(`"${node.label}" does not support sections`)
+      return false
+    }
+    if (node.actions?.split !== true) {
+      setStatus(`"${node.label}" does not support sections`)
+      return false
+    }
+    const chain = chainFor(node)
+    if (!chain) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    const currentText = resolvedText(node)
+    // Keep existing manual boundaries (minus any preview-only preamble) and
+    // append the new section at the end of the current text.
+    const preview = resolveSplit({
+      text: currentText,
+      title: chain.upstream.title,
+      splits: chain.splits,
+      scopes: scopes(),
+      address: chain.address,
+    })
+    const existing =
+      preview.kind === "manual"
+        ? preview.sections
+            .filter((section) => section.id !== "preamble")
+            .map((section) => ({ id: section.id, name: section.name, start: section.start }))
+        : [{ id: "existing", name: chain.upstream.title, start: 0 }]
+    const nextStart = currentText.length
+    const used = new Set(existing.map((entry) => entry.id))
+    const boundaries = [...existing, { id: claim(slugify(name), used), name, start: nextStart }]
+    // Build through the same manual() call the splitter previews with so the
+    // appended boundary and save always agree.
+    const split = manual(currentText, boundaries)
+    const added = split.sections.find((section) => section.start === nextStart && section.name === name)
+    if (!added) {
+      setStatus(`Could not add "${name}" to "${node.label}"`)
+      return false
+    }
+    const rest = chain.splits.filter(
+      (record) => !(record.level === address.level && record.agent === address.agent && record.item === address.item),
+    )
+    const nextSplits: (SplitRecord & { updated: string })[] = [
+      ...rest,
+      { type: "split", level: address.level, agent: address.agent, item: address.item, boundaries, updated: now() },
+    ]
+    const sectionAddress: Address = { ...address, section: added.id }
+    const sectionUpstream = upstreamSliceOf(split, currentText, added.id)
+    const nextCustomizations = merge(
+      chain.customizations,
+      sectionAddress,
+      { text },
+      { text: sectionUpstream, fingerprint: fingerprint(sectionUpstream) },
+      scopes(),
+      nextSplits,
+    )
+    return persist(
+      nextCustomizations,
+      nextSplits,
+      `Added "${name}" to "${node.label}"`,
+      `added "${name}" against a stale revision; retry to apply`,
+    )
+  }
+
   // Yellow (review) resolutions via threeWay/resolveResolution.
   async function resolveKeep(node: TreeNode): Promise<boolean> {
     const chain = chainFor(node)
@@ -882,6 +956,7 @@ export function createInstructionsState(context: Plugin.Context) {
     saveText,
     reset: resetNode,
     saveSplit,
+    addSection,
     splitPreview,
     resolvedText,
     threeWay: threeWayFor,
@@ -895,6 +970,32 @@ export function createInstructionsState(context: Plugin.Context) {
 }
 
 export type InstructionsState = ReturnType<typeof createInstructionsState>
+
+function upstreamSliceOf(split: Split, text: string, id: string): string {
+  const section = split.sections.find((entry) => entry.id === id)
+  if (section === undefined) return ""
+  return slice(text, section)
+}
+
+// Same slug rules as the manual splitter so add-section ids match.
+function slugify(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug.length > 0 ? slug : "section"
+}
+
+function claim(base: string, used: Set<string>): string {
+  if (!used.has(base)) {
+    used.add(base)
+    return base
+  }
+  let n = 2
+  while (used.has(`${base}-${n}`)) n += 1
+  used.add(`${base}-${n}`)
+  return `${base}-${n}`
+}
 
 function now(): string {
   return new Date().toISOString()

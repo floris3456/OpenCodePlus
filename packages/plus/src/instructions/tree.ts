@@ -3,7 +3,7 @@ import type { Address, AgentSource, CustomizationRecord, Item, Level, Resolved, 
 import type { Section, Split } from "./sections.js"
 
 export type TreeNodeKind = "root" | "group" | "agent" | "item" | "section"
-export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp"
+export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section"
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
@@ -581,6 +581,7 @@ function lazyItem(
   depth: number,
 ): Lazy {
   const address: Address = { level, agent: owner, item: item.id, section: null }
+  const splittable = item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base"
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
       splitOf(memo, level, owner, item).sections.map((section) =>
@@ -593,12 +594,13 @@ function lazyItem(
     label: item.id === "system:role" ? "Role/persona" : item.title,
     depth,
     address,
+    ...(splittable ? { add: "section" as const } : {}),
     actions: {
       toggle: true,
       edit: true,
       reset: canReset(ctx.customizations, address),
       remove: removable(level, owner, item),
-      split: true,
+      split: splittable,
     },
     selfReview: () => flagOf(memo, level, owner, item, null),
     partial: () => itemBadges(memo, level, owner, agent, item),
