@@ -465,19 +465,20 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 
 // The plugin Context prompt domain exposes the host's base prompt
 // templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`); the
-// local table below is only the fallback when the host reports none. User
-// templates created via `base.create` are layered on top so discover lists
-// them alongside the built-ins. Host templates pass through verbatim: the
-// bundled text is raw, and core's optimize plugins render it into `system[0]`
-// before Plus's later (`post`) hook overwrites it with stored custom text.
+// local table below is only the template fallback when the host reports
+// none. Classification always comes from the host: the agent's catalog
+// model resolves through `resolveCatalogModel`, then `ctx.prompt.active`
+// answers. User templates created via `base.create` are layered on top so
+// discover lists them alongside the built-ins. Host templates pass through
+// verbatim: the bundled text is raw, and core's optimize plugins render it
+// into `system[0]` before Plus's later (`post`) hook overwrites it with
+// stored custom text.
 async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
   const templates = await Effect.runPromise(ctx.prompt.templates())
-  if (templates.length === 0)
-    return {
-      templates: [...fallbackBaseTemplates(), ...readUserBaseTemplates()],
-      active: (agent) => fallbackActiveBase(agent),
-    }
-  const listed = templates.map((template) => ({ ...template }))
+  const listed =
+    templates.length === 0
+      ? [...fallbackBaseTemplates(), ...readUserBaseTemplates()]
+      : templates.map((template) => ({ ...template }))
   const catalog = await Effect.runPromise(
     ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
   )
@@ -541,19 +542,6 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
       return { id, title, text }
     })
     .filter((template): template is BaseTemplate => template !== undefined)
-}
-
-function fallbackActiveBase(agent: { model?: { providerID: string; id: string } }): string | undefined {
-  const model = agent.model
-  if (model === undefined) return undefined
-  const hay = `${model.providerID} ${model.id}`.toLowerCase()
-  if (hay.includes("gpt")) return "gpt"
-  if (hay.includes("kimi")) return "kimi"
-  if (hay.includes("trinity")) return "trinity"
-  if (hay.includes("muse")) return "muse"
-  if (hay.includes("claude")) return "claude"
-  if (hay.includes("gemini")) return "gemini"
-  return "general"
 }
 
 async function discoverAll(ctx: Context, loaded: LoadedStores, baselines: ReadonlyMap<string, PromptBaseline>): Promise<Discovered> {
