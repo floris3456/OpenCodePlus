@@ -2,12 +2,27 @@ import path from "node:path"
 
 const entrypoint = process.argv[1] ? path.resolve(process.argv[1]) : undefined
 
+function runtime() {
+  const name = path.basename(process.execPath, path.extname(process.execPath)).toLowerCase()
+  return {
+    name,
+    script: name === "bun" || name === "node" || name === "nodejs",
+  }
+}
+
 export function selfCommand() {
-  const runtime = path.basename(process.execPath, path.extname(process.execPath)).toLowerCase()
-  if (runtime !== "bun" && runtime !== "node" && runtime !== "nodejs") return [process.execPath]
+  const current = runtime()
+  if (!current.script) return [process.execPath]
   if (!entrypoint) throw new Error("Failed to resolve CLI entrypoint")
-  if (runtime === "node" || runtime === "nodejs") return [process.execPath, ...nodeFlags(), entrypoint]
+  if (current.name === "node" || current.name === "nodejs") return [process.execPath, ...nodeFlags(), entrypoint]
   return [process.execPath, entrypoint]
+}
+
+export function serviceDirectory() {
+  const current = runtime()
+  if (!current.script) return path.dirname(process.execPath)
+  if (!entrypoint) throw new Error("Failed to resolve CLI entrypoint")
+  return path.dirname(entrypoint)
 }
 
 function nodeFlags() {
