@@ -8,64 +8,62 @@ import { Deferred, Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { fingerprint, type Customization, type Item, type Snapshot } from "./model.js"
 import { idFromPath } from "../agents/files.js"
-import { isSkillCopy } from "./apply.js"
+import { recordedEnabled, unmaskText, type PromptBaseline } from "./inventory.js"
+import {
+  fingerprint,
+  type AgentSource,
+  type CustomizationRecord,
+  type Item,
+} from "./model.js"
+import { globalConfigDir } from "./paths.js"
 
-export type AgentScope = "project" | "global" | "builtin"
-
-export interface AgentSource {
-  readonly id: string
-  readonly scope: AgentScope
-  readonly path?: string
-}
-
-export interface PromptBaseline {
-  readonly applied: string
-  readonly upstream: string
-  readonly file?: string
-  readonly fileBacked: boolean
-}
-
-export interface ToolSource {
-  readonly id: string
-  readonly native: boolean
-}
+export type { AgentScope, AgentSource } from "./model.js"
+export type { PromptBaseline } from "./inventory.js"
 
 export interface Discovered {
-  readonly snapshot: Snapshot
+  readonly items: Item[]
   readonly agents: AgentSource[]
-  readonly tools: ToolSource[]
-  readonly files: ReadonlyMap<string, string>
+  readonly servers: { readonly name: string; readonly enabled: boolean }[]
 }
 
-export async function discover(
-  ctx: Context,
-  stored: { revision: number; customizations: Customization[] },
-  baselines: ReadonlyMap<string, PromptBaseline> = new Map(),
-): Promise<Discovered> {
-  const agents = yieldList(ctx.agent.list())
-  const skills = yieldList(ctx.skill.list())
-  const tools = await readTransform(ctx.tool.transform, (editor) => editor.list())
-  const servers = await readTransform(ctx.mcp.transform, (editor) => editor.list())
-  const resolvedAgents = await agents
-  const sources = await resolveAgentSources(ctx.location.directory, resolvedAgents)
-  const files = await readAgentBodies(sources)
-  const instructions = await readProjectInstructions(ctx.location.directory)
-  const toolSources = toolSourcesFor(tools)
+export interface BaseTemplate {
+  readonly id: string
+  readonly title: string
+  readonly text: string
+}
+
+export interface DiscoverInput {
+  readonly ctx: Context
+  readonly records: readonly CustomizationRecord[]
+  readonly baselines?: ReadonlyMap<string, PromptBaseline>
+  /** Injected by the caller so discovery does not depend on where core exposes them. */
+  readonly baseTemplates: readonly BaseTemplate[]
+  /** Resolves the active template id for an agent, by that agent's configured model. */
+  readonly activeBase: (agent: Agent.Info) => string | undefined
+}
+
+export async function discover(input: DiscoverInput): Promise<Discovered> {
+  const directory = input.ctx.location.directory
+  const projectDirectory = input.ctx.location.project.directory
+  const agents = await yieldList(input.ctx.agent.list())
+  const skills = await yieldList(input.ctx.skill.list())
+  const tools = await readTransform(input.ctx.tool.transform, (editor) => editor.list())
+  const servers = await readTransform(input.ctx.mcp.transform, (editor) => editor.list())
+  const baselines = input.baselines ?? new Map<string, PromptBaseline>()
+  const sources = await resolveAgentSources(directory, agents, input.activeBase)
+  const bodies = await readAgentBodies(sources)
+  const instructions = await discoverInstructionFiles(directory, projectDirectory)
+  const mcp = mcpInventory(servers, input.records)
   const items = [
-    ...promptItems(resolvedAgents, baselines, files),
-    ...skillItems(await skills),
-    ...toolItems(tools),
-    ...mcpItems(servers, stored.customizations),
-    ...instructionItems(ctx.location.directory, instructions),
+    ...toolItems(tools, input.records, baselines),
+    ...baseItems(input.baseTemplates, input.records),
+    ...skillItems(skills, directory, input.records, baselines),
+    ...roleItems(agents, baselines, bodies, input.records),
+    ...instructionFileItems(directory, instructions, input.records),
+    ...mcp.items,
   ]
-  return {
-    snapshot: { revision: stored.revision, items, customizations: stored.customizations },
-    agents: sources,
-    tools: toolSources,
-    files,
-  }
+  return { items, agents: sources, servers: mcp.servers }
 }
 
 async function yieldList<Data>(list: Effect.Effect<{ data: Data }, unknown, never>): Promise<Data> {
@@ -94,12 +92,21 @@ function readTransform<Editor, Value>(
 // project files live under <directory>/.opencode/{agent,agents}/**/*.md and
 // global files under the same patterns beneath the global config dir. The
 // agent id is the path relative to the agent directory without the .md
-// suffix, matching core's decode; an agent with no matching file is
-// builtin/plugin-provided and is not file-backed.
-async function resolveAgentSources(directory: string, agents: readonly Agent.Info[]): Promise<AgentSource[]> {
+// suffix, matching core's decode; an agent with no matching file is a
+// defaults template and is not file-backed.
+async function resolveAgentSources(
+  directory: string,
+  agents: readonly Agent.Info[],
+  activeBase: (agent: Agent.Info) => string | undefined,
+): Promise<AgentSource[]> {
   const project = await scanAgentFiles(path.join(directory, ".opencode"))
   const global = await scanAgentFiles(globalConfigDir())
-  return agents.map((agent) => sourceFor(agent.id, project, global))
+  return agents.map((agent) => {
+    const source = sourceFor(agent.id, project, global)
+    const base = activeBase(agent)
+    if (base === undefined) return source
+    return { ...source, base }
+  })
 }
 
 function sourceFor(id: string, project: Map<string, string>, global: Map<string, string>): AgentSource {
@@ -107,7 +114,7 @@ function sourceFor(id: string, project: Map<string, string>, global: Map<string,
   if (projectPath !== undefined) return { id, scope: "project", path: projectPath }
   const globalPath = global.get(id)
   if (globalPath !== undefined) return { id, scope: "global", path: globalPath }
-  return { id, scope: "builtin" }
+  return { id, scope: "defaults" }
 }
 
 async function scanAgentFiles(root: string): Promise<Map<string, string>> {
@@ -147,24 +154,132 @@ async function readDirectory(directory: string): Promise<DirectoryEntry[]> {
   })
 }
 
-// Mirrors the global config resolution in @opencode/util without importing it:
-// an explicit OPENCODE_CONFIG_DIR override, else <XDG_CONFIG_HOME>/opencode,
-// else ~/.config/opencode.
-function globalConfigDir(): string {
-  const override = process.env.OPENCODE_CONFIG_DIR
-  if (override) return override
-  const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
-  return path.join(base, "opencode")
+// Tool.Info gains `origin?: { type: "mcp" | "plugin"; name: string }` in a
+// parallel core change. It is optional, so tolerate it being absent at
+// runtime. Never infer the server from the sanitized namespace — the
+// namespace rewrites characters (core's McpTool.namespace replaces every
+// [^a-zA-Z0-9_-] with "_"), so two distinct servers can share one namespace
+// and a rewritten name never round-trips.
+interface ToolOrigin {
+  readonly type: "mcp" | "plugin"
+  readonly name: string
 }
 
-function promptItems(
+type ToolEntry = Tool.Info & { readonly id: string; readonly origin?: ToolOrigin }
+
+function toolOrigin(tool: Tool.Info & { readonly id: string }): ToolOrigin | undefined {
+  return (tool as ToolEntry).origin
+}
+
+function toolGroup(origin: ToolOrigin | undefined): { group: Item["group"]; server?: string } {
+  if (origin?.type === "mcp") return { group: "mcp", server: origin.name }
+  if (origin?.type === "plugin" && origin.name === "opencode.plus") return { group: "plus" }
+  return { group: "native" }
+}
+
+function toolItems(
+  tools: readonly (Tool.Info & { readonly id: string })[],
+  records: readonly CustomizationRecord[],
+  baselines: ReadonlyMap<string, PromptBaseline>,
+): Item[] {
+  return tools.map((tool): Item => {
+    const id = `tool:${tool.id}`
+    const grouped = toolGroup(toolOrigin(tool))
+    const text = unmaskText(tool.description, baselines.get(id))
+    return {
+      id,
+      kind: "tool",
+      group: grouped.group,
+      ...(grouped.server === undefined ? {} : { server: grouped.server }),
+      title: tool.name,
+      text,
+      enabled: recordedEnabled(records, id, undefined),
+      fingerprint: fingerprint(text),
+    }
+  })
+}
+
+function baseItems(templates: readonly BaseTemplate[], records: readonly CustomizationRecord[]): Item[] {
+  return templates.map((template): Item => {
+    const id = `base:${template.id}`
+    return {
+      id,
+      kind: "base",
+      group: "none",
+      title: template.title,
+      text: template.text,
+      enabled: recordedEnabled(records, id, undefined),
+      fingerprint: fingerprint(template.text),
+    }
+  })
+}
+
+function skillOrigin(skill: Skill.Info): ToolOrigin | undefined {
+  return (skill as Skill.Info & { readonly origin?: ToolOrigin }).origin
+}
+
+function skillGroup(skill: Skill.Info, directory: string): { group: Item["group"]; server?: string } {
+  const grouped = toolGroup(skillOrigin(skill))
+  if (grouped.group !== "native") return grouped
+  if (isProjectSkill(skill.location, directory)) return { group: "project" }
+  return { group: "native" }
+}
+
+// A skill discovered from the project's own skill directory
+// (<project>/.opencode/skill*/**/SKILL.md) is "project"; everything else
+// without a known origin is "native".
+function isProjectSkill(location: string, directory: string): boolean {
+  const relative = path.relative(path.join(directory, ".opencode"), location)
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
+  const first = relative.split(path.sep)[0]
+  if (!first.startsWith("skill")) return false
+  return path.basename(location) === "SKILL.md"
+}
+
+function skillItems(
+  skills: readonly Skill.Info[],
+  directory: string,
+  records: readonly CustomizationRecord[],
+  baselines: ReadonlyMap<string, PromptBaseline>,
+): Item[] {
+  return skills
+    .filter((skill) => !isSkillCopyId(skill.id))
+    .map((skill): Item => {
+      const id = `skill:${skill.id}`
+      const grouped = skillGroup(skill, directory)
+      const text = unmaskText(skill.content, baselines.get(id))
+      return {
+        id,
+        kind: "skill",
+        group: grouped.group,
+        ...(grouped.server === undefined ? {} : { server: grouped.server }),
+        title: skill.name,
+        text,
+        enabled: recordedEnabled(records, id, undefined),
+        fingerprint: fingerprint(text),
+      }
+    })
+}
+
+function roleItems(
   agents: readonly Agent.Info[],
   baselines: ReadonlyMap<string, PromptBaseline>,
-  files: ReadonlyMap<string, string>,
+  bodies: ReadonlyMap<string, string>,
+  records: readonly CustomizationRecord[],
 ): Item[] {
-  return agents.map((agent) => {
-    const text = upstreamPrompt(agent, baselines.get(agent.id), files.get(agent.id))
-    return item(`prompt:${agent.id}`, "prompt", agent.id, agent.name, text, [agent.id])
+  return agents.map((agent): Item => {
+    const text = upstreamPrompt(agent, baselines.get(agent.id), bodies.get(agent.id))
+    return {
+      id: "system:role",
+      kind: "system",
+      group: "none",
+      title: "Role/persona",
+      text,
+      enabled: recordedEnabled(records, "system:role", [agent.id]),
+      fingerprint: fingerprint(text),
+      agents: [agent.id],
+      order: 0,
+    }
   })
 }
 
@@ -175,15 +290,19 @@ function promptItems(
 // producing a permanent dispose/reinstall storm. While the host still shows
 // exactly what Plus last wrote, unmask the upstream text independently of the
 // post-transform host view: file-backed agents reread their markdown body
-// (core decodes it as `system: body`), and builtin agents without a backing
+// (core decodes it as `system: body`), and defaults agents without a backing
 // file retain the existing baseline behaviour. Unmasked host text means no
 // override is installed for that agent, so it flows through untouched. A file
 // body is only trusted when it matched the host upstream at baseline time;
 // otherwise another config source owns the prompt and the file is ignored to
 // avoid a spurious fingerprint change. A file appearing where the baseline had
 // none is a source transition: the new body re-establishes ownership instead
-// of being rejected against the stale builtin upstream.
-function upstreamPrompt(agent: Agent.Info, baseline: PromptBaseline | undefined, fileBody: string | undefined): string {
+// of being rejected against the stale defaults upstream.
+function upstreamPrompt(
+  agent: Agent.Info,
+  baseline: PromptBaseline | undefined,
+  fileBody: string | undefined,
+): string {
   const current = agent.system ?? ""
   if (baseline === undefined) return current
   if (current !== baseline.applied) return current
@@ -218,58 +337,80 @@ export function agentBody(markdown: string): string {
   return (match[2] ?? "").trim()
 }
 
-function skillItems(skills: readonly Skill.Info[]): Item[] {
-  return skills
-    .filter((skill) => !isSkillCopy(skill.id))
-    .map((skill) => item(`skill:${skill.id}`, "skill", skill.id, skill.name, skill.content, []))
+// Plus's private per-agent skill copies live under "plus/<agent>/<skill>";
+// they are apply output, never inventory.
+function isSkillCopyId(id: string): boolean {
+  return id.startsWith("plus/")
 }
 
-function toolItems(tools: readonly (Tool.Info & { readonly id: string })[]): Item[] {
-  return tools.map((tool) => item(`tool:${tool.id}`, "tool", tool.id, tool.name, tool.description, []))
+interface McpInventory {
+  readonly items: Item[]
+  readonly servers: { readonly name: string; readonly enabled: boolean }[]
 }
 
-// Same rule as apply.ts readTools: only tools with options.codemode === false
-// are individual keys of the session tool list. Everything else (codemode
-// enabled or absent — the Code Mode inventory surfaced through execute) cannot
-// be toggled or edited, so tree.ts marks those rows non-actionable.
-function toolSourcesFor(tools: readonly (Tool.Info & { readonly id: string })[]): ToolSource[] {
-  return tools.map((tool) => ({ id: tool.id, native: tool.options?.codemode === false }))
-}
-
-// Discovery reads config through Plus's own transform, so `config.disabled` reflects
-// post-transform state rather than raw upstream. Upstream availability must reconstruct
-// the pre-transform value by removing Plus's own known contribution: if a shared
-// (`agent: "*"`) record for that item says `disabled`, upstream must have been enabled, so
-// `true`; if it says `enabled`, upstream must have been disabled, so `false`; otherwise
-// `config.disabled !== true`. This inference is load-bearing: otherwise a disabled server
-// would report `available: false`, `mcpUpdates` would short-circuit on `enabled === item.available`,
-// the disable would silently stop being reinstalled on the next publish, and `effective()`
-// would report `customized: false` so the user could not undo it. Serializing the item text
-// from a copy without `disabled` ensures the fingerprint never incorporates Plus's own
-// enablement contribution.
-function mcpItems(servers: readonly [string, Mcp.ServerConfig][], customizations: readonly Customization[]): Item[] {
-  return servers.map(([name, config]) => {
+function mcpInventory(
+  servers: readonly [string, Mcp.ServerConfig][],
+  records: readonly CustomizationRecord[],
+): McpInventory {
+  const entries = servers.map(([name, config]) => {
     const id = `mcp:${name}`
-    const available = upstreamMcpAvailable(id, config, customizations)
+    const enabled = upstreamMcpAvailable(id, config, records)
     const sanitized = { ...config }
     delete (sanitized as { disabled?: boolean }).disabled
-    return item(id, "mcp", name, name, JSON.stringify(sanitized), [], available)
+    const text = JSON.stringify(sanitized)
+    const item: Item = {
+      id,
+      kind: "mcp",
+      group: "none",
+      title: name,
+      text,
+      enabled,
+      fingerprint: fingerprint(text),
+    }
+    return { item, server: { name, enabled } }
   })
+  return { items: entries.map((entry) => entry.item), servers: entries.map((entry) => entry.server) }
 }
 
+// Discovery reads config through Plus's own transform, so `config.disabled`
+// reflects post-transform state rather than raw upstream. Upstream
+// availability must reconstruct the pre-transform value by removing Plus's
+// own known contribution: if a shared (`level: "defaults"`, `agent: null`)
+// record for that item says `off`, upstream must have been enabled, so
+// `true`; if it says `on`, upstream must have been disabled, so `false`;
+// otherwise `config.disabled !== true`. This inference is load-bearing:
+// otherwise a disabled server would report `enabled: false`, `mcpUpdates`
+// would short-circuit on `enabled === item.enabled`, the disable would
+// silently stop being reinstalled on the next publish, and the tree would
+// report no customization so the user could not undo it. Serializing the
+// item text from a copy without `disabled` ensures the fingerprint never
+// incorporates Plus's own enablement contribution.
 function upstreamMcpAvailable(
   id: string,
   config: Mcp.ServerConfig,
-  customizations: readonly Customization[],
+  records: readonly CustomizationRecord[],
 ): boolean {
-  const shared = customizations.find((record) => record.item === id && record.agent === "*")
-  if (shared?.state === "disabled") return true
-  if (shared?.state === "enabled") return false
+  const shared = records.find(
+    (record) => record.item === id && record.level === "defaults" && record.agent === null && record.section === null,
+  )
+  if (shared?.state === "off") return true
+  if (shared?.state === "on") return false
   return config.disabled !== true
 }
 
-async function readProjectInstructions(directory: string): Promise<{ path: string; text: string }[]> {
-  const candidates = await walkInstructionFiles(directory)
+// The ambient set core applies (packages/core/src/config/plugin/
+// instruction.ts): the global config AGENTS.md first, then project AGENTS.md
+// files from the location upward to the stop directory
+// (nearest-to-farthest). Descendant files, which core surfaces only as
+// synthetic messages when read, are not inventory. Plus cannot reach core's
+// internal project/global discovery flags, so both scopes are always
+// included; a core deployment with either scope disabled applies a subset of
+// what is listed here.
+async function discoverInstructionFiles(
+  directory: string,
+  projectDirectory: string,
+): Promise<{ path: string; text: string }[]> {
+  const candidates = instructionCandidates(directory, projectDirectory)
   const texts = await Promise.all(candidates.map((file) => readText(file)))
   return candidates.flatMap((file, index) => {
     const text = texts[index]
@@ -278,40 +419,60 @@ async function readProjectInstructions(directory: string): Promise<{ path: strin
   })
 }
 
-async function walkInstructionFiles(directory: string): Promise<string[]> {
-  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => undefined)
-  if (!entries) return []
-  const nested = await Promise.all(
-    entries.flatMap((entry) => {
-      if (entry.name === "node_modules" || entry.name === ".git") return []
-      const full = path.join(directory, entry.name)
-      if (entry.isDirectory()) return [walkInstructionFiles(full)]
-      if (entry.isFile() && entry.name === "AGENTS.md") return [Promise.resolve([full])]
-      return []
-    }),
-  )
-  return nested.flat().toSorted()
+function instructionCandidates(directory: string, projectDirectory: string): string[] {
+  const start = path.resolve(directory)
+  const root = path.resolve(projectDirectory)
+  const home = path.resolve(process.env.OPENCODE_TEST_HOME ?? os.homedir())
+  const stop = contains(home, start) ? home : root
+  const candidates = [path.join(globalConfigDir(), "AGENTS.md")]
+  if (!contains(root, start)) return [...new Set(candidates)]
+  return [...new Set([...candidates, ...ancestorFiles(start, stop)])]
+}
+
+function ancestorFiles(start: string, stop: string): string[] {
+  const files: string[] = []
+  let current = start
+  while (true) {
+    files.push(path.join(current, "AGENTS.md"))
+    if (current === stop) break
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return files
+}
+
+// Same containment semantics as FSUtil.contains: equal paths contain, and a
+// relative result escaping with ".." does not.
+function contains(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child)
+  if (relative === "") return true
+  if (path.isAbsolute(relative)) return false
+  if (relative === "..") return false
+  return !relative.startsWith(`..${path.sep}`)
 }
 
 async function readText(file: string): Promise<string | undefined> {
   return fs.readFile(file, "utf8").catch(() => undefined)
 }
 
-function instructionItems(directory: string, files: { path: string; text: string }[]): Item[] {
-  return files.map((file) => {
-    const owner = path.relative(directory, file.path) || file.path
-    return item(`instruction:${owner}`, "instruction", owner, owner, file.text, [])
+function instructionFileItems(
+  directory: string,
+  files: readonly { path: string; text: string }[],
+  records: readonly CustomizationRecord[],
+): Item[] {
+  return files.map((file, index): Item => {
+    const relative = path.relative(directory, file.path) || file.path
+    const id = `system:${relative}`
+    return {
+      id,
+      kind: "system",
+      group: "none",
+      title: relative,
+      text: file.text,
+      enabled: recordedEnabled(records, id, undefined),
+      fingerprint: fingerprint(file.text),
+      order: index,
+    }
   })
-}
-
-function item(
-  id: string,
-  kind: Item["kind"],
-  owner: string,
-  title: string,
-  text: string,
-  agents: string[],
-  available = true,
-): Item {
-  return { id, kind, owner, title, text, agents, fingerprint: fingerprint(text), available }
 }
