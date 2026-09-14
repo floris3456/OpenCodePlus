@@ -448,3 +448,163 @@ Implemented: the `Teams` tree group beside `Agents` under the `Project` and
 `team.setEnabled` + snapshot refresh; `tree-pane.tsx` on/off badge). Store
 persistence and the RPC surface are implemented.
 
+## §11 Tools, log, and query
+
+Agent-facing Code Mode namespace `instructions` (`teaching.ts` pins the
+user-visible contract). All tools require project mode (`project.disabled`
+otherwise); no tool enables or disables project mode. Every successful write
+is logged with actor `tool`.
+
+### Tool surface
+
+```ts
+export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" | "diff" | "assembled"
+export type ToolResolve = "keep" | "take" | "edit"
+export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
+export interface ShowInput { readonly id: string; readonly view?: ToolView }
+export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve }
+export interface ResetInput { readonly id: string }
+export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
+export type CreateInput =
+  | { readonly kind: "agent"; readonly id: string; readonly prompt: string }
+  | { readonly kind: "skill"; readonly name: string; readonly body: string }
+  | { readonly kind: "base"; readonly id: string; readonly title: string; readonly text: string }
+  | { readonly kind: "instruction"; readonly name: string; readonly text: string }
+  | { readonly kind: "mcp"; readonly name: string; readonly config: Record<string, unknown> }
+  | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global" }
+export interface DeleteInput { readonly id: string; readonly confirm: true }
+```
+
+- `list` returns the matching row ids (default projection `id, badges,
+  source, tokens`; `limit` defaults to 40). `show` defaults to view
+  `resolved`. `assembled` renders the full effective prompt and accepts agent
+  row ids only (`agent:<level>:<id>`); any other id fails with
+  `view.unsupported`. `diff` returns two unified diffs (original→mine and
+  original→upstream) plus a one-line summary. `set` with `resolve: "keep"`
+  acks upstream keeping text, `"take"` drops stored text and follows upstream,
+  `"edit"` stores `text` against current upstream. `reset` deletes the
+  override at that row. `split` boundaries are `{ id, name, start }` with
+  character offsets into the row text; `add: { name, text }` appends a new
+  trailing section. `create` writes one row per call. `delete` without
+  `confirm: true` fails with `delete.unconfirmed` and writes nothing.
+- Row ids (same string in the TUI filter, tool calls, the log, and error
+  messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
+  shared Defaults row), `section:<level>:<agent|''>:<itemId>:<sectionId>`,
+  `agent:<level>:<id>`, `team:<level>:<name>`. `<level>` is `project`,
+  `global`, or `defaults`.
+- Guards: writes for agents listed in `protectedAgents` fail with
+  `agent.protected`; unknown ids fail with `row.unknown`. A no-op or a
+  refusal writes nothing and logs nothing.
+
+### Log (`log.ts`, `rpc.ts`, `index.ts`)
+
+```ts
+export interface LogEntry { readonly ts: string; readonly actor: Actor; readonly op: string; readonly target: string; readonly summary: string; readonly revision: number }
+export interface Actor { readonly type: "tui" | "tool"; readonly agent?: string; readonly sessionID?: string; readonly messageID?: string }
+export interface LogInput { readonly where?: string; readonly limit?: number; readonly offset?: number }
+export interface LogOutput { readonly entries: readonly LogEntry[]; readonly total: number }
+```
+
+- Files: project writes append to
+  `<project>/.opencodeplus/instructions/log.jsonl`; global/defaults writes
+  append to `<globalConfigDir>/opencodeplus/instructions/log.jsonl`. One
+  JSON object per line; the summary is capped at 200 characters with newlines
+  stripped.
+- Append-only guarantees: logging never bumps a revision, never enters
+  `records.jsonl`, and never feeds the publish fingerprint. One line is
+  appended per store actually changed (a mutate touching both stores appends
+  one line to each, naming only that store's changed rows); a no-op or a
+  refusal appends nothing. File operations and team toggles log on success
+  only, to the owning store, carrying that store's current revision (the file
+  write never moves it).
+- Reads (`instructions.log`, `readBoth`): both files merged newest-first
+  (same-file ties break towards the later line). A missing file reads as
+  empty; a corrupt line is skipped, never fatal. `total` counts filtered
+  entries before offset/limit slicing; `offset`/`limit` are floored at 0
+  (`NaN` means unset).
+- Log `where` grammar: space-separated tokens, ANDed; `!` negates one token.
+  A bare word is a case-insensitive substring over op, target, summary, and
+  actor agent. Keyed tokens: `actor:tui|tool` (exact actor type),
+  `agent:<text>` (substring over actor agent), `op:<text>` (substring over
+  op), `target:<prefix>` (prefix over target), `session:<text>` (substring
+  over actor sessionID), `since:<instant>` / `before:<instant>` over `ts`,
+  where an instant is an ISO date or a `<number><s|m|h|d|w>` age before now.
+  An unknown key falls back to bare-word matching of the whole token; an
+  unparseable instant matches nothing.
+
+### Query grammar (`query.ts`)
+
+```ts
+export type Field = "id" | "badges" | "source" | "tokens" | "text" | "upstream" | "record" | "label" | "path" | "updated" | "sections"
+export type Sort = "tokens" | "delta" | "updated" | "label" | "id" | "-tokens" | "-delta" | "-updated" | "-label" | "-id"
+export interface QueryOptions { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
+export interface QueryRow { readonly id: string; readonly badges?: string; readonly source?: Level | "upstream"; readonly tokens?: number; readonly text?: string; readonly upstream?: string; readonly record?: CustomizationRecord; readonly label?: string; readonly path?: string; readonly updated?: string; readonly sections?: readonly string[] }
+export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { rows: QueryRow[]; total: number }
+```
+
+- Terms are space-separated and ANDed. `!key:value` negates one term.
+  `key:a,b` is OR within a single key. A bare word matches case-insensitively
+  over label or id. Values may be single- or double-quoted and `\`-escaped;
+  an empty term or empty value throws, as does an unknown key.
+- `sort:<key>` is a directive, not a filter: it cannot be negated and takes
+  exactly one value. An explicit `sort` option wins over the directive. Sort
+  keys are `tokens|delta|updated|label|id` with an optional `-` prefix for
+  descending; ties keep tree order.
+- Default projection is `id, badges, source, tokens`. `total` counts matches
+  before offset/limit slicing. `offset`/`limit` must be integers ≥ 0 (else
+  `bad query offset|limit`); `offset` defaults to 0, `limit` defaults to all
+  matches.
+- Key semantics: `kind` is `root|group|agent|team|item|section`;
+  `item` is `tool|base|skill|system|mcp`; `group` is
+  `native|plus|mcp|project|none`; `server` is the exact (case-insensitive)
+  MCP server name; `level` is `project|global|defaults`; `agent` is a
+  case-insensitive substring, `_` is the shared (agent-less) row; `state`
+  is `on|off`; `modified`/`overridden` read the row's own stored text;
+  `review` includes rolled-up descendant review; `source` is
+  `project|global|defaults|upstream`; `active` is the base template active
+  for the row's agent model; `inactive` is a user base template that can
+  never become active; `unsupported` is Code Mode tool rows (and their
+  sections), whole `system:role`, and whole base rows; `codemode` reads the
+  item flag; `can` is `toggle|edit|reset|remove|split`; `has` is
+  `record|split|sections|text`; `id` is a case-insensitive prefix match;
+  `label` is a substring; `updated` compares the row's own override (or
+  split) timestamp against an ISO date or a `<n><s|m|h|d|w>` age, where
+  `>`/`<` on an age mean older/newer than; `team` is the exact
+  (case-insensitive) team name on agent/team rows; `acked` reads
+  `acknowledged`; `excluded` is an addressed row whose effective state is
+  off; `identical` is stored text equal to upstream text; `dead` is a record
+  that can never apply (Code Mode tool rows, MCP text overrides, off-state
+  on whole `system:role`/base rows); `shadowed` is a row whose text a more
+  specific level overrides for the same scope; `orphan` is a record naming a
+  missing item, agent, or section (`orphan:true` also pulls those rows into
+  the candidates); `tokens` is `ceil(length/4)` of the resolved text;
+  `delta` is changed lines vs upstream (0 with no stored text);
+  `overriders` counts distinct agents overriding a Defaults shared row (0
+  elsewhere); `text`/`upstream` are substrings over the resolved/upstream
+  text. Numeric keys take `>`, `<`, `>=`, `<=`, `=` comparisons (`=` may be
+  bare); boolean keys take `true|false`.
+- Evaluation order: filters run sorted by rank — structural keys first
+  (`kind item group server level agent overridden active inactive
+  unsupported codemode can has id label updated team acked), then `state modified review source excluded`, then the
+  text-dependent keys in order `identical dead shadowed orphan tokens delta
+  overriders text upstream`. Structural filters never resolve row text.
+- Memo: one `Memo` per snapshot input (`buildMemo`), caching whole/section
+  resolves, splits, and review flags per address key plus an index of
+  addresses holding stored text (addresses without one short-circuit review
+  to false). Candidates walk the lazy skeleton without resolving; resolved
+  and upstream text are computed lazily per candidate and cached on it. A
+  caller-supplied `memo` reuses those caches.
+- The TUI filter (`state.ts`) runs the same engine (`query` with
+  `fields: ["id"]`) and reveals each match with its ancestor chain; gated
+  Code Mode sections never surface as rows; a `where` the grammar rejects
+  falls back to a label/id substring match.
+
+### Errors
+
+| error | meaning |
+| `row.unknown` | no row has that id; `list` again for the current id |
+| `agent.protected` | that agent is in `protectedAgents` |
+| `delete.unconfirmed` | retry with `confirm: true` |
+| `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
+| `project.disabled` | project mode is off and no tool changes that |
+

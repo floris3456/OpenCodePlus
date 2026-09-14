@@ -228,7 +228,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   async function filterPrompt() {
     const raw = await props.context.ui.dialog.prompt({
       title: "Filter",
-      description: "Filter rows by label (empty clears)",
+      description: "Filter: words or key:value (? help)",
       value: state.filter(),
     })
     if (raw === undefined) return
@@ -314,6 +314,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       "space toggle include/exclude · a add · d delete (confirm)",
       "r reset override · s split into sections",
       "/ filter rows · ? help · esc back",
+      "filter: words or key:value · ! negates · a,b ors · sort:key",
+      "keys: kind item group server level agent state modified review",
+      "  source overridden active inactive unsupported codemode can",
+      "  has id label updated team acked excluded",
+      "slow text: text upstream tokens delta overriders identical dead",
+      "  shadowed orphan",
     ].join("\n")
   }
 
