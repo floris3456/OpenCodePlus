@@ -267,18 +267,32 @@ test("resolveReview keep/take/edit match resolveResolution", () => {
     scopes: { global: new Set<string>(), defaults: new Set<string>() },
     address: node.address,
   }
+  const withoutUpdated = (records: readonly CustomizationRecord[]) =>
+    records.map((entry) => {
+      const { updated: _ignored, ...meaningful } = entry
+      void _ignored
+      return meaningful
+    })
+  const expectValidIso = (timestamp: string) => {
+    expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    expect(Number.isNaN(Date.parse(timestamp))).toBe(false)
+    expect(new Date(timestamp).toISOString()).toBe(timestamp)
+  }
   const keep = resolveReview(withUpstream, rowId, "keep")
   if ("refusal" in keep) throw new Error(`keep refused ${keep.refusal}`)
   expect(keep.status).toBe(`Kept "sample"`)
-  expect(keep.records).toEqual(resolveResolution(chain, "keep"))
+  expect(withoutUpdated(keep.records)).toEqual(withoutUpdated(resolveResolution(chain, "keep")))
+  keep.records.forEach((entry) => expectValidIso(entry.updated))
   const take = resolveReview(withUpstream, rowId, "take")
   if ("refusal" in take) throw new Error(`take refused ${take.refusal}`)
   expect(take.status).toBe(`Took upstream for "sample"`)
-  expect(take.records).toEqual(resolveResolution(chain, "take"))
+  expect(withoutUpdated(take.records)).toEqual(withoutUpdated(resolveResolution(chain, "take")))
+  take.records.forEach((entry) => expectValidIso(entry.updated))
   const edit = resolveReview(withUpstream, rowId, "edit", "merged text")
   if ("refusal" in edit) throw new Error(`edit refused ${edit.refusal}`)
   expect(edit.status).toBe(`Edited "sample"`)
-  expect(edit.records).toEqual(resolveResolution(chain, "edit", "merged text"))
+  expect(withoutUpdated(edit.records)).toEqual(withoutUpdated(resolveResolution(chain, "edit", "merged text")))
+  edit.records.forEach((entry) => expectValidIso(entry.updated))
   expect(edit.records.some((entry) => entry.text === "merged text")).toBe(true)
 })
 

@@ -80,6 +80,7 @@ Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead
 | \`agent.protected\` | that agent is in \`protectedAgents\` |
 | \`delete.unconfirmed\` | retry with \`confirm: true\` |
 | \`view.unsupported\` | that view needs another id kind (\`assembled\` needs an agent row) |
+| \`agent.unknown\` | no agent has that id; \`list\` again for the current id |
 | \`project.disabled\` | project mode is off and no tool changes that |
 
 ## Examples
