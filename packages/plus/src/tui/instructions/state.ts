@@ -144,11 +144,25 @@ export function createInstructionsState(context: Plugin.Context) {
   function fullTree(): TreeNode[] {
     const current = snapshot()
     if (!current) return []
-    return tree({
+    const expanded = new Set<string>()
+    let previous = -1
+    let nodes = tree({
       items: itemsForTree(),
       records: recordsForTree(),
       agents: agentsForTree(),
+      expanded,
     })
+    while (previous !== expanded.size) {
+      previous = expanded.size
+      for (const node of nodes) expanded.add(node.id)
+      nodes = tree({
+        items: itemsForTree(),
+        records: recordsForTree(),
+        agents: agentsForTree(),
+        expanded,
+      })
+    }
+    return nodes
   }
 
   function ancestorsOf(all: readonly TreeNode[], byId: ReadonlyMap<string, TreeNode>, node: TreeNode): TreeNode[] {

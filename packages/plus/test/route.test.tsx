@@ -448,6 +448,34 @@ test("disabled project mode hides actions and keys", async () => {
   }
 })
 
+function reviewSnapshot(): Snapshot {
+  return createSnapshot({
+    items: [mcpItem({ text: "new-upstream" })],
+    records: [
+      {
+        type: "customization" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "mcp:sample",
+        section: null,
+        text: "mine",
+        basedOn: "fp-old",
+        basedOnText: "old-upstream",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+}
+
+async function gotoReviewRow(fixture: TestFixture): Promise<void> {
+  await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+  await moveDown(fixture, 8)
+  dispatch(fixture, "right")
+  await sleep(50)
+  await moveDown(fixture, 1)
+  await fixture.waitForFrame((frame) => frame.includes("sample"))
+}
+
 test("narrow detail opens with right and closes with escape", async () => {
   const snapshot = createSnapshot({ items: [mcpItem()] })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 80, height: 40 })
@@ -464,6 +492,154 @@ test("narrow detail opens with right and closes with escape", async () => {
     dispatch(fixture, "escape")
     await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("back to tree"))
     expect(fixture.captureCharFrame()).not.toContain("back to tree")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("enter on a yellow node opens the three-pane diff and k keeps mine", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("review"))
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Original upstream")
+    expect(frame).toContain("Yours")
+    expect(frame).toContain("New upstream")
+    expect(frame).toContain("k keep mine")
+    dispatch(fixture, "k")
+    await fixture.waitForFrame((frame) => frame.includes('Kept "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", item: "mcp:sample" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("enter on a yellow node resolves t take upstream", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("review"))
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    dispatch(fixture, "t")
+    await fixture.waitForFrame((frame) => frame.includes("Took upstream"))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("enter on a yellow node resolves e edit through the route", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [reviewSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["merged text"] },
+  })
+  try {
+    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("review"))
+    // The diff pane mounts its own e edit editor; wait for it before typing.
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    dispatch(fixture, "e")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor).toBeDefined()
+    expect(editor?.plainText).toBe("mine")
+    editor?.setText("merged text")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Edited "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "merged text" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("s opens the manual splitter and saves two named sections", async () => {
+  const text = "Purpose tells when.\n\nQuoting details here.\n"
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ items: [mcpItem({ text })] })],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await gotoReviewRow(fixture)
+    expect(binds(fixture)).toContain("s")
+    dispatch(fixture, "s")
+    await fixture.waitForFrame((frame) => frame.includes("split into sections"))
+    dispatch(fixture, "b")
+    await fixture.waitForFrame((frame) => frame.includes("Name section"))
+    fixture.renderer.currentFocusedEditor?.setText("Purpose")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes("Purpose") && !frame.includes("Name section"))
+    dispatch(fixture, "down")
+    dispatch(fixture, "down")
+    dispatch(fixture, "b")
+    await fixture.waitForFrame((frame) => frame.includes("Name section"))
+    fixture.renderer.currentFocusedEditor?.setText("Quoting")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes("Quoting"))
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Split "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const split = fixture.fake.mutateInputs[0].records.find((record) => record.type === "split")
+    expect(split).toMatchObject({ type: "split", item: "mcp:sample" })
+    if (split?.type !== "split") throw new Error("expected a split record")
+    expect(split.boundaries.map((boundary) => boundary.name)).toEqual(["Purpose", "Quoting"])
+    expect(split.boundaries.map((boundary) => boundary.start)).toEqual([0, text.indexOf("Quoting")])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("normal-mode keys are arrows without j/k/h/l aliases", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [createSnapshot()], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    const all = binds(fixture)
+    expect(all).toContain("up")
+    expect(all).toContain("down")
+    expect(all).toContain("left")
+    expect(all).toContain("right")
+    for (const key of ["j", "k", "h", "l"]) {
+      expect(dispatch(fixture, key)).toBe(false)
+    }
+    const full = all.join(",")
+    expect(full).not.toContain("up,k")
+    expect(full).not.toContain("left,h")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("filter reveals a match nested under collapsed ancestors", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [toolItem({ title: "zz-unique-tool", id: "tool:zz-unique", text: "zz-unique-body" })],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["zz-unique"] },
+  })
+  try {
+    // The tool row starts hidden under collapsed ancestors; filtering must
+    // reveal it with its ancestor chain.
+    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    expect(fixture.captureCharFrame()).not.toContain("zz-unique-tool")
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Filter:")
+    expect(frame).toContain("zz-unique-tool")
+    expect(frame).toContain("Implementer")
   } finally {
     fixture.destroy()
   }
