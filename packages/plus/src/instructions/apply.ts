@@ -15,7 +15,7 @@ import { applies, isCodeModeToolEntry, isCodeModeToolId, resolve, type Customiza
 export interface ApplyAgent {
   readonly id: string
   readonly level: Level
-  /** Host classification of the base template active for this agent. Threaded from discover; never re-derived. */
+  /** Display/active-badge classification from discover; request fallback only, never the per-request answer. */
   readonly base?: string | undefined
   /** True when the agent defines its own custom system prompt. Base edits never touch such agents. */
   readonly customSystem?: boolean | undefined
@@ -309,6 +309,8 @@ interface BasePlan {
   readonly agent: string
   readonly template: string
   readonly text: string
+  /** Raw upstream host template that produced the live rendered text; the alignment key. */
+  readonly upstream: string
 }
 
 interface InstructionPlan {
@@ -326,7 +328,7 @@ function basePlans(input: ApplyInput): BasePlan[] {
       const resolved = resolvedFor(item, agent, input)
       if (isNoop(item, resolved)) return []
       if (!resolved.enabled) return []
-      return [{ agent: agent.id, template: parseId(item.id, "base:"), text: resolved.assembled }]
+      return [{ agent: agent.id, template: parseId(item.id, "base:"), text: resolved.assembled, upstream: item.text }]
     }),
   )
 }
@@ -395,9 +397,10 @@ async function applySession(
 // `ctx.prompt.active`. Classification happens per request from `event.model`
 // because a session can select or switch to a model family that differs from
 // the agent's configured model; classifying once at install time would serve
-// the configured family's customization to the wrong model. An explicit
-// per-agent base threaded from discover (index.ts derives it from the agent's
-// configured model) wins over the request model.
+// the configured family's customization to the wrong model. The per-agent
+// base threaded from discover (index.ts derives it from the agent's
+// configured model) is display/active-badge state and only a fallback when
+// the request model yields no classification.
 interface RequestClassifier {
   readonly pinned: ReadonlyMap<string, string>
   readonly catalog: readonly Model.Info[]
@@ -409,15 +412,15 @@ function classifyRequest(
   agent: string,
   ref: { providerID: unknown; id: unknown },
 ): string | undefined {
-  const pinned = classifier.pinned.get(agent)
-  if (pinned !== undefined) return pinned
   const providerID = String(ref.providerID)
   const id = String(ref.id)
   const found = classifier.catalog.find((entry) => String(entry.providerID) === providerID && String(entry.id) === id)
   const model = found !== undefined ? { id: found.id, name: found.name } : { id, name: id }
-  return Effect.runSync(
+  const request = Effect.runSync(
     classifier.prompt.active(model).pipe(Effect.catchCause(() => Effect.succeed(undefined as string | undefined))),
   )
+  if (request !== undefined) return request
+  return classifier.pinned.get(agent)
 }
 
 // "Custom system" comes from real agent info in the context hook's host:
@@ -463,10 +466,10 @@ function applyBasePlan(
   // model placeholder.
   const first = event.system[0]
   if (first === undefined) {
-    event.system.push({ type: "text", text: renderBaseText(match.text, event, classifier) })
+    event.system.push({ type: "text", text: renderBaseText(match.text, match.upstream, event, classifier) })
     return
   }
-  event.system[0] = { ...first, text: renderBaseText(match.text, event, classifier) }
+  event.system[0] = { ...first, text: renderBaseText(match.text, match.upstream, event, classifier) }
 }
 
 // Render one stored base customization the way core's optimize plugin renders
@@ -476,8 +479,8 @@ function applyBasePlan(
 // request model name. The live text — not a regenerated guidance string —
 // is the source of truth for what core rendered for this request, so Plus
 // never invents guidance for tools the request does not have.
-function renderBaseText(text: string, event: SessionContext, classifier: RequestClassifier): string {
-  const rendered = spliceToolGuidance(text, event.system[0]?.text)
+function renderBaseText(text: string, upstream: string, event: SessionContext, classifier: RequestClassifier): string {
+  const rendered = spliceToolGuidance(text, upstream, event.system[0]?.text)
   return rendered.replaceAll("{{MODEL_NAME}}", requestModelName(classifier, event))
 }
 
@@ -490,21 +493,24 @@ function requestModelName(classifier: RequestClassifier, event: SessionContext):
 
 // The stored customization only knows the RAW placeholder; the live system[0]
 // already carries core's rendered guidance for this request's tool set. Take
-// the guidance span out of the live text by aligning the raw template around
-// its placeholder: the literal text before the marker locates the guidance
-// start in the live text, and the literal text after the marker locates its
-// end. No marker in the stored text means nothing to render; no live text (or
-// a live text that no longer contains the template's surroundings, e.g. an
-// agent-owned prompt Plus must not rewrite — already excluded above) leaves
-// the stored text untouched rather than inventing guidance.
+// the guidance span out of the live text by aligning the UPSTREAM raw
+// template around its placeholder: the upstream text before the marker
+// locates the guidance start in the live text, and the upstream text after
+// the marker locates its end. Customized surroundings cannot align because
+// editing them is the point of the feature. No marker in the stored text
+// means nothing to render; no live text, no upstream marker, or a live text
+// that genuinely lacks the upstream surroundings leaves the marker empty
+// rather than inventing guidance.
 const toolGuidanceMarker = "${OPENCODE_TOOL_GUIDANCE}"
 
-function spliceToolGuidance(stored: string, live: string | undefined): string {
+function spliceToolGuidance(stored: string, upstream: string, live: string | undefined): string {
   const at = stored.indexOf(toolGuidanceMarker)
   if (at === -1) return stored
   if (live === undefined) return stored.replaceAll(toolGuidanceMarker, "")
-  const before = stored.slice(0, at)
-  const after = stored.slice(at + toolGuidanceMarker.length)
+  const upstreamAt = upstream.indexOf(toolGuidanceMarker)
+  if (upstreamAt === -1) return stored.replaceAll(toolGuidanceMarker, "")
+  const before = upstream.slice(0, upstreamAt)
+  const after = upstream.slice(upstreamAt + toolGuidanceMarker.length)
   const start = before === "" ? 0 : live.indexOf(before)
   if (start === -1) return stored.replaceAll(toolGuidanceMarker, "")
   const guidanceStart = start + before.length

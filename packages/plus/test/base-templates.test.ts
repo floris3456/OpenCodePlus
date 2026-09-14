@@ -169,3 +169,81 @@ test("a user template that is not the host's active answer is never applied", as
   expect(event.system[0]?.text).toBe("customized trinity base")
   expect(event.system[0]?.text).not.toContain("customized user base")
 })
+
+test("a request model switch through publication applies the request model's customization", async () => {
+  // DEFECT 1 through the real publication path: the agent is configured to a
+  // gpt model (discover pins base "gpt"), both families are customized, but
+  // the request arrives on a kimi model. The hook must serve the kimi text.
+  const { project } = await tempRoot()
+  await enable(project)
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role\n")
+  const hostTemplates = [
+    { id: "gpt", title: "GPT.txt", text: "host gpt base" },
+    { id: "kimi", title: "Kimi.txt", text: "host kimi base" },
+  ]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "", modelRef("openai", "gpt-4o"))],
+    templates: hostTemplates,
+    models: [modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")],
+    classifications: { "": "general", "gpt-4o": "gpt", "kimi-k2": "kimi" },
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const handlers = createHandlers(ctx, createState())
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const gpt = snapshot.items.find((item) => item.id === "base:gpt")
+  expect(gpt?.text).toBe("host gpt base")
+  const kimi = snapshot.items.find((item) => item.id === "base:kimi")
+  expect(kimi?.text).toBe("host kimi base")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [{
+          type: "customization",
+          level: "project",
+          agent: "alpha",
+          item: "base:gpt",
+          section: null,
+          text: "customized gpt base",
+          basedOn: gpt?.fingerprint ?? fingerprint("host gpt base"),
+          updated: "2026-01-01T00:00:00.000Z",
+        }, {
+          type: "customization",
+          level: "project",
+          agent: "alpha",
+          item: "base:kimi",
+          section: null,
+          text: "customized kimi base",
+          basedOn: kimi?.fingerprint ?? fingerprint("host kimi base"),
+          updated: "2026-01-01T00:00:00.000Z",
+        }],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(callbacks).toHaveLength(1)
+  const hook = callbacks[0]
+  if (!hook) throw new Error("missing context hook")
+  const event = {
+    sessionID: Session.ID.make("ses_test"),
+    agent: Agent.ID.make("alpha"),
+    model: Model.Ref.make({ providerID: Provider.ID.make("moonshot"), id: Model.ID.make("kimi-k2") }),
+    system: [{ type: "text" as const, text: "host kimi base" }],
+    messages: [],
+    options: {},
+    tools: {},
+  }
+  await Effect.runPromise(hook(event))
+  expect(event.system[0]?.text).toBe("customized kimi base")
+})
