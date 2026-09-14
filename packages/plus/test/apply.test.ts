@@ -18,7 +18,7 @@ import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "..
 import type { ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
-import type { CustomizationRecord, Item, Level } from "../src/instructions/model.js"
+import type { CustomizationRecord, Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 
@@ -38,22 +38,6 @@ async function discoverFor(
     baseTemplates: options.baseTemplates ?? [],
     activeBase: options.activeBase ?? (() => undefined),
   })
-}
-
-// Fallback item constructor for tests where full discovery is intentionally bypassed;
-// tests should prefer real discover() output wherever the harness allows.
-function makeItem(overrides: Partial<Item> & { id: string; kind: Item["kind"] }): Item {
-  const text = overrides.text ?? "upstream"
-  const base = {
-    group: "none" as const,
-    title: overrides.id,
-    enabled: true,
-    ...overrides,
-    id: overrides.id,
-    kind: overrides.kind,
-    text,
-  }
-  return { ...base, fingerprint: overrides.fingerprint ?? fingerprint(text) }
 }
 
 function makeRecord(overrides: Partial<CustomizationRecord> & { item: string; type?: "customization" }): CustomizationRecord {
@@ -628,6 +612,9 @@ test("per-file instructions drop or replace one part by canonical path", async (
     makeRecord({ item: "system:../AGENTS.md", agent: "alpha", level: "project", state: "off" }),
   ]
   const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
+  // One session registration: applySession installs a single context hook
+  // carrying both instruction plans (the project-file replace and the
+  // ancestor-file drop).
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
@@ -640,16 +627,22 @@ test("per-file instructions drop or replace one part by canonical path", async (
     ],
   )
   await Effect.runPromise(run(event))
-  expect(event.system.map((part) => part.text)).toEqual(["custom guide\n"])
+  // resolve assembles custom text trimmed (the same normalization the
+  // neighboring global/ancestor test pins: "custom ancestor\n" reads back as
+  // "custom ancestor"), so the replaced project part reads back without its
+  // trailing newline while the dropped ancestor part is gone.
+  expect(event.system.map((part) => part.text)).toEqual(["custom guide"])
   // Direct unit path: no string surgery on a merged blob.
   const direct: SessionHooks["context"]["system"] = [{ type: "text", text: "merged blob" }]
   applyInstructions({ system: direct }, [])
   expect(direct).toHaveLength(1)
 })
 
-// Direct unit test of applyInstructions array mutation: hand-constructs synthetic
-// system parts to isolate part removal without disk instruction discovery.
-test("excluding one instruction removes exactly that production part", async () => {
+// Direct unit test of applyInstructions array mutation: synthetic system parts
+// isolate part removal without disk instruction discovery. The full
+// discover -> apply -> real-hook path is covered by the neighboring per-file
+// tests; synthesizing here keeps this a pure mutation unit.
+test("excluding one instruction removes exactly that part (direct applyInstructions unit)", async () => {
   const system: SessionHooks["context"]["system"] = [
     { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
     { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
@@ -658,9 +651,11 @@ test("excluding one instruction removes exactly that production part", async () 
   expect(system.map((part) => part.text)).toEqual(["guide"])
 })
 
-// Direct unit test of applyInstructions array mutation: hand-constructs synthetic
-// system parts to isolate in-place part replacement without disk instruction discovery.
-test("editing one instruction replaces its production part rather than appending", async () => {
+// Direct unit test of applyInstructions array mutation: synthetic system parts
+// isolate in-place part replacement without disk instruction discovery. The
+// full discover -> apply -> real-hook path is covered by the neighboring
+// per-file tests; synthesizing here keeps this a pure mutation unit.
+test("editing one instruction replaces its part rather than appending (direct applyInstructions unit)", async () => {
   const system: SessionHooks["context"]["system"] = [
     { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
     { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
@@ -985,5 +980,8 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
   expect(skills.state.get(copyName("alpha", "notes"))).toBeUndefined()
   expect(skills.state.get("notes")?.content).toBe("skill body")
   expect(stateAgents.state.get("alpha")?.system).toBe("upstream")
-  expect(stateAgents.disposes).toBe(1)
+  // apply() installs two agent transforms in this scenario (the role prompt
+  // via install:prompt and the skill agent rules via install:skill-agent-rules),
+  // so a correct unwind disposes every installed agent transform.
+  expect(stateAgents.disposes).toBe(stateAgents.transforms)
 })
