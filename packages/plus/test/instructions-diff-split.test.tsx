@@ -272,3 +272,56 @@ test("splitter saves two named section boundaries compatible with manual()", asy
     fixture.destroy()
   }
 })
+
+test("diff pane shows visible keep take edit labels", async () => {
+  const fixture = await mount((context) => (
+    <DiffPane context={context} title="Demo item" threeWay={threeWay} active={() => true} onResolve={async () => {}} />
+  ))
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("k keep mine"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("k keep mine")
+    expect(frame).toContain("t take new")
+    expect(frame).toContain("e edit")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("splitter save builds sections.manual-compatible boundaries", async () => {  const text = "Alpha line.\n\nBeta line.\n"
+  const saved: { id: string; name: string; start: number }[][] = []
+  const fixture = await mount((context) => (
+    <Splitter
+      context={context}
+      title="Sample"
+      text={text}
+      active={() => true}
+      onSave={async (boundaries) => {
+        saved.push(boundaries.map((boundary) => ({ ...boundary })))
+      }}
+    />
+  ))
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("split into sections"))
+    expect(send(fixture, "b")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Name section"))
+    fixture.renderer.currentFocusedEditor?.setText("Alpha")
+    expect(send(fixture, "ctrl+s")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Alpha") && !frame.includes("Name section"))
+    expect(send(fixture, "down")).toBe(true)
+    expect(send(fixture, "down")).toBe(true)
+    expect(send(fixture, "b")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Name section"))
+    fixture.renderer.currentFocusedEditor?.setText("Beta")
+    expect(send(fixture, "ctrl+s")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Beta"))
+    expect(send(fixture, "ctrl+s")).toBe(true)
+    await waitFor(() => saved.length === 1)
+    // sections.manual sorts by start and names each slice from its boundary.
+    const split = manual(text, saved[0] ?? [])
+    expect(split.kind).toBe("manual")
+    expect(split.sections.map((section) => section.name)).toEqual(["Alpha", "Beta"])
+  } finally {
+    fixture.destroy()
+  }
+})

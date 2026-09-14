@@ -5,6 +5,8 @@ import { tree } from "../src/instructions/tree.js"
 import {
   displayLevel,
   excludedAttributes,
+  excludedRanges,
+  isExcludedOffset,
   parentItemTitle,
   provenanceLine,
   resolvedText,
@@ -250,4 +252,31 @@ test("review badge owns yellow and nothing else borrows it", () => {
   for (const label of ["on", "off", "modified", "active"]) {
     expect(badgeColor(context, label)).toBe("gray")
   }
+})
+
+test("whole-item detail strikes the excluded section range", () => {
+  const snap = snapshot([    {
+      type: "customization",
+      level: "project",
+      agent: "Implementer",
+      item: "system:role",
+      section: "usage",
+      state: "off",
+      basedOn: fingerprint("# Usage\n\nb\n"),
+      updated: UPDATED,
+    },
+  ])
+  const full = expandAll()
+  const role = full.find((node) => node.id === "item:project:Implementer:system:role")
+  expect(role).toBeDefined()
+  const ranges = excludedRanges(role!, snap)
+  expect(ranges).toHaveLength(1)
+  const text = resolvedText(role!, snap)
+  const usageStart = text.indexOf("# Usage")
+  expect(usageStart).toBeGreaterThanOrEqual(0)
+  expect(ranges[0]).toEqual({ start: usageStart, end: text.length })
+  // Inside the usage body is excluded; inside purpose is not.
+  expect(isExcludedOffset(ranges, usageStart + 2)).toBe(true)
+  expect(isExcludedOffset(ranges, 1)).toBe(false)
+  expect(excludedAttributes(true)).toBe(TextAttributes.STRIKETHROUGH)
 })

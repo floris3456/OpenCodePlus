@@ -598,6 +598,39 @@ test("s opens the manual splitter and saves two named sections", async () => {
   }
 })
 
+test("mutation leaves an untouched split record updated unchanged", async () => {
+  const splitUpdated = "2026-01-02T00:00:00.000Z"
+  const snapshot = createSnapshot({
+    items: [mcpItem(), toolItem()],
+    records: [
+      {
+        type: "split" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "tool:bash",
+        boundaries: [{ id: "a", name: "A", start: 0 }],
+        updated: splitUpdated,
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const split = fixture.fake.mutateInputs[0].records.find((record) => record.type === "split")
+    expect(split).toMatchObject({ type: "split", item: "tool:bash", updated: splitUpdated })
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("normal-mode keys are arrows without j/k/h/l aliases", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [createSnapshot()], width: 120, height: 40 })
   try {
