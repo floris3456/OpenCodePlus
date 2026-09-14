@@ -136,10 +136,10 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addBase(): Promise<void> {
     if (disposed) return
-    const id = await context.ui.dialog.prompt({ title: "Base id", placeholder: "gpt" })
+    const id = await context.ui.dialog.prompt({ title: "Base id", placeholder: "custom" })
     if (disposed) return
     if (id === undefined) return
-    const title = await context.ui.dialog.prompt({ title: "Base title", placeholder: "gpt.txt" })
+    const title = await context.ui.dialog.prompt({ title: "Base title", placeholder: "custom.txt" })
     if (disposed) return
     if (title === undefined) return
     const text = await context.ui.dialog.prompt({ title: "Base text", placeholder: "Base prompt text" })
