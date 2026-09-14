@@ -16,6 +16,8 @@ export interface TreeNodeBadges {
   readonly inactive?: boolean
   /** Code Mode tool whose customizations are never applied. */
   readonly unsupported?: boolean
+  /** Whole Role/persona or whole base row: apply keeps the original text live, so the row cannot be toggled off. */
+  readonly unexcludable?: boolean
 }
 
 export interface TreeNodeActions {
@@ -233,11 +235,16 @@ function flagOf(memo: Memo, level: Level, owner: string | null, item: Item, sect
 
 // Section ids come from the split, so an item with no section customizations
 // contributes zero without resolving anything; only items that actually have
-// section overrides pay for one whole resolve plus one split.
+// section overrides pay for one whole resolve plus one split. Gated (Code
+// Mode) section overrides stay stored but never apply, so their review flags
+// must not roll up into ancestor counts: the content needs attention, and
+// the `unsupported` badge on the section says so, without implying an
+// upstream change.
 function itemRollup(memo: Memo, level: Level, owner: string | null, item: Item): number {
   const entry = memo.texts.get(textKey(level, owner, item.id))
   if (entry === undefined) return 0
   if (entry.sections.size === 0) return 0
+  if (item.kind === "tool" && item.codemode === true) return 0
   return splitOf(memo, level, owner, item).sections.filter(
     (section) => entry.sections.has(section.id) && flagOf(memo, level, owner, item, section.id),
   ).length
@@ -649,12 +656,15 @@ function lazyItem(
 ): Lazy {
   const address: Address = { level, agent: owner, item: item.id, section: null }
   // Code Mode tool rows stay discoverable but offer nothing apply would drop:
-  // no toggle/edit/split and no `a: add section` affordance. Sections of such
-  // an item are unreachable because the item cannot split. The TUI already
-  // gates every one of these on these same two fields (`canToggle`,
-  // `canEdit`, `canSplit` in tui/instructions/route.tsx and the `add:
-  // "section"` emission below), so no TUI change is needed.
+  // no toggle/edit/split and no `a: add section` affordance. Their sections
+  // stay reachable so stale pre-fix overrides remain visible and resettable.
+  // Whole Role/persona and whole base rows cannot be excluded either: apply
+  // keeps the original text live, so toggling would report "Disabled" for a
+  // no-op. Their text edits and section toggles still apply, so only the
+  // whole-row toggle is gated. Blocked rows share the Code Mode vocabulary
+  // ("cannot be toggled" plus `unsupported`), so they read the same.
   const codemode = item.kind === "tool" && item.codemode === true
+  const wholeNoToggle = item.id === "system:role" || item.kind === "base"
   const splittable = !codemode && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
@@ -670,20 +680,27 @@ function lazyItem(
     address,
     ...(splittable ? { add: "section" as const } : {}),
     actions: {
-      toggle: !codemode,
+      toggle: !codemode && !wholeNoToggle,
       edit: !codemode,
       reset: canReset(ctx.customizations, address),
       remove: removable(level, owner, item),
       split: splittable,
     },
     selfReview: () => flagOf(memo, level, owner, item, null),
-    partial: () => itemBadges(memo, level, owner, agent, item),
+    partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle),
     reviewCount: () => itemRollup(memo, level, owner, item),
     children: kids,
   }
 }
 
-function itemBadges(memo: Memo, level: Level, owner: string | null, agent: AgentSource | null, item: Item): TreeNodeBadges {
+function itemBadges(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  item: Item,
+  wholeNoToggle = false,
+): TreeNodeBadges {
   const resolved = wholeOf(memo, level, owner, item)
   const active = agent?.base !== undefined && item.id === `base:${agent.base}`
   return {
@@ -702,6 +719,12 @@ function itemBadges(memo: Memo, level: Level, owner: string | null, agent: Agent
     // effect: like review it flags saved content needing user attention,
     // rather than inventing a new badge language.
     ...(item.kind === "tool" && item.codemode === true ? { unsupported: true } : {}),
+    // Whole Role/persona and whole base rows cannot be excluded: apply keeps
+    // the original text live, so toggling would report "Disabled" for a
+    // no-op. Same `unsupported` badge vocabulary as Code Mode rows so every
+    // no-op toggle refusal reads the same; `unexcludable` names the reason
+    // for status/detail text.
+    ...(wholeNoToggle ? { unsupported: true, unexcludable: true } : {}),
   }
 }
 
@@ -715,27 +738,47 @@ function lazySection(
   depth: number,
 ): Lazy {
   const address: Address = { level, agent: owner, item: item.id, section: section.id }
+  // Same gate as the parent row: apply drops the whole tool plan, so
+  // section toggle/edit would report success for a no-op. Reset stays
+  // available (like the parent) so stale pre-fix overrides can be cleared;
+  // modified/review stay visible alongside `unsupported` so the dead content
+  // is discoverable rather than hidden.
+  const gated = item.kind === "tool" && item.codemode === true
   return {
     id: `section:${level}:${owner ?? ""}:${item.id}:${section.id}`,
     kind: "section",
     label: section.name,
     depth,
     address,
-    actions: { toggle: true, edit: true, reset: canReset(ctx.customizations, address), remove: false, split: false },
+    actions: {
+      toggle: !gated,
+      edit: !gated,
+      reset: canReset(ctx.customizations, address),
+      remove: false,
+      split: false,
+    },
     selfReview: () => flagOf(memo, level, owner, item, section.id),
-    partial: () => sectionBadges(memo, level, owner, item, section),
+    partial: () => sectionBadges(memo, level, owner, item, section, gated),
     reviewCount: () => 0,
     children: () => [],
   }
 }
 
-function sectionBadges(memo: Memo, level: Level, owner: string | null, item: Item, section: Section): TreeNodeBadges {
+function sectionBadges(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  section: Section,
+  gated = false,
+): TreeNodeBadges {
   const resolved = sectionResolveOf(memo, level, owner, item, section.id)
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     review: resolved.review,
     source: resolved.source,
+    ...(gated ? { unsupported: true } : {}),
   }
 }
 

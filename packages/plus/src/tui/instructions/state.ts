@@ -207,12 +207,16 @@ export function createInstructionsState(context: Plugin.Context) {
     if (query.length === 0) return allNodes()
     // Reveal matches hidden inside collapsed ancestors: match against the
     // full logical tree and include each match with its ancestor chain.
+    // Gated Code Mode sections never surface: their toggle/edit would report
+    // success for content apply discards, and the tree path already refuses
+    // to expand them. The gated item parent still matches by its own label.
     const full = fullTree()
     const byId = new Map(full.map((node) => [node.id, node]))
     const indexById = new Map(full.map((node, index) => [node.id, index] as const))
-    const matched = full.filter(
-      (node) => node.label.toLowerCase().includes(query) || node.id.toLowerCase().includes(query),
-    )
+    const matched = full.filter((node) => {
+      if (node.kind === "section" && node.actions?.toggle !== true) return false
+      return node.label.toLowerCase().includes(query) || node.id.toLowerCase().includes(query)
+    })
     const included = new Map<string, TreeNode>()
     for (const node of matched) {
       for (const ancestor of ancestorsOf(full, byId, indexById, node)) included.set(ancestor.id, ancestor)
@@ -436,6 +440,9 @@ export function createInstructionsState(context: Plugin.Context) {
   // toggle enabled; sections toggle their own exclusion. Team rows carry no
   // address by design (a synthetic address would corrupt chainFor/persist),
   // so they toggle through team.setEnabled with the inverted snapshot state.
+  // Unsupported rows (Code Mode tools and their sections, whole Role/persona
+  // and whole base rows) refuse: persisting would report "Saved"/"Disabled"
+  // for content apply discards, so the status names the row instead.
   async function toggle(node: TreeNode): Promise<boolean> {
     if (node.kind === "team") return toggleTeam(node)
     if (node.address === undefined) {
@@ -443,6 +450,14 @@ export function createInstructionsState(context: Plugin.Context) {
       return false
     }
     if (node.actions?.toggle !== true) {
+      if (node.badges.unsupported === true) {
+        setStatus(
+          node.badges.unexcludable === true
+            ? `"${node.label}" cannot be excluded and remains in effect`
+            : `"${node.label}" is unsupported in Code Mode and cannot be toggled`,
+        )
+        return false
+      }
       setStatus(`"${node.label}" cannot be toggled`)
       return false
     }
@@ -548,13 +563,19 @@ export function createInstructionsState(context: Plugin.Context) {
     )
   }
 
-  // Enter (non-review): save a text override at the current address.
+  // Enter (non-review): save a text override at the current address. Gated
+  // rows refuse with the same unsupported wording as toggle so section edits
+  // on Code Mode tools cannot report "Saved" for discarded content.
   async function saveText(node: TreeNode, text: string): Promise<boolean> {
     if (node.address === undefined) {
       setStatus(`"${node.label}" cannot be edited`)
       return false
     }
     if (node.actions?.edit !== true) {
+      if (node.badges.unsupported === true) {
+        setStatus(`"${node.label}" is unsupported in Code Mode and cannot be edited`)
+        return false
+      }
       setStatus(`"${node.label}" cannot be edited`)
       return false
     }
