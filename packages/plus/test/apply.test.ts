@@ -17,6 +17,8 @@ import { Project } from "@opencode/schema/project"
 import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "../src/instructions/apply.js"
 import type { ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
+import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
+import { seedSystemInstruction } from "../src/instructions/teaching.js"
 import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import type { CustomizationRecord, Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
@@ -1167,4 +1169,129 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
   // via install:prompt and the skill agent rules via install:skill-agent-rules),
   // so a correct unwind disposes every installed agent transform.
   expect(stateAgents.disposes).toBe(stateAgents.transforms)
+})
+
+test("editing the teaching row for one agent replaces that agent's part only", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-teaching-"))
+  applyRoots.push(parent)
+  const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = path.join(parent, "config")
+  try {
+    const root = path.join(parent, "repo")
+    const project = path.join(root, "session")
+    await fs.mkdir(project, { recursive: true })
+    const seeded = await seedSystemInstruction()
+    expect(seeded.path).toBe(teachingFilePath())
+    const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+    const ctx = context({
+      location: new Location.Info({
+        directory: AbsolutePath.make(project),
+        project: { id: Project.ID.global, directory: AbsolutePath.make(root), canonical: AbsolutePath.make(root) },
+      }),
+      session: {
+        hook: (name, callback) => {
+          if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+          return Effect.succeed({ dispose: Effect.void })
+        },
+      },
+    })
+    const discovered = await discoverFor(ctx)
+    const row = discovered.items.find((item) => item.id === teachingItemId)
+    if (row === undefined) throw new Error("expected teaching row")
+    const records = [
+      makeRecord({ item: teachingItemId, agent: "alpha", level: "project", text: "custom teaching", basedOn: fingerprint(row.text) }),
+    ]
+    const applied = await apply(
+      ctx,
+      makeInput({
+        items: discovered.items,
+        records,
+        agents: [
+          { id: "alpha", level: "project" },
+          { id: "beta", level: "project" },
+        ],
+      }),
+    )
+    expect(applied.registrations).toHaveLength(1)
+    const run = callbacks[0]
+    if (!run) throw new Error("missing context hook")
+    const alpha = sessionEvent(
+      "alpha",
+      {},
+      [{ type: "text", text: row.text, metadata: { instruction: { path: seeded.path } } }],
+    )
+    const beta = sessionEvent(
+      "beta",
+      {},
+      [{ type: "text", text: row.text, metadata: { instruction: { path: seeded.path } } }],
+    )
+    await Effect.runPromise(run(alpha))
+    await Effect.runPromise(run(beta))
+    expect(alpha.system.map((part) => part.text)).toEqual(["custom teaching"])
+    expect(beta.system.map((part) => part.text)).toEqual([row.text])
+  } finally {
+    if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  }
+})
+
+test("toggling the teaching row off removes that part", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-teaching-off-"))
+  applyRoots.push(parent)
+  const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = path.join(parent, "config")
+  try {
+    const root = path.join(parent, "repo")
+    const project = path.join(root, "session")
+    await fs.mkdir(project, { recursive: true })
+    const seeded = await seedSystemInstruction()
+    const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+    const ctx = context({
+      location: new Location.Info({
+        directory: AbsolutePath.make(project),
+        project: { id: Project.ID.global, directory: AbsolutePath.make(root), canonical: AbsolutePath.make(root) },
+      }),
+      session: {
+        hook: (name, callback) => {
+          if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+          return Effect.succeed({ dispose: Effect.void })
+        },
+      },
+    })
+    const discovered = await discoverFor(ctx)
+    const row = discovered.items.find((item) => item.id === teachingItemId)
+    if (row === undefined) throw new Error("expected teaching row")
+    const records = [makeRecord({ item: teachingItemId, agent: "alpha", level: "project", state: "off" })]
+    const applied = await apply(
+      ctx,
+      makeInput({
+        items: discovered.items,
+        records,
+        agents: [
+          { id: "alpha", level: "project" },
+          { id: "beta", level: "project" },
+        ],
+      }),
+    )
+    expect(applied.registrations).toHaveLength(1)
+    const run = callbacks[0]
+    if (!run) throw new Error("missing context hook")
+    const alpha = sessionEvent(
+      "alpha",
+      {},
+      [{ type: "text", text: row.text, metadata: { instruction: { path: seeded.path } } }],
+    )
+    const beta = sessionEvent(
+      "beta",
+      {},
+      [{ type: "text", text: row.text, metadata: { instruction: { path: seeded.path } } }],
+    )
+    await Effect.runPromise(run(alpha))
+    await Effect.runPromise(run(beta))
+    expect(alpha.system).toEqual([])
+    expect(beta.system.map((part) => part.text)).toEqual([row.text])
+  } finally {
+    if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  }
 })

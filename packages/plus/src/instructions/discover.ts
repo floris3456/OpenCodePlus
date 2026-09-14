@@ -17,7 +17,7 @@ import {
   type CustomizationRecord,
   type Item,
 } from "./model.js"
-import { globalConfigDir } from "./paths.js"
+import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 
 export type { AgentScope, AgentSource } from "./model.js"
 export type { PromptBaseline } from "./inventory.js"
@@ -59,6 +59,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const sources = await resolveAgentSources(directory, agents, input.activeBase)
   const bodies = await readAgentBodies(sources)
   const instructions = await discoverInstructionFiles(directory, projectDirectory)
+  const teaching = await readTeachingFile()
   const mcp = mcpInventory(servers, input.records)
   const items = [
     ...toolItems(tools, baselines),
@@ -66,6 +67,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...skillItems(skills, directory, baselines),
     ...roleItems(agents, baselines, bodies),
     ...instructionFileItems(directory, instructions),
+    ...teachingItems(teaching, instructions.length),
     ...mcp.items,
   ]
   return { items, agents: sources, servers: mcp.servers, bodies }
@@ -269,6 +271,12 @@ function skillOrigin(skill: Skill.Info): ToolOrigin | undefined {
 }
 
 function skillGroup(skill: Skill.Info, directory: string): { group: Item["group"]; server?: string } {
+  // The teaching skill is Plus inventory, matched by its own id: an `origin`
+  // field would not survive core's skill state (core/src/plugin/host.ts adds
+  // through Schema.decodeUnknownSync(Skill.Info), which drops undeclared
+  // keys), so classification cannot rely on it. teaching.test.ts pins both
+  // the stripping and this fallback.
+  if (skill.id === teachingSkillId) return { group: "plus" }
   const grouped = toolGroup(skillOrigin(skill))
   if (grouped.group !== "native") return grouped
   if (isProjectSkill(skill.location, directory)) return { group: "project" }
@@ -533,4 +541,31 @@ function instructionFileItems(
       order: index,
     }
   })
+}
+
+// The seeded teaching file is ambient Plus inventory, not a core discovery
+// candidate: it gets its own stable row so it is editable, sectionable, and
+// toggleable per agent like any other instruction. It appears only while the
+// file exists, so hosts that never seed it see no new row.
+async function readTeachingFile(): Promise<{ path: string; text: string } | undefined> {
+  const file = teachingFilePath()
+  const text = await readText(file)
+  if (text === undefined) return undefined
+  return { path: file, text }
+}
+
+function teachingItems(teaching: { path: string; text: string } | undefined, order: number): Item[] {
+  if (teaching === undefined) return []
+  return [
+    {
+      id: teachingItemId,
+      kind: "system",
+      group: "plus",
+      title: "OpenCodePlus",
+      text: teaching.text,
+      enabled: upstreamEnabled(),
+      fingerprint: fingerprint(teaching.text),
+      order,
+    },
+  ]
 }

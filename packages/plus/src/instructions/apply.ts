@@ -11,6 +11,7 @@ import { Model } from "@opencode/schema/model"
 import { Deferred, Effect, Exit, Scope } from "effect"
 import path from "node:path"
 import { applies, isCodeModeToolEntry, isCodeModeToolId, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+import { teachingFilePath, teachingItemId } from "./paths.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -74,7 +75,7 @@ async function runVoid(effect: Effect.Effect<void>): Promise<void> {
   await Effect.runPromise(effect)
 }
 
-async function runRegistration<Editor>(
+export async function runRegistration<Editor>(
   transform: Transform<Editor>,
   callback: (editor: Editor) => void,
 ): Promise<Registration> {
@@ -353,9 +354,18 @@ function instructionPlans(input: ApplyInput): InstructionPlan[] {
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
       if (isNoop(item, resolved)) return []
-      return [{ agent: agent.id, path: parseId(item.id, "system:"), text: resolved.assembled, enabled: resolved.enabled }]
+      return [{ agent: agent.id, path: instructionPlanPath(item.id), text: resolved.assembled, enabled: resolved.enabled }]
     }),
   )
+}
+
+// The teaching row carries a stable id instead of a location-relative path,
+// so it cannot resolve against the location directory like other instruction
+// rows. Core keys that part by the seeded absolute path, so plan it
+// absolutely; resolveInstructionId leaves the seeded path untouched.
+function instructionPlanPath(id: string): string {
+  if (id === teachingItemId) return teachingFilePath()
+  return parseId(id, "system:")
 }
 
 async function applySession(
@@ -632,6 +642,7 @@ function applyInstructionPlans(ctx: Context, event: SessionContext, plans: reado
 }
 
 function resolveInstructionId(directory: string, id: string): string {
+  if (id === teachingFilePath()) return id
   const relative = id.replace(/^\/+/, "")
   if (relative === "") return directory
   return path.resolve(directory, relative)

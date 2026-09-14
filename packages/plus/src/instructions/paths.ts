@@ -71,3 +71,14 @@ export function resolveInstructionPath(
     return { ok: false, message: `Invalid instruction name "${name}"` }
   return { ok: true, relative: path.relative(root, target), path: target }
 }
+
+// The teaching layer (teaching.ts) lives here as path plus stable ids so
+// discover.ts and apply.ts share them without a dependency cycle and without
+// hardcoding the strings twice.
+export function teachingFilePath(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "opencodeplus", "instructions", "OPENCODEPLUS.md")
+}
+
+export const teachingItemId = "system:opencodeplus"
+
+export const teachingSkillId = "instructions-tools"
