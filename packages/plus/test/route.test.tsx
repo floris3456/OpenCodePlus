@@ -29,6 +29,56 @@ function binds(fixture: TestFixture): string[] {
   return fixture.commands().map((cmd) => cmd.bind as string)
 }
 
+function selectedRow(frame: string): string {
+  const line = frame.split("\n").find((entry) => entry.includes("›"))
+  return line ?? ""
+}
+
+// Locate rows by label instead of hardcoded moveDown counts from a root, so
+// the next structural change does not shift every test. Each step waits for
+// the selection to actually move before continuing, so the walk cannot
+// outrun the renderer and blow past its target while frames are stale.
+async function moveTo(fixture: TestFixture, label: string): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    const before = fixture.captureCharFrame()
+    if (selectedRow(before).includes(label)) return
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => selectedRow(frame) !== selectedRow(before))
+  }
+  throw new Error(`never reached row "${label}"`)
+}
+
+async function expand(fixture: TestFixture): Promise<void> {
+  // Idempotent: only press right when the selected row shows collapsed "+".
+  // Roots start expanded ("-"), so a blind right would collapse them.
+  const line = selectedRow(fixture.captureCharFrame())
+  const rest = line.slice(line.indexOf("›") + 1)
+  if (/^\s*- /.test(rest)) return
+  dispatch(fixture, "right")
+  await sleep(50)
+}
+
+// Agents live under their level's Agents group (collapsed by default), so
+// every agent-scoped test starts by revealing the named agent row. The
+// opening "Instructions" wait doubles as a mount gate, but the agent name
+// may already be on screen (the loader resolves between renders), so do not
+// require both in one predicate.
+async function gotoAgent(fixture: TestFixture, name: string): Promise<void> {
+  await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+  await moveTo(fixture, "Agents")
+  await expand(fixture)
+  await moveTo(fixture, name)
+}
+
+// Down-only walk that skips the current row first: used when several rows
+// share a label (each level has its own Agents group).
+async function moveToNext(fixture: TestFixture, label: string): Promise<void> {
+  const before = selectedRow(fixture.captureCharFrame())
+  dispatch(fixture, "down")
+  await fixture.waitForFrame((frame) => selectedRow(frame) !== before)
+  await moveTo(fixture, label)
+}
+
 function mcpItem(overrides?: Record<string, unknown>) {
   return {
     id: "mcp:sample",
@@ -72,23 +122,52 @@ test("roots render with agents and subtree groups", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
-    const frame = fixture.captureCharFrame()
-    expect(frame).toContain("Project agents")
-    expect(frame).toContain("Global agents")
-    expect(frame).toContain("Defaults")
-    expect(frame).toContain("Implementer")
-    expect(frame).toContain("Helper")
-    expect(frame).toContain("Agents")
-    // Expand the project agent to reveal its identical subtree.
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
+    // Agents live one level down under each level's Agents group: expand
+    // Project's group to reveal Implementer, then the agent itself to reveal
+    // its Tools/Base/Skills/System subtree.
+    await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    await moveTo(fixture, "Implementer")
+    await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Tools"))
     const expanded = fixture.captureCharFrame()
+    expect(expanded).toContain("Project")
+    expect(expanded).toContain("Global")
+    expect(expanded).toContain("Defaults")
+    expect(expanded).toContain("Implementer")
     expect(expanded).toContain("Tools")
     expect(expanded).toContain("Base")
     expect(expanded).toContain("Skills")
     expect(expanded).toContain("System")
+    // Global's Agents group holds Helper.
+    await moveToNext(fixture, "Agents")
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("Helper"))
+    expect(fixture.captureCharFrame()).toContain("Helper")
+    expect(fixture.captureCharFrame()).toContain("Agents")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("selectAgent expands the Agents group chain for any scope", async () => {
+  const snapshot = createSnapshot({ agents: [projectAgent("Implementer")] })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    data: { agent: "Implementer" },
+  })
+  try {
+    // Route data drives selectAgent: it must expand root + Agents group so
+    // the agent row is revealed and selected. Without the group expansion
+    // the row never appears and this times out.
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("Implementer")
+    expect(selectedRow(frame)).toContain("Implementer")
   } finally {
     fixture.destroy()
   }
@@ -105,6 +184,10 @@ test("filter narrows visible rows", async () => {
     dialogs: { prompts: ["Implementer"] },
   })
   try {
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
+    // Agents start collapsed under group:project:agents; expand it first.
+    await moveTo(fixture, "Agents")
+    await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Implementer"))
     expect(dispatch(fixture, "/")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Filter:"))
@@ -143,7 +226,9 @@ test("add agent chooses Defaults template then id and scope", async () => {
     dialogs: { selects: ["Template", "project"], prompts: ["my-agent", "hello prompt"] },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
+    // The `a: add agent` affordance lives on group:project:agents now.
+    await moveTo(fixture, "Agents")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.agentCreates.length).toBe(1)
@@ -213,15 +298,12 @@ test("a on an instruction row adds a section with split plus customization recor
     dialogs: { prompts: ["Notes", "follow the guide"] },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
-    // Project agent subtree: agent(1) right, System group(4) right, item(1).
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 4)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
+    // Agent subtree by label: Agents group, agent, System group, item row.
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "System")
+    await expand(fixture)
+    await moveTo(fixture, "AGENTS.md")
     await fixture.waitForFrame((frame) => frame.includes(body.split("\n")[0]))
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes('Added "Notes"'))
@@ -358,18 +440,14 @@ test("a on a tool row adds a section", async () => {
     dialogs: { prompts: ["Flags", "extra flags"] },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
-    // Project agent subtree: agent(1) right, Tools group(1) right, Native(1) right, item(1).
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
+    // Agent subtree by label: Agents group, agent, Tools, subgroup, item.
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveToNext(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "bash")
     await fixture.waitForFrame((frame) => frame.includes("run commands"))
     expect(fixture.fake.dialogSelects.length).toBe(0)
     expect(dispatch(fixture, "a")).toBe(true)
@@ -406,7 +484,7 @@ test("a on a row without section support keeps the generic picker", async () => 
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::tools has no add, so a opens the generic picker.
-    await moveDown(fixture, 4)
+    await moveTo(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => fixture.fake.skillCreates.length === 1)
     expect(fixture.fake.skillCreates.length).toBe(1)
@@ -424,8 +502,8 @@ test("add base prompts for id, title, and text", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // group:defaults::base is index 5 from root:project.
-    await moveDown(fixture, 5)
+    // group:defaults::base carries the add:base affordance.
+    await moveTo(fixture, "Base")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.baseCreates.length).toBe(1)
@@ -445,7 +523,7 @@ test("add skill offers create with name and body", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::tools has no add, so a opens the generic picker.
-    await moveDown(fixture, 4)
+    await moveTo(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.skillCreates.length).toBe(1)
@@ -464,7 +542,7 @@ test("add skill offers import from SKILL.md path", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 4)
+    await moveTo(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.skillImports.length).toBe(1)
@@ -479,15 +557,15 @@ test("add instruction prompts for name and text", async () => {
     snapshots: [createSnapshot()],
     width: 120,
     height: 40,
-    dialogs: { selects: ["instruction"], prompts: ["guide.md", "guide text"] },
+    dialogs: { selects: ["instruction"], prompts: ["AGENTS.md", "guide text"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 4)
+    await moveTo(fixture, "System")
     expect(dispatch(fixture, "a")).toBe(true)
-    await sleep(200)
+    await fixture.waitForFrame(() => fixture.fake.instructionCreates.length === 1)
     expect(fixture.fake.instructionCreates.length).toBe(1)
-    expect(fixture.fake.instructionCreates[0]).toMatchObject({ name: "guide.md", text: "guide text" })
+    expect(fixture.fake.instructionCreates[0]).toMatchObject({ name: "AGENTS.md", text: "guide text" })
   } finally {
     fixture.destroy()
   }
@@ -502,7 +580,8 @@ test("add mcp prompts for name and JSON config", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
+    // group:defaults::mcp carries the add:mcp affordance.
+    await moveTo(fixture, "MCP")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.mcpAdds.length).toBe(1)
@@ -521,8 +600,7 @@ test("delete agent asks for confirmation", async () => {
     dialogs: { confirms: [true] },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
-    await moveDown(fixture, 1)
+    await gotoAgent(fixture, "Implementer")
     expect(binds(fixture)).toContain("d")
     expect(dispatch(fixture, "d")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Deleted agent Implementer"))
@@ -556,15 +634,15 @@ test("delete project skill calls skill.delete and the row disappears", async () 
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Navigate the Defaults shared-skills branch: group:defaults::skills is
-    // index 6, expand, Project subgroup (index 3 within skills), expand, item.
-    await moveDown(fixture, 6)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 4)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
+    // Defaults group order from root:project: Agents, Global, Defaults —
+    // expand Defaults, then drill into Skills, the group row, and the item.
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Skills")
+    await expand(fixture)
+    await moveTo(fixture, "Project")
+    await expand(fixture)
+    await moveTo(fixture, "proj-one")
     await fixture.waitForFrame((frame) => frame.includes("project skill"))
     expect(binds(fixture)).toContain("d")
     dispatch(fixture, "d")
@@ -595,16 +673,14 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Native skills are not removable, so they hang directly under
-    // group:defaults::skills (index 6): expand, move to the Native subgroup
-    // row, expand it, then move to the item.
-    await moveDown(fixture, 6)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
+    // Native skills hang under Defaults → Skills → Native.
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Skills")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
     expect(binds(fixture)).toContain("d")
     dispatch(fixture, "d")
@@ -640,12 +716,7 @@ test("reset asks for confirmation and clears the override", async () => {
     dialogs: { confirms: [true] },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    await gotoMcpItem(fixture)
     expect(binds(fixture)).toContain("r")
     dispatch(fixture, "r")
     await fixture.waitForFrame((frame) => frame.includes('Reset "sample"'))
@@ -664,12 +735,7 @@ test("space toggle sends both expected revisions", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    await gotoMcpItem(fixture)
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "sample"'))
@@ -695,12 +761,7 @@ test("stale dual revisions adopt the snapshot and ask to retry", async () => {
     mutateResult: { ok: false, reason: "stale", snapshot: latest },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    await gotoMcpItem(fixture)
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes("Revision changed"))
     const frame = fixture.captureCharFrame()
@@ -720,16 +781,18 @@ test("key availability follows the selected row", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
-    // Root row: structural, no space/d/r/s.
+    // Root row: structural, no space/d/r/s. Goto gates the mount first.
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     const rootBinds = binds(fixture)
     expect(rootBinds).toContain("a")
     expect(rootBinds).not.toContain("space")
     expect(rootBinds).not.toContain("d")
     expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
-    // Agent row: removable, so d appears but space still does not.
-    await moveDown(fixture, 1)
+    // Agent row: removable, so d appears but space still does not. The agent
+    // hides under its Agents group; the initial Implementer frame only gates
+    // the mount, then gotoAgent reveals the row.
+    await gotoAgent(fixture, "Implementer")
     const agentBinds = binds(fixture)
     expect(agentBinds).toContain("d")
     expect(agentBinds).not.toContain("space")
@@ -742,7 +805,7 @@ test("disabled project mode hides actions and keys", async () => {
   const snapshot = createSnapshot({ agents: [projectAgent("Implementer")], items: [toolItem()] })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await fixture.emitProjectChanged({ enabled: false })
     await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled"))
     const frame = fixture.captureCharFrame()
@@ -777,25 +840,26 @@ function reviewSnapshot(): Snapshot {
   })
 }
 
-async function gotoReviewRow(fixture: TestFixture): Promise<void> {
+// Defaults MCP inventory: expand Defaults, the MCP group, then move through
+// the per-server subgroup rows to the item. waitForFrame only polls up to 20
+// frames (~a second), so each navigation step must also wait for the *frame*
+// to catch up, not just sleep: the final wait targets the item row directly.
+async function gotoMcpItem(fixture: TestFixture): Promise<void> {
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  await moveDown(fixture, 8)
-  dispatch(fixture, "right")
-  await sleep(50)
-  await moveDown(fixture, 1)
-  await fixture.waitForFrame((frame) => frame.includes("sample"))
+  await moveTo(fixture, "Defaults")
+  await expand(fixture)
+  await moveTo(fixture, "MCP")
+  await expand(fixture)
+  await moveTo(fixture, "sample")
+  await fixture.waitForFrame((frame) => selectedRow(frame).includes("sample"))
 }
 
 test("narrow detail opens with right and closes with escape", async () => {
   const snapshot = createSnapshot({ items: [mcpItem()] })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 80, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
+    await gotoMcpItem(fixture)
     dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    await fixture.waitForFrame((frame) => frame.includes("sample"))
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => frame.includes("back to tree"))
     expect(fixture.captureCharFrame()).toContain("sample-config")
@@ -810,8 +874,8 @@ test("narrow detail opens with right and closes with escape", async () => {
 test("enter on a yellow node opens the three-pane diff and k keeps mine", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
-    await gotoReviewRow(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("review"))
+    await gotoMcpItem(fixture)
+    dispatch(fixture, "right")
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
     const frame = fixture.captureCharFrame()
@@ -831,8 +895,8 @@ test("enter on a yellow node opens the three-pane diff and k keeps mine", async 
 test("enter on a yellow node resolves t take upstream", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
-    await gotoReviewRow(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("review"))
+    await gotoMcpItem(fixture)
+    dispatch(fixture, "right")
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
     dispatch(fixture, "t")
@@ -851,8 +915,8 @@ test("enter on a yellow node resolves e edit through the route", async () => {
     dialogs: { prompts: ["merged text"] },
   })
   try {
-    await gotoReviewRow(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("review"))
+    await gotoMcpItem(fixture)
+    dispatch(fixture, "right")
     // The diff pane mounts its own e edit editor; wait for it before typing.
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
@@ -880,15 +944,15 @@ test("s opens the manual splitter and saves two named sections", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults tools branch: group:defaults::tools is index 4, expand it,
-    // move to the Native subgroup, expand, then move to the item.
-    await moveDown(fixture, 4)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
+    // Defaults tools branch: expand Defaults, Tools, the Native subgroup,
+    // then move to the item.
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "bash")
     await fixture.waitForFrame((frame) => frame.includes("Purpose tells when."))
     expect(binds(fixture)).toContain("s")
     dispatch(fixture, "s")
@@ -935,12 +999,7 @@ test("mutation leaves an untouched split record updated unchanged", async () => 
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    await fixture.waitForFrame((frame) => frame.includes("sample-config"))
+    await gotoMcpItem(fixture)
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "sample"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
@@ -985,7 +1044,7 @@ test("filter reveals a match nested under collapsed ancestors", async () => {
   try {
     // The tool row starts hidden under collapsed ancestors; filtering must
     // reveal it with its ancestor chain.
-    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
     expect(fixture.captureCharFrame()).not.toContain("zz-unique-tool")
     expect(dispatch(fixture, "/")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Filter:"))
@@ -1006,12 +1065,7 @@ test("right on an item row reveals its sections for select and toggle", async ()
     height: 40,
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveDown(fixture, 8)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
-    await fixture.waitForFrame((frame) => frame.includes("Purpose"))
+    await gotoMcpItem(fixture)
     // Right expands the item row itself; the section rows appear in the tree
     // with their on/off badge (the detail pane uses [included] instead).
     dispatch(fixture, "right")
@@ -1042,11 +1096,11 @@ test("filtered hidden match can be selected and toggled", async () => {
     dialogs: { prompts: ["zz-unique"] },
   })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
     expect(dispatch(fixture, "/")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Filter:"))
-    // Filtered list is root, Tools, Native, then the revealed tool row.
-    await moveDown(fixture, 4)
+    // Filtered list walks to the revealed tool row by label.
+    await moveTo(fixture, "zz-unique-tool")
     await fixture.waitForFrame((frame) => frame.includes("zz-unique-body"))
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
@@ -1086,14 +1140,14 @@ test("reviewer persona shows its own prompt and saves only its record", async ()
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Reviewer"))
-    await moveDown(fixture, 2)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 4)
-    dispatch(fixture, "right")
-    await sleep(50)
-    await moveDown(fixture, 1)
+    // Agent subtree by label: Agents group, agent, System group, Role item.
+    // The Implementer agent sorts first inside the group; move past it.
+    await gotoAgent(fixture, "Implementer")
+    await moveToNext(fixture, "Reviewer")
+    await expand(fixture)
+    await moveTo(fixture, "System")
+    await expand(fixture)
+    await moveTo(fixture, "Role/persona")
     await fixture.waitForFrame((frame) => frame.includes("reviewer-prompt"))
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))

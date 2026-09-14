@@ -283,12 +283,10 @@ export function createInstructionsState(context: Plugin.Context) {
     const entry = current.agents.find((candidate) => candidate.id === agentId)
     if (!entry) return false
     const next = new Set(expanded())
-    if (entry.scope === "defaults") {
-      next.add("root:defaults")
-      next.add("group:defaults:agents")
-    } else {
-      next.add(`root:${entry.scope}`)
-    }
+    // Agents live under their level's Agents group at every level, so reveal
+    // the whole chain down to the agent.
+    next.add(`root:${entry.scope}`)
+    next.add(`group:${entry.scope}:agents`)
     setExpanded(next)
     setSelectedId(`agent:${entry.scope}:${agentId}`)
     return true
