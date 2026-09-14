@@ -1,28 +1,60 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createSignal } from "solid-js"
+import { createEffect, createRoot, createSignal } from "solid-js"
 import { Definition } from "../rpc.js"
 import type { Status } from "../rpc.js"
 
 export function createProjectMode(context: Plugin.Context) {
   const plus = context.client.rpc(Definition)
-  const [status, setStatus] = createSignal<Status>({ enabled: false, directory: "" })
+  return createRoot((disposeRoot) => {
+    const [status, setStatus] = createSignal<Status>({ enabled: false, directory: "" })
+    let disposed = false
+    let generation = 0
 
-  void plus["project.status"](undefined, { location: context.location }).then(
-    (current) => setStatus(current),
-    (error: unknown) => {
-      context.ui.toast.show({
-        variant: "error",
-        message: error instanceof Error ? error.message : String(error),
-      })
-    },
-  )
+    // The RPC location query uses `workspace`; map the plugin location refs
+    // (which carry `workspaceID`) instead of forwarding them verbatim.
+    function targetLocation() {
+      const current = context.location
+      if (current !== undefined) return { directory: current.directory, workspace: current.workspaceID }
+      const fallback = context.data.location.default()
+      if (fallback === undefined) return undefined
+      return { directory: fallback.directory, workspace: fallback.workspaceID }
+    }
 
-  const unsubscribe = plus.events.on("project.changed", (event) => {
-    setStatus(event.data)
-  })
+    function refresh() {
+      const requestGen = ++generation
+      const location = targetLocation()
+      void plus["project.status"](undefined, { location }).then(
+        (current) => {
+          if (disposed || requestGen !== generation) return
+          setStatus(current)
+        },
+        (error: unknown) => {
+          if (disposed || requestGen !== generation) return
+          context.ui.toast.show({
+            variant: "error",
+            message: error instanceof Error ? error.message : String(error),
+          })
+        },
+      )
+    }
+
+    // Setup runs before location hydration lands, so a one-shot setup fetch
+    // never observes the opened project. Resolve the status once the location
+    // is ready and refetch whenever it changes instead.
+    createEffect(() => {
+      targetLocation()
+      refresh()
+    })
+
+    const unsubscribe = plus.events.on("project.changed", (event) => {
+      if (disposed) return
+      generation++
+      setStatus(event.data)
+    })
 
   async function toggle() {
     const current = status()
+    const location = targetLocation()
     const confirmed = await context.ui.dialog.confirm(
       current.enabled
         ? {
@@ -37,8 +69,8 @@ export function createProjectMode(context: Plugin.Context) {
     if (!confirmed) return
     try {
       const next = current.enabled
-        ? await plus["project.disable"](undefined, { location: context.location })
-        : await plus["project.enable"](undefined, { location: context.location })
+        ? await plus["project.disable"](undefined, { location })
+        : await plus["project.enable"](undefined, { location })
       setStatus(next)
       context.ui.toast.show({
         variant: "success",
@@ -54,5 +86,13 @@ export function createProjectMode(context: Plugin.Context) {
     }
   }
 
-  return { status, toggle, dispose: unsubscribe }
+  function dispose() {
+    disposed = true
+    generation++
+    unsubscribe()
+    disposeRoot()
+  }
+
+  return { status, toggle, dispose }
+  })
 }
