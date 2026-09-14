@@ -17,6 +17,8 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agentBody, discover, type BaseTemplate } from "../src/instructions/discover.js"
+import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
+import { seedSystemInstruction, teachingContent } from "../src/instructions/teaching.js"
 import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
@@ -857,4 +859,40 @@ test("agentBody matches core's trimmed markdown content for frontmatter and body
   expect(agentBody("  spaced  ")).toBe("spaced")
   expect(agentBody("---\ndescription: x\n---\nfirst\n---\nsecond\n")).toBe("first\n---\nsecond")
   expect(agentBody("not frontmatter\n---\nstill body\n")).toBe("not frontmatter\n---\nstill body")
+})
+
+test("the seeded teaching file appears as an editable plus row", async () => {
+  const config = await tempDir("plus-teaching-config-")
+  process.env.OPENCODE_CONFIG_DIR = config
+  const directory = await tempDir("plus-teaching-")
+  const seeded = await seedSystemInstruction()
+  expect(seeded.path).toBe(teachingFilePath())
+  const discovered = await discover({
+    ctx: fullContext({ directory }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const row = discovered.items.find((item) => item.id === teachingItemId)
+  expect(row).toMatchObject({
+    kind: "system",
+    group: "plus",
+    title: "OpenCodePlus",
+    text: teachingContent,
+    enabled: true,
+  })
+  expect(row?.fingerprint).toBe(fingerprint(teachingContent))
+})
+
+test("no teaching row appears without the seeded file", async () => {
+  const config = await tempDir("plus-teaching-config-")
+  process.env.OPENCODE_CONFIG_DIR = config
+  const directory = await tempDir("plus-teaching-")
+  const discovered = await discover({
+    ctx: fullContext({ directory }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  expect(discovered.items.some((item) => item.id === teachingItemId)).toBe(false)
 })
