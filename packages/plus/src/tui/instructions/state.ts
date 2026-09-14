@@ -1,39 +1,78 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import { mergeCustomization, resetFields } from "../../instructions/model.js"
-import type { Customization, Item, MergeCustomizationFields } from "../../instructions/model.js"
+import {
+  merge,
+  reset,
+  resolve,
+  resolveResolution,
+  resolveSplit,
+  scopesOf,
+  threeWay,
+} from "../../instructions/model.js"
+import type {
+  Address,
+  AgentSource,
+  CustomizationRecord,
+  Item,
+  SplitRecord,
+} from "../../instructions/model.js"
 import { tree, type TreeNode } from "../../instructions/tree.js"
-import { Definition, type Snapshot } from "../../rpc.js"
+import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
-export interface ModelSnapshot {
-  revision: number
-  items: Item[]
-  customizations: Customization[]
+export type { TreeNode }
+
+function agentSourcesOf(snapshot: Snapshot): AgentSource[] {
+  return snapshot.agents.map((entry) => ({
+    id: entry.id,
+    scope: entry.scope,
+    ...(entry.path === undefined ? {} : { path: entry.path }),
+    ...(entry.base === undefined ? {} : { base: entry.base }),
+  }))
 }
 
-export function modelSnapshotOf(rpc: Snapshot): ModelSnapshot {
-  return {
-    revision: rpc.revision,
-    items: rpc.items.map((item) => ({
-      id: item.id,
-      kind: item.kind,
-      owner: item.owner,
-      title: item.title,
-      text: item.text,
-      agents: [...item.agents],
-      fingerprint: item.fingerprint,
-      available: item.available,
-    })),
-    customizations: rpc.customizations.map((record) => ({
-      item: record.item,
-      agent: record.agent,
-      ...(record.text === undefined ? {} : { text: record.text }),
-      state: record.state,
-      basedOn: record.basedOn,
-      ...(record.reviewed === undefined ? {} : { reviewed: record.reviewed }),
-      updated: record.updated,
-    })),
-  }
+function customizationsOf(records: readonly SnapshotRecord[]): CustomizationRecord[] {
+  return records.flatMap((record): CustomizationRecord[] => {
+    if (record.type !== "customization") return []
+    const { type: _type, ...rest } = record
+    return [{ ...rest }]
+  })
+}
+
+function splitsOf(records: readonly SnapshotRecord[]): SplitRecord[] {
+  return records.flatMap((record): SplitRecord[] => {
+    if (record.type !== "split") return []
+    return [{ level: record.level, agent: record.agent, item: record.item, boundaries: [...record.boundaries] }]
+  })
+}
+
+function toRpcRecords(customizations: readonly CustomizationRecord[], splits: readonly SplitRecord[]): SnapshotRecord[] {
+  return [
+    ...customizations.map(
+      (record): SnapshotRecord => ({
+        type: "customization",
+        level: record.level,
+        agent: record.agent,
+        item: record.item,
+        section: record.section,
+        ...(record.text === undefined ? {} : { text: record.text }),
+        ...(record.state === undefined ? {} : { state: record.state }),
+        basedOn: record.basedOn,
+        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+        updated: record.updated,
+      }),
+    ),
+    ...splits.map(
+      (record): SnapshotRecord => ({
+        type: "split",
+        level: record.level,
+        agent: record.agent,
+        item: record.item,
+        boundaries: [...record.boundaries],
+        updated: now(),
+      }),
+    ),
+  ]
 }
 
 export function createInstructionsState(context: Plugin.Context) {
@@ -41,30 +80,48 @@ export function createInstructionsState(context: Plugin.Context) {
   const [snapshot, setSnapshot] = createSignal<Snapshot | undefined>(undefined)
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
   const [selectedId, setSelectedId] = createSignal<string | undefined>(undefined)
+  const [filter, setFilter] = createSignal<string>("")
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
   let disposed = false
   let disabled = false
   let generation = 0
 
-  function nodes(): TreeNode[] {
+  function allNodes(): TreeNode[] {
     const current = snapshot()
     if (!current) return []
     return tree({
-      snapshot: modelSnapshotOf(current),
-      agents: current.agents.map((agent) => ({
-        id: agent.id,
-        scope: agent.scope,
-        ...(agent.path === undefined ? {} : { path: agent.path }),
-      })),
-      tools: current.tools.map((tool) => ({ id: tool.id, native: tool.native })),
-      project: { version: 1, protectedAgents: [...current.protectedAgents] },
+      items: current.items.map(
+        (entry): Item => ({
+          id: entry.id,
+          kind: entry.kind,
+          group: entry.group,
+          ...(entry.server === undefined ? {} : { server: entry.server }),
+          title: entry.title,
+          text: entry.text,
+          enabled: entry.enabled,
+          fingerprint: entry.fingerprint,
+          ...(entry.agents === undefined ? {} : { agents: [...entry.agents] }),
+          ...(entry.order === undefined ? {} : { order: entry.order }),
+        }),
+      ),
+      records: [...customizationsOf(current.records), ...splitsOf(current.records)],
+      agents: agentSourcesOf(current),
       expanded: expanded(),
     })
   }
 
+  function nodes(): TreeNode[] {
+    const all = allNodes()
+    const query = filter().trim().toLowerCase()
+    if (query.length === 0) return all
+    return all.filter(
+      (node) => node.label.toLowerCase().includes(query) || node.id.toLowerCase().includes(query),
+    )
+  }
+
   function selected(): TreeNode | undefined {
-    return nodes().find((node) => node.id === selectedId())
+    return allNodes().find((node) => node.id === selectedId())
   }
 
   function ensureSelection() {
@@ -87,13 +144,9 @@ export function createInstructionsState(context: Plugin.Context) {
       if (disposed || disabled || requestGen !== generation) return
       const firstLoad = snapshot() === undefined
       setSnapshot(fresh)
-      // First load only: expand the top-level groups so agents are visible.
-      // Group ids come from tree(...) itself; nothing is hardcoded here.
       if (firstLoad && expanded().size === 0) {
-        const groups = nodes()
-          .filter((node) => node.kind === "group")
-          .map((node) => node.id)
-        if (groups.length > 0) setExpanded(new Set(groups))
+        const roots = allNodes().filter((node) => node.kind === "root")
+        if (roots.length > 0) setExpanded(new Set(roots.map((node) => node.id)))
       }
       setStatus("")
       ensureSelection()
@@ -140,18 +193,17 @@ export function createInstructionsState(context: Plugin.Context) {
     if (disposed) return false
     const current = snapshot()
     if (!current) return false
-    const agent = current.agents.find((entry) => entry.id === agentId)
-    if (!agent) return false
-    const groupId = agent.scope === "builtin" ? "group:defaults" : `group:${agent.scope}`
-    if (!expanded().has(groupId)) {
-      setExpanded((previous) => {
-        const next = new Set(previous)
-        next.add(groupId)
-        return next
-      })
+    const entry = current.agents.find((candidate) => candidate.id === agentId)
+    if (!entry) return false
+    const next = new Set(expanded())
+    if (entry.scope === "defaults") {
+      next.add("root:defaults")
+      next.add("group:defaults:agents")
+    } else {
+      next.add(`root:${entry.scope}`)
     }
-    const nodeId = `agent:${agentId}`
-    setSelectedId(nodeId)
+    setExpanded(next)
+    setSelectedId(`agent:${entry.scope}:${agentId}`)
     return true
   }
 
@@ -169,154 +221,85 @@ export function createInstructionsState(context: Plugin.Context) {
     setSelectedId(list[next].id)
   }
 
-  async function setEnabled(node: TreeNode, value: boolean) {
-    if (node.itemId === undefined) {
-      setStatus(`"${node.label}" cannot be toggled`)
-      return
-    }
-    const toggle = node.action?.toggle
-    if (toggle?.allowed === false) {
-      setStatus(`"${node.label}" cannot be toggled: ${toggle.reason}`)
-      return
-    }
-    await mutateFields(
-      node,
-      { state: value ? "enabled" : "disabled" },
-      value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
-      `Revision changed; reloaded, toggle "${node.label}" again to apply`,
-    )
-  }
-
-  async function acknowledge(node: TreeNode) {
+  function chainFor(node: TreeNode):
+    | { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] }
+    | undefined {
     const current = snapshot()
-    if (!current) {
-      setStatus("No snapshot loaded")
-      return
+    const address = node.address
+    if (!current || !address) return undefined
+    const found = current.items.find((entry) => entry.id === address.item)
+    if (!found) return undefined
+    const upstream: Item = {
+      id: found.id,
+      kind: found.kind,
+      group: found.group,
+      ...(found.server === undefined ? {} : { server: found.server }),
+      title: found.title,
+      text: found.text,
+      enabled: found.enabled,
+      fingerprint: found.fingerprint,
+      ...(found.agents === undefined ? {} : { agents: [...found.agents] }),
+      ...(found.order === undefined ? {} : { order: found.order }),
     }
-    if (node.badges.readOnly) {
-      const owner = node.agentId ?? "default"
-      setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
-      return
+    return {
+      address,
+      upstream,
+      customizations: customizationsOf(current.records),
+      splits: splitsOf(current.records),
     }
-    if (node.itemId === undefined) {
-      setStatus(`"${node.label}" cannot be acknowledged`)
-      return
-    }
-    const edit = node.action?.edit
-    const toggle = node.action?.toggle
-    const reset = node.action?.reset
-    // Acknowledge must follow whether the row retains a usable action (edit, toggle,
-    // or reset), because a row can be reviewable while both toggle and edit are refused.
-    if (edit?.allowed !== true && toggle?.allowed !== true && reset?.allowed !== true) {
-      const reason =
-        edit?.allowed === false
-          ? edit.reason
-          : toggle?.allowed === false
-            ? toggle.reason
-            : reset?.allowed === false
-              ? reset.reason
-              : "action is not supported"
-      setStatus(`"${node.label}" cannot be acknowledged: ${reason}`)
-      return
-    }
-    if (node.badges.review !== true) {
-      setStatus(`"${node.label}" needs no review`)
-      return
-    }
-    const item = current.items.find((entry) => entry.id === node.itemId)
-    if (!item) {
-      setStatus(`Item not found for "${node.label}"`)
-      return
-    }
-    await mutateFields(
-      node,
-      { reviewed: item.fingerprint },
-      `Acknowledged "${node.label}"`,
-      `Revision changed; reloaded, acknowledge "${node.label}" again to apply`,
-    )
   }
 
-  async function saveText(node: TreeNode, text: string): Promise<boolean> {
-    const edit = node.action?.edit
-    if (edit?.allowed === false) {
-      setStatus(`"${node.label}" cannot be edited: ${edit.reason}`)
-      return false
-    }
-    return mutateFields(
-      node,
-      { text },
-      `Saved "${node.label}"`,
-      `Revision changed; reloaded, save "${node.label}" again to apply`,
-    )
+  function scopes(): ReturnType<typeof scopesOf> {
+    const current = snapshot()
+    if (!current) return { global: new Set<string>(), defaults: new Set<string>() }
+    return scopesOf(agentSourcesOf(current))
   }
 
-  async function reset(node: TreeNode): Promise<boolean> {
-    // Every refusal lands before the confirm: offering a destructive dialog
-    // for a row that cannot proceed would only scare the user, then refuse.
-    if (node.badges.readOnly) {
-      const owner = node.agentId ?? "default"
-      setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
-      return false
-    }
-    if (node.itemId === undefined) {
-      setStatus(`"${node.label}" cannot be reset`)
-      return false
-    }
-    const resettable = node.action?.reset
-    if (resettable?.allowed === false) {
-      setStatus(`"${node.label}" cannot be reset: ${resettable.reason}`)
-      return false
-    }
-    const confirmed = await context.ui.dialog.confirm({
-      title: `Reset "${node.label}"?`,
-      message: `Reset "${node.label}" to its default? This discards the customization and cannot be undone.`,
+  function resolvedText(node: TreeNode): string {
+    const chain = chainFor(node)
+    if (!chain) return ""
+    const scopesValue = scopes()
+    return resolve({
+      upstream: chain.upstream,
+      records: chain.customizations,
+      splits: chain.splits,
+      scopes: scopesValue,
+      address: chain.address,
+    }).text
+  }
+
+  function threeWayFor(node: TreeNode): { original: string; mine: string; upstream: string } | undefined {
+    const chain = chainFor(node)
+    if (!chain) return undefined
+    return threeWay({
+      upstream: chain.upstream,
+      records: chain.customizations,
+      splits: chain.splits,
+      scopes: scopes(),
+      address: chain.address,
     })
-    if (!confirmed) {
-      setStatus(`Reset of "${node.label}" cancelled`)
-      return false
-    }
-    return mutateFields(
-      node,
-      resetFields(node),
-      `Reset "${node.label}" to default`,
-      `Revision changed; reloaded, reset "${node.label}" again to apply`,
-    )
   }
 
-  async function mutateFields(
-    node: TreeNode,
-    fields: MergeCustomizationFields,
+  async function persist(
+    nextCustomizations: readonly CustomizationRecord[],
+    nextSplits: readonly SplitRecord[],
     successStatus: string,
-    staleStatus: string,
+    retryHint: string,
   ): Promise<boolean> {
     const current = snapshot()
     if (!current) {
       setStatus("No snapshot loaded")
       return false
     }
-    if (node.badges.readOnly) {
-      const owner = node.agentId ?? "default"
-      setStatus(`"${node.label}" is read-only: agent "${owner}" is protected`)
-      return false
-    }
-    if (node.itemId === undefined) {
-      setStatus(`"${node.label}" cannot be changed`)
-      return false
-    }
-    const found = current.items.find((entry) => entry.id === node.itemId)
-    if (!found) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    const item: Item = { ...found, agents: [...found.agents] }
-    const agent = node.agentId ?? "*"
-    const model = modelSnapshotOf(current)
-    const customizations = mergeCustomization(model.customizations, item, agent, fields)
     const requestGen = ++generation
     setLoading(true)
     try {
       const result = await plus["instructions.mutate"](
-        { expectedRevision: current.revision, customizations },
+        {
+          expectedRevision: current.revision,
+          expectedGlobalRevision: current.globalRevision,
+          records: toRpcRecords(nextCustomizations, nextSplits),
+        },
         { location: context.location },
       )
       if (disposed || disabled || requestGen !== generation) return false
@@ -327,7 +310,9 @@ export function createInstructionsState(context: Plugin.Context) {
         return true
       }
       setSnapshot(result.snapshot)
-      setStatus(`Revision changed (expected ${current.revision}, latest ${result.snapshot.revision}); ${staleStatus}`)
+      setStatus(
+        `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${result.snapshot.revision}/${result.snapshot.globalRevision}); ${retryHint}`,
+      )
       ensureSelection()
       return false
     } catch (error: unknown) {
@@ -337,6 +322,291 @@ export function createInstructionsState(context: Plugin.Context) {
     } finally {
       if (!disposed && !disabled && requestGen === generation) setLoading(false)
     }
+  }
+
+  // Space: flip include/exclude state at the node's own address. Whole items
+  // toggle enabled; sections toggle their own exclusion.
+  async function toggle(node: TreeNode): Promise<boolean> {
+    if (node.address === undefined) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    if (node.actions?.toggle !== true) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    const chain = chainFor(node)
+    if (!chain) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    const resolved = resolve({
+      upstream: chain.upstream,
+      records: chain.customizations,
+      splits: chain.splits,
+      scopes: scopes(),
+      address: chain.address,
+    })
+    const next = merge(chain.customizations, chain.address, { state: resolved.enabled ? "off" : "on" }, chain.upstream)
+    return persist(
+      next,
+      chain.splits,
+      resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`,
+      `toggled "${node.label}" against a stale revision; retry to apply`,
+    )
+  }
+
+  async function setEnabled(node: TreeNode, value: boolean): Promise<boolean> {
+    if (node.address === undefined) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    if (node.actions?.toggle !== true) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    const chain = chainFor(node)
+    if (!chain) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream)
+    return persist(
+      next,
+      chain.splits,
+      value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
+      `toggled "${node.label}" against a stale revision; retry to apply`,
+    )
+  }
+
+  // Enter (non-review): save a text override at the current address.
+  async function saveText(node: TreeNode, text: string): Promise<boolean> {
+    if (node.address === undefined) {
+      setStatus(`"${node.label}" cannot be edited`)
+      return false
+    }
+    if (node.actions?.edit !== true) {
+      setStatus(`"${node.label}" cannot be edited`)
+      return false
+    }
+    const chain = chainFor(node)
+    if (!chain) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    const next = merge(chain.customizations, chain.address, { text }, chain.upstream)
+    return persist(
+      next,
+      chain.splits,
+      `Saved "${node.label}"`,
+      `saved "${node.label}" against a stale revision; retry to apply`,
+    )
+  }
+
+  async function resetNode(node: TreeNode): Promise<boolean> {
+    if (node.address === undefined) {
+      setStatus(`"${node.label}" cannot be reset`)
+      return false
+    }
+    const chain = chainFor(node)
+    if (!chain) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    if (node.actions?.reset !== true) {
+      setStatus(`"${node.label}" has no override to reset`)
+      return false
+    }
+    const confirmed = await context.ui.dialog.confirm({
+      title: `Reset "${node.label}"?`,
+      message: `Reset "${node.label}" to its default? This discards the override and cannot be undone.`,
+    })
+    if (!confirmed) {
+      setStatus(`Reset of "${node.label}" cancelled`)
+      return false
+    }
+    return persist(
+      reset(chain.customizations, chain.address),
+      chain.splits,
+      `Reset "${node.label}" to default`,
+      `reset "${node.label}" against a stale revision; retry to apply`,
+    )
+  }
+
+  // s: persist the item's manual split at the level it was made.
+  async function saveSplit(
+    node: TreeNode,
+    boundaries: readonly { id: string; name: string; start: number }[],
+  ): Promise<boolean> {
+    const address = node.address
+    if (!address) {
+      setStatus(`"${node.label}" cannot be split`)
+      return false
+    }
+    if (node.actions?.split !== true) {
+      setStatus(`"${node.label}" cannot be split`)
+      return false
+    }
+    const chain = chainFor(node)
+    if (!chain) {
+      setStatus(`Item not found for "${node.label}"`)
+      return false
+    }
+    const rest = chain.splits.filter(
+      (record) => !(record.level === address.level && record.agent === address.agent && record.item === address.item),
+    )
+    const nextSplits: SplitRecord[] = [
+      ...rest,
+      { level: address.level, agent: address.agent, item: address.item, boundaries: [...boundaries] },
+    ]
+    return persist(
+      chain.customizations,
+      nextSplits,
+      `Split "${node.label}"`,
+      `split "${node.label}" against a stale revision; retry to apply`,
+    )
+  }
+
+  // Yellow (review) resolutions via threeWay/resolveResolution.
+  async function resolveKeep(node: TreeNode): Promise<boolean> {
+    const chain = chainFor(node)
+    if (!chain || !node.address) {
+      setStatus(`"${node.label}" cannot be resolved`)
+      return false
+    }
+    const next = resolveResolution(
+      {
+        upstream: chain.upstream,
+        records: chain.customizations,
+        splits: chain.splits,
+        scopes: scopes(),
+        address: chain.address,
+      },
+      "keep",
+    )
+    return persist(next, chain.splits, `Kept "${node.label}"`, `resolved "${node.label}" against a stale revision; retry`)
+  }
+
+  async function resolveTake(node: TreeNode): Promise<boolean> {
+    const chain = chainFor(node)
+    if (!chain || !node.address) {
+      setStatus(`"${node.label}" cannot be resolved`)
+      return false
+    }
+    const next = resolveResolution(
+      {
+        upstream: chain.upstream,
+        records: chain.customizations,
+        splits: chain.splits,
+        scopes: scopes(),
+        address: chain.address,
+      },
+      "take",
+    )
+    return persist(next, chain.splits, `Took upstream for "${node.label}"`, `resolved "${node.label}" against a stale revision; retry`)
+  }
+
+  async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
+    const chain = chainFor(node)
+    if (!chain || !node.address) {
+      setStatus(`"${node.label}" cannot be resolved`)
+      return false
+    }
+    const next = resolveResolution(
+      {
+        upstream: chain.upstream,
+        records: chain.customizations,
+        splits: chain.splits,
+        scopes: scopes(),
+        address: chain.address,
+      },
+      "edit",
+      edited,
+    )
+    return persist(next, chain.splits, `Edited "${node.label}"`, `resolved "${node.label}" against a stale revision; retry`)
+  }
+
+  function splitPreview(node: TreeNode) {
+    const chain = chainFor(node)
+    if (!chain || !node.address) return undefined
+    return resolveSplit({
+      text: resolvedText(node),
+      title: chain.upstream.title,
+      splits: chain.splits,
+      scopes: scopes(),
+      address: chain.address,
+    })
+  }
+
+  // d: delete rows whose tree actions allow remove. Agent rows go through
+  // agent.delete, shared MCP rows through mcp.remove. File-backed item rows
+  // (project skills, added instructions, added base prompts) have no delete
+  // RPC in the opencode.plus contract, so surface that limitation directly.
+  async function remove(node: TreeNode): Promise<boolean> {
+    if (node.actions?.remove !== true) {
+      setStatus(`"${node.label}" cannot be deleted`)
+      return false
+    }
+    if (node.kind === "agent") {
+      const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
+      const agentId = match?.[2]
+      const scope = match?.[1]
+      if (!agentId || !scope) {
+        setStatus(`"${node.label}" cannot be deleted`)
+        return false
+      }
+      if (scope !== "project" && scope !== "global") {
+        setStatus(`"${node.label}" cannot be deleted: agent.delete supports scope project|global only`)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Delete agent ${agentId}?`,
+        message: `Delete ${scope} agent "${agentId}"? This cannot be undone.`,
+      })
+      if (!confirmed) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      try {
+        await plus["agent.delete"]({ scope, id: agentId }, { location: context.location })
+        if (disposed) return
+        await refresh()
+        if (disposed) return
+        setStatus(`Deleted agent ${agentId}`)
+        return true
+      } catch (error: unknown) {
+        setStatus(errorMessage(error))
+        return false
+      }
+    }
+    const address = node.address
+    if (address && address.item.startsWith("mcp:") && address.level === "defaults" && address.agent === null) {
+      const name = address.item.slice("mcp:".length)
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Remove MCP server ${name}?`,
+        message: `Remove MCP server "${name}"? This cannot be undone.`,
+      })
+      if (!confirmed) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      try {
+        await plus["mcp.remove"]({ name }, { location: context.location })
+        if (disposed) return
+        await refresh()
+        if (disposed) return
+        setStatus(`Removed MCP server ${name}`)
+        return true
+      } catch (error: unknown) {
+        setStatus(errorMessage(error))
+        return false
+      }
+    }
+    const itemId = address?.item ?? node.label
+    setStatus(
+      `"${node.label}" cannot be deleted: no delete RPC exists for item ${itemId} (only agent.delete and mcp.remove are defined)`,
+    )
+    return false
   }
 
   void load()
@@ -367,25 +637,40 @@ export function createInstructionsState(context: Plugin.Context) {
   return {
     snapshot,
     nodes,
+    allNodes,
     selected,
     selectedId,
     expanded,
+    filter,
+    setFilter,
     status,
     loading,
     toggleExpanded,
     select,
     selectAgent,
     move,
+    toggle,
     setEnabled,
-    acknowledge,
     saveText,
-    reset,
+    reset: resetNode,
+    saveSplit,
+    splitPreview,
+    resolvedText,
+    threeWay: threeWayFor,
+    resolveKeep,
+    resolveTake,
+    resolveEdit,
+    remove,
     refresh,
     dispose,
   }
 }
 
 export type InstructionsState = ReturnType<typeof createInstructionsState>
+
+function now(): string {
+  return new Date().toISOString()
+}
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
