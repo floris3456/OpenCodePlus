@@ -443,6 +443,8 @@ RPC surface (`rpc.ts`, `index.ts`):
   stays a no-op without moving revisions. Retries once on concurrent conflict
   before raising `team.unknown`.
 
-Not yet implemented: the `Teams` tree group beside `Agents` in the TUI, and
-TUI wiring. Store persistence and the RPC surface are implemented.
+Implemented: the `Teams` tree group beside `Agents` under the `Project` and
+`Global` roots (`tree.ts`), and TUI wiring (`state.ts` `space` → real
+`team.setEnabled` + snapshot refresh; `tree-pane.tsx` on/off badge). Store
+persistence and the RPC surface are implemented.
 

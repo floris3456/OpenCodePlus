@@ -158,6 +158,107 @@ test("Project and Global hold Agents group", () => {
   expect(childrenOf(nodes, "group:global:agents").map((node) => node.id)).toEqual(["agent:global:Helper"])
 })
 
+test("Teams group sits beside Agents under Project and Global, never Defaults", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [
+      { level: "project", team: "crew", enabled: true, agents: ["alpha", "nested/beta"] },
+      { level: "project", team: "side", enabled: false, agents: [] },
+      { level: "global", team: "crew", enabled: false, agents: ["gamma"] },
+    ],
+  })
+  const projectGroup = nodes.find((node) => node.id === "group:project:teams")
+  expect(projectGroup?.kind).toBe("group")
+  expect(projectGroup?.label).toBe("Teams")
+  expect(projectGroup?.depth).toBe(1)
+  const globalGroup = nodes.find((node) => node.id === "group:global:teams")
+  expect(globalGroup?.kind).toBe("group")
+  expect(globalGroup?.label).toBe("Teams")
+  expect(globalGroup?.depth).toBe(1)
+  expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents", "group:project:teams"])
+  expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents", "group:global:teams"])
+  expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(false)
+  expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).not.toContain("group:defaults:teams")
+  // Teams sort by name inside their group.
+  expect(childrenOf(nodes, "group:project:teams").map((node) => node.id)).toEqual(["team:project:crew", "team:project:side"])
+})
+
+test("team rows carry toggle actions and read enabled state as on/off", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [
+      { level: "project", team: "crew", enabled: true, agents: ["alpha", "nested/beta"] },
+      { level: "global", team: "crew", enabled: false, agents: ["gamma"] },
+    ],
+  })
+  const enabled = nodes.find((node) => node.id === "team:project:crew")
+  expect(enabled?.kind).toBe("team")
+  expect(enabled?.label).toBe("crew")
+  expect(enabled?.depth).toBe(2)
+  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false })
+  expect(enabled?.address).toBeUndefined()
+  expect(enabled?.badges.state).toBe("on")
+  const disabled = nodes.find((node) => node.id === "team:global:crew")
+  expect(disabled?.kind).toBe("team")
+  expect(disabled?.depth).toBe(2)
+  expect(disabled?.actions?.toggle).toBe(true)
+  expect(disabled?.badges.state).toBe("off")
+  // Same team name at different levels stays two distinct rows.
+  expect(enabled?.id).not.toBe(disabled?.id)
+})
+
+test("member rows are informational: no address, no actions, depth 3", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha", "nested/beta"] }],
+  })
+  expect(childrenOf(nodes, "team:project:crew").map((node) => node.id)).toEqual([
+    "team:project:crew:alpha",
+    "team:project:crew:nested/beta",
+  ])
+  for (const id of ["team:project:crew:alpha", "team:project:crew:nested/beta"]) {
+    const member = nodes.find((node) => node.id === id)
+    expect(member?.kind).toBe("team")
+    expect(member?.depth).toBe(3)
+    expect(member?.address).toBeUndefined()
+    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false })
+    expect(member?.badges.state).toBeUndefined()
+  }
+})
+
+test("a level with no teams renders no Teams group", () => {
+  // No teams key at all (older snapshots) and an empty list both hide the
+  // group: with no add affordance and no rows, an empty group would be a
+  // dead row that looks broken.
+  for (const input of [
+    { items: items(), records: [], agents: agents() },
+    { items: items(), records: [], agents: agents(), teams: [] },
+    {
+      items: items(),
+      records: [],
+      agents: agents(),
+      teams: [{ level: "global" as const, team: "crew", enabled: true, agents: ["gamma"] }],
+    },
+  ]) {
+    const nodes = expandAll(input)
+    expect(nodes.some((node) => node.id === "group:project:teams")).toBe(false)
+    expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents"])
+  }
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "global", team: "crew", enabled: true, agents: ["gamma"] }],
+  })
+  expect(nodes.some((node) => node.id === "group:global:teams")).toBe(true)
+})
+
 test("MCP tools group by item.server, never the tool name", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   const group = nodes.find((node) => node.id === "group:project:Implementer:tools:mcp:sample")

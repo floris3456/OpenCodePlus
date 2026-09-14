@@ -3,11 +3,16 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { createComponent } from "solid-js"
+import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
 import { resolve, scopesOf } from "../src/instructions/model.js"
+import { projectTeamsPath } from "../src/instructions/paths.js"
 import { enable } from "../src/project.js"
 import type { Snapshot } from "../src/rpc.js"
-import { createSnapshot, renderInstructionsRoute } from "./tui.js"
+import { Definition } from "../src/rpc.js"
+import { InstructionsRoute } from "../src/tui/instructions/route.js"
+import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import type { TestFixture } from "./tui.js"
 import { fullContext } from "./harness.js"
 
@@ -1184,6 +1189,98 @@ test("provenance flags travel real discovery -> snapshot -> rendered rows", asyn
     fixture.destroy()
   }
 })
+test("team row toggles through the real team.setEnabled and the rebuilt tree shows the new state", async () => {
+  // End to end through the production path: a real team on disk, a real
+  // snapshot carrying `teams`, the real route rendering it, the real
+  // team.setEnabled handler toggling it, and the refreshed snapshot
+  // rebuilding the tree. The fixture has no team RPC mock, so the route's
+  // `team.setEnabled` call is wired to the real handlers and every wire is
+  // asserted: the call arguments, the stored record, and the rebuilt row.
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-teams-e2e-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  await fs.mkdir(path.join(teamDir, "nested"), { recursive: true })
+  await Bun.write(
+    path.join(teamDir, "alpha.md"),
+    formatMarkdown({ description: "crew/alpha" }, "alpha role"),
+  )
+  await Bun.write(
+    path.join(teamDir, "nested", "beta.md"),
+    formatMarkdown({ description: "crew/nested/beta" }, "beta role"),
+  )
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  const teamToggles: { level: string; team: string; enabled: boolean }[] = []
+  const wrappedTeamSetEnabled = async (input: { level: "project" | "global"; team: string; enabled: boolean }) => {
+    teamToggles.push({ ...input })
+    return Effect.runPromise(handlers["team.setEnabled"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: ["alpha", "nested/beta"] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.setEnabled": wrappedTeamSetEnabled,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // Navigate by label: Project root, its Teams group (beside Agents), the
+    // crew row, then its member rows.
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    // The disabled row renders its badge in the visible frame.
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[off]")
+    expect(binds(fixture)).toContain("space")
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("nested/beta"))
+    expect(fixture.captureCharFrame()).toContain("alpha")
+    await moveTo(fixture, "crew")
+    // Space calls the real team.setEnabled with the inverted state.
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Enabled team "crew"'))
+    expect(teamToggles).toEqual([{ level: "project", team: "crew", enabled: true }])
+    // The toggle republishes: refresh pulls a fresh snapshot whose teams
+    // entry reads enabled, and the rebuilt tree shows the new badge.
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("crew") && selectedRow(frame).includes("[on]"))
+    const selected = selectedRow(fixture.captureCharFrame())
+    expect(selected).toContain("crew")
+    expect(selected).toContain("[on]")
+    expect(liveSnapshots[liveSnapshots.length - 1].teams).toEqual([
+      { level: "project", team: "crew", enabled: true, agents: ["alpha", "nested/beta"] },
+    ])
+    // Toggle back off through the same path: the call inverts again.
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled team "crew"'))
+    expect(teamToggles).toEqual([
+      { level: "project", team: "crew", enabled: true },
+      { level: "project", team: "crew", enabled: false },
+    ])
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("crew") && selectedRow(frame).includes("[off]"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("reviewer persona shows its own prompt and saves only its record", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer"), projectAgent("Reviewer")],
