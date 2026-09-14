@@ -1,4 +1,4 @@
-import { applies, canReset, fingerprint, resolutionChain, resolveSplit } from "./model.js"
+import { applies, canReset, upstreamForEdit } from "./model.js"
 import type {
   Address,
   AgentSource,
@@ -7,10 +7,8 @@ import type {
   Level,
   SplitRecord,
 } from "./model.js"
-import { buildMemo, sectionResolveOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { skeletonOf, type Lazy, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
-import { builtinBaseIds } from "../agents/base.js"
-import { slice } from "./sections.js"
+import { buildMemo, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
+import { materialize, skeletonOf, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 
 export type Field =
@@ -63,10 +61,8 @@ export interface QueryRow {
 export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { rows: QueryRow[]; total: number } {
   const active = memo ?? buildMemo(input)
   const state = queryState(active)
-  const scope: Scope = { all: [] }
-  const parsed = parseWhere(options?.where ?? "", state, scope)
-  const candidates = collectCandidates(state, parsed.wantsOrphans)
-  scope.all = candidates
+  const parsed = parseWhere(options?.where ?? "", state)
+  const candidates = collectCandidates(state, parsed)
   const matched = candidates.filter((candidate) => parsed.filters.every((filter) => filter.negate !== filter.test(candidate)))
   const sorted = sortCandidates(state, matched, parseSort(options?.sort) ?? parsed.sort)
   const total = sorted.length
@@ -75,7 +71,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   if (!Number.isInteger(offset) || offset < 0) throw new Error(`bad query offset "${offset}"`)
   if (!Number.isInteger(limit) || limit < 0) throw new Error(`bad query limit "${limit}"`)
   const fields = options?.fields ?? (["id", "badges", "source", "tokens"] as const satisfies readonly Field[])
-  return { rows: sorted.slice(offset, offset + limit).map((candidate) => project(state, scope, candidate, fields)), total }
+  return { rows: sorted.slice(offset, offset + limit).map((candidate) => project(state, candidate, fields)), total }
 }
 
 interface QueryState {
@@ -83,10 +79,6 @@ interface QueryState {
   readonly recs: Map<string, CustomizationRecord[]>
   readonly splits: Map<string, SplitRecord[]>
   readonly agents: Map<string, AgentSource>
-}
-
-interface Scope {
-  all: Candidate[]
 }
 
 interface Candidate {
@@ -97,8 +89,10 @@ interface Candidate {
   readonly index: number
   readonly orphan: boolean
   readonly lazy: Lazy | undefined
+  readonly parent: Lazy | undefined
   readonly address: Address | undefined
-  readonly sectionCount: number
+  readonly sectionIds: readonly string[]
+  node: TreeNode | undefined
   resolvedText: string | undefined
   upstreamText: string | undefined
 }
@@ -106,6 +100,9 @@ interface Candidate {
 interface Filter {
   readonly negate: boolean
   readonly rank: number
+  readonly excludesSections: boolean
+  readonly mentionsSections: boolean
+  readonly propagating: boolean
   readonly test: (candidate: Candidate) => boolean
 }
 
@@ -164,28 +161,42 @@ function lookupItem(state: QueryState, itemId: string, owner: string | null): It
   return matches.find((entry) => applies(entry, owner)) ?? matches[0]
 }
 
-// Candidates walk the lazy skeleton without resolving: branch children are
-// cheap, item rows enumerate sections through a memo-free split of the
-// walked whole text, so merely listing rows never touches whole/section.
-function collectCandidates(state: QueryState, wantsOrphans: boolean): Candidate[] {
+// Candidates walk the lazy skeleton: branch children are cheap, item rows
+// enumerate their sections through the shared memo split, so listing rows
+// costs the same per-row resolve the TUI already pays when it builds the
+// tree. Section expansion is skipped when a positive structural term can
+// never match a section, or when the item itself fails a term its sections
+// necessarily fail (level, agent, and the upstream item attributes).
+function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
   const out: Candidate[] = []
-  const push = (candidate: Omit<Candidate, "index" | "resolvedText" | "upstreamText">) => {
-    out.push({ ...candidate, index: out.length, resolvedText: undefined, upstreamText: undefined })
+  const push = (candidate: Omit<Candidate, "index" | "node" | "resolvedText" | "upstreamText">) => {
+    out.push({ ...candidate, index: out.length, node: undefined, resolvedText: undefined, upstreamText: undefined })
   }
+  const skipRows = parsed.filters.some((filter) => filter.excludesSections)
+  const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
-      const sections = sectionsFor(state, lazy)
-      push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, address: lazy.address, sectionCount: sections.length })
-      for (const section of sections)
-        push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, address: section.address, sectionCount: 0 })
+      const enumerated = (!needIds || failsPropagating(parsed, lazy) ? [] : sectionsFor(state, lazy))
+      push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
+      if (!skipRows) {
+        for (const section of enumerated)
+          push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: lazy, address: section.address, sectionIds: [] })
+      }
       return
     }
-    push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, address: lazy.address, sectionCount: 0 })
+    push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [] })
     for (const child of lazy.children()) visit(child)
   }
   for (const root of skeletonOf(state.memo)) visit(root)
-  if (wantsOrphans) pushOrphans(state, push)
+  if (parsed.wantsOrphans) pushOrphans(state, push, skipRows)
   return out
+}
+
+const propagatingKeys = new Set(["level", "agent", "item", "group", "server", "codemode"])
+
+function failsPropagating(parsed: Parsed, lazy: Lazy): boolean {
+  const probe: Candidate = { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
+  return parsed.filters.some((filter) => filter.propagating && !filter.test(probe))
 }
 
 interface SectionRow {
@@ -200,14 +211,7 @@ function sectionsFor(state: QueryState, lazy: Lazy): SectionRow[] {
   if (address === undefined) return []
   const item = lookupItem(state, address.item, address.agent)
   if (item === undefined) return []
-  const split = resolveSplit({
-    text: effectiveWholeText(state, address, item),
-    title: item.title,
-    splits: state.memo.ctx.splits,
-    scopes: state.memo.ctx.scopes,
-    address: { ...address, section: null },
-  })
-  return split.sections.map((section) => ({
+  return splitOf(state.memo, address.level, address.agent, item).sections.map((section) => ({
     id: `section:${address.level}:${address.agent ?? ""}:${address.item}:${section.id}`,
     label: section.name,
     depth: lazy.depth + 1 + section.depth,
@@ -221,26 +225,28 @@ function sectionsFor(state: QueryState, lazy: Lazy): SectionRow[] {
 // (per-agent MCP state, say) are not orphans.
 function pushOrphans(
   state: QueryState,
-  push: (candidate: Omit<Candidate, "index" | "resolvedText" | "upstreamText">) => void,
+  push: (candidate: Omit<Candidate, "index" | "node" | "resolvedText" | "upstreamText">) => void,
+  skipSections: boolean,
 ): void {
   const seen = new Set<string>()
   for (const record of state.memo.ctx.customizations) {
     const key = JSON.stringify([record.level, record.agent, record.item, record.section])
     if (seen.has(key)) continue
     seen.add(key)
+    if (record.section !== null && skipSections) continue
     if (!isOrphan(state, record.level, record.agent, record.item, record.section)) continue
     const address: Address = { level: record.level, agent: record.agent, item: record.item, section: record.section }
     if (record.section === null)
-      push({ id: `item:${record.level}:${record.agent ?? ""}:${record.item}`, kind: "item", label: record.item, depth: 0, orphan: true, lazy: undefined, address, sectionCount: 0 })
+      push({ id: `item:${record.level}:${record.agent ?? ""}:${record.item}`, kind: "item", label: record.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
     else
-      push({ id: `section:${record.level}:${record.agent ?? ""}:${record.item}:${record.section}`, kind: "section", label: record.section, depth: 0, orphan: true, lazy: undefined, address, sectionCount: 0 })
+      push({ id: `section:${record.level}:${record.agent ?? ""}:${record.item}:${record.section}`, kind: "section", label: record.section, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
   }
   for (const split of state.memo.ctx.splits) {
     const key = JSON.stringify([split.level, split.agent, split.item, null])
     if (seen.has(key)) continue
     seen.add(key)
     if (!isOrphan(state, split.level, split.agent, split.item, null)) continue
-    push({ id: `item:${split.level}:${split.agent ?? ""}:${split.item}`, kind: "item", label: split.item, depth: 0, orphan: true, lazy: undefined, address: { level: split.level, agent: split.agent, item: split.item, section: null }, sectionCount: 0 })
+    push({ id: `item:${split.level}:${split.agent ?? ""}:${split.item}`, kind: "item", label: split.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address: { level: split.level, agent: split.agent, item: split.item, section: null }, sectionIds: [] })
   }
 }
 
@@ -249,114 +255,25 @@ function isOrphan(state: QueryState, level: Level, agent: string | null, itemId:
   if (item === undefined) return true
   if (agent !== null && !state.agents.has(agent)) return true
   if (section === null) return false
-  const address: Address = { level, agent, item: itemId, section: null }
-  const split = resolveSplit({
-    text: effectiveWholeText(state, address, item),
-    title: item.title,
-    splits: state.memo.ctx.splits,
-    scopes: state.memo.ctx.scopes,
-    address,
-  })
-  return !split.sections.some((entry) => entry.id === section)
+  return !splitOf(state.memo, level, agent, item).sections.some((entry) => entry.id === section)
 }
 
-function effectiveWholeText(state: QueryState, address: Address, item: Item): string {
-  const chain = resolutionChain(address, state.memo.ctx.scopes)
-  const whole = recsAt(state, address.item, null)
-  const winner = chain.find((node) => atNode(whole, node.level, node.agent)?.text !== undefined)
-  if (winner === undefined) return item.text
-  return atNode(whole, winner.level, winner.agent)?.text ?? item.text
-}
-
-// The badge values the tree renders, recomputed from stored records without
-// touching the memo so structural filters never resolve text.
-function wholeBadges(
-  state: QueryState,
-  address: Address,
-  item: Item,
-): { enabled: boolean; source: Level | "upstream"; modified: boolean; review: boolean } {
-  const chain = resolutionChain(address, state.memo.ctx.scopes)
-  const whole = recsAt(state, address.item, null)
-  const stateWinner = chain.find((node) => atNode(whole, node.level, node.agent)?.state !== undefined)
-  const own = atNode(whole, address.level, address.agent)
-  let review = false
-  if (own?.text !== undefined) {
-    const above = chain
-      .slice(1)
-      .map((node) => atNode(whole, node.level, node.agent)?.text)
-      .find((text) => text !== undefined)
-    const current = above === undefined ? item.fingerprint : fingerprint(above)
-    review = current !== own.basedOn && current !== own.acknowledged
+// Badge values come from the one tree path: materializing a lazy row runs
+// the shared memo resolves exactly like the TUI build does. Section rows
+// materialize through their parent item's cached children.
+function nodeOf(state: QueryState, candidate: Candidate): TreeNode | undefined {
+  if (candidate.node !== undefined) return candidate.node
+  if (candidate.lazy !== undefined) {
+    candidate.node = materialize(candidate.lazy)
+    return candidate.node
   }
-  const source = chain.find((node) => {
-    const found = atNode(whole, node.level, node.agent)
-    return found?.text !== undefined || found?.state !== undefined
-  })
-  return {
-    enabled: stateWinner === undefined ? item.enabled : atNode(whole, stateWinner.level, stateWinner.agent)?.state === "on",
-    source: source?.level ?? "upstream",
-    modified: own?.text !== undefined,
-    review,
-  }
-}
-
-function sectionBadges(
-  state: QueryState,
-  address: Address,
-  item: Item,
-  section: string,
-): { enabled: boolean; source: Level | "upstream"; modified: boolean; review: boolean } {
-  const chain = resolutionChain(address, state.memo.ctx.scopes)
-  const sectioned = recsAt(state, address.item, section)
-  const winner = chain.find((node) => atNode(sectioned, node.level, node.agent)?.text !== undefined)
-  const stateWinner = chain.find((node) => atNode(sectioned, node.level, node.agent)?.state !== undefined)
-  const whole = wholeBadges(state, { ...address, section: null }, item)
-  const own = atNode(sectioned, address.level, address.agent)
-  return {
-    enabled: stateWinner === undefined ? whole.enabled : atNode(sectioned, stateWinner.level, stateWinner.agent)?.state === "on",
-    source: winner?.level ?? stateWinner?.level ?? "upstream",
-    modified: own?.text !== undefined,
-    review: sectionReview(state, address, item, section),
-  }
-}
-
-function sectionReview(state: QueryState, address: Address, item: Item, section: string): boolean {
-  const own = atNode(recsAt(state, address.item, section), address.level, address.agent)
-  if (own?.text === undefined) return false
-  const current = fingerprint(aboveSectionText(state, address, item, section))
-  return current !== own.basedOn && current !== own.acknowledged
-}
-
-function aboveWholeText(state: QueryState, address: Address, item: Item): string {
-  const chain = resolutionChain(address, state.memo.ctx.scopes)
-  const whole = recsAt(state, address.item, null)
-  return (
-    chain
-      .slice(1)
-      .map((node) => atNode(whole, node.level, node.agent)?.text)
-      .find((text) => text !== undefined) ?? item.text
-  )
-}
-
-function aboveSectionText(state: QueryState, address: Address, item: Item, section: string): string {
-  const chain = resolutionChain(address, state.memo.ctx.scopes)
-  const sectioned = recsAt(state, address.item, section)
-  const ancestor = chain
-    .slice(1)
-    .map((node) => atNode(sectioned, node.level, node.agent)?.text)
-    .find((text) => text !== undefined)
-  if (ancestor !== undefined) return ancestor
-  const text = aboveWholeText(state, address, item)
-  const split = resolveSplit({
-    text,
-    title: item.title,
-    splits: state.memo.ctx.splits,
-    scopes: state.memo.ctx.scopes,
-    address,
-  })
-  const definition = split.sections.find((entry) => entry.id === section)
-  if (definition === undefined) return text
-  return slice(text, definition)
+  const parent = candidate.parent
+  const address = candidate.address
+  if (parent === undefined || address === undefined) return undefined
+  const found = parent.children().find((child) => child.id === candidate.id)
+  if (found === undefined) return undefined
+  candidate.node = materialize(found)
+  return candidate.node
 }
 
 function resolvedTextOf(state: QueryState, candidate: Candidate): string {
@@ -380,29 +297,15 @@ function upstreamTextOf(state: QueryState, candidate: Candidate): string {
   const text =
     address === undefined || item === undefined
       ? ""
-      : address.section === null
-        ? aboveWholeText(state, address, item)
-        : aboveSectionText(state, address, item, address.section)
+      : upstreamForEdit({
+          upstream: item,
+          records: state.memo.ctx.customizations,
+          splits: state.memo.ctx.splits,
+          scopes: state.memo.ctx.scopes,
+          address,
+        })
   candidate.upstreamText = text
   return text
-}
-
-function enabledOf(state: QueryState, candidate: Candidate): boolean | undefined {
-  const address = candidate.address
-  if (address === undefined) {
-    if (candidate.kind !== "team") return undefined
-    const level = levelOf(candidate)
-    if (level !== "project" && level !== "global") return undefined
-    const team = state.memo.ctx.teams.find((entry) => entry.level === level && candidate.id === `team:${level}:${entry.team}`)
-    return team?.enabled
-  }
-  const item = lookupItem(state, address.item, address.agent)
-  if (item === undefined) {
-    const stateValue = ownOf(state, address)?.state
-    return stateValue === undefined ? undefined : stateValue === "on"
-  }
-  if (address.section !== null) return sectionBadges(state, address, item, address.section).enabled
-  return wholeBadges(state, address, item).enabled
 }
 
 function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
@@ -418,128 +321,6 @@ function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
     remove: false,
     split: false,
   }
-}
-
-function livenessOf(state: QueryState, candidate: Candidate, key: "active" | "inactive" | "unsupported"): boolean {
-  const address = candidate.address
-  if (address === undefined) return false
-  const item = lookupItem(state, address.item, address.agent)
-  if (item === undefined) return false
-  // Sections never carry the base liveness badges: like the tree, only a
-  // gated Code Mode section reads unsupported.
-  if (address.section !== null) return key === "unsupported" && item.kind === "tool" && item.codemode === true
-  if (key === "unsupported") {
-    if (item.kind === "tool" && item.codemode === true) return true
-    return item.id === "system:role" || item.kind === "base"
-  }
-  if (item.kind !== "base") return false
-  if (key === "active") {
-    const owner = address.agent === null ? undefined : state.agents.get(address.agent)
-    return owner?.base !== undefined && item.id === `base:${owner.base}`
-  }
-  if (item.userBase !== true) return false
-  return !builtinBaseIds().has(baseIdOf(item.id))
-}
-
-function baseIdOf(id: string): string {
-  return id.startsWith("base:") ? id.slice("base:".length) : id
-}
-
-interface Badges {
-  readonly state: "on" | "off" | undefined
-  readonly modified: boolean
-  readonly active: boolean
-  readonly inactive: boolean
-  readonly unsupported: boolean
-  readonly review: boolean
-  readonly reviewCount: number
-  readonly source: Level | "upstream" | undefined
-}
-
-function badgesOf(state: QueryState, scope: Scope, candidate: Candidate): Badges {
-  const address = candidate.address
-  if (address === undefined) {
-    const enabled = enabledOf(state, candidate)
-    const count = reviewCountOf(state, scope, candidate)
-    return {
-      state: enabled === undefined ? undefined : enabled ? "on" : "off",
-      modified: false,
-      active: false,
-      inactive: false,
-      unsupported: false,
-      review: count > 0,
-      reviewCount: count,
-      source: undefined,
-    }
-  }
-  const item = lookupItem(state, address.item, address.agent)
-  if (item === undefined) {
-    const enabled = enabledOf(state, candidate)
-    return {
-      state: enabled === undefined ? undefined : enabled ? "on" : "off",
-      modified: ownOf(state, address)?.text !== undefined,
-      active: false,
-      inactive: false,
-      unsupported: false,
-      review: false,
-      reviewCount: 0,
-      source: undefined,
-    }
-  }
-  const resolved =
-    address.section === null ? wholeBadges(state, address, item) : sectionBadges(state, address, item, address.section)
-  const count = reviewCountOf(state, scope, candidate)
-  return {
-    state: resolved.enabled ? "on" : "off",
-    modified: resolved.modified,
-    active: livenessOf(state, candidate, "active"),
-    inactive: livenessOf(state, candidate, "inactive"),
-    unsupported: livenessOf(state, candidate, "unsupported"),
-    review: resolved.review || count > 0,
-    reviewCount: candidate.kind === "section" ? 0 : count,
-    source: resolved.source,
-  }
-}
-
-function selfReviewOf(state: QueryState, candidate: Candidate): boolean {
-  const address = candidate.address
-  if (address === undefined) return false
-  const item = lookupItem(state, address.item, address.agent)
-  if (item === undefined) return false
-  if (address.section !== null) return sectionBadges(state, address, item, address.section).review
-  return wholeBadges(state, address, item).review
-}
-
-function reviewCountOf(state: QueryState, scope: Scope, candidate: Candidate): number {
-  const address = candidate.address
-  if (address !== undefined) {
-    if (candidate.kind === "section") return 0
-    const item = lookupItem(state, address.item, address.agent)
-    if (item === undefined) return 0
-    if (item.kind === "tool" && item.codemode === true) return 0
-    const split = resolveSplit({
-      text: effectiveWholeText(state, address, item),
-      title: item.title,
-      splits: state.memo.ctx.splits,
-      scopes: state.memo.ctx.scopes,
-      address,
-    })
-    return split.sections.filter((section) => sectionBadges(state, address, item, section.id).review).length
-  }
-  return directChildren(scope, candidate).reduce(
-    (sum, child) => sum + reviewCountOf(state, scope, child) + (selfReviewOf(state, child) ? 1 : 0),
-    0,
-  )
-}
-
-function directChildren(scope: Scope, candidate: Candidate): Candidate[] {
-  const out: Candidate[] = []
-  for (let at = candidate.index + 1; at < scope.all.length; at++) {
-    const next = scope.all[at]
-    if (next === undefined || next.depth <= candidate.depth) break
-    if (next.depth === candidate.depth + 1) out.push(next)
-  }
-  return out
 }
 
 function levelOf(candidate: Candidate): Level | undefined {
@@ -655,12 +436,12 @@ function deltaOf(state: QueryState, candidate: Candidate): number {
   return changedLines(upstreamTextOf(state, candidate), resolvedTextOf(state, candidate))
 }
 
-function parseWhere(where: string, state: QueryState, scope: Scope): Parsed {
+function parseWhere(where: string, state: QueryState): Parsed {
   const filters: Filter[] = []
   let sort: SortSpec | undefined
   let wantsOrphans = false
   for (const raw of splitTerms(where)) {
-    const parsed = parseTerm(raw, state, scope)
+    const parsed = parseTerm(raw, state)
     if (parsed === undefined) continue
     if ("sort" in parsed) {
       sort = parsed.sort
@@ -674,7 +455,7 @@ function parseWhere(where: string, state: QueryState, scope: Scope): Parsed {
 
 type TermOut = (Filter & { wantsOrphans: boolean }) | { sort: SortSpec }
 
-function parseTerm(raw: string, state: QueryState, scope: Scope): TermOut | undefined {
+function parseTerm(raw: string, state: QueryState): TermOut | undefined {
   if (raw === "") return undefined
   let negate = false
   let body = raw
@@ -686,7 +467,7 @@ function parseTerm(raw: string, state: QueryState, scope: Scope): TermOut | unde
   if (colon === -1) {
     const word = unescape(body)
     if (word === "") throw new Error(`empty filter term in "${raw}"`)
-    return { negate, rank: 0, test: (candidate) => contains(candidate.label, word) || contains(candidate.id, word), wantsOrphans: false }
+    return { negate, rank: 0, excludesSections: false, mentionsSections: false, propagating: false, test: (candidate) => contains(candidate.label, word) || contains(candidate.id, word), wantsOrphans: false }
   }
   const key = body.slice(0, colon).toLowerCase()
   const alts = splitValue(body.slice(colon + 1), raw)
@@ -695,7 +476,16 @@ function parseTerm(raw: string, state: QueryState, scope: Scope): TermOut | unde
     if (alts.length !== 1) throw new Error(`bad sort directive in "${raw}"`)
     return { sort: parseSortKey(alts[0] ?? "", raw) }
   }
-  return { negate, rank: rankFor(key, raw), test: testFor(key, alts, raw, state, scope), wantsOrphans: key === "orphan" && wantsTrue(alts, negate) }
+  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: key === "has" && alts.some((alt) => lower(alt) === "sections"), propagating: !negate && propagatingKeys.has(key), test: testFor(key, alts, raw, state), wantsOrphans: key === "orphan" && wantsTrue(alts, negate) }
+}
+
+function excludesSections(key: string, alts: readonly string[], negate: boolean): boolean {
+  if (negate) return false
+  if (key === "team") return true
+  if (key === "has" && alts.length === 1 && lower(alts[0] ?? "") === "sections") return true
+  if (key === "can" && alts.every((alt) => lower(alt) === "split" || lower(alt) === "remove")) return true
+  if (key === "kind" && !alts.some((alt) => lower(alt) === "section")) return true
+  return false
 }
 
 function wantsTrue(alts: readonly string[], negate: boolean): boolean {
@@ -703,11 +493,12 @@ function wantsTrue(alts: readonly string[], negate: boolean): boolean {
 }
 
 function rankFor(key: string, term: string): number {
-  if (key === "state" || key === "modified" || key === "review" || key === "source" || key === "excluded") return 1
-  const order = ["identical", "dead", "shadowed", "orphan", "tokens", "delta", "overriders", "text", "upstream"]
-  const index = order.indexOf(key)
-  if (index === -1 && !structuralKeys.has(key)) throw new Error(`unknown filter key in "${term}"`)
-  return index === -1 ? 0 : 2 + index
+  if (key === "state" || key === "modified" || key === "review" || key === "source" || key === "excluded" || key === "active" || key === "inactive" || key === "unsupported") return 1
+  const textKeys = ["identical", "tokens", "delta", "text", "upstream"]
+  const index = textKeys.indexOf(key)
+  if (index !== -1) return 2 + index
+  if (!structuralKeys.has(key)) throw new Error(`unknown filter key in "${term}"`)
+  return 0
 }
 
 const structuralKeys = new Set([
@@ -734,6 +525,10 @@ const structuralKeys = new Set([
   "team",
   "acked",
   "excluded",
+  "dead",
+  "shadowed",
+  "orphan",
+  "overriders",
 ])
 
 function contains(haystack: string, needle: string): boolean {
@@ -912,7 +707,7 @@ function numberMatches(value: number, alt: string, term: string): boolean {
   return value === expected
 }
 
-function testFor(key: string, alts: readonly string[], term: string, state: QueryState, scope: Scope): (candidate: Candidate) => boolean {
+function testFor(key: string, alts: readonly string[], term: string, state: QueryState): (candidate: Candidate) => boolean {
   switch (key) {
     case "kind": {
       const allowed = oneOf(key, alts, ["root", "group", "agent", "team", "item", "section"], term)
@@ -952,34 +747,24 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
     case "state": {
       const allowed = oneOf(key, alts, ["on", "off"], term)
       return (candidate) => {
-        const enabled = enabledOf(state, candidate)
-        if (enabled === undefined) return false
-        return allowed.some((alt) => (enabled ? "on" : "off") === lower(alt))
+        const badges = nodeOf(state, candidate)?.badges
+        if (badges?.state === undefined) return false
+        return allowed.some((alt) => badges.state === lower(alt))
       }
     }
     case "modified": {
       const allowed = booleanOf(alts, term)
-      return (candidate) => {
-        const address = candidate.address
-        const modified = address !== undefined && ownOf(state, address)?.text !== undefined
-        return allowed.some((alt) => modified === alt)
-      }
+      return (candidate) => allowed.some((alt) => (nodeOf(state, candidate)?.badges.modified === true) === alt)
     }
     case "review": {
       const allowed = booleanOf(alts, term)
-      return (candidate) => allowed.some((alt) => badgesOf(state, scope, candidate).review === alt)
+      return (candidate) => allowed.some((alt) => (nodeOf(state, candidate)?.badges.review === true) === alt)
     }
     case "source": {
       const allowed = oneOf(key, alts, ["project", "global", "defaults", "upstream"], term)
       return (candidate) => {
-        const address = candidate.address
-        if (address === undefined) return false
-        const item = lookupItem(state, address.item, address.agent)
-        if (item === undefined) return false
-        const source =
-          address.section === null
-            ? wholeBadges(state, address, item).source
-            : sectionBadges(state, address, item, address.section).source
+        const source = nodeOf(state, candidate)?.badges.source
+        if (source === undefined) return false
         return allowed.some((alt) => source === lower(alt))
       }
     }
@@ -995,7 +780,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
     case "inactive":
     case "unsupported": {
       const allowed = booleanOf(alts, term)
-      return (candidate) => allowed.some((alt) => livenessOf(state, candidate, key) === alt)
+      return (candidate) => allowed.some((alt) => (nodeOf(state, candidate)?.badges[key] === true) === alt)
     }
     case "codemode": {
       const allowed = booleanOf(alts, term)
@@ -1042,8 +827,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
     case "excluded": {
       const allowed = booleanOf(alts, term)
       return (candidate) => {
-        const enabled = enabledOf(state, candidate)
-        const excluded = candidate.address !== undefined && enabled === false
+        const excluded = candidate.address !== undefined && nodeOf(state, candidate)?.badges.state === "off"
         return allowed.some((alt) => excluded === alt)
       }
     }
@@ -1094,7 +878,7 @@ function hasOf(state: QueryState, candidate: Candidate, alt: string): boolean {
   if (address === undefined) return false
   if (alt === "record") return ownOf(state, address) !== undefined
   if (alt === "split") return splitOfAddress(state, address.level, address.agent, address.item) !== undefined
-  if (alt === "sections") return candidate.sectionCount > 0
+  if (alt === "sections") return candidate.sectionIds.length > 0
   const item = lookupItem(state, address.item, address.agent)
   return (ownOf(state, address)?.text ?? item?.text ?? "") !== ""
 }
@@ -1131,28 +915,30 @@ function sortCandidates(state: QueryState, candidates: Candidate[], sort: SortSp
     .map((entry) => entry.candidate)
 }
 
-function badgesString(badges: Badges): string {
+function badgesString(node: TreeNode): string {
   const labels: string[] = []
-  if (badges.state !== undefined) labels.push(badges.state)
-  if (badges.modified) labels.push("modified")
-  if (badges.active) labels.push("active")
-  if (badges.inactive) labels.push("inactive")
-  if (badges.unsupported) labels.push("unsupported")
-  if (badges.reviewCount > 0) labels.push(`${badges.reviewCount} to review`)
-  else if (badges.review) labels.push("review")
+  if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
+  if (node.badges.modified === true) labels.push("modified")
+  if (node.badges.active === true) labels.push("active")
+  if (node.badges.inactive === true) labels.push("inactive")
+  if (node.badges.unsupported === true) labels.push("unsupported")
+  const count = node.badges.reviewCount ?? 0
+  if (count > 0) labels.push(`${count} to review`)
+  else if (node.badges.review === true) labels.push("review")
   return labels.join(" ")
 }
 
-function project(state: QueryState, scope: Scope, candidate: Candidate, fields: readonly Field[]): QueryRow {
+function project(state: QueryState, candidate: Candidate, fields: readonly Field[]): QueryRow {
   const row: Record<string, unknown> = { id: candidate.id }
   for (const field of fields) {
     if (field === "id") continue
     if (field === "badges") {
-      row.badges = badgesString(badgesOf(state, scope, candidate))
+      const node = nodeOf(state, candidate)
+      if (node !== undefined) row.badges = badgesString(node)
       continue
     }
     if (field === "source") {
-      const source = badgesOf(state, scope, candidate).source
+      const source = nodeOf(state, candidate)?.badges.source
       if (source !== undefined) row.source = source
       continue
     }
@@ -1192,8 +978,7 @@ function project(state: QueryState, scope: Scope, candidate: Candidate, fields: 
       continue
     }
     if (field === "sections") {
-      if (candidate.kind === "item" && candidate.lazy !== undefined)
-        row.sections = sectionsFor(state, candidate.lazy).map((section) => section.id)
+      if (candidate.kind === "item" && candidate.address !== undefined && !candidate.orphan) row.sections = candidate.sectionIds
     }
   }
   return row as unknown as QueryRow
