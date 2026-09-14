@@ -444,9 +444,12 @@ function applyBasePlan(
   if (active === undefined) return
   const match = candidates.find((plan) => plan.template === active)
   if (match === undefined) return
-  // Host templates already carry core's rendered tool guidance
-  // (`SessionSystemPrompt.render` ran before the session hook assembled
-  // `system[0]`), so overwrite with the stored text verbatim.
+  // Host templates already carry core's rendered tool guidance: the plugin
+// host serves `PromptTemplate.templates` (raw bundled text), the core
+// optimize plugins run first (`pre`) and overwrite `system[0]` with the
+// rendered family template, and Plus runs last (`post`) after the rendered
+// text is already in place. Stored custom text replaces it verbatim — there
+// is no second render seam to call.
   const first = event.system[0]
   if (first === undefined) {
     event.system.push({ type: "text", text: match.text })

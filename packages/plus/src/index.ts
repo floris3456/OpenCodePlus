@@ -467,8 +467,9 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`); the
 // local table below is only the fallback when the host reports none. User
 // templates created via `base.create` are layered on top so discover lists
-// them alongside the built-ins. Templates pass through verbatim: the text
-// already carries core's rendered tool guidance.
+// them alongside the built-ins. Host templates pass through verbatim: the
+// bundled text is raw, and core's optimize plugins render it into `system[0]`
+// before Plus's later (`post`) hook overwrites it with stored custom text.
 async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
   const templates = await Effect.runPromise(ctx.prompt.templates())
   if (templates.length === 0)
