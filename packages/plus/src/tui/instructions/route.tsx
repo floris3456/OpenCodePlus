@@ -35,6 +35,15 @@ function canRemove(node: TreeNode | undefined): boolean {
   return node?.actions?.remove === true
 }
 
+// d is offered on every item and section row, not just removable ones, so
+// state.remove can explain why upstream-owned rows cannot be deleted.
+// Structural rows (roots, groups, agents without remove) keep no binding.
+function canDelete(node: TreeNode | undefined): boolean {
+  if (node === undefined) return false
+  if (node.actions?.remove === true) return true
+  return node.kind === "item" || node.kind === "section"
+}
+
 function canSplit(node: TreeNode | undefined): boolean {
   return node?.actions?.split === true
 }
@@ -284,7 +293,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     hints.push("enter edit")
     if (canToggle(node)) hints.push("space toggle")
     hints.push("a add")
-    if (canRemove(node)) hints.push("d delete")
+    if (canDelete(node)) hints.push("d delete")
     if (canReset(node)) hints.push("r reset")
     if (canSplit(node)) hints.push("s split")
     hints.push("/ filter")
@@ -333,7 +342,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           ? [{ bind: "space", title: "Toggle include", group: "Instructions", run: toggle }]
           : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
-        ...(canRemove(node)
+        ...(canDelete(node)
           ? [{ bind: "d", title: "Delete", group: "Instructions", run: remove }]
           : []),
         ...(canReset(node)

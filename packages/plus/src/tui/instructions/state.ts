@@ -635,15 +635,18 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   // d: delete rows whose tree actions allow remove. Agent rows go through
-  // agent.delete, shared MCP rows through mcp.remove. File-backed item rows
-  // (project skills, added instructions, added base prompts) have no delete
-  // RPC in the opencode.plus contract, so surface that limitation directly.
+  // agent.delete, shared MCP rows through mcp.remove, project skills through
+  // skill.delete, user base templates through base.delete, and project
+  // instruction files through instruction.delete. Anything else keeps an
+  // honest refusal naming why it cannot be deleted. The route offers d on
+  // every item and section row so refusals reach the user as status text;
+  // rows without remove actions never delete.
   async function remove(node: TreeNode): Promise<boolean> {
-    if (node.actions?.remove !== true) {
-      setStatus(`"${node.label}" cannot be deleted`)
-      return false
-    }
     if (node.kind === "agent") {
+      if (node.actions?.remove !== true) {
+        setStatus(`"${node.label}" cannot be deleted`)
+        return false
+      }
       const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
       const agentId = match?.[2]
       const scope = match?.[1]
@@ -676,6 +679,23 @@ export function createInstructionsState(context: Plugin.Context) {
       }
     }
     const address = node.address
+    if (node.kind === "item" && node.actions?.remove !== true) {
+      const refusal = refusalFor(node)
+      if (refusal !== undefined) {
+        setStatus(refusal)
+        return false
+      }
+      setStatus(`"${node.label}" cannot be deleted`)
+      return false
+    }
+    if (node.kind === "section") {
+      setStatus(`"${node.label}" cannot be deleted: sections are toggled or split, not deleted`)
+      return false
+    }
+    if (node.actions?.remove !== true) {
+      setStatus(`"${node.label}" cannot be deleted`)
+      return false
+    }
     if (address && address.item.startsWith("mcp:") && address.level === "defaults" && address.agent === null) {
       const name = address.item.slice("mcp:".length)
       const confirmed = await context.ui.dialog.confirm({
@@ -699,10 +719,124 @@ export function createInstructionsState(context: Plugin.Context) {
       }
     }
     const itemId = address?.item ?? node.label
-    setStatus(
-      `"${node.label}" cannot be deleted: no delete RPC exists for item ${itemId} (only agent.delete and mcp.remove are defined)`,
-    )
+    const item = currentItem(address?.item)
+    if (item === undefined) {
+      setStatus(`"${node.label}" cannot be deleted`)
+      return false
+    }
+    if (item.kind === "skill" && itemId.startsWith("skill:")) {
+      const skillId = itemId.slice("skill:".length)
+      if (node.actions?.remove !== true || item.group !== "project") {
+        setStatus(`"${node.label}" cannot be deleted: skill "${skillId}" is not project-owned`)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Delete skill ${skillId}?`,
+        message: `Delete project skill "${skillId}"? This cannot be undone.`,
+      })
+      if (confirmed !== true) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      try {
+        await plus["skill.delete"]({ id: skillId }, { location: context.location })
+        if (disposed) return false
+        await refresh()
+        if (disposed) return false
+        setStatus(`Deleted skill ${skillId}`)
+        return true
+      } catch (error: unknown) {
+        setStatus(errorMessage(error))
+        return false
+      }
+    }
+    if (item.kind === "base" && itemId.startsWith("base:")) {
+      const templateId = itemId.slice("base:".length)
+      if (node.actions?.remove !== true) {
+        setStatus(`"${node.label}" cannot be deleted: base template "${templateId}" is built in`)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Delete base template ${templateId}?`,
+        message: `Delete base template "${templateId}"? This cannot be undone.`,
+      })
+      if (confirmed !== true) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      try {
+        await plus["base.delete"]({ id: templateId }, { location: context.location })
+        if (disposed) return false
+        await refresh()
+        if (disposed) return false
+        setStatus(`Deleted base template ${templateId}`)
+        return true
+      } catch (error: unknown) {
+        setStatus(errorMessage(error))
+        return false
+      }
+    }
+    if (item.kind === "system" && itemId.startsWith("system:") && itemId !== "system:role") {
+      const relative = itemId.slice("system:".length)
+      if (node.actions?.remove !== true) {
+        setStatus(`"${node.label}" cannot be deleted: instruction "${relative}" is not project-owned`)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Delete instruction ${relative}?`,
+        message: `Delete instruction "${relative}"? This cannot be undone.`,
+      })
+      if (confirmed !== true) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      try {
+        await plus["instruction.delete"]({ name: relative }, { location: context.location })
+        if (disposed) return false
+        await refresh()
+        if (disposed) return false
+        setStatus(`Deleted instruction ${relative}`)
+        return true
+      } catch (error: unknown) {
+        setStatus(errorMessage(error))
+        return false
+      }
+    }
+    if (item.kind === "system" && itemId === "system:role") {
+      setStatus(`"${node.label}" cannot be deleted: the agent's own prompt body is not a file`)
+      return false
+    }
+    setStatus(`"${node.label}" cannot be deleted`)
     return false
+  }
+
+  function refusalFor(node: TreeNode): string | undefined {
+    const address = node.address
+    if (address === undefined) return undefined
+    const item = currentItem(address.item)
+    if (item === undefined) return undefined
+    if (item.kind === "skill") {
+      const skillId = address.item.startsWith("skill:") ? address.item.slice("skill:".length) : address.item
+      return `"${node.label}" cannot be deleted: skill "${skillId}" is not project-owned`
+    }
+    if (item.kind === "base") {
+      const templateId = address.item.startsWith("base:") ? address.item.slice("base:".length) : address.item
+      return `"${node.label}" cannot be deleted: base template "${templateId}" is built in`
+    }
+    if (item.kind === "system" && item.id !== "system:role") {
+      const relative = address.item.startsWith("system:") ? address.item.slice("system:".length) : address.item
+      return `"${node.label}" cannot be deleted: instruction "${relative}" is not project-owned`
+    }
+    if (node.kind === "section") return `"${node.label}" cannot be deleted: sections are toggled or split, not deleted`
+    if (item.id === "system:role") return `"${node.label}" cannot be deleted: the agent's own prompt body is not a file`
+    if (item.kind === "tool" || item.kind === "mcp")
+      return `"${node.label}" cannot be deleted: ${item.kind} rows are not files`
+    return undefined
+  }
+
+  function currentItem(itemId: string | undefined) {
+    if (itemId === undefined) return undefined
+    return snapshot()?.items.find((entry) => entry.id === itemId)
   }
 
   void load()

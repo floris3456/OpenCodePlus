@@ -270,8 +270,8 @@ test("delete agent asks for confirmation", async () => {
   }
 })
 
-test("delete file-backed item surfaces the RPC contract limitation", async () => {
-  const snapshot = createSnapshot({
+test("delete project skill calls skill.delete and the row disappears", async () => {
+  const before = createSnapshot({
     items: [
       {
         id: "skill:proj-one",
@@ -284,7 +284,13 @@ test("delete file-backed item surfaces the RPC contract limitation", async () =>
       },
     ],
   })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  const after = createSnapshot({ items: [] })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [before, after],
+    width: 120,
+    height: 40,
+    dialogs: { confirms: [true] },
+  })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // Navigate the Defaults shared-skills branch: group:defaults::skills is
@@ -299,7 +305,48 @@ test("delete file-backed item surfaces the RPC contract limitation", async () =>
     await fixture.waitForFrame((frame) => frame.includes("project skill"))
     expect(binds(fixture)).toContain("d")
     dispatch(fixture, "d")
-    await fixture.waitForFrame((frame) => frame.includes("no delete RPC"))
+    await fixture.waitForFrame((frame) => frame.includes("Deleted skill proj-one"))
+    expect(fixture.fake.skillDeletes.length).toBe(1)
+    expect(fixture.fake.skillDeletes[0]).toMatchObject({ id: "proj-one" })
+    await fixture.emitChanged()
+    await fixture.waitForFrame((frame) => !frame.includes("proj-one"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("delete upstream skill refuses without calling skill.delete", async () => {
+  const snapshot = createSnapshot({
+    items: [
+      {
+        id: "skill:native-one",
+        kind: "skill" as const,
+        group: "native" as const,
+        title: "native-one",
+        text: "upstream skill",
+        enabled: true,
+        fingerprint: "fp-native",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // Native skills are not removable, so they hang directly under
+    // group:defaults::skills (index 6): expand, move to the Native subgroup
+    // row, expand it, then move to the item.
+    await moveDown(fixture, 6)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
+    expect(binds(fixture)).toContain("d")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("is not project-owned"))
+    expect(fixture.fake.skillDeletes.length).toBe(0)
     expect(fixture.fake.agentDeletes.length).toBe(0)
     expect(fixture.fake.mcpRemoves.length).toBe(0)
   } finally {

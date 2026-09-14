@@ -23,6 +23,15 @@ export interface SkillInvalid {
 
 export type SkillResult = SkillSuccess | SkillExists | SkillInvalid
 
+export interface SkillMissing {
+  readonly ok: false
+  readonly reason: "missing"
+  readonly id: string
+  readonly path: string
+}
+
+export type SkillDeleteResult = SkillSuccess | SkillMissing | SkillInvalid
+
 export function validateSkillName(raw: string): { ok: true; id: string } | { ok: false; reason: string } {
   const id = raw.trim()
   if (id.length === 0) return { ok: false, reason: "Skill name cannot be empty" }
@@ -71,6 +80,15 @@ export async function importSkill(input: { projectDirectory: string; path: strin
   if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: validated.id, path: target }
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, text.endsWith("\n") ? text : `${text}\n`)
+  return { ok: true, id: validated.id, path: target }
+}
+
+export async function deleteSkill(input: { projectDirectory: string; id: string }): Promise<SkillDeleteResult> {
+  const validated = validateSkillName(input.id)
+  if (!validated.ok) return { ok: false, reason: "invalid", id: input.id, message: validated.reason }
+  const target = skillFile(input.projectDirectory, validated.id)
+  if (!(await Bun.file(target).exists())) return { ok: false, reason: "missing", id: validated.id, path: target }
+  await fs.rm(path.dirname(target), { recursive: true, force: true })
   return { ok: true, id: validated.id, path: target }
 }
 
