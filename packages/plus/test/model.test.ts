@@ -2,690 +2,296 @@ import { expect, test } from "bun:test"
 import {
   applies,
   canReset,
-  effective,
+  countReview,
   fingerprint,
-  mergeCustomization,
-  override,
-  resetFields,
-  type Customization,
+  merge,
+  reset,
+  resolve,
+  resolveResolution,
+  resolveSplit,
+  threeWay,
+  type Address,
+  type ChainInput,
+  type CustomizationRecord,
   type Item,
-  type Snapshot,
+  type Scopes,
 } from "../src/instructions/model.js"
+import { derive } from "../src/instructions/sections.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
 function makeItem(overrides?: Partial<Item>): Item {
   const text = overrides?.text ?? "default text"
   return {
-    id: "item-1",
-    kind: "prompt",
-    owner: "owner",
-    title: "title",
+    id: "tool:bash",
+    kind: "tool",
+    group: "native",
+    title: "bash",
     text,
-    agents: [],
+    enabled: true,
     fingerprint: fingerprint(text),
-    available: true,
     ...overrides,
   }
 }
 
-function makeCustomization(overrides?: Partial<Customization>): Customization {
+function makeRecord(overrides?: Partial<CustomizationRecord>): CustomizationRecord {
   return {
-    item: "item-1",
-    agent: "*",
-    state: "inherit",
+    level: "project",
+    agent: "alpha",
+    item: "tool:bash",
+    section: null,
     basedOn: fingerprint("default text"),
     updated: UPDATED,
     ...overrides,
   }
 }
 
-function makeSnapshot(customizations: Customization[]): Snapshot {
-  return { revision: 1, items: [], customizations }
+const scopes: Scopes = { global: new Set(["alpha"]), defaults: new Set(["alpha"]) }
+
+function input(overrides?: Partial<ChainInput>): ChainInput {
+  const upstream = overrides?.upstream ?? makeItem()
+  return {
+    upstream,
+    records: [],
+    splits: [],
+    scopes,
+    address: { level: "project", agent: "alpha", item: upstream.id, section: null },
+    ...overrides,
+  }
 }
 
-test("applies matches empty agents to every agent", () => {
-  expect(applies(makeItem(), "anything")).toBe(true)
-})
-
-test("applies matches listed agents only", () => {
-  const item = makeItem({ agents: ["alpha", "beta"] })
-  expect(applies(item, "alpha")).toBe(true)
-  expect(applies(item, "gamma")).toBe(false)
-})
-
-test("override returns undefined without records", () => {
-  expect(override(makeSnapshot([]), "item-1", "alpha")).toBeUndefined()
-})
-
-test("override falls back to the shared record", () => {
-  const shared = makeCustomization({ text: "shared", state: "disabled" })
-  const resolved = override(makeSnapshot([shared]), "item-1", "alpha")
-  expect(resolved).toEqual(shared)
-})
-
-test("override returns the per-agent record without shared", () => {
-  const own = makeCustomization({ agent: "alpha", text: "own" })
-  expect(override(makeSnapshot([own]), "item-1", "alpha")).toEqual(own)
-})
-
-test("override merges per-agent over shared", () => {
-  const shared = makeCustomization({ text: "shared", state: "disabled" })
-  const own = makeCustomization({ agent: "alpha", state: "inherit" })
-  const resolved = override(makeSnapshot([shared, own]), "item-1", "alpha")
-  expect(resolved?.text).toBe("shared")
-  expect(resolved?.state).toBe("disabled")
-  expect(resolved?.agent).toBe("alpha")
-})
-
-test("override keeps per-agent values that diverge from shared", () => {
-  const shared = makeCustomization({ text: "shared", state: "disabled" })
-  const own = makeCustomization({ agent: "alpha", text: "own", state: "enabled" })
-  const resolved = override(makeSnapshot([shared, own]), "item-1", "alpha")
-  expect(resolved?.text).toBe("own")
-  expect(resolved?.state).toBe("enabled")
-})
-
-test("override for the shared agent returns the shared record as-is", () => {
-  const shared = makeCustomization({ text: "shared", state: "disabled" })
-  const resolved = override(makeSnapshot([shared]), "item-1", "*")
-  expect(resolved).toEqual(shared)
-})
-
-test("effective falls back to item text and availability without records", () => {
-  const item = makeItem()
-  expect(effective(makeSnapshot([]), item, "alpha")).toEqual({
-    text: "default text",
-    enabled: true,
-    customized: false,
-    review: false,
-  })
-})
-
-test("effective disables unavailable items", () => {
-  const item = makeItem({ available: false })
-  const result = effective(makeSnapshot([]), item, "alpha")
-  expect(result.enabled).toBe(false)
-  expect(result.customized).toBe(false)
-})
-
-test("effective enables unavailable MCP item with shared enabled record", () => {
-  const item = makeItem({ kind: "mcp", available: false })
-  const record = makeCustomization({ agent: "*", state: "enabled" })
-  const result = effective(makeSnapshot([record]), item, "alpha")
-  expect(result.enabled).toBe(true)
-  expect(result.customized).toBe(true)
-})
-
-test("effective keeps unavailable non-MCP item disabled even with enabled record", () => {
-  const item = makeItem({ kind: "skill", available: false })
-  const record = makeCustomization({ agent: "*", state: "enabled" })
-  const result = effective(makeSnapshot([record]), item, "alpha")
-  expect(result.enabled).toBe(false)
-  expect(result.customized).toBe(true)
-})
-
-test("effective resolves custom text and disabled state", () => {
-  const item = makeItem()
-  const record = makeCustomization({ agent: "alpha", text: "custom", state: "disabled" })
-  const result = effective(makeSnapshot([record]), item, "alpha")
-  expect(result.text).toBe("custom")
-  expect(result.enabled).toBe(false)
-  expect(result.customized).toBe(true)
-})
-
-test("effective keeps the item text when only the state changes", () => {
-  const item = makeItem()
-  const record = makeCustomization({ agent: "alpha", state: "disabled" })
-  const result = effective(makeSnapshot([record]), item, "alpha")
-  expect(result.text).toBe("default text")
-  expect(result.enabled).toBe(false)
-  expect(result.customized).toBe(true)
-})
-
-test("activation equal to the default is not a customization", () => {
-  const enabled = makeItem({ available: true })
-  const enableRecord = makeCustomization({ agent: "alpha", state: "enabled" })
-  expect(effective(makeSnapshot([enableRecord]), enabled, "alpha").customized).toBe(false)
-
-  const disabled = makeItem({ available: false })
-  const disableRecord = makeCustomization({ agent: "alpha", state: "disabled" })
-  expect(effective(makeSnapshot([disableRecord]), disabled, "alpha").customized).toBe(false)
-})
-
-test("activation against the default is a customization", () => {
-  const enabled = makeItem({ available: true })
-  const disableRecord = makeCustomization({ agent: "alpha", state: "disabled" })
-  expect(effective(makeSnapshot([disableRecord]), enabled, "alpha").customized).toBe(true)
-
-  const disabled = makeItem({ available: false })
-  const enableRecord = makeCustomization({ agent: "alpha", state: "enabled" })
-  expect(effective(makeSnapshot([enableRecord]), disabled, "alpha").customized).toBe(true)
-})
-
-test("inherited state without text is not a customization", () => {
-  const item = makeItem()
-  const record = makeCustomization({ agent: "alpha", state: "inherit" })
-  expect(effective(makeSnapshot([record]), item, "alpha").customized).toBe(false)
-})
-
-test("review flags upstream changes after authoring", () => {
-  const item = makeItem({ text: "revised text" })
-  const record = makeCustomization({ agent: "alpha", text: "custom", basedOn: fingerprint("default text") })
-  const result = effective(makeSnapshot([record]), item, "alpha")
-  expect(result.customized).toBe(true)
-  expect(result.review).toBe(true)
-})
-
-test("review clears once the change is reviewed", () => {
-  const item = makeItem({ text: "revised text" })
-  const record = makeCustomization({
-    agent: "alpha",
-    text: "custom",
-    basedOn: fingerprint("default text"),
-    reviewed: fingerprint("revised text"),
-  })
-  const result = effective(makeSnapshot([record]), item, "alpha")
-  expect(result.customized).toBe(true)
-  expect(result.review).toBe(false)
-})
-
-test("review stays false when nothing changed upstream", () => {
-  const item = makeItem()
-  const record = makeCustomization({ agent: "alpha", text: "custom", basedOn: item.fingerprint })
-  expect(effective(makeSnapshot([record]), item, "alpha").review).toBe(false)
-})
-
-test("review stays false without a customization", () => {
-  const item = makeItem({ text: "revised text" })
-  expect(effective(makeSnapshot([]), item, "alpha").review).toBe(false)
-})
-
-test("mergeCustomization acknowledge sets reviewed and clears the review flag", () => {
-  const item = makeItem({ text: "revised text" })
-  const customizations = mergeCustomization([], item, "alpha", { reviewed: item.fingerprint })
-  expect(customizations).toHaveLength(1)
-  expect(customizations[0].reviewed).toBe(item.fingerprint)
-  expect(effective(makeSnapshot(customizations), item, "alpha").review).toBe(false)
-})
-
-test("mergeCustomization save text sets text and marks the item customized", () => {
-  const item = makeItem()
-  const customizations = mergeCustomization([], item, "alpha", { text: "custom" })
-  expect(customizations).toHaveLength(1)
-  expect(customizations[0].text).toBe("custom")
-  expect(effective(makeSnapshot(customizations), item, "alpha").customized).toBe(true)
-})
-
-test("mergeCustomization acknowledge preserves the other fields of an existing record", () => {
-  const item = makeItem({ text: "revised text" })
-  const existing = makeCustomization({
-    agent: "alpha",
-    text: "custom",
-    state: "disabled",
-    basedOn: fingerprint("default text"),
-  })
-  const customizations = mergeCustomization([existing], item, "alpha", { reviewed: item.fingerprint })
-  expect(customizations).toHaveLength(1)
-  const record = customizations[0]
-  expect(record.text).toBe("custom")
-  expect(record.state).toBe("disabled")
-  expect(record.basedOn).toBe(fingerprint("default text"))
-  expect(record.reviewed).toBe(item.fingerprint)
-})
-
-test("mergeCustomization save text preserves the other fields of an existing record", () => {
-  const item = makeItem({ text: "revised text" })
-  const existing = makeCustomization({
-    agent: "alpha",
-    state: "disabled",
-    basedOn: fingerprint("default text"),
-    reviewed: fingerprint("revised text"),
-  })
-  const customizations = mergeCustomization([existing], item, "alpha", { text: "custom" })
-  expect(customizations).toHaveLength(1)
-  const record = customizations[0]
-  expect(record.text).toBe("custom")
-  expect(record.state).toBe("disabled")
-  expect(record.basedOn).toBe(fingerprint("default text"))
-  expect(record.reviewed).toBe(fingerprint("revised text"))
-})
-
-test("mergeCustomization replaces the matching record instead of appending a duplicate", () => {
-  const item = makeItem()
-  const other = makeCustomization({ item: "item-2", agent: "alpha", text: "other" })
-  const existing = makeCustomization({ agent: "alpha", text: "before" })
-  const customizations = mergeCustomization([other, existing], item, "alpha", { text: "after" })
-  expect(customizations).toHaveLength(2)
-  expect(customizations.filter((record) => record.item === "item-1" && record.agent === "alpha")).toHaveLength(1)
-  expect(customizations.find((record) => record.item === "item-1")?.text).toBe("after")
-  expect(customizations.find((record) => record.item === "item-2")).toEqual(other)
-})
-
-test("mergeCustomization defaults basedOn to the item fingerprint and omits undefined optionals", () => {
-  const item = makeItem()
-  const customizations = mergeCustomization([], item, "alpha", { state: "disabled" })
-  expect(customizations).toHaveLength(1)
-  const record = customizations[0]
-  expect(record.basedOn).toBe(item.fingerprint)
-  expect("text" in record).toBe(false)
-  expect("reviewed" in record).toBe(false)
-})
-
-test("mergeCustomization null text clears the override and omits the key", () => {
-  const item = makeItem()
-  const existing = makeCustomization({ agent: "alpha", text: "custom", state: "disabled" })
-  const customizations = mergeCustomization([existing], item, "alpha", { text: null })
-  expect(customizations).toHaveLength(1)
-  const record = customizations[0]
-  expect("text" in record).toBe(false)
-  expect(record.state).toBe("disabled")
-  expect(effective(makeSnapshot(customizations), item, "alpha").text).toBe("default text")
-})
-
-test("mergeCustomization null reviewed clears the acknowledgement and omits the key", () => {
-  const item = makeItem({ text: "revised text" })
-  const existing = makeCustomization({
-    agent: "alpha",
-    text: "custom",
-    basedOn: fingerprint("default text"),
-    reviewed: fingerprint("revised text"),
-  })
-  const customizations = mergeCustomization([existing], item, "alpha", { reviewed: null })
-  expect(customizations).toHaveLength(1)
-  const record = customizations[0]
-  expect("reviewed" in record).toBe(false)
-  expect(record.text).toBe("custom")
-  expect(effective(makeSnapshot(customizations), item, "alpha").review).toBe(true)
-})
-
-test("mergeCustomization dropping the last deviation removes the record and restores the default", () => {
-  const item = makeItem()
-  const existing = makeCustomization({ agent: "alpha", text: "custom", state: "disabled" })
-  const customizations = mergeCustomization([existing], item, "alpha", {
-    text: null,
-    reviewed: null,
-    state: "inherit",
-  })
-  expect(customizations).toHaveLength(0)
-  expect(effective(makeSnapshot(customizations), item, "alpha")).toEqual({
-    text: "default text",
-    enabled: true,
-    customized: false,
-    review: false,
-  })
-})
-
-test("mergeCustomization enable matching availability drops the inert record", () => {
-  const item = makeItem({ available: true })
-  const existing = makeCustomization({ agent: "alpha", state: "disabled" })
-  const customizations = mergeCustomization([existing], item, "alpha", { state: "enabled" })
-  expect(customizations).toHaveLength(0)
-  expect(effective(makeSnapshot(customizations), item, "alpha").customized).toBe(false)
-})
-
-test("mergeCustomization clearing text and state preserves a reviewed acknowledgement", () => {
-  const item = makeItem({ text: "revised text" })
-  const existing = makeCustomization({
-    agent: "alpha",
-    text: "custom",
-    basedOn: fingerprint("default text"),
-    reviewed: fingerprint("revised text"),
-  })
-  const customizations = mergeCustomization([existing], item, "alpha", { text: null, state: "inherit" })
-  expect(customizations).toHaveLength(1)
-  const record = customizations[0]
-  expect("text" in record).toBe(false)
-  expect(record.state).toBe("inherit")
-  expect(record.reviewed).toBe(fingerprint("revised text"))
-  const resolved = effective(makeSnapshot(customizations), item, "alpha")
-  expect(resolved.text).toBe("revised text")
-  expect(resolved.customized).toBe(false)
+test("unmodified nodes resolve upstream", () => {
+  const resolved = resolve(input())
+  expect(resolved.text).toBe("default text")
+  expect(resolved.source).toBe("upstream")
+  expect(resolved.modified).toBe(false)
   expect(resolved.review).toBe(false)
 })
 
-test("mergeCustomization clearing keeps unrelated records untouched", () => {
-  const item = makeItem()
-  const other = makeCustomization({ item: "item-2", agent: "alpha", text: "other" })
-  const existing = makeCustomization({ agent: "alpha", text: "custom" })
-  const customizations = mergeCustomization([other, existing], item, "alpha", { text: null })
-  expect(customizations).toHaveLength(1)
-  expect(customizations[0]).toEqual(other)
+test("project inherits the global override, then the defaults template, then shared", () => {
+  const upstream = makeItem({ text: "upstream" })
+  const records = [
+    makeRecord({ level: "defaults", agent: null, text: "shared" }),
+    makeRecord({ level: "defaults", agent: "alpha", text: "template" }),
+    makeRecord({ level: "global", agent: "alpha", text: "global" }),
+  ]
+  expect(resolve(input({ upstream, records })).text).toBe("global")
+  const withoutGlobal = records.filter((record) => record.level !== "global")
+  expect(resolve(input({ upstream, records: withoutGlobal })).text).toBe("template")
+  const sharedOnly = records.filter((record) => record.agent === null)
+  expect(resolve(input({ upstream, records: sharedOnly })).text).toBe("shared")
 })
 
-test("mergeCustomization undefined preserves fields while null clears them", () => {
-  const item = makeItem({ text: "revised text" })
-  const existing = makeCustomization({
-    agent: "alpha",
-    text: "custom",
-    state: "disabled",
-    basedOn: fingerprint("default text"),
-    reviewed: fingerprint("revised text"),
+test("global skips the global level of other agents and project rows", () => {
+  const upstream = makeItem({ text: "upstream" })
+  const address: Address = { level: "global", agent: "alpha", item: upstream.id, section: null }
+  const records = [
+    makeRecord({ level: "defaults", agent: null, text: "shared" }),
+    makeRecord({ level: "defaults", agent: "alpha", text: "template" }),
+    makeRecord({ level: "project", agent: "alpha", text: "project" }),
+    makeRecord({ level: "global", agent: "beta", text: "other" }),
+  ]
+  expect(resolve(input({ upstream, records, address })).text).toBe("template")
+})
+
+test("text and state resolve independently", () => {
+  const upstream = makeItem({ text: "upstream", enabled: true })
+  const records = [
+    makeRecord({ level: "defaults", agent: null, text: "shared text" }),
+    makeRecord({ level: "global", agent: "alpha", state: "off" }),
+  ]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.text).toBe("shared text")
+  expect(resolved.enabled).toBe(false)
+  expect(resolved.source).toBe("global")
+})
+
+test("state-only override never marks modified and never raises review", () => {
+  const upstream = makeItem({ text: "revised text" })
+  const records = [makeRecord({ state: "off" })]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.text).toBe("revised text")
+  expect(resolved.enabled).toBe(false)
+  expect(resolved.modified).toBe(false)
+  expect(resolved.review).toBe(false)
+  expect(resolved.overriddenHere).toBe(true)
+})
+
+test("review is text-only: disabled-but-unmodified keeps taking upstream silently", () => {
+  const first = makeItem({ text: "v1" })
+  const records = [makeRecord({ state: "off", basedOn: first.fingerprint })]
+  const second = makeItem({ text: "v2" })
+  const resolved = resolve(input({ upstream: second, records }))
+  expect(resolved.text).toBe("v2")
+  expect(resolved.review).toBe(false)
+})
+
+test("review raises when upstream moved past basedOn and acknowledged", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [
+    makeRecord({
+      text: "mine",
+      basedOn: fingerprint("v1"),
+      basedOnText: "v1",
+      acknowledged: fingerprint("v1"),
+    }),
+  ]
+  expect(resolve(input({ upstream, records })).review).toBe(true)
+})
+
+test("review clears when upstream matches basedOn or acknowledged", () => {
+  const v2 = makeItem({ text: "v2" })
+  const based = [makeRecord({ text: "mine", basedOn: v2.fingerprint, basedOnText: "v1" })]
+  expect(resolve(input({ upstream: v2, records: based })).review).toBe(false)
+  const v3 = makeItem({ text: "v3" })
+  const acked = [makeRecord({ text: "mine", basedOn: fingerprint("v1"), basedOnText: "v1", acknowledged: v3.fingerprint })]
+  expect(resolve(input({ upstream: v3, records: acked })).review).toBe(false)
+})
+
+test("live propagation: unmodified nodes see upstream changes with no user action", () => {
+  const records = [makeRecord({ level: "defaults", agent: null, text: "shared v1" })]
+  const v2 = makeItem({ text: "upstream v2" })
+  expect(resolve(input({ upstream: v2, records })).text).toBe("shared v1")
+  const upstreamOnly = input({ upstream: makeItem({ text: "upstream v2" }) })
+  expect(resolve(upstreamOnly).text).toBe("upstream v2")
+})
+
+test("live propagation across Defaults to Global to Project", () => {
+  const upstream = makeItem({ text: "base" })
+  const records = [makeRecord({ level: "defaults", agent: null, text: "shared" })]
+  for (const address of [
+    { level: "defaults", agent: null, item: upstream.id, section: null },
+    { level: "global", agent: "alpha", item: upstream.id, section: null },
+    { level: "project", agent: "alpha", item: upstream.id, section: null },
+  ] as Address[])
+    expect(resolve(input({ upstream, records, address })).text).toBe("shared")
+  const changed = makeItem({ text: "changed" })
+  expect(resolve(input({ upstream: changed })).text).toBe("changed")
+})
+
+test("threeWay reports original, mine, and current upstream", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [makeRecord({ text: "mine", basedOnText: "v1", basedOn: fingerprint("v1") })]
+  expect(threeWay(input({ upstream, records }))).toEqual({ original: "v1", mine: "mine", upstream: "v2" })
+})
+
+test("threeWay is undefined without a text override", () => {
+  expect(threeWay(input({ records: [makeRecord({ state: "off" })] }))).toBeUndefined()
+})
+
+test("keep acknowledges without changing text", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [makeRecord({ text: "mine", basedOnText: "v1", basedOn: fingerprint("v1") })]
+  const next = resolveResolution(input({ upstream, records }), "keep")
+  expect(next[0].text).toBe("mine")
+  expect(next[0].acknowledged).toBe(upstream.fingerprint)
+  expect(resolve(input({ upstream, records: next })).review).toBe(false)
+})
+
+test("take drops the text override so propagation resumes", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [makeRecord({ text: "mine", basedOnText: "v1", basedOn: fingerprint("v1") })]
+  const next = resolveResolution(input({ upstream, records }), "take")
+  expect(next).toHaveLength(0)
+  const resolved = resolve(input({ upstream, records: next }))
+  expect(resolved.modified).toBe(false)
+  expect(resolved.text).toBe("v2")
+})
+
+test("take keeps a state-only record", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [makeRecord({ text: "mine", state: "off", basedOnText: "v1", basedOn: fingerprint("v1") })]
+  const next = resolveResolution(input({ upstream, records }), "take")
+  expect(next).toHaveLength(1)
+  expect(next[0].text).toBeUndefined()
+  expect(next[0].state).toBe("off")
+})
+
+test("edit replaces text and re-bases review", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [makeRecord({ text: "mine", basedOnText: "v1", basedOn: fingerprint("v1") })]
+  const next = resolveResolution(input({ upstream, records }), "edit", "newer")
+  expect(next[0].text).toBe("newer")
+  expect(next[0].basedOn).toBe(upstream.fingerprint)
+  expect(next[0].acknowledged).toBe(upstream.fingerprint)
+  expect(resolve(input({ upstream, records: next })).review).toBe(false)
+})
+
+test("merge applies a field change and reset removes the level row", () => {
+  const upstream = makeItem()
+  const merged = merge([], { level: "project", agent: "alpha", item: upstream.id, section: null }, { text: "mine" }, upstream)
+  expect(merged).toHaveLength(1)
+  expect(canReset(merged, { level: "project", agent: "alpha", item: upstream.id, section: null })).toBe(true)
+  expect(reset(merged, { level: "project", agent: "alpha", item: upstream.id, section: null })).toHaveLength(0)
+})
+
+test("sections warn independently", () => {
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  const upstream = makeItem({ id: "system:role", kind: "system", group: "none", text, title: "role" })
+  const one = "# One\n\na\n"
+  const edited = "# One\n\na edited\n"
+  const records = [
+    makeRecord({
+      item: "system:role",
+      section: "one",
+      text: edited,
+      basedOn: fingerprint(one),
+      basedOnText: one,
+    }),
+  ]
+  const oneAddress: Address = { level: "project", agent: "alpha", item: "system:role", section: "one" }
+  const twoAddress: Address = { level: "project", agent: "alpha", item: "system:role", section: "two" }
+  const oneResolved = resolve(input({ upstream, records, address: oneAddress }))
+  expect(oneResolved.text).toBe(edited)
+  expect(oneResolved.modified).toBe(true)
+  expect(resolve(input({ upstream, records, address: twoAddress })).review).toBe(false)
+  const entries = [
+    { address: oneAddress, resolved: oneResolved },
+    { address: twoAddress, resolved: resolve(input({ upstream, records, address: twoAddress })) },
+  ]
+  expect(countReview(entries, { level: "project", agent: "alpha", item: "system:role" })).toBe(
+    oneResolved.review ? 1 : 0,
+  )
+})
+
+test("assembled drops excluded sections", () => {
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  const upstream = makeItem({ text, title: "role" })
+  const split = derive(text, "role")
+  expect(split.sections.map((section) => section.id)).toEqual(["one", "two"])
+  const records = [makeRecord({ section: "two", state: "off" })]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.assembled).not.toContain("b")
+  expect(resolved.assembled).toContain("a")
+})
+
+test("resolveSplit prefers a manual split record down the chain", () => {
+  const upstream = makeItem({ text: "plain text", title: "bash" })
+  const address: Address = { level: "project", agent: "alpha", item: upstream.id, section: null }
+  expect(resolveSplit({ text: upstream.text, title: "bash", splits: [], scopes, address }).kind).toBe("whole")
+  const splits = [
+    { level: "defaults", agent: null, item: upstream.id, boundaries: [{ id: "a", name: "A", start: 0 }] },
+  ] as const
+  const split = resolveSplit({
+    text: upstream.text,
+    title: "bash",
+    splits: splits.map((entry) => ({ ...entry })),
+    scopes,
+    address,
   })
-  const cleared = mergeCustomization([existing], item, "alpha", { reviewed: null })
-  expect(cleared).toHaveLength(1)
-  expect(cleared[0].text).toBe("custom")
-  expect(cleared[0].state).toBe("disabled")
-  expect("reviewed" in cleared[0]).toBe(false)
+  expect(split.kind).toBe("manual")
+  expect(split.sections.map((section) => section.id)).toEqual(["a"])
 })
 
-test("canReset follows only the row's own record", () => {
-  const item = makeItem()
-  expect(canReset(makeSnapshot([]), item, "alpha")).toBe(false)
-
-  const ownText = makeCustomization({ agent: "alpha", text: "custom" })
-  expect(canReset(makeSnapshot([ownText]), item, "alpha")).toBe(true)
-
-  const ownDisabled = makeCustomization({ agent: "alpha", state: "disabled" })
-  expect(canReset(makeSnapshot([ownDisabled]), item, "alpha")).toBe(true)
-
-  const inertOwn = makeCustomization({ agent: "alpha", state: "inherit" })
-  expect(canReset(makeSnapshot([inertOwn]), item, "alpha")).toBe(false)
-
-  const sharedOnly = makeCustomization({ agent: "*", text: "shared" })
-  expect(canReset(makeSnapshot([sharedOnly]), item, "alpha")).toBe(false)
+test("applies matches unset agents lists to every agent", () => {
+  expect(applies(makeItem(), "anything")).toBe(true)
+  expect(applies(makeItem({ agents: ["alpha"] }), "beta")).toBe(false)
 })
 
-test("mergeCustomization per-agent enable over shared disable keeps record and overrides to enabled", () => {
-  const item = makeItem({ available: true })
-  const shared = makeCustomization({ agent: "*", state: "disabled" })
-  const customizations = mergeCustomization([shared], item, "alpha", { state: "enabled" })
-  const own = customizations.find((record) => record.item === item.id && record.agent === "alpha")
-  expect(own).toBeDefined()
-  expect(own?.state).toBe("enabled")
-  const resolved = override(makeSnapshot(customizations), item.id, "alpha")
-  expect(resolved?.state).toBe("enabled")
+test("item id forms ride through resolution untouched", () => {
+  for (const id of ["tool:bash", "base:gpt", "skill:review", "system:role", "system:AGENTS.md", "mcp:server"]) {
+    const upstream = makeItem({ id })
+    const resolved = resolve(input({ upstream, address: { level: "project", agent: "alpha", item: id, section: null } }))
+    expect(resolved.text).toBe(upstream.text)
+  }
 })
-
-test("mergeCustomization per-agent disable over shared enable keeps record and overrides to disabled", () => {
-  const item = makeItem({ available: false })
-  const shared = makeCustomization({ agent: "*", state: "enabled" })
-  const customizations = mergeCustomization([shared], item, "alpha", { state: "disabled" })
-  const own = customizations.find((record) => record.item === item.id && record.agent === "alpha")
-  expect(own).toBeDefined()
-  expect(own?.state).toBe("disabled")
-  const resolved = override(makeSnapshot(customizations), item.id, "alpha")
-  expect(resolved?.state).toBe("disabled")
-})
-
-test("mergeCustomization drops per-agent record matching inherited state", () => {
-  const item = makeItem({ available: true })
-  const sharedDisabled = makeCustomization({ agent: "*", state: "disabled" })
-  const customizations1 = mergeCustomization([sharedDisabled], item, "alpha", { state: "disabled" })
-  expect(customizations1.find((record) => record.agent === "alpha")).toBeUndefined()
-
-  const sharedEnabled = makeCustomization({ agent: "*", state: "enabled" })
-  const customizations2 = mergeCustomization([sharedEnabled], item, "alpha", { state: "enabled" })
-  expect(customizations2.find((record) => record.agent === "alpha")).toBeUndefined()
-})
-
-test("canReset and reset on MCP text-only record with state inherit", () => {
-  const item = makeItem({ kind: "mcp" })
-  const record = makeCustomization({ agent: "alpha", text: "custom config", state: "inherit" })
-  const snapshot = makeSnapshot([record])
-  expect(canReset(snapshot, item, "alpha")).toBe(false)
-  const postReset = mergeCustomization(snapshot.customizations, item, "alpha", resetFields(item))
-  expect(postReset).toHaveLength(1)
-  expect(postReset[0].text).toBe("custom config")
-  expect(postReset[0].state).toBe("inherit")
-})
-
-test("canReset and reset on MCP mixed text and state record", () => {
-  const item = makeItem({ kind: "mcp", available: true })
-  const record = makeCustomization({ agent: "alpha", text: "custom config", state: "disabled" })
-  const snapshot = makeSnapshot([record])
-  expect(canReset(snapshot, item, "alpha")).toBe(true)
-  const postReset = mergeCustomization(snapshot.customizations, item, "alpha", resetFields(item))
-  expect(postReset).toHaveLength(1)
-  expect(postReset[0].text).toBe("custom config")
-  expect(postReset[0].state).toBe("inherit")
-  expect(canReset(makeSnapshot(postReset), item, "alpha")).toBe(false)
-})
-
-test("effective per-agent enable over shared disable reports customized and allows reset", () => {
-  const item = makeItem({ available: true })
-  const shared = makeCustomization({ agent: "*", state: "disabled" })
-  const own = makeCustomization({ agent: "alpha", state: "enabled" })
-  const snapshot = makeSnapshot([shared, own])
-  const result = effective(snapshot, item, "alpha")
-  expect(result.customized).toBe(true)
-  expect(result.enabled).toBe(true)
-  expect(canReset(snapshot, item, "alpha")).toBe(true)
-})
-
-test("effective per-agent disable over shared enable reports customized", () => {
-  const item = makeItem({ available: false })
-  const shared = makeCustomization({ agent: "*", state: "enabled" })
-  const own = makeCustomization({ agent: "alpha", state: "disabled" })
-  const snapshot = makeSnapshot([shared, own])
-  const result = effective(snapshot, item, "alpha")
-  expect(result.customized).toBe(true)
-  expect(result.enabled).toBe(false)
-})
-
-test("mergeCustomization shared MCP disable, acknowledge, then re-enable normalizes state to inherit", () => {
-  const item = makeItem({ id: "mcp:server", kind: "mcp", available: true })
-  const disabled = mergeCustomization([], item, "*", { state: "disabled" })
-  const revisedItem = { ...item, fingerprint: fingerprint("changed command") }
-  const acknowledged = mergeCustomization(disabled, revisedItem, "*", { reviewed: revisedItem.fingerprint })
-  const reEnabled = mergeCustomization(acknowledged, revisedItem, "*", { state: "enabled" })
-  expect(reEnabled).toHaveLength(1)
-  expect(reEnabled[0].state).toBe("inherit")
-  expect(reEnabled[0].reviewed).toBe(revisedItem.fingerprint)
-})
-
-test("mergeCustomization record kept alive by text normalizes non-deviating state to inherit", () => {
-  const item = makeItem({ available: true })
-  const customizations = mergeCustomization([], item, "alpha", { text: "custom text", state: "enabled" })
-  expect(customizations).toHaveLength(1)
-  expect(customizations[0].state).toBe("inherit")
-  expect(customizations[0].text).toBe("custom text")
-})
-
-test("mergeCustomization genuine MCP enable against unavailable upstream preserves enabled state", () => {
-  const item = makeItem({ id: "mcp:server", kind: "mcp", available: false })
-  const customizations = mergeCustomization([], item, "*", { state: "enabled" })
-  expect(customizations).toHaveLength(1)
-  expect(customizations[0].state).toBe("enabled")
-})
-
-test("state-only toggle on agent inheriting customized text preserves pending review", () => {
-  const item = makeItem({ text: "revised upstream text" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const initial = [shared]
-  expect(effective(makeSnapshot(initial), item, "alpha").review).toBe(true)
-
-  const toggled = mergeCustomization(initial, item, "alpha", { state: "disabled" })
-  expect(effective(makeSnapshot(toggled), item, "alpha").review).toBe(true)
-})
-
-test("acknowledging shared customization clears review for inheriting agent", () => {
-  const item = makeItem({ text: "revised upstream text" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const toggled = mergeCustomization([shared], item, "alpha", { state: "disabled" })
-  const acknowledged = mergeCustomization(toggled, item, "*", { reviewed: item.fingerprint })
-  expect(effective(makeSnapshot(acknowledged), item, "*").review).toBe(false)
-  expect(effective(makeSnapshot(acknowledged), item, "alpha").review).toBe(false)
-})
-
-test("own record with custom text keeps its own review provenance", () => {
-  const item = makeItem({ text: "revised upstream text" })
-  const staleShared = makeCustomization({
-    agent: "*",
-    text: "shared text",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const upToDateOwn = makeCustomization({
-    agent: "alpha",
-    text: "own text",
-    basedOn: item.fingerprint,
-  })
-  const snapshotWithUpToDateOwn = makeSnapshot([staleShared, upToDateOwn])
-  const resolvedUpToDate = override(snapshotWithUpToDateOwn, item.id, "alpha")
-  expect(resolvedUpToDate?.basedOn).toBe(upToDateOwn.basedOn)
-  expect(effective(snapshotWithUpToDateOwn, item, "alpha").review).toBe(false)
-  expect(effective(snapshotWithUpToDateOwn, item, "*").review).toBe(true)
-
-  const upToDateShared = makeCustomization({
-    agent: "*",
-    text: "shared text",
-    basedOn: item.fingerprint,
-  })
-  const staleOwn = makeCustomization({
-    agent: "alpha",
-    text: "own text",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const snapshotWithStaleOwn = makeSnapshot([upToDateShared, staleOwn])
-  const resolvedStale = override(snapshotWithStaleOwn, item.id, "alpha")
-  expect(resolvedStale?.basedOn).toBe(staleOwn.basedOn)
-  expect(effective(snapshotWithStaleOwn, item, "alpha").review).toBe(true)
-  expect(effective(snapshotWithStaleOwn, item, "*").review).toBe(false)
-
-  const acknowledgedOwn = mergeCustomization(snapshotWithStaleOwn.customizations, item, "alpha", {
-    reviewed: item.fingerprint,
-  })
-  const snapshotAcknowledged = makeSnapshot(acknowledgedOwn)
-  const resolvedAck = override(snapshotAcknowledged, item.id, "alpha")
-  expect(resolvedAck?.reviewed).toBe(item.fingerprint)
-  expect(effective(snapshotAcknowledged, item, "alpha").review).toBe(false)
-})
-
-test("acknowledging on agent inheriting customized text clears review for that agent", () => {
-  const item = makeItem({ text: "revised upstream text" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const initial = [shared]
-  expect(effective(makeSnapshot(initial), item, "alpha").review).toBe(true)
-
-  const acknowledged = mergeCustomization(initial, item, "alpha", { reviewed: item.fingerprint })
-  expect(effective(makeSnapshot(acknowledged), item, "alpha").review).toBe(false)
-  expect(effective(makeSnapshot(acknowledged), item, "*").review).toBe(true)
-})
-
-test("state-only toggle preserves review but subsequent agent acknowledge clears it", () => {
-  const item = makeItem({ text: "revised upstream text" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const toggled = mergeCustomization([shared], item, "alpha", { state: "disabled" })
-  expect(effective(makeSnapshot(toggled), item, "alpha").review).toBe(true)
-
-  const acknowledged = mergeCustomization(toggled, item, "alpha", { reviewed: item.fingerprint })
-  expect(effective(makeSnapshot(acknowledged), item, "alpha").review).toBe(false)
-  expect(effective(makeSnapshot(acknowledged), item, "*").review).toBe(true)
-})
-
-test("neither record supplies text keeps row own review provenance", () => {
-  const item = makeItem({ text: "revised upstream text", available: true })
-  const shared = makeCustomization({
-    agent: "*",
-    state: "disabled",
-    basedOn: fingerprint("original upstream text"),
-  })
-  const own = makeCustomization({
-    agent: "alpha",
-    state: "enabled",
-    basedOn: item.fingerprint,
-  })
-  const snapshot = makeSnapshot([shared, own])
-  const resolved = override(snapshot, item.id, "alpha")
-  expect(resolved?.basedOn).toBe(own.basedOn)
-  expect(effective(snapshot, item, "alpha").review).toBe(false)
-  expect(effective(snapshot, item, "*").review).toBe(true)
-})
-
-test("stale agent acknowledgement does not mask newer shared acknowledgement", () => {
-  const itemH1 = makeItem({ text: "upstream text v1" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: itemH1.fingerprint,
-  })
-
-  // 2. Upstream changes to H2. Agent alpha acknowledges.
-  const itemH2 = makeItem({ text: "upstream text v2" })
-  const afterAlphaAck = mergeCustomization([shared], itemH2, "alpha", {
-    reviewed: itemH2.fingerprint,
-  })
-
-  // 3. Upstream changes to H3. Defaults acknowledges.
-  const itemH3 = makeItem({ text: "upstream text v3" })
-  const afterDefaultsAck = mergeCustomization(afterAlphaAck, itemH3, "*", {
-    reviewed: itemH3.fingerprint,
-  })
-
-  // 4. For alpha, override yields shared text acknowledged at H3, so review is false.
-  expect(effective(makeSnapshot(afterDefaultsAck), itemH3, "alpha").review).toBe(false)
-  expect(effective(makeSnapshot(afterDefaultsAck), itemH3, "*").review).toBe(false)
-})
-
-test("state-only toggle on an inheriting agent preserves review", () => {
-  const itemH1 = makeItem({ text: "upstream text v1" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: itemH1.fingerprint,
-  })
-  const itemH2 = makeItem({ text: "upstream text v2" })
-  const toggled = mergeCustomization([shared], itemH2, "alpha", { state: "disabled" })
-  expect(effective(makeSnapshot(toggled), itemH2, "alpha").review).toBe(true)
-})
-
-test("agent acknowledgement at the current fingerprint clears review for that agent", () => {
-  const itemH1 = makeItem({ text: "upstream text v1" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: itemH1.fingerprint,
-  })
-  const itemH2 = makeItem({ text: "upstream text v2" })
-  const toggled = mergeCustomization([shared], itemH2, "alpha", { state: "disabled" })
-  const acknowledged = mergeCustomization(toggled, itemH2, "alpha", { reviewed: itemH2.fingerprint })
-  expect(effective(makeSnapshot(acknowledged), itemH2, "alpha").review).toBe(false)
-  expect(effective(makeSnapshot(acknowledged), itemH2, "*").review).toBe(true)
-})
-
-test("genuinely new upstream change after both acknowledgements re-raises review for the agent", () => {
-  const itemH1 = makeItem({ text: "upstream text v1" })
-  const shared = makeCustomization({
-    agent: "*",
-    text: "custom shared text",
-    basedOn: itemH1.fingerprint,
-  })
-
-  // Agent acknowledges at H2
-  const itemH2 = makeItem({ text: "upstream text v2" })
-  const afterAlphaAck = mergeCustomization([shared], itemH2, "alpha", {
-    reviewed: itemH2.fingerprint,
-  })
-
-  // Defaults acknowledges at H3
-  const itemH3 = makeItem({ text: "upstream text v3" })
-  const afterDefaultsAck = mergeCustomization(afterAlphaAck, itemH3, "*", {
-    reviewed: itemH3.fingerprint,
-  })
-
-  // Upstream changes to H4 (neither alpha's H2 nor shared's H3 matches H4)
-  const itemH4 = makeItem({ text: "upstream text v4" })
-  expect(effective(makeSnapshot(afterDefaultsAck), itemH4, "alpha").review).toBe(true)
-  expect(effective(makeSnapshot(afterDefaultsAck), itemH4, "*").review).toBe(true)
-})
-
-
-
-
-
