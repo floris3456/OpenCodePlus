@@ -405,6 +405,7 @@ test("MutateInput and MutateResult schemas round-trip correctly", () => {
   const conflict: Plus.MutateResult = {
     ok: false,
     reason: "stale",
+    store: "project",
     snapshot,
   }
   const encodedConflict = Schema.encodeSync(Plus.MutateResult)(conflict)

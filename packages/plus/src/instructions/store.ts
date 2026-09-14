@@ -12,24 +12,28 @@ export type RecordState = "on" | "off"
 export type { Level }
 
 export interface Loaded {
-  readonly revision: number
+  readonly projectRevision: number
+  readonly globalRevision: number
   readonly records: readonly StoredRecord[]
   readonly migrated: boolean
 }
 
 export interface SaveInput {
-  readonly expectedRevision: number
+  readonly expectedProjectRevision: number
+  readonly expectedGlobalRevision: number
   readonly records: readonly StoredRecord[]
 }
 
 export interface SaveSuccess {
   readonly ok: true
-  readonly revision: number
+  readonly projectRevision: number
+  readonly globalRevision: number
 }
 
 export interface SaveStale {
   readonly ok: false
   readonly reason: "stale"
+  readonly store: "project" | "global"
   readonly current: Loaded
 }
 
@@ -96,39 +100,64 @@ const decodeV2Header = Schema.decodeUnknownOption(Schema.fromJsonString(V2Header
 const decodeV1Header = Schema.decodeUnknownOption(Schema.fromJsonString(V1Header))
 const decodeV1Record = Schema.decodeUnknownOption(Schema.fromJsonString(V1Record))
 
+export type StaleStore = "project" | "global"
+
 const gates = new Map<string, Promise<void>>()
+
+interface ParsedFile {
+  readonly revision: number
+  readonly records: readonly StoredRecord[]
+  readonly migrated: boolean
+}
 
 export async function load(projectDir: string): Promise<Loaded> {
   const project = await readFile(projectRecordsPath(projectDir))
   const global = await readFile(globalRecordsPath())
   const projectParsed = parseFile(project)
   const globalParsed = parseFile(global)
-  if (!projectParsed.migrated && !globalParsed.migrated) return combine(projectParsed, globalParsed)
+  if (!projectParsed.migrated && !globalParsed.migrated)
+    return {
+      projectRevision: projectParsed.revision,
+      globalRevision: globalParsed.revision,
+      records: [...projectParsed.records, ...globalParsed.records],
+      migrated: false,
+    }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
   // those route into the global store, not the project file.
   const routed = route(projectParsed.records.concat(globalParsed.records))
   return {
-    revision: Math.max(projectParsed.revision, globalParsed.revision),
+    projectRevision: projectParsed.revision,
+    globalRevision: globalParsed.revision,
     records: routed.project.concat(routed.global),
     migrated: true,
   }
 }
 
 export async function save(projectDir: string, input: SaveInput): Promise<SaveResult> {
-  return withLock(projectDir, () => write(projectDir, input))
+  // Fixed order (global then project) so two projects saving concurrently
+  // cannot interleave: each save holds both gates across read+write.
+  return withLock(globalGateKey(), () => withLock(projectGateKey(projectDir), () => write(projectDir, input)))
 }
 
 async function write(projectDir: string, input: SaveInput): Promise<SaveResult> {
   const current = await load(projectDir)
-  if (input.expectedRevision !== current.revision) return { ok: false, reason: "stale", current }
-  // An unchanged save is a no-op — except after a migrating load, when the
-  // first save must write v2 to both stores so no v1 file is left in use.
-  if (!current.migrated && same(current.records, input.records)) return { ok: true, revision: current.revision }
-  const next = current.revision + 1
+  const projectStale = input.expectedProjectRevision !== current.projectRevision
+  const globalStale = input.expectedGlobalRevision !== current.globalRevision
+  if (projectStale || globalStale)
+    return { ok: false, reason: "stale", store: projectStale ? "project" : "global", current }
   const routed = route(input.records)
-  await writeStore(projectRecordsPath(projectDir), next, routed.project)
-  await writeStore(globalRecordsPath(), next, routed.global)
-  return { ok: true, revision: next }
+  // A migrating load reroutes v1 rows across stores, so the first save must
+  // write v2 to both stores even when the rerouted records already match.
+  const projectChanged = current.migrated || !same(currentProjectRecords(current.records), routed.project)
+  const globalChanged = current.migrated || !same(currentGlobalRecords(current.records), routed.global)
+  // An unchanged save is a no-op: neither file is touched, neither revision moves.
+  if (!projectChanged && !globalChanged)
+    return { ok: true, projectRevision: current.projectRevision, globalRevision: current.globalRevision }
+  const nextProject = projectChanged ? current.projectRevision + 1 : current.projectRevision
+  const nextGlobal = globalChanged ? current.globalRevision + 1 : current.globalRevision
+  if (projectChanged) await writeStore(projectRecordsPath(projectDir), nextProject, routed.project)
+  if (globalChanged) await writeStore(globalRecordsPath(), nextGlobal, routed.global)
+  return { ok: true, projectRevision: nextProject, globalRevision: nextGlobal }
 }
 
 async function writeStore(target: string, revision: number, records: readonly StoredRecord[]): Promise<void> {
@@ -136,8 +165,23 @@ async function writeStore(target: string, revision: number, records: readonly St
   await Bun.write(target, serialize(revision, records))
 }
 
-async function withLock<T>(directory: string, task: () => Promise<T>): Promise<T> {
-  const key = path.resolve(directory)
+function globalGateKey(): string {
+  return `global:${path.resolve(globalRecordsPath())}`
+}
+
+function projectGateKey(projectDir: string): string {
+  return `project:${path.resolve(projectDir)}`
+}
+
+function currentProjectRecords(records: readonly StoredRecord[]): StoredRecord[] {
+  return records.filter((record) => record.level === "project")
+}
+
+function currentGlobalRecords(records: readonly StoredRecord[]): StoredRecord[] {
+  return records.filter((record) => record.level !== "project")
+}
+
+async function withLock<T>(key: string, task: () => Promise<T>): Promise<T> {
   const previous = gates.get(key) ?? Promise.resolve()
   let release: () => void = () => undefined
   const gate = new Promise<void>((resolve) => {
@@ -154,21 +198,7 @@ async function withLock<T>(directory: string, task: () => Promise<T>): Promise<T
   }
 }
 
-function combine(project: Loaded, global: Loaded): Loaded {
-  return {
-    revision: Math.max(project.revision, global.revision),
-    records: [...project.records, ...global.records],
-    migrated: false,
-  }
-}
-
-function route(records: readonly StoredRecord[]): { project: StoredRecord[]; global: StoredRecord[] } {
-  const project = records.filter((record) => record.level === "project")
-  const global = records.filter((record) => record.level !== "project")
-  return { project: canonical(project), global: canonical(global) }
-}
-
-function parseFile(text: string | undefined): Loaded {
+function parseFile(text: string | undefined): ParsedFile {
   if (text === undefined) return { revision: 0, records: [], migrated: false }
   const lines = text.split("\n").filter((line) => line.trim().length > 0)
   if (lines.length === 0) return { revision: 0, records: [], migrated: false }
@@ -177,6 +207,12 @@ function parseFile(text: string | undefined): Loaded {
   // Any header without "version" is v1 and must be migrated; never write v1 again.
   const v1 = Option.getOrUndefined(decodeV1Header(lines[0]))
   return { revision: v1?.revision ?? 0, records: lines.slice(1).flatMap(migrateLine), migrated: true }
+}
+
+function route(records: readonly StoredRecord[]): { project: StoredRecord[]; global: StoredRecord[] } {
+  const project = records.filter((record) => record.level === "project")
+  const global = records.filter((record) => record.level !== "project")
+  return { project: canonical(project), global: canonical(global) }
 }
 
 function parseV2(lines: string[]): StoredRecord[] {
