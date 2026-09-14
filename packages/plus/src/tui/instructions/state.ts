@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createSignal } from "solid-js"
+import { createMemo, createSignal } from "solid-js"
 import {
   applies,
   merge,
@@ -114,7 +114,7 @@ export function createInstructionsState(context: Plugin.Context) {
   let disabled = false
   let generation = 0
 
-  function itemsForTree(): Item[] {
+  const itemsForTree = createMemo<Item[]>(() => {
     const current = snapshot()
     if (!current) return []
     return current.items.map(
@@ -131,21 +131,21 @@ export function createInstructionsState(context: Plugin.Context) {
         ...(entry.order === undefined ? {} : { order: entry.order }),
       }),
     )
-  }
+  })
 
-  function recordsForTree(): (CustomizationRecord | SplitRecord)[] {
+  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord)[]>(() => {
     const current = snapshot()
     if (!current) return []
     return [...customizationsOf(current.records), ...splitsOf(current.records)]
-  }
+  })
 
-  function agentsForTree(): AgentSource[] {
+  const agentsForTree = createMemo<AgentSource[]>(() => {
     const current = snapshot()
     if (!current) return []
     return agentSourcesOf(current)
-  }
+  })
 
-  function allNodes(): TreeNode[] {
+  const allNodes = createMemo<TreeNode[]>(() => {
     const current = snapshot()
     if (!current) return []
     return tree({
@@ -154,37 +154,38 @@ export function createInstructionsState(context: Plugin.Context) {
       agents: agentsForTree(),
       expanded: expanded(),
     })
-  }
+  })
 
-  function fullTree(): TreeNode[] {
+  const fullTree = createMemo<TreeNode[]>(() => {
     const current = snapshot()
     if (!current) return []
-    const expanded = new Set<string>()
+    // Expanding every id found in one fell swoop gets closer, then one more
+    // pass after expanding those catches rows hidden two levels deep, and so
+    // on until no new ids appear. Each pass reuses the same converted inputs.
+    const items = itemsForTree()
+    const records = recordsForTree()
+    const agents = agentsForTree()
+    const grown = new Set<string>()
     let previous = -1
-    let nodes = tree({
-      items: itemsForTree(),
-      records: recordsForTree(),
-      agents: agentsForTree(),
-      expanded,
-    })
-    while (previous !== expanded.size) {
-      previous = expanded.size
-      for (const node of nodes) expanded.add(node.id)
-      nodes = tree({
-        items: itemsForTree(),
-        records: recordsForTree(),
-        agents: agentsForTree(),
-        expanded,
-      })
+    let built = tree({ items, records, agents, expanded: grown })
+    while (previous !== grown.size) {
+      previous = grown.size
+      for (const node of built) grown.add(node.id)
+      built = tree({ items, records, agents, expanded: grown })
     }
-    return nodes
-  }
+    return built
+  })
 
-  function ancestorsOf(all: readonly TreeNode[], byId: ReadonlyMap<string, TreeNode>, node: TreeNode): TreeNode[] {
+  function ancestorsOf(
+    all: readonly TreeNode[],
+    byId: ReadonlyMap<string, TreeNode>,
+    indexById: ReadonlyMap<string, number>,
+    node: TreeNode,
+  ): TreeNode[] {
     // tree() emits the full logical pre-order list: ancestors of node are the
     // nearest preceding rows with strictly smaller depth.
-    const index = all.findIndex((entry) => entry.id === node.id)
-    if (index === -1) return []
+    const index = indexById.get(node.id)
+    if (index === undefined) return []
     const out: TreeNode[] = []
     let depth = node.depth
     for (let at = index - 1; at >= 0; at--) {
@@ -199,27 +200,28 @@ export function createInstructionsState(context: Plugin.Context) {
     return out
   }
 
-  function nodes(): TreeNode[] {
+  const nodes = createMemo<TreeNode[]>(() => {
     const query = filter().trim().toLowerCase()
     if (query.length === 0) return allNodes()
     // Reveal matches hidden inside collapsed ancestors: match against the
     // full logical tree and include each match with its ancestor chain.
     const full = fullTree()
     const byId = new Map(full.map((node) => [node.id, node]))
+    const indexById = new Map(full.map((node, index) => [node.id, index] as const))
     const matched = full.filter(
       (node) => node.label.toLowerCase().includes(query) || node.id.toLowerCase().includes(query),
     )
     const included = new Map<string, TreeNode>()
     for (const node of matched) {
-      for (const ancestor of ancestorsOf(full, byId, node)) included.set(ancestor.id, ancestor)
+      for (const ancestor of ancestorsOf(full, byId, indexById, node)) included.set(ancestor.id, ancestor)
       included.set(node.id, node)
     }
     return [...included.values()]
-  }
+  })
 
-  function selected(): TreeNode | undefined {
+  const selected = createMemo<TreeNode | undefined>(() => {
     return nodes().find((node) => node.id === selectedId())
-  }
+  })
 
   function ensureSelection() {
     const list = nodes()
