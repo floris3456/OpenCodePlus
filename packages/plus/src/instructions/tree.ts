@@ -12,6 +12,10 @@ export interface TreeNodeBadges {
   readonly reviewCount?: number
   readonly active?: boolean
   readonly source?: Level | "upstream"
+  /** User base template that can never be the host active answer. */
+  readonly inactive?: boolean
+  /** Code Mode tool whose customizations are never applied. */
+  readonly unsupported?: boolean
 }
 
 export interface TreeNodeActions {
@@ -581,7 +585,14 @@ function lazyItem(
   depth: number,
 ): Lazy {
   const address: Address = { level, agent: owner, item: item.id, section: null }
-  const splittable = item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base"
+  // Code Mode tool rows stay discoverable but offer nothing apply would drop:
+  // no toggle/edit/split and no `a: add section` affordance. Sections of such
+  // an item are unreachable because the item cannot split. The TUI already
+  // gates every one of these on these same two fields (`canToggle`,
+  // `canEdit`, `canSplit` in tui/instructions/route.tsx and the `add:
+  // "section"` emission below), so no TUI change is needed.
+  const codemode = item.kind === "tool" && item.codemode === true
+  const splittable = !codemode && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
       splitOf(memo, level, owner, item).sections.map((section) =>
@@ -596,8 +607,8 @@ function lazyItem(
     address,
     ...(splittable ? { add: "section" as const } : {}),
     actions: {
-      toggle: true,
-      edit: true,
+      toggle: !codemode,
+      edit: !codemode,
       reset: canReset(ctx.customizations, address),
       remove: removable(level, owner, item),
       split: splittable,
@@ -617,6 +628,17 @@ function itemBadges(memo: Memo, level: Level, owner: string | null, agent: Agent
     modified: resolved.modified,
     source: resolved.source,
     ...(active ? { active: true } : {}),
+    // A user template id can never be the host active answer, so it reads as
+    // applicable while never reaching system[0]. `inactive` reuses the
+    // existing active/state badge slot the tree already uses for base
+    // liveness: it is the negation of active, not a new visual language.
+    ...(item.kind === "base" && item.userBase === true ? { inactive: true } : {}),
+    // Stored Code Mode customizations are filtered out of apply and never
+    // reach the session, so the row must not read as live state. `unsupported`
+    // reuses the existing review-family slot for content that will not take
+    // effect: like review it flags saved content needing user attention,
+    // rather than inventing a new badge language.
+    ...(item.kind === "tool" && item.codemode === true ? { unsupported: true } : {}),
   }
 }
 
@@ -655,11 +677,14 @@ function sectionBadges(memo: Memo, level: Level, owner: string | null, item: Ite
 }
 
 // User-owned rows can be deleted outright: shared MCP servers, project-group
-// items (skills, added instructions, added base prompts), and agents. The
+// items (skills, added instructions, added base prompts), user-created base
+// templates (which carry group "none" with userBase, deletable through
+// base.delete while builtins stay refused), and agents. The
 // agent's own Role/persona body is owned but not deletable.
 function removable(level: Level, owner: string | null, item: Item): boolean {
   if (level === "defaults" && owner === null && item.kind === "mcp") return true
   if (item.id === "system:role") return false
+  if (item.kind === "base" && item.userBase === true) return true
   return item.group === "project"
 }
 

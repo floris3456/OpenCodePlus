@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import type { Tool } from "@opencode/schema/tool"
 import { assembleWithOverrides, derive, manual, slice, type Split } from "./sections.js"
 
 export type Level = "defaults" | "global" | "project"
@@ -25,6 +26,10 @@ export interface Item {
   readonly fingerprint: string
   readonly agents?: readonly string[]
   readonly order?: number
+  /** True for user-created base templates (deletable, never the host active answer). */
+  readonly userBase?: boolean
+  /** True for Code Mode tools: stored customizations are never applied. */
+  readonly codemode?: boolean
 }
 
 // Id forms (documented, not enforced):
@@ -272,6 +277,20 @@ export function applies(item: Pick<Item, "agents">, agent: string): boolean {
 
 export function canReset(records: readonly CustomizationRecord[], address: Address): boolean {
   return records.some((record) => sameNode(record, address))
+}
+
+// The one host-sourced Code Mode classification: tools default into
+// Code Mode (`packages/core/src/tool/AGENTS.md`) — only `codemode: false`
+// keeps a tool on the provider's native tool list where the session context
+// hook can address it. Everything else is reachable only through the
+// aggregated `execute` inventory, so Plus's tool edits have nothing to write
+// to. Discovery marks the item and apply filters against the same rule.
+export function isCodeModeToolEntry(tool: Pick<Tool.Info, "options">): boolean {
+  return tool.options?.codemode !== false
+}
+
+export function isCodeModeToolId(inventory: ReadonlyMap<string, boolean>, id: string): boolean {
+  return inventory.get(id) !== true
 }
 
 // Roll-up for ancestor rows: count reviewable descendants under a prefix.
