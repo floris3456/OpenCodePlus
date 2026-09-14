@@ -447,6 +447,38 @@ test("instructions.assembled reports the registry tool description for a per-age
   expect(reader.description).toBe("read things")
 })
 
+test("agent.create from a non-file-backed Defaults template seeds prompt and fields without copying records", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const template = {
+    ...agentInfo("build", "Build the thing."),
+    description: "The default agent.",
+    mode: "primary" as const,
+  }
+  const agents = agentHarness([template])
+  const skillState = skillHarness([])
+  const location = fullContext({ directory: project }).location
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const entry = snapshot.agents.find((agent) => agent.id === "build")
+  expect(entry?.scope).toBe("defaults")
+  expect(entry?.fileBacked).toBe(false)
+  const created = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "from-defaults", template: "build", prompt: "ignored" }, throwingContext({})),
+  )
+  expect(created).toEqual({ id: "from-defaults", path: path.join(project, ".opencode", "agent", "from-defaults.md") })
+  const written = await Bun.file(created.path).text()
+  expect(written).toContain("Build the thing.")
+  expect(written).toContain("The default agent.")
+  expectRpcBody(created)
+  const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(after.records).toEqual([])
+})
+
 test("agent create/rename/delete work at both scopes and create accepts a template seed", async () => {
   const { project, config } = await tempRoot()
   await enable(project)

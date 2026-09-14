@@ -174,7 +174,7 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         const validated = validateAgentId(input.id)
         if (!validated.ok)
           return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
-        const seed = input.template === undefined ? undefined : yield* Effect.promise(() => readTemplate(directory, input.template as string))
+        const seed = input.template === undefined ? undefined : yield* Effect.promise(() => readTemplate(ctx, directory, input.template as string))
         if (input.template !== undefined && seed === undefined)
           return yield* Effect.fail(
             context.error("agent.invalid", `Unknown template ${input.template}`, { id: input.id, reason: `Unknown template ${input.template}` }),
@@ -517,7 +517,11 @@ function scopeLevel(scope: "project" | "global" | "defaults"): Level {
   return "project"
 }
 
-async function readTemplate(directory: string, template: string): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
+async function readTemplate(
+  ctx: Context,
+  directory: string,
+  template: string,
+): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
   const validated = validateAgentId(template)
   if (!validated.ok) return undefined
   const candidates = [
@@ -532,7 +536,34 @@ async function readTemplate(directory: string, template: string): Promise<{ fiel
     const text = await file.text()
     return { fields: templateFields(text), prompt: agentBody(text) }
   }
-  return undefined
+  return readDefaultsTemplate(ctx, validated.id)
+}
+
+// Defaults-tree agents are built-ins with no backing file, so seeding from
+// one reads the discovered host view: prompt from the live system text and
+// frontmatter fields from the same data discover reports for that agent.
+// Records are never copied; the new agent inherits through the chain.
+async function readDefaultsTemplate(
+  ctx: Context,
+  id: string,
+): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const current = listed.data.find((entry) => String(entry.id) === id) as Agent.Info | undefined
+  if (current === undefined) return undefined
+  const fields: AgentFields = {
+    ...(current.model === undefined ? {} : { model: formatModel(current.model) }),
+    ...(current.description === undefined ? {} : { description: current.description }),
+    ...(current.mode === undefined ? {} : { mode: current.mode }),
+  }
+  return {
+    ...(Object.keys(fields).length === 0 ? {} : { fields }),
+    prompt: current.system ?? "",
+  }
+}
+
+function formatModel(model: { readonly providerID: string; readonly id: string; readonly variant?: string }): string {
+  if (model.variant === undefined) return `${model.providerID}/${model.id}`
+  return `${model.providerID}/${model.id}#${model.variant}`
 }
 
 function templateFields(markdown: string): AgentFields | undefined {

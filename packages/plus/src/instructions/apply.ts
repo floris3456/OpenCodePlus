@@ -110,6 +110,23 @@ function isNoop(item: Item, resolved: { assembled: string; enabled: boolean }): 
   return resolved.assembled === item.text && resolved.enabled === item.enabled
 }
 
+// A skill installs a copy, denial or rule only when this agent's address
+// carries a whole-item record: at this agent's level or at the shared
+// Defaults row both levels inherit from. Comparing assembled output against
+// raw upstream text cannot decide this, because assemble normalizes
+// whitespace and never round-trips byte-identically. A section-only record
+// leaves the whole-item address unowned, so it installs nothing on its own:
+// enabling or disabling one section cannot be expressed through a private
+// whole-skill copy without also denying the remaining sections.
+function skillCustomized(input: ApplyInput, agent: ApplyAgent, item: Item): boolean {
+  return input.records.some((record) => {
+    if (record.item !== item.id || record.section !== null) return false
+    if (record.level === agent.level && record.agent === agent.id) return true
+    if (record.level === "defaults" && record.agent === null) return true
+    return false
+  })
+}
+
 function parseId(id: string, prefix: string): string {
   if (id.startsWith(prefix)) return id.slice(prefix.length)
   return id
@@ -154,7 +171,7 @@ async function applySkills(
       if (item.kind !== "skill") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (resolved.assembled === item.text && resolved.enabled === item.enabled) return []
+      if (!skillCustomized(input, agent, item)) return []
       if (resolved.enabled) return []
       return [{ agent: agent.id, skill: parseId(item.id, "skill:") }]
     }),
@@ -164,10 +181,12 @@ async function applySkills(
       if (item.kind !== "skill") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (resolved.assembled === item.text && resolved.enabled === item.enabled) return []
+      if (!skillCustomized(input, agent, item)) return []
       if (!resolved.enabled) return []
-      // Enabling an upstream-disabled skill with unchanged text needs no copy.
-      if (resolved.assembled === item.text) return []
+      // A whole-item record with unchanged text needs no copy, even when a
+      // section exclusion changes the assembled view: the exclusion is
+      // enforced by denying the original, and a copy would reintroduce it.
+      if (resolved.text === item.text) return []
       return [{ agent: agent.id, skill: parseId(item.id, "skill:"), text: resolved.assembled }]
     }),
   )

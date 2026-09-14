@@ -11,7 +11,7 @@ import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Effect, Schema } from "effect"
 import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "../src/instructions/apply.js"
 import type { ApplyInput } from "../src/instructions/apply.js"
-import { fingerprint } from "../src/instructions/model.js"
+import { fingerprint, resolve } from "../src/instructions/model.js"
 import type { CustomizationRecord, Item, Level } from "../src/instructions/model.js"
 import { agentHarness, context, skillHarness } from "./harness.js"
 
@@ -223,6 +223,46 @@ test("tool description reaches the target agent and disablement deletes the tool
   expect(beta.tools.writer?.description).toBe("write things")
 })
 
+test("an uncustomized skill with lossy assemble output installs nothing", async () => {
+  // assemble collapses blank runs and trims, so this raw text never
+  // round-trips byte-identically: a byte comparison against the raw upstream
+  // would mistake it for customized. With records present for other items but
+  // none for this skill, it must install no copy and no rule.
+  const raw = "# One\n\n\n\na\n\n"
+  const skills = skillHarness([skillInfo("notes", raw)])
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const items = [
+    makeItem({ id: "skill:notes", kind: "skill", text: raw, title: "notes" }),
+    makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),
+  ]
+  const records = [makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" })]
+  const permissionsBefore = agents.state.get("alpha")?.permissions.length
+  const betaBefore = agents.state.get("beta")?.permissions.length
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    agent: agents.domain,
+    skill: skills.domain,
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+  )
+  // The tool record still applies through the session hook; the skill side
+  // installs no copy and no rule.
+  expect(applied.registrations).toHaveLength(1)
+  expect(callbacks).toHaveLength(1)
+  expect(skills.added).toEqual([])
+  expect(agents.state.get("alpha")?.permissions).toHaveLength(permissionsBefore ?? 0)
+  expect(agents.state.get("beta")?.permissions).toHaveLength(betaBefore ?? 0)
+})
+
 test("skill content registers a private copy and denial, and disablement only denies", async () => {
   const skills = skillHarness([skillInfo("notes", "skill body")])
   const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
@@ -244,6 +284,31 @@ test("skill content registers a private copy and denial, and disablement only de
     { action: "skill", resource: "notes", effect: "deny" },
     { action: "skill", resource: copyName("alpha", "notes"), effect: "allow" },
   ])
+})
+
+test("a section-only skill record installs no copy and no rule", async () => {
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  const skills = skillHarness([skillInfo("notes", text)])
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const items = [makeItem({ id: "skill:notes", kind: "skill", text, title: "notes" })]
+  const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", section: "two", state: "off" })]
+  const probe = resolve({
+    upstream: items[0] as Item,
+    records,
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: new Set<string>() },
+    address: { level: "project", agent: "alpha", item: "skill:notes", section: null },
+  })
+  expect(probe.assembled).not.toBe(text)
+  expect(probe.enabled).toBe(true)
+  expect(probe.overriddenHere).toBe(false)
+  // A section-only record leaves the whole-item address unowned: enabling or
+  // disabling one section cannot be expressed through a private whole-skill
+  // copy without also denying the remaining sections.
+  const ctx = context({ agent: agents.domain, skill: skills.domain })
+  const applied = await apply(ctx, makeInput({ items, records }))
+  expect(applied.registrations).toEqual([])
+  expect(skills.added).toEqual([])
 })
 
 test("a disabled skill only denies without a copy", async () => {
