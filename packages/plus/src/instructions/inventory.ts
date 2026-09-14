@@ -1,5 +1,3 @@
-import type { CustomizationRecord } from "./model.js"
-
 // What Plus last wrote for an item plus the upstream text it replaced, so
 // discovery can report upstream while the host still shows Plus's output.
 // Prompts are keyed by agent id (file-backed agents additionally reread
@@ -24,27 +22,12 @@ export function unmaskText(current: string, baseline: PromptBaseline | undefined
   return baseline.upstream
 }
 
-// Upstream enablement for tools, base prompts, skills, and system rows is
-// not observable per item, so these default to enabled unless a Plus whole-
-// item record says otherwise. `agents` is the item's agent scope: shared
-// items (undefined) only honor the Defaults shared row, while per-agent
-// items honor their own agent's records plus the shared row. The latest
-// record by `updated` wins.
-export function recordedEnabled(
-  records: readonly CustomizationRecord[],
-  item: string,
-  agents: readonly string[] | undefined,
-): boolean {
-  const candidates = records.filter(
-    (record) =>
-      record.item === item &&
-      record.section === null &&
-      record.state !== undefined &&
-      (record.agent === null || agents?.includes(record.agent) === true),
-  )
-  const latest = candidates.toSorted((left, right) =>
-    left.updated < right.updated ? 1 : left.updated > right.updated ? -1 : 0,
-  )[0]
-  if (latest?.state === "off") return false
+// Item enablement as the host provides it: tools, skills, base prompts, and
+// system rows carry no per-item disable flag upstream, so they are always
+// enabled at discovery. Plus records layer on top through resolution (the
+// shared `level: "defaults"`, `agent: null` row carries shared toggles);
+// folding them into `Item.enabled` hides whole-item offs from apply's
+// no-op check and installs nothing while the tree shows `[off]`.
+export function upstreamEnabled(): boolean {
   return true
 }

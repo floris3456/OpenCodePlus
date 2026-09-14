@@ -9,7 +9,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { idFromPath } from "../agents/files.js"
-import { recordedEnabled, unmaskText, type PromptBaseline } from "./inventory.js"
+import { unmaskText, upstreamEnabled, type PromptBaseline } from "./inventory.js"
 import {
   fingerprint,
   type AgentSource,
@@ -56,11 +56,11 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const instructions = await discoverInstructionFiles(directory, projectDirectory)
   const mcp = mcpInventory(servers, input.records)
   const items = [
-    ...toolItems(tools, input.records, baselines),
-    ...baseItems(input.baseTemplates, input.records),
-    ...skillItems(skills, directory, input.records, baselines),
-    ...roleItems(agents, baselines, bodies, input.records),
-    ...instructionFileItems(directory, instructions, input.records),
+    ...toolItems(tools, baselines),
+    ...baseItems(input.baseTemplates),
+    ...skillItems(skills, directory, baselines),
+    ...roleItems(agents, baselines, bodies),
+    ...instructionFileItems(directory, instructions),
     ...mcp.items,
   ]
   return { items, agents: sources, servers: mcp.servers }
@@ -101,13 +101,54 @@ async function resolveAgentSources(
 ): Promise<AgentSource[]> {
   const project = await scanAgentFiles(path.join(directory, ".opencode"))
   const global = await scanAgentFiles(globalConfigDir())
-  return agents.map((agent) => {
-    const source = sourceFor(agent.id, project, global)
-    const base = activeBase(agent)
-    if (base === undefined) return source
-    return { ...source, base }
+  const effective = agents.map((agent) => withBase(sourceFor(agent.id, project, global), agent, activeBase))
+  return [...effective, ...shadowedSources(effective, agents, project, global, activeBase)]
+}
+
+function withBase(
+  source: AgentSource,
+  agent: Agent.Info,
+  activeBase: (agent: Agent.Info) => string | undefined,
+): AgentSource {
+  const base = activeBase(agent)
+  if (base === undefined) return source
+  return { ...source, base }
+}
+
+// Core's agent registry is keyed by id, so when the same id exists at more
+// than one scope only the winner (project, then global, then defaults)
+// reaches agent.list. The shadowed scope identities still own records:
+// without their own AgentSource entries scopesOf omits them and the
+// resolution chain silently skips that level. Re-add them here so
+// project/A -> global/A -> defaults/A -> shared resolves as designed.
+function shadowedSources(
+  effective: readonly AgentSource[],
+  agents: readonly Agent.Info[],
+  project: ReadonlyMap<string, string>,
+  global: ReadonlyMap<string, string>,
+  activeBase: (agent: Agent.Info) => string | undefined,
+): AgentSource[] {
+  const present = (id: string, scope: AgentSource["scope"]): boolean =>
+    effective.some((source) => source.id === id && source.scope === scope)
+  return agents.flatMap((agent) => {
+    const projectPath = project.get(agent.id)
+    const globalPath = global.get(agent.id)
+    const shadowed: AgentSource[] = []
+    if (projectPath !== undefined && globalPath !== undefined && !present(agent.id, "global"))
+      shadowed.push(withBase({ id: agent.id, scope: "global", path: globalPath }, agent, activeBase))
+    if (present(agent.id, "defaults")) return shadowed
+    if (projectPath === undefined && globalPath === undefined) return shadowed
+    if (!builtinAgentIds.includes(agent.id)) return shadowed
+    return [...shadowed, withBase({ id: agent.id, scope: "defaults" }, agent, activeBase)]
   })
 }
+
+// Agents core registers without backing files: core/src/plugin/agent.ts
+// (build, general, explore, compaction, title, summary) and
+// core/src/plugin/plan.ts (plan). A file with the same id shadows the
+// builtin in core's id-keyed registry, so the defaults identity needs its
+// own entry here. Keep in sync with core.
+const builtinAgentIds = ["build", "general", "explore", "compaction", "title", "summary", "plan"]
 
 function sourceFor(id: string, project: Map<string, string>, global: Map<string, string>): AgentSource {
   const projectPath = project.get(id)
@@ -179,7 +220,6 @@ function toolGroup(origin: ToolOrigin | undefined): { group: Item["group"]; serv
 
 function toolItems(
   tools: readonly (Tool.Info & { readonly id: string })[],
-  records: readonly CustomizationRecord[],
   baselines: ReadonlyMap<string, PromptBaseline>,
 ): Item[] {
   return tools.map((tool): Item => {
@@ -193,13 +233,13 @@ function toolItems(
       ...(grouped.server === undefined ? {} : { server: grouped.server }),
       title: tool.name,
       text,
-      enabled: recordedEnabled(records, id, undefined),
+      enabled: upstreamEnabled(),
       fingerprint: fingerprint(text),
     }
   })
 }
 
-function baseItems(templates: readonly BaseTemplate[], records: readonly CustomizationRecord[]): Item[] {
+function baseItems(templates: readonly BaseTemplate[]): Item[] {
   return templates.map((template): Item => {
     const id = `base:${template.id}`
     return {
@@ -208,7 +248,7 @@ function baseItems(templates: readonly BaseTemplate[], records: readonly Customi
       group: "none",
       title: template.title,
       text: template.text,
-      enabled: recordedEnabled(records, id, undefined),
+      enabled: upstreamEnabled(),
       fingerprint: fingerprint(template.text),
     }
   })
@@ -239,7 +279,6 @@ function isProjectSkill(location: string, directory: string): boolean {
 function skillItems(
   skills: readonly Skill.Info[],
   directory: string,
-  records: readonly CustomizationRecord[],
   baselines: ReadonlyMap<string, PromptBaseline>,
 ): Item[] {
   return skills
@@ -255,7 +294,7 @@ function skillItems(
         ...(grouped.server === undefined ? {} : { server: grouped.server }),
         title: skill.name,
         text,
-        enabled: recordedEnabled(records, id, undefined),
+        enabled: upstreamEnabled(),
         fingerprint: fingerprint(text),
       }
     })
@@ -265,7 +304,6 @@ function roleItems(
   agents: readonly Agent.Info[],
   baselines: ReadonlyMap<string, PromptBaseline>,
   bodies: ReadonlyMap<string, string>,
-  records: readonly CustomizationRecord[],
 ): Item[] {
   return agents.map((agent): Item => {
     const text = upstreamPrompt(agent, baselines.get(agent.id), bodies.get(agent.id))
@@ -275,7 +313,7 @@ function roleItems(
       group: "none",
       title: "Role/persona",
       text,
-      enabled: recordedEnabled(records, "system:role", [agent.id]),
+      enabled: upstreamEnabled(),
       fingerprint: fingerprint(text),
       agents: [agent.id],
       order: 0,
@@ -459,7 +497,6 @@ async function readText(file: string): Promise<string | undefined> {
 function instructionFileItems(
   directory: string,
   files: readonly { path: string; text: string }[],
-  records: readonly CustomizationRecord[],
 ): Item[] {
   return files.map((file, index): Item => {
     const relative = path.relative(directory, file.path) || file.path
@@ -470,7 +507,7 @@ function instructionFileItems(
       group: "none",
       title: relative,
       text: file.text,
-      enabled: recordedEnabled(records, id, undefined),
+      enabled: upstreamEnabled(),
       fingerprint: fingerprint(file.text),
       order: index,
     }

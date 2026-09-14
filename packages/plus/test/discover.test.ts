@@ -2,10 +2,14 @@ import { afterEach, expect, test } from "bun:test"
 import type { MCPEditor } from "@opencode/plugin/effect/mcp"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
+import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Location } from "@opencode/schema/location"
 import type { Mcp } from "@opencode/schema/mcp"
 import { AbsolutePath } from "@opencode/schema/schema"
+import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema, type Types } from "effect"
@@ -13,8 +17,9 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agentBody, discover, type BaseTemplate } from "../src/instructions/discover.js"
-import { fingerprint, type CustomizationRecord } from "../src/instructions/model.js"
-import { context } from "./harness.js"
+import { apply, type ApplyInput } from "../src/instructions/apply.js"
+import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
+import { agentHarness, context, skillHarness } from "./harness.js"
 
 const roots: string[] = []
 const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -152,17 +157,105 @@ function fullContext(options: {
 
 const noBase = () => undefined
 const noTemplates: BaseTemplate[] = []
+const UPDATED = "2026-01-01T00:00:00.000Z"
 
-function record(item: string, state: "on" | "off", agent: string | null = null): CustomizationRecord {
+function agentInfo(id: string, system: string): Agent.Info {
+  return { ...Agent.Info.default(Agent.ID.make(id)), system }
+}
+
+function skillInfo(id: string, content: string): Skill.Info {
+  return Skill.Info.make({
+    id: Skill.ID.make(id),
+    name: Skill.Name.make(id),
+    location: AbsolutePath.make(`/skills/${id}.md`),
+    content,
+  })
+}
+
+function makeInput(overrides: Partial<ApplyInput> & { items: ApplyInput["items"] }): ApplyInput {
+  return {
+    agents: [{ id: "alpha", level: "project" satisfies Level }],
+    records: [],
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: new Set<string>() },
+    ...overrides,
+  }
+}
+
+function toolDomainFor(tools: readonly (Tool.Info & { readonly id: string })[]) {
+  const live = tools.map((tool) => ({ ...tool }))
+  const editor: ToolEditor = {
+    list: () => live,
+    get: (id) => live.find((entry) => entry.id === id),
+    namespace: () => {},
+    add: () => {},
+    update: () => {},
+    remove: () => {},
+  }
+  return {
+    transform: (callback: (editor: ToolEditor) => void) =>
+      Effect.sync(() => {
+        callback(editor)
+        return { dispose: Effect.void }
+      }),
+    reload: () => Effect.void,
+    hook: () => Effect.die("unused tool.hook"),
+  }
+}
+
+function nativeTool(id: string, description: string): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    options: { codemode: false },
+    execute: () => Effect.die("unused tool.execute"),
+  }
+}
+
+function sessionEvent(
+  agentID: string,
+  tools: SessionHooks["context"]["tools"],
+  system: SessionHooks["context"]["system"],
+): SessionHooks["context"] {
+  return {
+    sessionID: Session.ID.make("ses_test_event"),
+    agent: Agent.ID.make(agentID),
+    model: Model.Ref.make({
+      providerID: Provider.ID.make("test"),
+      id: Model.ID.make("test"),
+    }),
+    system,
+    messages: [],
+    options: {},
+    tools,
+  }
+}
+
+function sharedRecord(item: string, state: "on" | "off"): CustomizationRecord {
   return {
     type: "customization",
-    level: agent === null ? "defaults" : "project",
-    agent,
+    level: "defaults",
+    agent: null,
     item,
     section: null,
     state,
-    basedOn: fingerprint("upstream"),
-    updated: "2026-01-01T00:00:00.000Z",
+    basedOn: fingerprint("shared upstream"),
+    updated: UPDATED,
+  }
+}
+
+function globalRecord(item: string, agent: string, text: string): CustomizationRecord {
+  return {
+    type: "customization",
+    level: "global",
+    agent,
+    item,
+    section: null,
+    text,
+    basedOn: fingerprint("shared upstream"),
+    updated: UPDATED,
   }
 }
 
@@ -336,7 +429,7 @@ test("mcp server items serialize config without disabled and reconstruct upstrea
 
   const withDisable = await discover({
     ctx: fullContext({ directory, servers: servers.map(([name, config]) => [name, structuredClone(config)] as [string, Types.DeepMutable<Mcp.ServerConfig>]) }),
-    records: [record("mcp:search", "off")],
+    records: [sharedRecord("mcp:search", "off")],
     baseTemplates: noTemplates,
     activeBase: noBase,
   })
@@ -403,16 +496,131 @@ test("a Plus-applied skill description is never reported as upstream", async () 
   expect(item?.fingerprint).toBe(fingerprint("upstream body"))
 })
 
-test("a Plus state record disables the reported tool enablement", async () => {
+test("a shared off record through discover -> apply installs a real skill denial", async () => {
   const directory = await tempDir("plus-discover-")
-  const tools = [tool("reader", "read things")]
+  const records = [sharedRecord("skill:notes", "off")]
+  const locationPath = path.join(directory, "skills", "notes", "SKILL.md")
   const discovered = await discover({
-    ctx: fullContext({ directory, tools }),
-    records: [record("tool:reader", "off")],
+    ctx: fullContext({ directory, skills: [skill("notes", "skill body", locationPath)] }),
+    records,
     baseTemplates: noTemplates,
     activeBase: noBase,
   })
-  expect(discovered.items.find((entry) => entry.id === "tool:reader")?.enabled).toBe(false)
+  const item = discovered.items.find((entry) => entry.id === "skill:notes")
+  if (item === undefined) throw new Error("expected skill:notes")
+  expect(item.enabled).toBe(true)
+  const skills = skillHarness([skillInfo("notes", "skill body")])
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const ctx = context({ agent: agents.domain, skill: skills.domain })
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: [item],
+      records,
+      scopes: scopesOf(discovered.agents),
+      agents: [{ id: "alpha", level: "project" }],
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(skills.added).toEqual([])
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([
+    { action: "skill", resource: "notes", effect: "deny" },
+  ])
+})
+
+test("a shared off record through discover -> apply removes a native tool", async () => {
+  const directory = await tempDir("plus-discover-")
+  const records = [sharedRecord("tool:reader", "off")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, tools: [tool("reader", "read things")] }),
+    records,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const item = discovered.items.find((entry) => entry.id === "tool:reader")
+  if (item === undefined) throw new Error("expected tool:reader")
+  expect(item.enabled).toBe(true)
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: [item],
+      records,
+      scopes: scopesOf(discovered.agents),
+      agents: [{ id: "alpha", level: "project" }],
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(callbacks).toHaveLength(1)
+  const run = callbacks[0]
+  if (run === undefined) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", { reader: { description: "read things", input: { type: "object" } } }, [
+    { type: "text", text: "base" },
+  ])
+  await Effect.runPromise(run(event))
+  expect(event.tools.reader).toBeUndefined()
+})
+
+test("a project agent shadowing a global file keeps both scopes", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "alpha.md"), "# project alpha\n")
+  await fs.mkdir(path.join(global, "agents"), { recursive: true })
+  await Bun.write(path.join(global, "agents", "alpha.md"), "# global alpha\n")
+  const records: CustomizationRecord[] = [globalRecord("system:role", "alpha", "global custom")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("alpha", "project prompt")] }),
+    records,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  expect(discovered.agents).toEqual([
+    { id: "alpha", scope: "project", path: path.join(directory, ".opencode", "agent", "alpha.md") },
+    { id: "alpha", scope: "global", path: path.join(global, "agents", "alpha.md") },
+  ])
+  const scopes = scopesOf(discovered.agents)
+  expect(scopes.global.has("alpha")).toBe(true)
+  const projectRole = discovered.items.find((entry) => entry.id === "system:role")
+  if (projectRole === undefined) throw new Error("expected system:role")
+  const resolved = resolve({
+    upstream: projectRole,
+    records,
+    splits: [],
+    scopes,
+    address: { level: "project", agent: "alpha", item: "system:role", section: null },
+  })
+  expect(resolved.text).toBe("global custom")
+})
+
+test("a project agent shadowing a builtin keeps the defaults identity", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "build.md"), "# build\n")
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("build", "build prompt")] }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  expect(discovered.agents).toEqual([
+    { id: "build", scope: "project", path: path.join(directory, ".opencode", "agent", "build.md") },
+    { id: "build", scope: "defaults" },
+  ])
+  const scopes = scopesOf(discovered.agents)
+  expect(scopes.defaults.has("build")).toBe(true)
 })
 
 test("agentBody matches core's trimmed markdown content for frontmatter and body-only files", () => {
