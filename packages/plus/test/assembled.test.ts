@@ -3,7 +3,8 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createHandlers, createState } from "../src/index.js"
+import { createHandlers, createState, deactivate } from "../src/index.js"
+import { save } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness, skillInfo, toolHarness } from "./harness.js"
@@ -255,15 +256,114 @@ test("reports a natively denied tool as absent once the denial is installed", as
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
   // The native denial installs through the session context hook, which the
-  // registry seam cannot observe per agent: assembled reports the stored
-  // desire (absent). That seam is a known blind spot — a stored off that was
-  // never published (hook never installed it) reads absent too, unlike
-  // skills where the installed deny rule is host-observable. Exposing the
-  // hook's installed plans would require a signal only apply/index.ts can
-  // provide; see the report.
+  // registry seam cannot observe per agent: apply publishes the installed
+  // tool plans to state, and assembled observes that installed plan set.
   expect(hooks.current).toBe(1)
   const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
   expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("reader")
+})
+
+test("reports a stored native-tool off that was never published as present", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+  const agents = agentHarness([agentInfo("alpha", "upstream role")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  const tools = toolHarness([{ id: "reader", description: "native tool", options: { codemode: false } }])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  // Write the stored off record directly to the store without publishing it through handlers
+  await save(project, {
+    expectedProjectRevision: 0,
+    expectedGlobalRevision: 0,
+    records: [
+      {
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "tool:reader",
+        section: null,
+        state: "off",
+        basedOn: "any",
+        updated: UPDATED,
+      },
+    ],
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).toContain("reader")
+})
+
+test("disposal clears the installed set, so after teardown a stale record cannot hide a tool", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+  const agents = agentHarness([agentInfo("alpha", "upstream role")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  const tools = toolHarness([{ id: "reader", description: "native tool", options: { codemode: false } }])
+  const hooks = { current: 0 }
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    session: {
+      hook: () =>
+        Effect.sync(() => {
+          hooks.current++
+          return { dispose: Effect.sync(() => { hooks.current-- }) }
+        }),
+    },
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:reader")
+  if (!item) throw new Error("expected tool:reader")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [offRecord(item)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(hooks.current).toBe(1)
+  expect(state.installedTools).toEqual([
+    { agent: "alpha", tool: "reader", enabled: false, text: "native tool" },
+  ])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("reader")
+
+  // Teardown / deactivate: disposes applied registrations and clears installed tool plans
+  await Effect.runPromise(deactivate(state))
+  expect(hooks.current).toBe(0)
+  expect(state.installedTools).toEqual([])
+
+  // The record remains stored on disk, but after teardown the host serves the tool
+  // and assembled must report it present instead of letting the stale record hide it
+  const afterTeardown = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(afterTeardown.tools.map((entry) => entry.id)).toContain("reader")
 })
 
 test("reports a stored-but-unpublished skill off as present", async () => {

@@ -16,7 +16,7 @@ import { create, remove, rename, validateAgentId, type AgentFields } from "./age
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir } from "./agents/base.js"
 import { addMcp, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
-import { apply } from "./instructions/apply.js"
+import { apply, type ToolPlan } from "./instructions/apply.js"
 import { dedupeAgents, installTeamAgents, resolveTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
@@ -30,6 +30,7 @@ import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
 export interface PlusState {
   registration: RpcRegistration<typeof Definition> | undefined
   applied: Registration[]
+  installedTools: readonly ToolPlan[]
   fingerprint: string | undefined
   projectRevision: number | undefined
   globalRevision: number | undefined
@@ -41,6 +42,7 @@ export function createState(): PlusState {
   return {
     registration: undefined,
     applied: [],
+    installedTools: [],
     fingerprint: undefined,
     projectRevision: undefined,
     globalRevision: undefined,
@@ -185,6 +187,7 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
             records: customizationsOf(loaded.records),
             splits: splitsOf(loaded.records),
             scopes: scopesOf(discovered.agents),
+            installedTools: state.installedTools,
           }),
         )
         if ("ok" in result)
@@ -862,7 +865,7 @@ async function loadCurrent(directory: string): Promise<LoadedStores> {
   return { ...stored, protectedAgents: config?.protectedAgents ?? [] }
 }
 
-function deactivate(state: PlusState): Effect.Effect<void> {
+export function deactivate(state: PlusState): Effect.Effect<void> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
       yield* disposeApplied(state)
@@ -936,6 +939,7 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, teamAgents))
       const previous = state.applied
       state.applied = [...applied.registrations, ...teamApplied.registrations]
+      state.installedTools = applied.tools
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
@@ -1002,6 +1006,7 @@ function disposeApplied(state: PlusState): Effect.Effect<void> {
   return Effect.gen(function* () {
     const registrations = state.applied
     state.applied = []
+    state.installedTools = []
     yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
   })
 }

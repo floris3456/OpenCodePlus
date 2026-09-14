@@ -29,12 +29,20 @@ export interface ApplyInput {
   readonly scopes: Scopes
 }
 
+export interface ToolPlan {
+  readonly agent: string
+  readonly tool: string
+  readonly enabled: boolean
+  readonly text: string
+}
+
 export interface Applied {
   readonly registrations: Registration[]
+  readonly tools: readonly ToolPlan[]
 }
 
 export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
-  if (input.records.length === 0) return { registrations: [] }
+  if (input.records.length === 0) return { registrations: [], tools: [] }
   const installed: Registration[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
@@ -42,13 +50,13 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     if (role !== undefined) installed.push(role)
     const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
     const session = await applySession(ctx, input)
-    if (session !== undefined) installed.push(session)
+    if (session.registration !== undefined) installed.push(session.registration)
     const mcp = await applyMcp(ctx, input)
     if (mcp !== undefined) installed.push(mcp)
     if (role !== undefined || skills.agentChanged) await runVoid(ctx.agent.reload())
     if (skills.skillChanged) await runVoid(ctx.skill.reload())
     if (mcp !== undefined) await runVoid(ctx.mcp.reload())
-    return { registrations: [...installed] }
+    return { registrations: [...installed], tools: session.tools }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
@@ -303,13 +311,6 @@ interface BasePlan {
   readonly text: string
 }
 
-interface ToolPlan {
-  readonly agent: string
-  readonly tool: string
-  readonly enabled: boolean
-  readonly text: string
-}
-
 interface InstructionPlan {
   readonly agent: string
   readonly path: string
@@ -355,17 +356,20 @@ function instructionPlans(input: ApplyInput): InstructionPlan[] {
   )
 }
 
-async function applySession(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+async function applySession(
+  ctx: Context,
+  input: ApplyInput,
+): Promise<{ registration?: Registration; tools: readonly ToolPlan[] }> {
   const base = basePlans(input)
   const candidates = toolCandidates(input)
   const instructions = instructionPlans(input)
-  if (base.length === 0 && candidates.length === 0 && instructions.length === 0) return undefined
+  if (base.length === 0 && candidates.length === 0 && instructions.length === 0) return { tools: [] }
   let tools: ToolPlan[] = []
   if (candidates.length > 0) {
     const inventory = await readTools(ctx)
     tools = candidates.filter((plan) => !isCodeModeToolId(inventory, plan.tool))
   }
-  if (base.length === 0 && tools.length === 0 && instructions.length === 0) return undefined
+  if (base.length === 0 && tools.length === 0 && instructions.length === 0) return { tools: [] }
   const pins = new Map<string, string>()
   for (const agent of input.agents) {
     if (agent.base !== undefined) pins.set(agent.id, agent.base)
@@ -375,12 +379,13 @@ async function applySession(ctx: Context, input: ApplyInput): Promise<Registrati
   )
   const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
   const customByAgent = await readCustomSystem(ctx, input.agents)
-  return runHook(ctx.session.hook, "context", (event) => {
+  const registration = await runHook(ctx.session.hook, "context", (event) => {
     applyBasePlan(event, base, classifier, customByAgent)
     applyToolPlan(event, tools.filter((plan) => plan.agent === String(event.agent)))
     applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
     return Effect.void
   })
+  return { registration, tools }
 }
 
 // The one host-sourced classification: mirror the core optimize plugin

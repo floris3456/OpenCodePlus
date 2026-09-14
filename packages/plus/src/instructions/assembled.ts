@@ -3,7 +3,7 @@ import type { Transform } from "@opencode/plugin/effect/registration"
 import type { Agent } from "@opencode/schema/agent"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
-import { copyName, isSkillCopy } from "./apply.js"
+import { copyName, isSkillCopy, type ToolPlan } from "./apply.js"
 import { isCodeModeToolEntry, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
 import type { Plus } from "../rpc.js"
 
@@ -15,6 +15,7 @@ interface AssembledInput {
   readonly records: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
+  readonly installedTools?: readonly ToolPlan[] | undefined
 }
 
 // Assembled view for one agent: the agent's installed system text read back
@@ -32,10 +33,10 @@ interface AssembledInput {
 // deny left behind without its private copy alongside an enabled desire is a
 // torn install, and the missing copy means the customization is not live, so
 // the registry original is reported (the same principle as the content
-// readback below). Native tool denials install only through the session
-// context hook, which no registry seam can observe per agent; the stored
-// record remains the signal there, so a stored-but-unpublished native off
-// reads absent (known blind spot; see below).
+// readback below). Native tool denials install through the session context
+// hook, which no registry seam can observe per agent; assembled consults
+// the installed tool plan set published by apply/index.ts so a stored-but-
+// unpublished off does not hide a tool the host still serves.
 export async function assembled(input: AssembledInput): Promise<Plus.Assembled | { ok: false; agent: string }> {
   const owner = input.agents.find((entry) => entry.id === input.agent)
   if (owner === undefined) return { ok: false, agent: input.agent }
@@ -50,6 +51,11 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
   const system = systemEntry?.system === undefined ? [] : [systemEntry.system]
   const tools = await listTools(input.ctx)
+  const deniedTools = new Set(
+    (input.installedTools ?? [])
+      .filter((plan) => plan.agent === input.agent && !plan.enabled)
+      .map((plan) => plan.tool),
+  )
   const visibleTools = input.items
     .filter((item) => item.kind === "tool")
     .flatMap((item) => {
@@ -59,13 +65,12 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // their host-effective membership is registry presence alone: ignore
       // the stored record and report the tool whenever the host holds it.
       if (live.codemode) return [{ id: live.id, description: live.description }]
-      // Native tool denials install only through the session context hook,
-      // which no registry seam can observe per agent. The stored record
-      // remains the signal there: an installed removal reads as absent, and
-      // a stored-but-unpublished off reads absent too (known blind spot — a
-      // signal only apply/index.ts can provide; see the report).
-      const state = resolved.get(item.id)
-      if (state === undefined || !state.enabled) return []
+      // Native tool denials install through the session context hook, which no
+      // registry seam can observe per agent. The installed plan set published
+      // by apply records what was actually installed for this agent: an
+      // installed denial excludes the tool, while an unapplied or cleared
+      // stored off leaves the tool present because the host still serves it.
+      if (deniedTools.has(live.id)) return []
       return [{ id: live.id, description: live.description }]
     })
   const skills = await listSkills(input.ctx)
