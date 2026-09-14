@@ -1,16 +1,19 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createSignal, onCleanup, Show } from "solid-js"
+import type { Resolution } from "../../instructions/model.js"
+import { manual } from "../../instructions/sections.js"
 import type { TreeNode } from "../../instructions/tree.js"
+import { DetailPane } from "./detail-pane.js"
+import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs } from "./dialogs.js"
+import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
+import { TreePane } from "./tree-pane.js"
 
-// NOTE (parallel work): DiffPane (diff-pane.tsx) and Splitter
-// (splitter.tsx) land separately. Enter/diff uses state.threeWay plus
-// state.resolveKeep/resolveTake/resolveEdit; s/split uses
-// state.splitPreview plus state.saveSplit. Keep those signatures stable
-// when wiring the panes in here.
 export const WIDE_THRESHOLD = 100
+
+type Mode = "tree" | "diff" | "split"
 
 function isExpandable(node: TreeNode): boolean {
   return node.kind === "root" || node.kind === "group" || node.kind === "agent"
@@ -61,6 +64,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const wide = () => dimensions().width >= WIDE_THRESHOLD
   const [showDetail, setShowDetail] = createSignal(false)
   const [showHelp, setShowHelp] = createSignal(false)
+  const [mode, setMode] = createSignal<Mode>("tree")
+  const [diffNode, setDiffNode] = createSignal<TreeNode | undefined>(undefined)
+  const [splitNode, setSplitNode] = createSignal<TreeNode | undefined>(undefined)
+  const [detailEditing, setDetailEditing] = createSignal(false)
+  const [detailDraft, setDetailDraft] = createSignal("")
   onCleanup(() => {
     state.dispose()
     dialogs.dispose()
@@ -81,6 +89,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     if (state.selectAgent(initialAgent)) initialApplied = true
   })
+
+  // Drafts belong to one node: leaving the node exits the detail editor.
+  createEffect((previous: string | undefined) => {
+    const current = state.selectedId()
+    if (previous !== undefined && current !== previous && detailEditing()) {
+      setDetailEditing(false)
+      setDetailDraft("")
+    }
+    return current
+  }, undefined)
 
   function current(): TreeNode | undefined {
     return state.selected()
@@ -119,10 +137,27 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       setShowHelp(false)
       return
     }
+    if (mode() !== "tree") {
+      setMode("tree")
+      setDiffNode(undefined)
+      setSplitNode(undefined)
+      return
+    }
     if (!wide() && showDetail()) {
+      if (detailEditing()) {
+        setDetailEditing(false)
+        setDetailDraft("")
+        return
+      }
       setShowDetail(false)
       return
     }
+    if (detailEditing()) {
+      setDetailEditing(false)
+      setDetailDraft("")
+      return
+    }
+    setShowHelp(false)
     props.onClose()
   }
 
@@ -148,20 +183,33 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     void state.reset(node)
   }
 
-  async function splitRow() {
+  // s opens the manual splitter: the user places boundaries in the item text
+  // and names each section; save persists a split record via saveSplit.
+  function splitRow() {
     const node = current()
     if (!node) return
-    if (!canSplit(node)) {
+    if (!canSplit(node)) return
+    setSplitNode(node)
+    setMode("split")
+  }
+
+  async function saveSplitBoundaries(boundaries: { id: string; name: string; start: number }[]): Promise<void> {
+    const node = splitNode() ?? current()
+    if (!node) {
+      setMode("tree")
       return
     }
-    const text = state.resolvedText(node)
-    const mid = Math.floor(text.length / 2)
-    const newline = text.indexOf("\n", mid)
-    const start = newline === -1 ? mid : newline + 1
-    await state.saveSplit(node, [
-      { id: "part-1", name: "Part 1", start: 0 },
-      { id: "part-2", name: "Part 2", start },
-    ])
+    // Validate through the same manual() call the splitter previews with so
+    // preview and save always agree.
+    manual(state.resolvedText(node), boundaries)
+    await state.saveSplit(node, boundaries)
+    setMode("tree")
+    setSplitNode(undefined)
+  }
+
+  function cancelSplit() {
+    setMode("tree")
+    setSplitNode(undefined)
   }
 
   async function filterPrompt() {
@@ -174,55 +222,62 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     state.setFilter(raw)
   }
 
-  async function enter() {
+  // Enter on a normal node opens the detail editor; Enter on a yellow review
+  // node opens the three-pane diff.
+  function enter() {
     const node = current()
     if (!node || node.address === undefined) {
       expandOrChild()
       return
     }
     if (isReview(node)) {
-      const choice = await props.context.ui.dialog.select<"keep" | "take" | "edit">({
-        title: `Resolve "${node.label}"`,
-        options: [
-          { title: "Keep mine", value: "keep" },
-          { title: "Take upstream", value: "take" },
-          { title: "Edit", value: "edit" },
-        ],
-      })
-      if (choice === undefined) return
-      if (choice === "keep") {
-        await state.resolveKeep(node)
-        return
-      }
-      if (choice === "take") {
-        await state.resolveTake(node)
-        return
-      }
-      const edited = await props.context.ui.dialog.prompt({
-        title: `Edit "${node.label}"`,
-        value: state.resolvedText(node),
-      })
-      if (edited === undefined) return
-      await state.resolveEdit(node, edited)
+      setDiffNode(node)
+      setMode("diff")
       return
     }
     if (!canEdit(node)) {
       expandOrChild()
       return
     }
-    const edited = await props.context.ui.dialog.prompt({
-      title: `Edit "${node.label}"`,
-      value: state.resolvedText(node),
-    })
-    if (edited === undefined) return
-    await state.saveText(node, edited)
+    setShowDetail(true)
+    setDetailDraft(state.resolvedText(node))
+    setDetailEditing(true)
+  }
+
+  async function resolveDiff(resolution: Resolution, edited?: string): Promise<void> {
+    const node = diffNode() ?? current()
+    if (!node) {
+      setMode("tree")
+      return
+    }
+    if (resolution === "keep") await state.resolveKeep(node)
+    else if (resolution === "take") await state.resolveTake(node)
+    else if (edited !== undefined) await state.resolveEdit(node, edited)
+    setMode("tree")
+    setDiffNode(undefined)
+  }
+
+  function diffThreeWay(): { original: string; mine: string; upstream: string } | undefined {
+    const node = diffNode() ?? current()
+    if (!node) return undefined
+    return state.threeWay(node)
+  }
+
+  function splitInitial(): { id: string; name: string; start: number }[] | undefined {
+    const node = splitNode() ?? current()
+    if (!node) return undefined
+    const preview = state.splitPreview(node)
+    if (!preview || preview.kind !== "manual") return undefined
+    return preview.sections.map((section) => ({ id: section.id, name: section.name, start: section.start }))
   }
 
   function hintLine(): string {
     if (showHelp()) return "esc close help"
+    if (mode() === "diff") return "k keep mine · t take new · e edit · esc back"
+    if (mode() === "split") return "arrows move · b boundary · e rename · x remove · ctrl+s save · esc back"
     if (state.snapshot() === undefined) return "esc back"
     const node = current()
-    const hints: string[] = ["up/down move"]
+    const hints: string[] = ["arrows move"]
     if (node && isExpandable(node)) hints.push("left/right expand")
     if (!wide() && node && node.address !== undefined && !isExpandable(node) && !showDetail())
       hints.push("right detail")
@@ -241,19 +296,26 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   function helpText(): string {
     return [
-      "up/k down/j move · left/h collapse · right/l expand",
-      "enter edit (diff menu on yellow review rows)",
+      "arrows move · left collapse · right expand",
+      "enter edit (diff on yellow review rows)",
       "space toggle include/exclude · a add · d delete (confirm)",
-      "r reset override · s split record persistence",
+      "r reset override · s split into sections",
       "/ filter rows · ? help · esc back",
     ].join("\n")
   }
 
   props.context.keymap.layer(() => {
-    if (showHelp()) return { commands: [{ bind: "escape", title: "Close help", group: "Instructions", run: back }] }
+    if (showHelp()) {
+      if (mode() !== "tree") back()
+      return { commands: [{ bind: "escape", title: "Close help", group: "Instructions", run: back }] }
+    }
     if (state.snapshot() === undefined)
       return {
         commands: [{ bind: "escape", title: "Back", group: "Instructions", run: back }],
+      }
+    if (mode() !== "tree")
+      return {
+        commands: [{ bind: "escape", title: "Back to tree", group: "Instructions", run: back }],
       }
     const node = current()
     const narrowDetail = !wide() && showDetail()
@@ -263,11 +325,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       }
     return {
       commands: [
-        { bind: "up,k", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
-        { bind: "down,j", title: "Next row", group: "Instructions", run: () => state.move(1) },
-        { bind: "left,h", title: "Collapse", group: "Instructions", run: collapseOrParent },
-        { bind: "right,l", title: "Expand", group: "Instructions", run: expandOrChild },
-        { bind: "return", title: "Edit or diff", group: "Instructions", run: () => void enter() },
+        { bind: "up", title: "Previous row", group: "Instructions", run: () => state.move(-1) },
+        { bind: "down", title: "Next row", group: "Instructions", run: () => state.move(1) },
+        { bind: "left", title: "Collapse", group: "Instructions", run: collapseOrParent },
+        { bind: "right", title: "Expand", group: "Instructions", run: expandOrChild },
+        { bind: "return", title: "Edit or diff", group: "Instructions", run: enter },
         ...(canToggle(node)
           ? [{ bind: "space", title: "Toggle include", group: "Instructions", run: toggle }]
           : []),
@@ -278,37 +340,13 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(canReset(node)
           ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }]
           : []),
-        ...(canSplit(node)
-          ? [{ bind: "s", title: "Split", group: "Instructions", run: () => void splitRow() }]
-          : []),
+        ...(canSplit(node) ? [{ bind: "s", title: "Split", group: "Instructions", run: splitRow }] : []),
         { bind: "/", title: "Filter", group: "Instructions", run: () => void filterPrompt() },
         { bind: "?", title: "Help", group: "Instructions", run: () => setShowHelp(true) },
         { bind: "escape", title: "Back", group: "Instructions", run: back },
       ],
     }
   })
-
-  function marker(node: TreeNode): string {
-    if (!isExpandable(node)) return " "
-    return state.expanded().has(node.id) ? "-" : "+"
-  }
-
-  function badges(node: TreeNode): string {
-    const parts: string[] = []
-    if (node.badges.state !== undefined) parts.push(node.badges.state)
-    if (node.badges.modified === true) parts.push("modified")
-    if (node.badges.review === true) parts.push("review")
-    if (node.badges.reviewCount !== undefined && node.badges.reviewCount > 0)
-      parts.push(`${node.badges.reviewCount} to review`)
-    if (node.badges.active === true) parts.push("active")
-    if (parts.length === 0) return ""
-    return ` [${parts.join(", ")}]`
-  }
-
-  function badgeColor(node: TreeNode) {
-    if (node.badges.review === true) return props.context.theme.text.feedback.warning.default
-    return props.context.theme.text.subdued
-  }
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={props.context.theme.background.default}>
@@ -322,107 +360,100 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           </box>
         }
       >
-      <box flexGrow={1} minHeight={0} flexDirection={wide() ? "row" : "column"}>
         <Show
-          when={wide() || !showDetail()}
+          when={mode() === "diff" && diffThreeWay() !== undefined}
           fallback={
-            <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
-              <Show when={current()}>
-                {(node) => (
-                  <box flexDirection="column" gap={1}>
-                    <text fg={props.context.theme.text.default}>
-                      {node().label}
-                      {badges(node())}
-                    </text>
-                    <text fg={props.context.theme.text.subdued}>{state.resolvedText(node())}</text>
-                    <Show when={isReview(node())}>
-                      <text fg={props.context.theme.text.feedback.warning.default}>needs review · enter diff</text>
-                    </Show>
-                  </box>
-                )}
-              </Show>
-            </box>
-          }
-        >
-          <box flexGrow={wide() ? 1 : 0} width={wide() ? "50%" : "100%"} flexDirection="column" minHeight={0}>
-            <text fg={props.context.theme.text.subdued}>Instructions</text>
             <Show
-              when={!state.loading()}
+              when={mode() === "split" && (splitNode() ?? current()) !== undefined}
               fallback={
-                <text fg={props.context.theme.text.subdued}>Loading…</text>
+                <box flexGrow={1} minHeight={0} flexDirection={wide() ? "row" : "column"}>
+                  <Show
+                    when={wide() || !showDetail()}
+                    fallback={
+                      <box flexGrow={1} flexDirection="column" minHeight={0}>
+                        <DetailPane
+                          context={props.context}
+                          node={current}
+                          snapshot={state.snapshot}
+                          state={state}
+                          editing={detailEditing}
+                          onEditingChange={setDetailEditing}
+                          draft={detailDraft}
+                          onDraftChange={setDetailDraft}
+                        />
+                      </box>
+                    }
+                  >
+                    <box flexGrow={wide() ? 1 : 0} width={wide() ? "50%" : "100%"} flexDirection="column" minHeight={0}>
+                      <Show when={state.filter()}>
+                        {(query) => (
+                          <text fg={props.context.theme.text.subdued}>{`Filter: ${query()}`}</text>
+                        )}
+                      </Show>
+                      <TreePane
+                        context={props.context}
+                        nodes={state.nodes}
+                        expanded={state.expanded}
+                        selectedId={state.selectedId}
+                        loading={state.loading}
+                      />
+                    </box>
+                    <Show when={wide() && state.snapshot() !== undefined}>
+                      <box flexGrow={1} width="50%" flexDirection="column" minHeight={0}>
+                        <DetailPane
+                          context={props.context}
+                          node={current}
+                          snapshot={state.snapshot}
+                          state={state}
+                          editing={detailEditing}
+                          onEditingChange={setDetailEditing}
+                          draft={detailDraft}
+                          onDraftChange={setDetailDraft}
+                        />
+                      </box>
+                    </Show>
+                  </Show>
+                </box>
               }
             >
-              <Show
-                when={state.snapshot() !== undefined}
-                fallback={
-                  <text fg={props.context.theme.text.feedback.info.default}>
-                    {state.status() || "No snapshot loaded"}
-                  </text>
-                }
-              >
-                <Show when={state.filter()}>
-                  {(query) => (
-                    <text fg={props.context.theme.text.subdued}>{`Filter: ${query()}`}</text>
-                  )}
-                </Show>
-                <Show
-                  when={state.nodes().length > 0}
-                  fallback={
-                    <text fg={props.context.theme.text.subdued}>No instructions found</text>
-                  }
-                >
-                  <scrollbox flexGrow={1}>
-                    <For each={state.nodes()}>
-                      {(node) => (
-                        <box
-                          flexDirection="row"
-                          backgroundColor={
-                            node.id === state.selectedId()
-                              ? props.context.theme.background.formfield.selected
-                              : undefined
-                          }
-                        >
-                          <text fg={props.context.theme.text.formfield.selected}>
-                            {node.id === state.selectedId() ? "›" : " "}
-                          </text>
-                          <text fg={props.context.theme.text.default}>
-                            {"  ".repeat(node.depth)}
-                            {marker(node)} {node.label}
-                          </text>
-                          <Show when={badges(node)}>
-                            <text fg={badgeColor(node)}>{badges(node)}</text>
-                          </Show>
-                        </box>
-                      )}
-                    </For>
-                  </scrollbox>
-                </Show>
-              </Show>
-            </Show>
-          </box>
-          <Show when={wide() && state.snapshot() !== undefined}>
-            <box flexGrow={1} width="50%" flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
-              <Show when={current()}>
+              <Show when={splitNode() ?? current()}>
                 {(node) => (
-                  <box flexDirection="column" gap={1}>
-                    <text fg={props.context.theme.text.default}>
-                      {node().label}
-                      {badges(node())}
-                    </text>
-                    <text fg={props.context.theme.text.subdued}>{state.resolvedText(node())}</text>
-                    <Show when={isReview(node())}>
-                      <text fg={props.context.theme.text.feedback.warning.default}>needs review · enter diff</text>
-                    </Show>
-                  </box>
+                  <Splitter
+                    context={props.context}
+                    title={node().label}
+                    text={state.resolvedText(node())}
+                    initial={splitInitial()}
+                    active={() => mode() === "split"}
+                    onSave={(boundaries) => saveSplitBoundaries(boundaries)}
+                    onCancel={cancelSplit}
+                  />
                 )}
               </Show>
-            </box>
+            </Show>
+          }
+        >
+          <Show when={diffNode() ?? current()}>
+            {(node) => (
+              <Show when={diffThreeWay()}>
+                {(three) => (
+                  <DiffPane
+                    context={props.context}
+                    title={node().label}
+                    threeWay={three()}
+                    active={() => mode() === "diff"}
+                    review={node().badges.review}
+                    onResolve={(resolution, edited) => resolveDiff(resolution, edited)}
+                  />
+                )}
+              </Show>
+            )}
           </Show>
         </Show>
-      </box>
       </Show>
       <Show when={showHelp()}>
-        <text fg={props.context.theme.text.default}>{helpText()}</text>
+        <text flexShrink={0} fg={props.context.theme.text.default}>
+          {helpText()}
+        </text>
       </Show>
       <Show when={state.status()}>
         {(line) => (

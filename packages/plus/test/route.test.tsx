@@ -121,10 +121,10 @@ test("help overlay lists keys and closes", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     dispatch(fixture, "?")
-    await fixture.waitForFrame((frame) => frame.includes("space toggle"))
-    expect(fixture.captureCharFrame()).toContain("space toggle")
+    await fixture.waitForFrame((frame) => frame.includes("space toggle include/exclude"))
+    expect(fixture.captureCharFrame()).toContain("space toggle include/exclude")
     dispatch(fixture, "escape")
-    await fixture.waitForFrame((frame) => frame.includes("up/down move"))
+    await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("space toggle include/exclude"))
     expect(fixture.captureCharFrame()).not.toContain("space toggle include/exclude")
   } finally {
     fixture.destroy()
@@ -462,7 +462,7 @@ test("narrow detail opens with right and closes with escape", async () => {
     await fixture.waitForFrame((frame) => frame.includes("back to tree"))
     expect(fixture.captureCharFrame()).toContain("sample-config")
     dispatch(fixture, "escape")
-    await fixture.waitForFrame((frame) => frame.includes("up/down move") && !frame.includes("back to tree"))
+    await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("back to tree"))
     expect(fixture.captureCharFrame()).not.toContain("back to tree")
   } finally {
     fixture.destroy()
