@@ -121,6 +121,11 @@ export function validateAgentId(raw: string): { ok: true; id: string } | { ok: f
   if (id.includes("\\"))
     return { ok: false, reason: `Invalid agent id "${id}": backslashes are not allowed (use / for nesting)` }
   if (id.includes("\0")) return { ok: false, reason: `Invalid agent id "${id}": null bytes are not allowed` }
+  if (id.includes(":"))
+    return {
+      ok: false,
+      reason: `Invalid agent id "${id}": colons are not allowed (colons separate the fields of instruction row ids)`,
+    }
   const segments = id.split("/")
   if (segments.some((segment) => segment.length === 0))
     return {

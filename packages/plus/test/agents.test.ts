@@ -431,6 +431,25 @@ test("traversal ids are rejected and confined to the agent root", async () => {
   expect(await Bun.file(outside).text()).toBe("keep me\n")
 })
 
+test("validateAgentId refuses colon-containing ids and accepts valid flat and nested ids", () => {
+  const refused = validateAgentId("team:lead")
+  expect(refused.ok).toBe(false)
+  if (!refused.ok) {
+    expect(refused.reason).toBe(
+      'Invalid agent id "team:lead": colons are not allowed (colons separate the fields of instruction row ids)',
+    )
+  }
+
+  const flat = validateAgentId("reviewer")
+  expect(flat).toEqual({ ok: true, id: "reviewer" })
+
+  const nested = validateAgentId("team/lead")
+  expect(nested).toEqual({ ok: true, id: "team/lead" })
+
+  const deeplyNested = validateAgentId("team/sub/worker")
+  expect(deeplyNested).toEqual({ ok: true, id: "team/sub/worker" })
+})
+
 test("rename and delete resolve the file in agent/ when an empty agents/ directory exists", async () => {
   const projectDirectory = await tempDir()
   const agentDir = path.join(projectDirectory, ".opencode", "agent")
