@@ -309,7 +309,7 @@ interface BasePlan {
   readonly agent: string
   readonly template: string
   readonly text: string
-  /** Raw upstream host template that produced the live rendered text; the alignment key. */
+  /** Raw upstream host template; the alignment fallback when the host lacks the per-request raw seam. */
   readonly upstream: string
 }
 
@@ -412,15 +412,42 @@ function classifyRequest(
   agent: string,
   ref: { providerID: unknown; id: unknown },
 ): string | undefined {
-  const providerID = String(ref.providerID)
-  const id = String(ref.id)
-  const found = classifier.catalog.find((entry) => String(entry.providerID) === providerID && String(entry.id) === id)
-  const model = found !== undefined ? { id: found.id, name: found.name } : { id, name: id }
+  const model = requestModel(classifier, ref)
   const request = Effect.runSync(
     classifier.prompt.active(model).pipe(Effect.catchCause(() => Effect.succeed(undefined as string | undefined))),
   )
   if (request !== undefined) return request
   return classifier.pinned.get(agent)
+}
+
+// The request model resolved the way the core optimize plugin resolves it:
+// look the event's model ref up in the catalog list, defaulting to a bare
+// ref (name = id) when the catalog has no entry. Shared by classification
+// and raw-template lookup so the two answer for the same model.
+function requestModel(
+  classifier: RequestClassifier,
+  ref: { providerID: unknown; id: unknown },
+): { id: string; name: string } {
+  const providerID = String(ref.providerID)
+  const id = String(ref.id)
+  const found = classifier.catalog.find((entry) => String(entry.providerID) === providerID && String(entry.id) === id)
+  if (found !== undefined) return { id: found.id, name: found.name }
+  return { id, name: id }
+}
+
+// The RAW template core actually rendered for this request. Classification
+// alone cannot key the guidance splice: gpt-6 classifies as gpt but
+// renders the astra text, so aligning discovery's gpt upstream against
+// astra live finds no suffix and would wipe the guidance. Hosts without
+// the seam (older hosts, and tests that predate it) leave `raw`
+// undefined; fall back to upstream, which matches whenever classification
+// and rendering agree — every family except gpt-6.
+function rawForRequest(classifier: RequestClassifier, event: SessionContext): string | undefined {
+  const raw = classifier.prompt.raw
+  if (typeof raw !== "function") return undefined
+  return Effect.runSync(
+    raw(requestModel(classifier, event.model)).pipe(Effect.catchCause(() => Effect.succeed(undefined as string | undefined))),
+  )
 }
 
 // "Custom system" comes from real agent info in the context hook's host:
@@ -465,11 +492,16 @@ function applyBasePlan(
   // of the raw placeholder, and substitute the request model name for the
   // model placeholder.
   const first = event.system[0]
+  const text = renderBaseText(match.text, match.upstream, event, classifier)
+  // An unresolvable alignment leaves the live text exactly as core
+  // rendered it: the customization is lost for this request, but the
+  // model's tool guidance is never stripped (see spliceToolGuidance).
+  if (text === undefined) return
   if (first === undefined) {
-    event.system.push({ type: "text", text: renderBaseText(match.text, match.upstream, event, classifier) })
+    event.system.push({ type: "text", text })
     return
   }
-  event.system[0] = { ...first, text: renderBaseText(match.text, match.upstream, event, classifier) }
+  event.system[0] = { ...first, text }
 }
 
 // Render one stored base customization the way core's optimize plugin renders
@@ -479,8 +511,14 @@ function applyBasePlan(
 // request model name. The live text — not a regenerated guidance string —
 // is the source of truth for what core rendered for this request, so Plus
 // never invents guidance for tools the request does not have.
-function renderBaseText(text: string, upstream: string, event: SessionContext, classifier: RequestClassifier): string {
-  const rendered = spliceToolGuidance(text, upstream, event.system[0]?.text)
+function renderBaseText(
+  text: string,
+  upstream: string,
+  event: SessionContext,
+  classifier: RequestClassifier,
+): string | undefined {
+  const rendered = spliceToolGuidance(text, rawForRequest(classifier, event) ?? upstream, event.system[0]?.text)
+  if (rendered === undefined) return undefined
   return rendered.replaceAll("{{MODEL_NAME}}", requestModelName(classifier, event))
 }
 
@@ -493,17 +531,18 @@ function requestModelName(classifier: RequestClassifier, event: SessionContext):
 
 // The stored customization only knows the RAW placeholder; the live system[0]
 // already carries core's rendered guidance for this request's tool set. Take
-// the guidance span out of the live text by aligning the UPSTREAM raw
-// template around its placeholder: the upstream text before the marker
-// locates the guidance start in the live text, and the upstream text after
-// the marker locates its end. Customized surroundings cannot align because
-// editing them is the point of the feature. No marker in the stored text
-// means nothing to render; no live text, no upstream marker, or a live text
-// that genuinely lacks the upstream surroundings leaves the marker empty
-// rather than inventing guidance.
+// the guidance span out of the live text by aligning the RAW template core
+// actually rendered (the per-request `ctx.prompt.raw` text, or the discovery
+// upstream on hosts without the seam) around its placeholder: the raw text
+// before the marker locates the guidance start in the live text, and the raw
+// text after the marker locates its end. Customized surroundings cannot align
+// because editing them is the point of the feature. No marker in the stored
+// text means nothing to render; no live text, or a raw template that itself
+// carries no marker, means core rendered no guidance, so the marker resolves
+// to empty rather than inventing any.
 const toolGuidanceMarker = "${OPENCODE_TOOL_GUIDANCE}"
 
-function spliceToolGuidance(stored: string, upstream: string, live: string | undefined): string {
+function spliceToolGuidance(stored: string, upstream: string, live: string | undefined): string | undefined {
   const at = stored.indexOf(toolGuidanceMarker)
   if (at === -1) return stored
   if (live === undefined) return stored.replaceAll(toolGuidanceMarker, "")
@@ -512,10 +551,16 @@ function spliceToolGuidance(stored: string, upstream: string, live: string | und
   const before = upstream.slice(0, upstreamAt)
   const after = upstream.slice(upstreamAt + toolGuidanceMarker.length)
   const start = before === "" ? 0 : live.indexOf(before)
-  if (start === -1) return stored.replaceAll(toolGuidanceMarker, "")
+  // The live text genuinely lacks the raw surroundings, so something besides
+  // core's renderer owns system[0]. Return undefined and let the caller keep
+  // the live text unmodified: dropping one request's customization loses an
+  // edit, but overwriting with guidance-stripped text would silently delete
+  // every tool instruction the model sees. Guidance is only ever sliced out
+  // of live text, never synthesized.
+  if (start === -1) return undefined
   const guidanceStart = start + before.length
   const guidanceEnd = after === "" ? live.length : live.indexOf(after, guidanceStart)
-  if (guidanceEnd === -1) return stored.replaceAll(toolGuidanceMarker, "")
+  if (guidanceEnd === -1) return undefined
   return stored.replaceAll(toolGuidanceMarker, live.slice(guidanceStart, guidanceEnd))
 }
 

@@ -2,6 +2,7 @@ export * as PromptTemplate from "./prompt-template.js"
 
 import PROMPT_GENERAL from "./session/runner/prompt/system.txt"
 import PROMPT_GPT from "./plugin/system-prompt/gpt.txt"
+import PROMPT_ASTRA from "./plugin/system-prompt/gpt-astra.txt"
 import PROMPT_KIMI from "./plugin/system-prompt/kimi.txt"
 import PROMPT_META from "./plugin/system-prompt/meta.txt"
 import PROMPT_TRINITY from "./plugin/system-prompt/trinity.txt"
@@ -32,4 +33,19 @@ export function active(model: { readonly id: string; readonly name: string }) {
   if (id.includes("trinity")) return "trinity"
   if (id.includes("muse")) return "muse"
   return "general"
+}
+
+// The RAW template text the optimize plugins render for this model. This is
+// the single owner of the gpt-6 -> astra selection: OpenAIPlugin renders
+// exactly this, and the plugin host exposes it so Plus aligns tool guidance
+// against what core actually rendered rather than the classification's
+// canonical template. Family comes from active so the two cannot disagree;
+// only gpt subdivides, and that rule lives here alone.
+export function raw(model: { readonly id: string; readonly name: string }): string | undefined {
+  const family = active(model)
+  if (family === "gpt") return model.id.toLowerCase().includes("gpt-6") ? PROMPT_ASTRA : PROMPT_GPT
+  if (family === "kimi") return PROMPT_KIMI
+  if (family === "trinity") return PROMPT_TRINITY
+  if (family === "muse") return PROMPT_META
+  return undefined
 }

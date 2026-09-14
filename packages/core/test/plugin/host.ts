@@ -105,6 +105,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     prompt: overrides.prompt ?? {
       templates: () => Effect.die("unused prompt.templates"),
       active: () => Effect.die("unused prompt.active"),
+      raw: () => Effect.die("unused prompt.raw"),
     },
     mcp: overrides.mcp ?? {
       list: () => Effect.die("unused mcp.list"),

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { PromptTemplate } from "@opencode/core/prompt-template"
+import PROMPT_GPT from "../src/plugin/system-prompt/gpt.txt"
+import PROMPT_ASTRA from "../src/plugin/system-prompt/gpt-astra.txt"
 
 describe("PromptTemplate", () => {
   test("active resolves representative model ids", () => {
@@ -11,6 +13,21 @@ describe("PromptTemplate", () => {
     expect(PromptTemplate.active({ id: "claude-opus-4", name: "Claude" })).toBe("general")
     expect(PromptTemplate.active({ id: "gemini-2.5-pro", name: "Gemini" })).toBe("general")
     expect(PromptTemplate.active({ id: "llama-3.3-70b", name: "Llama" })).toBe("general")
+  })
+
+  test("raw returns the template optimize renders for the model", () => {
+    // The gpt-6 rule lives here so the OpenAI optimize plugin and the
+    // plugin-host seam can never drift: gpt-6 classifies as gpt but
+    // renders the astra text.
+    expect(PromptTemplate.raw({ id: "gpt-6", name: "GPT 6" })).toBe(PROMPT_ASTRA)
+    expect(PromptTemplate.raw({ id: "openai/gpt-6-mini", name: "GPT 6 Mini" })).toBe(PROMPT_ASTRA)
+    expect(PromptTemplate.raw({ id: "OpenAI/GPT-6", name: "GPT 6" })).toBe(PROMPT_ASTRA)
+    expect(PromptTemplate.raw({ id: "gpt-5", name: "GPT 5" })).toBe(PROMPT_GPT)
+    const byId = new Map(PromptTemplate.templates.map((template) => [template.id, template.text]))
+    expect(PromptTemplate.raw({ id: "moonshot/kimi-k2", name: "Kimi" })).toBe(byId.get("kimi"))
+    expect(PromptTemplate.raw({ id: "arcee/trinity-large", name: "Trinity" })).toBe(byId.get("trinity"))
+    expect(PromptTemplate.raw({ id: "muse-opus", name: "Muse" })).toBe(byId.get("muse"))
+    expect(PromptTemplate.raw({ id: "llama-3.3-70b", name: "Llama" })).toBeUndefined()
   })
 
   test("templates have stable unique ids and non-empty text", () => {

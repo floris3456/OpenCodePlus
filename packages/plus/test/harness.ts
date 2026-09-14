@@ -196,6 +196,8 @@ export type PromptClassificationTable =
   | ReadonlyMap<string, string>
   | Readonly<Record<string, string>>
 
+export type PromptRawTable = ReadonlyMap<string, string> | Readonly<Record<string, string>>
+
 export const defaultHostTemplates: readonly { readonly id: string; readonly title: string; readonly text: string }[] = [
   { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
   { id: "claude", title: "Claude.txt", text: "claude base prompt" },
@@ -209,11 +211,13 @@ export const defaultHostTemplates: readonly { readonly id: string; readonly titl
 export function promptDomain(
   templates: readonly { id: string; title: string; text: string }[] = defaultHostTemplates,
   classifications: PromptClassificationTable = new Map([["", "general"]]),
+  raws: PromptRawTable = {},
 ): PromptDomain {
   const table =
     classifications instanceof Map
       ? new Map(classifications)
       : new Map(Object.entries(classifications))
+  const rawTable = raws instanceof Map ? new Map(raws) : new Map(Object.entries(raws))
   const listed = templates.map((template) => ({ ...template }))
   return {
     templates: () => Effect.succeed(listed),
@@ -225,6 +229,13 @@ export function promptDomain(
       if (target !== undefined) return Effect.succeed(target)
       return Effect.die(`promptDomain: no classification explicitly supplied for model "${model.id || model.name || "<unspecified>"}"`)
     },
+    // The host answers the per-request raw template from explicitly
+    // supplied fixtures only. It never derives this from the templates
+    // list or the classification table: that derivation is core's gpt-6
+    // selection, and reimplementing it here would hide the exact drift
+    // this seam exists to prevent. No fixture means an older host without
+    // the seam, so answer undefined and let the caller fall back.
+    raw: (model) => Effect.succeed(rawTable.get(model.id) ?? (model.name ? rawTable.get(model.name) : undefined)),
   }
 }
 
@@ -543,8 +554,9 @@ export function mcpHarness(initial: [string, { type: "remote"; url: string; disa
 export function promptHarness(
   templates: readonly { id: string; title: string; text: string }[],
   classifications?: PromptClassificationTable,
+  raws?: PromptRawTable,
 ): PromptDomain {
-  return promptDomain(templates, classifications)
+  return promptDomain(templates, classifications, raws)
 }
 
 export function catalogHarness(models: Model.Info[]): CatalogDomain {
@@ -587,6 +599,7 @@ export function fullContext(options: {
   models?: Model.Info[]
   templates?: { id: string; title: string; text: string }[]
   classifications?: PromptClassificationTable
+  raws?: PromptRawTable
   session?: Partial<Context["session"]>
 }): Context {
   const agents = options.agents ?? []
@@ -616,7 +629,7 @@ export function fullContext(options: {
     location,
     agent: agentState.domain,
     catalog: catalogDomain(models),
-    prompt: promptDomain(templates, classifications),
+    prompt: promptDomain(templates, classifications, options.raws),
     skill: skillDomain,
     tool: tools.domain,
     mcp: mcp.domain,

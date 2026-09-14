@@ -21,6 +21,13 @@ import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import type { CustomizationRecord, Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
+// Plus cannot depend on @opencode/core (core depends on Plus), so this
+// regression reads core's own template sources and renderer by path. That
+// is the point: artificial upstream/live pairs hid the gpt-6 divergence,
+// and only the real texts reproduce it.
+import PROMPT_GPT from "../../core/src/plugin/system-prompt/gpt.txt"
+import PROMPT_ASTRA from "../../core/src/plugin/system-prompt/gpt-astra.txt"
+import { SessionSystemPrompt } from "../../core/src/session/system-prompt.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -789,6 +796,52 @@ test("appending after a customized base template preserves rendered tool guidanc
   expect(event.system[0]?.text).not.toContain("${OPENCODE_TOOL_GUIDANCE}")
   expect(event.system[0]?.text).toContain("appended")
   expect(event.system[0]?.text).toContain(guidance)
+})
+
+test("a customized gpt base keeps astra-rendered tool guidance on a gpt-6 request", async () => {
+  // Third P1 in the guidance family: Plus discovers the canonical gpt.txt
+  // as upstream, but core's OpenAI optimize plugin renders gpt-astra.txt
+  // for gpt-6 ids. Aligning gpt upstream against astra live finds no
+  // suffix, so the classification-keyed code empties the marker and
+  // destroys the write/edit/shell guidance core actually rendered. The
+  // real core templates and the real core renderer reproduce it; an
+  // artificial matching pair cannot.
+  const live = SessionSystemPrompt.render(PROMPT_ASTRA, ["write", "edit", "shell"])
+  const customized = `MY-CUSTOM-HEADER-123\n\n${PROMPT_GPT}`
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: PROMPT_GPT }]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness(baseTemplates, { "gpt-6": "gpt" }, { "gpt-6": PROMPT_ASTRA }),
+    catalog: catalogHarness([modelInfo("openai", "gpt-6", "GPT 6")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: customized })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent(
+    "alpha",
+    {
+      write: { description: "write", input: { type: "object" } },
+      edit: { description: "edit", input: { type: "object" } },
+      shell: { description: "shell", input: { type: "object" } },
+    },
+    [{ type: "text", text: live }],
+    { providerID: "openai", id: "gpt-6" },
+  )
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).not.toContain("${OPENCODE_TOOL_GUIDANCE}")
+  expect(event.system[0]?.text).toContain("MY-CUSTOM-HEADER-123")
+  expect(event.system[0]?.text).toContain("Use the write tool")
 })
 
 test("an untouched base template with a trailing newline installs no base plan", async () => {

@@ -7,15 +7,13 @@ import { Effect } from "effect"
 import { PromptTemplate } from "../prompt-template.js"
 import { SessionSystemPrompt } from "../session/system-prompt.js"
 
-import PROMPT_GPT from "./system-prompt/gpt.txt"
-import PROMPT_ASTRA from "./system-prompt/gpt-astra.txt"
 import PROMPT_KIMI from "./system-prompt/kimi.txt"
 import PROMPT_META from "./system-prompt/meta.txt"
 import PROMPT_TRINITY from "./system-prompt/trinity.txt"
 
 export const OpenAIPlugin = make("opencode.prompt.openai", (model) => {
   if (PromptTemplate.active(model) !== "gpt") return undefined
-  return model.id.toLowerCase().includes("gpt-6") ? PROMPT_ASTRA : PROMPT_GPT
+  return PromptTemplate.raw(model)
 })
 
 export const OpenAIToolsPlugin = make("opencode.optimize.openai.tools", (model, tools) => {
