@@ -126,20 +126,33 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         const loaded = yield* loadStored(directory, () =>
           context.error("project.disabled", disabledMessage(directory), { directory }),
         )
-        if (input.expectedRevision !== loaded.projectRevision || input.expectedGlobalRevision !== loaded.globalRevision) {
+        const staleStore =
+          input.expectedRevision !== loaded.projectRevision
+            ? ("project" as const)
+            : input.expectedGlobalRevision !== loaded.globalRevision
+              ? ("global" as const)
+              : undefined
+        if (staleStore !== undefined) {
           const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
-          return { ok: false as const, reason: "stale" as const, snapshot: toSnapshot(discovered, loaded) }
+          return { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded) }
         }
         const saved = yield* Effect.promise(() =>
-          save(directory, { expectedRevision: loaded.revision, records: input.records.map(toRecord) }),
+          save(
+            directory,
+            {
+              expectedProjectRevision: loaded.projectRevision,
+              expectedGlobalRevision: loaded.globalRevision,
+              records: input.records.map(toRecord),
+            },
+          ),
         )
         if (!saved.ok) {
-          const refreshed = { ...saved.current, ...revisionsOf(saved.current), protectedAgents: loaded.protectedAgents }
+          const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
           const discovered = yield* Effect.promise(() => discoverAll(ctx, refreshed, state.baselines))
-          return { ok: false as const, reason: "stale" as const, snapshot: toSnapshot(discovered, refreshed) }
+          return { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed) }
         }
         const reloaded = yield* Effect.promise(() => load(directory))
-        const next = { ...reloaded, ...revisionsOf(reloaded), protectedAgents: loaded.protectedAgents }
+        const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
         const discovered = yield* publishFresh(ctx, state, next)
         const snapshot = toSnapshot(discovered, next)
         return { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot }
@@ -394,7 +407,6 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
 }
 
 interface LoadedStores {
-  readonly revision: number
   readonly projectRevision: number
   readonly globalRevision: number
   readonly records: readonly StoredRecord[]
@@ -413,19 +425,11 @@ function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<
   })
 }
 
-function revisionsOf(stored: { revision: number }): { projectRevision: number; globalRevision: number } {
-  // The two-store backend currently tracks one combined revision (the max of
-  // both store headers; every save bumps both files together), so both RPC
-  // revisions equal it. Optimistic checks on either field still conflict
-  // correctly because any write moves the shared revision.
-  return { projectRevision: stored.revision, globalRevision: stored.revision }
-}
-
 function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<LoadedStores, E> {
   return Effect.gen(function* () {
     const protectedAgents = yield* requireProject(directory, disabled)
     const stored = yield* Effect.promise(() => load(directory))
-    return { ...stored, ...revisionsOf(stored), protectedAgents }
+    return { ...stored, protectedAgents }
   })
 }
 
@@ -708,7 +712,7 @@ function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, ne
 async function loadCurrent(directory: string): Promise<LoadedStores> {
   const config = await read(directory)
   const stored = await load(directory)
-  return { ...stored, ...revisionsOf(stored), protectedAgents: config?.protectedAgents ?? [] }
+  return { ...stored, protectedAgents: config?.protectedAgents ?? [] }
 }
 
 function deactivate(state: PlusState): Effect.Effect<void> {

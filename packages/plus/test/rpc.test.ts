@@ -225,7 +225,7 @@ test("mutate stale on either revision returns the fresh snapshot without writing
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const seeded = await Effect.runPromise(
-    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" })] }, throwingContext({})),
+    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" }), record("tool:b", { level: "global", agent: "beta", text: "g" })] }, throwingContext({})),
   )
   expect(seeded.ok).toBe(true)
   if (!seeded.ok) throw new Error("expected seed to succeed")
@@ -235,12 +235,14 @@ test("mutate stale on either revision returns the fresh snapshot without writing
   expect(staleProject.ok).toBe(false)
   if (staleProject.ok) throw new Error("expected stale conflict")
   expect(staleProject.reason).toBe("stale")
+  expect(staleProject.store).toBe("project")
   expectRpcBody(staleProject)
   const staleGlobal = await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: seeded.revision, expectedGlobalRevision: 0, records: [record("tool:a", { text: "second" })] }, throwingContext({})),
   )
   expect(staleGlobal.ok).toBe(false)
   if (staleGlobal.ok) throw new Error("expected stale conflict")
+  expect(staleGlobal.store).toBe("global")
   expectRpcBody(staleGlobal)
 })
 

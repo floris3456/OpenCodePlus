@@ -150,6 +150,7 @@ export interface MutateConflict extends Schema.Schema.Type<typeof MutateConflict
 export const MutateConflict = Schema.Struct({
   ok: Schema.Literal(false),
   reason: Schema.Literal("stale"),
+  store: Schema.Union([Schema.Literal("project"), Schema.Literal("global")]),
   snapshot: Snapshot,
 }).annotate({ identifier: "Plus.MutateConflict" })
 

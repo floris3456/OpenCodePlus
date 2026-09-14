@@ -42,7 +42,7 @@ function customization(overrides?: Partial<Extract<StoredRecord, { type: "custom
 
 test("load returns empty when both stores are absent", async () => {
   const { project } = await isolated()
-  expect(await load(project)).toEqual({ revision: 0, records: [], migrated: false })
+  expect(await load(project)).toEqual({ projectRevision: 0, globalRevision: 0, records: [], migrated: false })
 })
 
 test("save then load round-trips project and global records", async () => {
@@ -52,9 +52,11 @@ test("save then load round-trips project and global records", async () => {
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
   ]
-  expect(await save(project, { expectedRevision: 0, records })).toEqual({ ok: true, revision: 1 })
+  const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1 })
   const loaded = await load(project)
-  expect(loaded.revision).toBe(1)
+  expect(loaded.projectRevision).toBe(1)
+  expect(loaded.globalRevision).toBe(1)
   expect(loaded.migrated).toBe(false)
   expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
 })
@@ -66,7 +68,7 @@ test("records route into project vs global files", async () => {
     customization({ level: "global", agent: "beta", item: "tool:other", text: "g" }),
     customization({ level: "defaults", agent: null, item: "system:role", text: "d" }),
   ]
-  await save(project, { expectedRevision: 0, records })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   const projectText = await Bun.file(projectRecordsPath(project)).text()
   const globalText = await Bun.file(globalRecordsPath()).text()
   expect(projectText).toContain(`"level":"project"`)
@@ -80,25 +82,29 @@ test("records route into project vs global files", async () => {
 test("no-op save keeps the revision and leaves files untouched", async () => {
   const { project } = await isolated()
   const records: StoredRecord[] = [customization({ text: "custom" })]
-  await save(project, { expectedRevision: 0, records })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   const beforeProject = await Bun.file(projectRecordsPath(project)).text()
-  const beforeGlobal = await Bun.file(globalRecordsPath()).text()
-  expect(await save(project, { expectedRevision: 1, records: [...records].reverse() })).toEqual({
+  expect(await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: [...records].reverse() })).toEqual({
     ok: true,
-    revision: 1,
+    projectRevision: 1,
+    globalRevision: 0,
   })
   expect(await Bun.file(projectRecordsPath(project)).text()).toBe(beforeProject)
-  expect(await Bun.file(globalRecordsPath()).text()).toBe(beforeGlobal)
+  // A project-only save never creates the global file.
+  expect(await Bun.file(globalRecordsPath()).exists()).toBe(false)
 })
 
 test("stale save is rejected without changing stored content", async () => {
   const { project } = await isolated()
   const first: StoredRecord[] = [customization({ text: "first" })]
-  await save(project, { expectedRevision: 0, records: first })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: first })
   const before = await Bun.file(projectRecordsPath(project)).text()
-  const rejected = await save(project, { expectedRevision: 0, records: [customization({ text: "second" })] })
+  const rejected = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [customization({ text: "second" })] })
   expect(rejected.ok).toBe(false)
-  if (!rejected.ok) expect(rejected.current.records).toHaveLength(1)
+  if (!rejected.ok) {
+    expect(rejected.store).toBe("project")
+    expect(rejected.current.records).toHaveLength(1)
+  }
   expect(await Bun.file(projectRecordsPath(project)).text()).toBe(before)
 })
 
@@ -114,7 +120,7 @@ test("split records round-trip", async () => {
       updated: UPDATED,
     },
   ]
-  await save(project, { expectedRevision: 0, records })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   expect((await load(project)).records).toEqual(records)
 })
 
@@ -146,7 +152,8 @@ test("v1 migration maps agents, states, and item ids", async () => {
   await Bun.write(projectRecordsPath(project), `${v1}\n`)
   const loaded = await load(project)
   expect(loaded.migrated).toBe(true)
-  expect(loaded.revision).toBe(3)
+  expect(loaded.projectRevision).toBe(3)
+  expect(loaded.globalRevision).toBe(0)
   expect(loaded.records).toContainEqual({
     type: "customization",
     level: "project",
@@ -180,8 +187,8 @@ test("v1 migration maps agents, states, and item ids", async () => {
     updated: UPDATED,
   })
   // Defaults-level rows from a v1 project file route into the global store.
-  const saved = await save(project, { expectedRevision: 3, records: loaded.records })
-  expect(saved).toEqual({ ok: true, revision: 4 })
+  const saved = await save(project, { expectedProjectRevision: 3, expectedGlobalRevision: 0, records: loaded.records })
+  expect(saved).toEqual({ ok: true, projectRevision: 4, globalRevision: 1 })
   const projectText = await Bun.file(projectRecordsPath(project)).text()
   const globalText = await Bun.file(globalRecordsPath()).text()
   expect(projectText.split("\n")[0]).toContain(`"version":2`)
@@ -194,10 +201,72 @@ test("v1 migration maps agents, states, and item ids", async () => {
 
 test("load skips malformed v2 lines", async () => {
   const { project } = await isolated()
-  await save(project, { expectedRevision: 0, records: [customization({ text: "kept" })] })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [customization({ text: "kept" })] })
   const target = projectRecordsPath(project)
   await Bun.write(target, `${await Bun.file(target).text()}{malformed\n`)
   expect((await load(project)).records).toHaveLength(1)
+})
+
+test("project-only save leaves the global revision untouched and vice versa", async () => {
+  const { project } = await isolated()
+  const projectOnly: StoredRecord[] = [customization({ agent: "alpha", text: "p1" })]
+  const first = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: projectOnly })
+  expect(first).toEqual({ ok: true, projectRevision: 1, globalRevision: 0 })
+  const globalOnly: StoredRecord[] = [
+    ...projectOnly,
+    customization({ level: "global", agent: "beta", item: "tool:other", text: "g1" }),
+  ]
+  const second = await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: globalOnly })
+  expect(second).toEqual({ ok: true, projectRevision: 1, globalRevision: 1 })
+  const loaded = await load(project)
+  expect(loaded.projectRevision).toBe(1)
+  expect(loaded.globalRevision).toBe(1)
+})
+
+test("two projects saving global records concurrently keep both records", async () => {
+  const root = await tempRoot()
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const projectA = path.join(root, "project-a")
+  const projectB = path.join(root, "project-b")
+  const startedAt = performance.now()
+  const baseA = await load(projectA)
+  const baseB = await load(projectB)
+  const recordA = customization({ level: "global", agent: "alpha", item: "tool:aaa", text: "from-a" })
+  const recordB = customization({ level: "global", agent: "beta", item: "tool:bbb", text: "from-b" })
+  // Start both saves concurrently: neither awaits the other first.
+  const pendingA = save(projectA, {
+    expectedProjectRevision: baseA.projectRevision,
+    expectedGlobalRevision: baseA.globalRevision,
+    records: [recordA],
+  })
+  const pendingB = save(projectB, {
+    expectedProjectRevision: baseB.projectRevision,
+    expectedGlobalRevision: baseB.globalRevision,
+    records: [recordB],
+  })
+  const [resultA, resultB] = await Promise.all([pendingA, pendingB])
+  const elapsedMs = performance.now() - startedAt
+  const stale = [resultA, resultB].find((result) => !result.ok)
+  if (stale !== undefined && !stale.ok) expect(stale.store).toBe("global")
+  // Retry the loser (if any) against a fresh read so both records land.
+  const loserProject = !resultA.ok ? projectA : !resultB.ok ? projectB : undefined
+  if (loserProject !== undefined) {
+    const loserRecord = loserProject === projectA ? recordA : recordB
+    const fresh = await load(loserProject)
+    const retry = await save(loserProject, {
+      expectedProjectRevision: fresh.projectRevision,
+      expectedGlobalRevision: fresh.globalRevision,
+      records: [...fresh.records, loserRecord],
+    })
+    expect(retry.ok).toBe(true)
+  }
+  const merged = await load(projectA)
+  const texts = merged.records.map((record) => (record.type === "customization" ? record.text : undefined))
+  expect(texts).toContain("from-a")
+  expect(texts).toContain("from-b")
+  // A silent lost update must fail: both global records are present.
+  expect(merged.records.filter((record) => record.level !== "project")).toHaveLength(2)
+  expect(elapsedMs).toBeGreaterThanOrEqual(0)
 })
 
 function compareForTest(left: StoredRecord, right: StoredRecord): number {
