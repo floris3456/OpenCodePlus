@@ -35,7 +35,11 @@ export function rowMarker(node: TreeNode, visibleChildren: boolean, expanded: Re
 
 export function badgeLabels(node: TreeNode): string[] {
   const labels: string[] = []
-  if (node.address !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
+  // On/off reads from the badge state, not the address: item and section
+  // rows always carry state, and team rows carry state with no address (a
+  // synthetic address would corrupt the mutate path). Structural rows carry
+  // no state and still render no badge.
+  if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
   if (node.badges.modified === true) labels.push("modified")
   if (node.badges.active === true) labels.push("active")
   if (node.badges.inactive === true) labels.push("inactive")

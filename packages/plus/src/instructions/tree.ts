@@ -2,7 +2,7 @@ import { applies, canReset, resolve, resolveSplit, scopesOf } from "./model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, Level, Resolved, Scopes, SplitRecord } from "./model.js"
 import type { Section, Split } from "./sections.js"
 
-export type TreeNodeKind = "root" | "group" | "agent" | "item" | "section"
+export type TreeNodeKind = "root" | "group" | "agent" | "team" | "item" | "section"
 export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section"
 
 export interface TreeNodeBadges {
@@ -37,10 +37,18 @@ export interface TreeNode {
   readonly actions?: TreeNodeActions
 }
 
+export interface TeamInput {
+  readonly level: "project" | "global"
+  readonly team: string
+  readonly enabled: boolean
+  readonly agents: readonly string[]
+}
+
 export interface TreeInput {
   readonly items: readonly Item[]
   readonly records: readonly (CustomizationRecord | SplitRecord)[]
   readonly agents: readonly AgentSource[]
+  readonly teams?: readonly TeamInput[]
   readonly expanded?: ReadonlySet<string>
 }
 
@@ -69,6 +77,7 @@ interface BuildContext {
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
   readonly agents: readonly AgentSource[]
+  readonly teams: readonly TeamInput[]
 }
 
 function contextOf(input: TreeInput): BuildContext {
@@ -78,6 +87,7 @@ function contextOf(input: TreeInput): BuildContext {
     splits: input.records.filter((record): record is SplitRecord => record.type === "split"),
     scopes: scopesOf(input.agents),
     agents: input.agents,
+    teams: input.teams ?? [],
   }
 }
 
@@ -320,7 +330,7 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     label: level === "project" ? "Project" : "Global",
     depth: 0,
     actions: noActions(),
-    children: () => [lazyAgentsGroup(ctx, memo, level)],
+    children: () => [lazyAgentsGroup(ctx, memo, level), ...lazyTeamsGroup(ctx, memo, level)],
   })
 }
 
@@ -351,6 +361,59 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     children: () =>
       ctx.agents.filter((agent) => agent.scope === level).map((agent) => lazyAgent(ctx, memo, level, agent, 2)),
   })
+}
+
+// Teams mirror the Agents group shape: a depth-1 "Teams" group per
+// project/global root holding one toggleable row per on-disk team. Levels
+// with no teams emit nothing — an empty group would be a dead row with no
+// add affordance and no rows to show. Defaults never gets a Teams group:
+// teams are project/global only. Member agent ids hang under each team row
+// as informational rows: they carry no address and no actions, so space,
+// enter, delete, and reset all ignore them.
+function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
+  if (level === "defaults") return []
+  const teams = ctx.teams
+    .filter((team) => team.level === level)
+    .toSorted((left, right) => (left.team < right.team ? -1 : left.team > right.team ? 1 : 0))
+  if (teams.length === 0) return []
+  return [
+    branch(memo, {
+      kind: "group",
+      id: `group:${level}:teams`,
+      label: "Teams",
+      depth: 1,
+      actions: noActions(),
+      children: () => teams.map((team) => lazyTeam(memo, level, team)),
+    }),
+  ]
+}
+
+function lazyTeam(memo: Memo, level: "project" | "global", team: TeamInput): Lazy {
+  const kids = (): readonly Lazy[] =>
+    cachedKids(memo, `team:${level}:${team.team}`, () =>
+      team.agents.map((member) => ({
+        id: `team:${level}:${team.team}:${member}`,
+        kind: "team" as const,
+        label: member,
+        depth: 3,
+        actions: noActions(),
+        selfReview: () => false,
+        partial: () => ({}),
+        reviewCount: () => 0,
+        children: () => [],
+      })),
+    )
+  return {
+    id: `team:${level}:${team.team}`,
+    kind: "team",
+    label: team.team,
+    depth: 2,
+    actions: { ...noActions(), toggle: true },
+    selfReview: () => false,
+    partial: () => ({ state: team.enabled ? ("on" as const) : ("off" as const) }),
+    reviewCount: () => 0,
+    children: kids,
+  }
 }
 
 function lazySharedGroups(ctx: BuildContext, memo: Memo): Lazy[] {

@@ -19,7 +19,7 @@ import type {
   Item,
   SplitRecord,
 } from "../../instructions/model.js"
-import { expandedTree, tree, type TreeNode } from "../../instructions/tree.js"
+import { expandedTree, tree, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
@@ -149,6 +149,17 @@ export function createInstructionsState(context: Plugin.Context) {
     return agentSourcesOf(current)
   })
 
+  const teamsForTree = createMemo<TeamInput[]>(() => {
+    const current = snapshot()
+    if (!current) return []
+    return (current.teams ?? []).map((entry) => ({
+      level: entry.level,
+      team: entry.team,
+      enabled: entry.enabled,
+      agents: [...entry.agents],
+    }))
+  })
+
   const allNodes = createMemo<TreeNode[]>(() => {
     const current = snapshot()
     if (!current) return []
@@ -156,6 +167,7 @@ export function createInstructionsState(context: Plugin.Context) {
       items: itemsForTree(),
       records: recordsForTree(),
       agents: agentsForTree(),
+      teams: teamsForTree(),
       expanded: expanded(),
     })
   })
@@ -163,7 +175,7 @@ export function createInstructionsState(context: Plugin.Context) {
   const fullTree = createMemo<TreeNode[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return expandedTree({ items: itemsForTree(), records: recordsForTree(), agents: agentsForTree() })
+    return expandedTree({ items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() })
   })
 
   function ancestorsOf(
@@ -421,8 +433,11 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   // Space: flip include/exclude state at the node's own address. Whole items
-  // toggle enabled; sections toggle their own exclusion.
+  // toggle enabled; sections toggle their own exclusion. Team rows carry no
+  // address by design (a synthetic address would corrupt chainFor/persist),
+  // so they toggle through team.setEnabled with the inverted snapshot state.
   async function toggle(node: TreeNode): Promise<boolean> {
+    if (node.kind === "team") return toggleTeam(node)
     if (node.address === undefined) {
       setStatus(`"${node.label}" cannot be toggled`)
       return false
@@ -450,6 +465,64 @@ export function createInstructionsState(context: Plugin.Context) {
       resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`,
       `toggled "${node.label}" against a stale revision; retry to apply`,
     )
+  }
+
+  // Team toggle: the tree row id is `team:<level>:<team>` (member rows hang
+  // one level deeper as `team:<level>:<team>:<member>`). The match takes the
+  // first segment after `team:` as the level and everything after as the
+  // team name, so names containing colons still parse. Member rows carry no
+  // toggle action, so only the team row itself reaches here. Enablement reads from the snapshot (same source the badge
+  // renders), inverts, calls team.setEnabled, then refreshes from the host
+  // exactly like agent.delete/mcp.remove do — the fresh snapshot rebuilds
+  // the tree with the new state. Declared errors surface as status text
+  // like every other action path.
+  async function toggleTeam(node: TreeNode): Promise<boolean> {
+    if (node.actions?.toggle !== true) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    const match = node.id.match(/^team:(project|global):(.+)$/)
+    const level = match?.[1]
+    const team = match === null || match === undefined ? undefined : match[2]
+    if (level !== "project" && level !== "global") {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    if (team === undefined) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    const current = snapshot()
+    if (!current) {
+      setStatus("No snapshot loaded")
+      return false
+    }
+    const entry = (current.teams ?? []).find((candidate) => candidate.level === level && candidate.team === team)
+    if (!entry) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    const next = !entry.enabled
+    const requestGen = ++generation
+    setLoading(true)
+    try {
+      const ref = await plus["team.setEnabled"]({ level, team, enabled: next }, { location: context.location })
+      if (disposed || disabled || requestGen !== generation) return false
+      if (ref.enabled !== next) {
+        setStatus(`Team "${team}" reported ${ref.enabled ? "enabled" : "disabled"} instead of the requested state`)
+        return false
+      }
+      await refresh()
+      if (disposed || disabled) return false
+      setStatus(next ? `Enabled team "${team}"` : `Disabled team "${team}"`)
+      return true
+    } catch (error: unknown) {
+      if (disposed || disabled || requestGen !== generation) return false
+      setStatus(errorMessage(error))
+      return false
+    } finally {
+      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+    }
   }
 
   async function setEnabled(node: TreeNode, value: boolean): Promise<boolean> {
