@@ -142,7 +142,11 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
             {
               expectedProjectRevision: loaded.projectRevision,
               expectedGlobalRevision: loaded.globalRevision,
-              records: input.records.map(toRecord),
+              // The RPC surface has no team variant, so the client cannot see
+              // teams; merge stored team records back so a mutate round-trip
+              // cannot delete them. Stored records pass through route/same
+              // unchanged, so this keeps an otherwise unchanged save a no-op.
+              records: [...input.records.map(toRecord), ...loaded.records.filter((record) => record.type === "team")],
             },
           ),
         )
@@ -915,29 +919,35 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores): Plus.Snapshot
       ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
       ...(item.order === undefined ? {} : { order: item.order }),
     })),
-    records: loaded.records.map((record) => {
+    records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
       if (record.type === "split")
-        return {
-          type: "split" as const,
+        return [
+          {
+            type: "split" as const,
+            level: record.level,
+            agent: record.agent,
+            item: record.item,
+            boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+            updated: record.updated,
+          },
+        ]
+      // Teams are not part of the RPC surface yet.
+      if (record.type === "team") return []
+      return [
+        {
+          type: "customization" as const,
           level: record.level,
           agent: record.agent,
           item: record.item,
-          boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+          section: record.section,
+          ...(record.text === undefined ? {} : { text: record.text }),
+          ...(record.state === undefined ? {} : { state: record.state }),
+          basedOn: record.basedOn,
+          ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+          ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
           updated: record.updated,
-        }
-      return {
-        type: "customization" as const,
-        level: record.level,
-        agent: record.agent,
-        item: record.item,
-        section: record.section,
-        ...(record.text === undefined ? {} : { text: record.text }),
-        ...(record.state === undefined ? {} : { state: record.state }),
-        basedOn: record.basedOn,
-        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-        updated: record.updated,
-      }
+        },
+      ]
     }),
     servers: discovered.servers.map((server) => ({ name: server.name, enabled: server.enabled })),
     protectedAgents: [...loaded.protectedAgents],
