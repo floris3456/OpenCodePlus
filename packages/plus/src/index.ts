@@ -13,15 +13,16 @@ import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
-import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir } from "./agents/base.js"
-import { addMcp, removeMcp } from "./agents/mcp.js"
+import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
+import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, type ToolPlan } from "./instructions/apply.js"
 import { dedupeAgents, installTeamAgents, resolveTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
-import { globalConfigDir, resolveInstructionPath } from "./instructions/paths.js"
-import { load, save, type StoredRecord } from "./instructions/store.js"
+import { append, readBoth } from "./instructions/log.js"
+import { globalConfigDir, globalLogPath, projectLogPath, resolveInstructionPath } from "./instructions/paths.js"
+import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
 import { discoverTeams, isTeamEnabled, validateTeamName, type TeamRecord } from "./instructions/teams.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
@@ -144,6 +145,10 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           const staleTeams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
           return { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) }
         }
+        const records: StoredRecord[] = [
+          ...input.records.map(toRecord),
+          ...loaded.records.filter((record) => record.type === "team"),
+        ]
         const saved = yield* Effect.promise(() =>
           save(
             directory,
@@ -154,7 +159,7 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
               // teams; merge stored team records back so a mutate round-trip
               // cannot delete them. Stored records pass through route/same
               // unchanged, so this keeps an otherwise unchanged save a no-op.
-              records: [...input.records.map(toRecord), ...loaded.records.filter((record) => record.type === "team")],
+              records,
             },
           ),
         )
@@ -164,12 +169,40 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           const staleTeams = yield* Effect.promise(() => snapshotTeams(directory, refreshed.records))
           return { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) }
         }
+        yield* Effect.promise(() =>
+          logMutate({
+            directory,
+            actor: normalizeActor(input.actor),
+            before: loaded.records,
+            after: records,
+            projectRevision: saved.projectRevision,
+            globalRevision: saved.globalRevision,
+            projectChanged: saved.changed.project,
+            globalChanged: saved.changed.global,
+          }),
+        )
         const reloaded = yield* Effect.promise(() => load(directory))
         const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
         const discovered = yield* publishFresh(ctx, state, next)
         const teams = yield* Effect.promise(() => snapshotTeams(directory, next.records))
         const snapshot = toSnapshot(discovered, next, teams)
         return { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot }
+      }),
+    "instructions.log": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const merged = yield* Effect.promise(() =>
+          readBoth(directory, { ...(input.where === undefined ? {} : { where: input.where }) }),
+        )
+        const offset = input.offset === undefined || Number.isNaN(input.offset) ? 0 : Math.max(0, Math.floor(input.offset))
+        const limit =
+          input.limit === undefined || Number.isNaN(input.limit) ? undefined : Math.max(0, Math.floor(input.limit))
+        const total = merged.length
+        const entries = limit === undefined ? merged.slice(offset) : merged.slice(offset, offset + limit)
+        return { entries: [...entries], total }
       }),
     "instructions.assembled": (input, context) =>
       Effect.gen(function* () {
@@ -227,6 +260,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
             }),
           )
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: input.scope,
+            op: "agent.create",
+            target: created.path,
+            summary: `agent.create ${validated.id} (${input.scope})`,
+          }),
+        )
         return { id: validated.id, path: created.path }
       }),
     "agent.rename": (input, context) =>
@@ -257,6 +299,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
             }),
           )
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: input.scope,
+            op: "agent.rename",
+            target: renamed.toPath,
+            summary: `agent.rename ${from.id} to ${to.id} (${input.scope})`,
+          }),
+        )
         return { from: from.id, to: to.id, path: renamed.toPath }
       }),
     "agent.delete": (input, context) =>
@@ -278,6 +329,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
             }),
           )
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: input.scope,
+            op: "agent.delete",
+            target: removed.path,
+            summary: `agent.delete ${validated.id} (${input.scope})`,
+          }),
+        )
         return { id: validated.id, path: removed.path }
       }),
     "skill.create": (input, context) =>
@@ -294,6 +354,9 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({ directory, scope: "project", op: "skill.create", target: result.path, summary: `skill.create ${result.id}` }),
+        )
         return { id: result.id, path: result.path }
       }),
     "skill.import": (input, context) =>
@@ -308,6 +371,9 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({ directory, scope: "project", op: "skill.import", target: result.path, summary: `skill.import ${result.id}` }),
+        )
         return { id: result.id, path: result.path }
       }),
     "skill.delete": (input, context) =>
@@ -322,6 +388,9 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({ directory, scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` }),
+        )
         return { id: result.id, path: result.path }
       }),
     "base.create": (input, context) =>
@@ -336,6 +405,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: "global",
+            op: "base.create",
+            target: userBaseFile(result.id),
+            summary: `base.create ${result.id}`,
+          }),
+        )
         return { id: result.id }
       }),
     "base.delete": (input, context) =>
@@ -350,6 +428,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: "global",
+            op: "base.delete",
+            target: userBaseFile(result.id),
+            summary: `base.delete ${result.id}`,
+          }),
+        )
         return { id: result.id }
       }),
     "instruction.create": (input, context) =>
@@ -373,6 +460,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: input.name, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: "project",
+            op: "instruction.create",
+            target: result.path,
+            summary: `instruction.create ${input.name}`,
+          }),
+        )
         return { id: result.id, path: result.path }
       }),
     "instruction.delete": (input, context) =>
@@ -391,6 +487,15 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        yield* Effect.promise(() =>
+          logFileOp({
+            directory,
+            scope: "project",
+            op: "instruction.delete",
+            target: result.path,
+            summary: `instruction.delete ${input.name}`,
+          }),
+        )
         return { id: result.id, path: result.path }
       }),
     "mcp.add": (input, context) =>
@@ -407,6 +512,10 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("mcp.invalid", result.message, { name: result.name, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        const addedConfig = yield* Effect.promise(() => mcpConfigTarget(directory))
+        yield* Effect.promise(() =>
+          logFileOp({ directory, scope: "project", op: "mcp.add", target: addedConfig, summary: `mcp.add ${result.name}` }),
+        )
         return { name: result.name }
       }),
     "mcp.remove": (input, context) =>
@@ -421,6 +530,10 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         if (!result.ok)
           return yield* Effect.fail(context.error("mcp.invalid", result.message, { name: result.name, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
+        const removedConfig = yield* Effect.promise(() => mcpConfigTarget(directory))
+        yield* Effect.promise(() =>
+          logFileOp({ directory, scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` }),
+        )
         return { name: result.name }
       }),
     "team.setEnabled": (input, context) =>
@@ -445,6 +558,17 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
             context.error("team.unknown", `Team ${validated.team} changed concurrently; retry`, {
               level: input.level,
               team: validated.team,
+            }),
+          )
+        if (saved.changed)
+          yield* Effect.promise(() =>
+            append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+              ts: new Date().toISOString(),
+              actor: { type: "tui" },
+              op: "team.setEnabled",
+              target: `team:${input.level}:${validated.team}`,
+              summary: `team.setEnabled ${validated.team} ${input.enabled ? "enabled" : "disabled"} (${input.level})`,
+              revision: saved.revision,
             }),
           )
         yield* refreshAfterFileChange(ctx, state, directory)
@@ -493,7 +617,7 @@ async function saveTeamRecord(
   level: TeamRecord["level"],
   team: string,
   enabled: boolean,
-): Promise<{ ok: true } | { ok: false }> {
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
   const attempt = (records: readonly StoredRecord[]) => {
     const existing = records.find(
       (record): record is TeamRecord => record.type === "team" && record.level === level && record.team === team,
@@ -505,28 +629,200 @@ async function saveTeamRecord(
       next,
     ] as readonly StoredRecord[]
   }
+  const revisionOf = (projectRevision: number, globalRevision: number) =>
+    level === "project" ? projectRevision : globalRevision
+  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
+    level === "project" ? changed.project : changed.global
   const first = attempt(loaded.records)
-  if (first === undefined) return { ok: true }
+  if (first === undefined) return { ok: true, changed: false, revision: revisionOf(loaded.projectRevision, loaded.globalRevision) }
   const saved = await save(directory, {
     expectedProjectRevision: loaded.projectRevision,
     expectedGlobalRevision: loaded.globalRevision,
     records: first,
   })
-  if (saved.ok) return { ok: true }
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision) }
   const fresh = await load(directory)
   const second = attempt(fresh.records)
-  if (second === undefined) return { ok: true }
+  if (second === undefined) return { ok: true, changed: false, revision: revisionOf(fresh.projectRevision, fresh.globalRevision) }
   const retried = await save(directory, {
     expectedProjectRevision: fresh.projectRevision,
     expectedGlobalRevision: fresh.globalRevision,
     records: second,
   })
-  if (retried.ok) return { ok: true }
+  if (retried.ok)
+    return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
   return { ok: false }
 }
 
 function isTeamRecord(record: StoredRecord): record is TeamRecord {
   return record.type === "team"
+}
+
+// A missing actor means the TUI; strip explicit undefined keys so the stored
+// line (and any RPC envelope) never carries a present-but-undefined value.
+function normalizeActor(actor: Plus.Actor | undefined): Plus.Actor {
+  if (actor === undefined) return { type: "tui" }
+  return {
+    type: actor.type,
+    ...(actor.agent === undefined ? {} : { agent: actor.agent }),
+    ...(actor.sessionID === undefined ? {} : { sessionID: actor.sessionID }),
+    ...(actor.messageID === undefined ? {} : { messageID: actor.messageID }),
+  }
+}
+
+// Tree row id for a stored record: customizations and splits address
+// item:<level>:<agent|''>:<itemId> (sectioned rows add their section),
+// teams address team:<level>:<name>.
+function recordTarget(record: StoredRecord): string {
+  if (record.type === "team") return `team:${record.level}:${record.team}`
+  const agent = record.agent ?? ""
+  if (record.type === "split") return `item:${record.level}:${agent}:${record.item}`
+  if (record.section !== null) return `section:${record.level}:${agent}:${record.item}:${record.section}`
+  return `item:${record.level}:${agent}:${record.item}`
+}
+
+function mutateTarget(rows: readonly StoredRecord[]): string {
+  const first = rows[0]
+  if (first === undefined) return "records"
+  return recordTarget(first)
+}
+
+// Multiset difference keyed by row identity (type plus level/agent/item/
+// section, or level/team): a row counts as changed when it was added,
+// removed, or its stored content differs, and a modified row is named once
+// (the after version). Content compares on the store's canonical serialized
+// form. Team rows merged back verbatim cancel out, so a pure mutate never
+// names them.
+function deltaRows(before: readonly StoredRecord[], after: readonly StoredRecord[]): StoredRecord[] {
+  const beforeGroups = groupByIdentity(before)
+  const afterGroups = groupByIdentity(after)
+  const changed: StoredRecord[] = []
+  for (const key of new Set([...beforeGroups.keys(), ...afterGroups.keys()])) {
+    const olds = sortByContent(beforeGroups.get(key) ?? [])
+    const news = sortByContent(afterGroups.get(key) ?? [])
+    const paired = Math.min(olds.length, news.length)
+    for (let index = 0; index < paired; index++) {
+      const oldRow = olds[index]
+      const newRow = news[index]
+      if (oldRow === undefined || newRow === undefined) continue
+      if (contentOf(oldRow) !== contentOf(newRow)) changed.push(newRow)
+    }
+    for (let index = paired; index < olds.length; index++) {
+      const removed = olds[index]
+      if (removed !== undefined) changed.push(removed)
+    }
+    for (let index = paired; index < news.length; index++) {
+      const added = news[index]
+      if (added !== undefined) changed.push(added)
+    }
+  }
+  return changed
+}
+
+function groupByIdentity(records: readonly StoredRecord[]): Map<string, StoredRecord[]> {
+  const groups = new Map<string, StoredRecord[]>()
+  for (const record of records) {
+    const key = `${record.type} ${recordTarget(record)}`
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [record])
+    else group.push(record)
+  }
+  return groups
+}
+
+function contentOf(record: StoredRecord): string {
+  return JSON.stringify(stable(record))
+}
+
+function sortByContent(records: readonly StoredRecord[]): StoredRecord[] {
+  return [...records].sort((left, right) => {
+    const leftKey = contentOf(left)
+    const rightKey = contentOf(right)
+    if (leftKey === rightKey) return 0
+    return leftKey < rightKey ? -1 : 1
+  })
+}
+
+function mutateSummary(changed: readonly StoredRecord[], level: string): string {
+  const first = changed[0]
+  // A reported-changed store with an empty delta is the v1→v2 migration
+  // rewrite: same logical rows, new serialization, both files rewritten.
+  if (first === undefined) return `mutate (${level}, migrated records)`
+  if (changed.length === 1) return `mutate ${recordTarget(first)}`
+  return `mutate ${changed.length} rows (${level}): ${changed.map(recordTarget).join(", ")}`
+}
+
+// One log line per store actually changed, naming only the rows that changed
+// in that store; a no-op or stale save logs nothing. The revision is the
+// store's revision after the write — logging never bumps a revision, never
+// enters the records file, and never feeds the publish fingerprint.
+async function logMutate(input: {
+  directory: string
+  actor: Plus.Actor
+  before: readonly StoredRecord[]
+  after: readonly StoredRecord[]
+  projectRevision: number
+  globalRevision: number
+  projectChanged: boolean
+  globalChanged: boolean
+}): Promise<void> {
+  const ts = new Date().toISOString()
+  const delta = deltaRows(input.before, input.after)
+  if (input.projectChanged) {
+    const rows = canonical(delta.filter((record) => record.level === "project"))
+    await append(projectLogPath(input.directory), {
+      ts,
+      actor: { ...input.actor },
+      op: "mutate",
+      target: mutateTarget(rows),
+      summary: mutateSummary(rows, "project"),
+      revision: input.projectRevision,
+    })
+  }
+  if (input.globalChanged) {
+    const rows = canonical(delta.filter((record) => record.level !== "project"))
+    await append(globalLogPath(), {
+      ts,
+      actor: { ...input.actor },
+      op: "mutate",
+      target: mutateTarget(rows),
+      summary: mutateSummary(rows, "global"),
+      revision: input.globalRevision,
+    })
+  }
+}
+
+// File operations and team toggles log to the store that owns the file:
+// agent.* follows the caller's scope; skills and instructions are
+// project-rooted by their directory helpers; base templates live under the
+// global config dir (userBaseDir); MCP servers live in the project's own
+// .opencode config. Only successful operations log; the revision is the
+// owning store's current revision, which the file write never moves.
+async function logFileOp(input: {
+  directory: string
+  scope: "project" | "global"
+  op: string
+  target: string
+  summary: string
+}): Promise<void> {
+  const stored = await load(input.directory)
+  await append(input.scope === "project" ? projectLogPath(input.directory) : globalLogPath(), {
+    ts: new Date().toISOString(),
+    actor: { type: "tui" },
+    op: input.op,
+    target: input.target,
+    summary: input.summary,
+    revision: input.scope === "project" ? stored.projectRevision : stored.globalRevision,
+  })
+}
+
+// The config file addMcp/removeMcp actually edited: the first existing
+// project candidate (opencode.json preferred), else a new opencode.json.
+async function mcpConfigTarget(projectDirectory: string): Promise<string> {
+  const candidates = await projectConfigCandidates(projectDirectory)
+  const first = candidates[0]
+  if (first !== undefined) return first
+  return path.join(projectDirectory, ".opencode", "opencode.json")
 }
 
 function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
