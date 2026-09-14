@@ -58,7 +58,7 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // the registry, it only denies it for that agent and allows the
       // plus/<agent>/<skill> copy, so reading the original first would always
       // win and the copy would never be consulted.
-      const current = skillContent(skills, state, input.agent, id)
+      const current = skillContent(skills, input.agent, id)
       if (current === undefined) return []
       return [{ id, content: current }]
     })
@@ -88,21 +88,18 @@ async function listSkills(ctx: Context): Promise<Map<string, string>> {
 // Prefer the agent's private copy: Plus never removes the original from the
 // registry, it only denies it for that agent and allows the
 // plus/<agent>/<skill> copy, so reading the original first would always win
-// and the copy would never be consulted. When no copy exists for the agent,
-// report the agent's resolved content: the assembled text when this agent
-// carries a customization, else the registry original. The resolved view is
-// what the copy would hold once installed, so assembled stays honest even
-// when the readback cannot observe the copy (for example a harness registry
-// whose discovery view excludes it).
-function skillContent(
-  skills: ReadonlyMap<string, string>,
-  state: { readonly assembled: string; readonly text: string } | undefined,
-  agent: string,
-  id: string,
-): string | undefined {
+// and the copy would never be consulted. When no copy exists, report the
+// registry original: that is what the host holds. A missing copy alongside a
+// customization means the customization is not live (apply never ran, failed,
+// or skipped it); returning the local projection here would conflate saved
+// with loaded. Discovery excludes copies from inventory
+// (packages/plus/src/instructions/discover.ts:285 backed by isSkillCopyId at
+// :380-382), but that filter never touches this readback: ctx.skill.list()
+// returns the full registry including installed copies (core/src/skill.ts
+// :123-125), so a missing copy is genuinely absent, not a view limitation.
+function skillContent(skills: ReadonlyMap<string, string>, agent: string, id: string): string | undefined {
   const copy = skills.get(copyName(agent, id))
   if (copy !== undefined) return copy
-  if (state !== undefined && state.assembled !== state.text) return state.assembled
   return skills.get(id)
 }
 
