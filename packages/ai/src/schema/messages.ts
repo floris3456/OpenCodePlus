@@ -28,7 +28,8 @@ const systemPartSchema = Schema.Struct({
 }).annotate({ identifier: "LLM.SystemPart" })
 export type SystemPart = Schema.Schema.Type<typeof systemPartSchema>
 
-const makeSystemPart = (text: string): SystemPart => ({ type: "text", text })
+const makeSystemPart = (text: string, metadata?: SystemPart["metadata"]): SystemPart =>
+  metadata === undefined ? { type: "text", text } : { type: "text", text, metadata }
 
 export const SystemPart = Object.assign(systemPartSchema, {
   make: makeSystemPart,
