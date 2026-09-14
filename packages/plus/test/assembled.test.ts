@@ -69,7 +69,7 @@ async function setup() {
   })
   const state = createState()
   const handlers = createHandlers(ctx, state)
-  return { handlers, skillState }
+  return { handlers, skillState, agents }
 }
 
 function customization(item: Plus.SnapshotItem, text: string): Plus.SnapshotCustomizationRecord {
@@ -154,4 +154,153 @@ test("discovery excludes installed copies while the readback still observes them
   expect(fresh.items.some((entry) => entry.id.includes("plus/"))).toBe(false)
   const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
   expect(forAlpha.skills.find((entry) => entry.id === "notes")?.content).toBe("custom body")
+})
+
+function offRecord(item: Plus.SnapshotItem): Plus.SnapshotCustomizationRecord {
+  return {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: item.id,
+    section: null,
+    state: "off",
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+  }
+}
+
+test("reports a code mode tool as present when a stored off was never applied", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+  const agents = agentHarness([agentInfo("alpha", "upstream role")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  // No options means Code Mode by default (codemode defaults true).
+  const tools = toolHarness([{ id: "coder", description: "code mode tool" }])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  expect(item.codemode).toBe(true)
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [offRecord(item)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // Apply filters Code Mode tool plans out entirely, so the host still holds
+  // the tool. Assembled must report host-effective membership (present), not
+  // the stored off.
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).toContain("coder")
+})
+
+test("reports a natively denied tool as absent once the denial is installed", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+  const agents = agentHarness([agentInfo("alpha", "upstream role")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  const tools = toolHarness([{ id: "reader", description: "native tool", options: { codemode: false } }])
+  const hooks = { current: 0 }
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    session: {
+      hook: () =>
+        Effect.sync(() => {
+          hooks.current++
+          return { dispose: Effect.sync(() => { hooks.current-- }) }
+        }),
+    },
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:reader")
+  if (!item) throw new Error("expected tool:reader")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [offRecord(item)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // The native denial installs through the session context hook, which the
+  // registry seam cannot observe per agent: assembled reports the stored
+  // desire (absent). That seam is a known blind spot — a stored off that was
+  // never published (hook never installed it) reads absent too, unlike
+  // skills where the installed deny rule is host-observable. Exposing the
+  // hook's installed plans would require a signal only apply/index.ts can
+  // provide; see the report.
+  expect(hooks.current).toBe(1)
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("reader")
+})
+
+test("reports a stored-but-unpublished skill off as present", async () => {
+  const { handlers, agents } = await setup()
+  const { snapshot, item } = await snapshotSkill(handlers)
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [offRecord(item)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // The record persists but no denial was ever installed: unwind apply's
+  // agent transform so the host holds the original with no deny rule.
+  agents.state.get("alpha")?.permissions.splice(0)
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.skills.map((entry) => entry.id)).toContain("notes")
+  expect(forAlpha.skills.find((entry) => entry.id === "notes")?.content).toBe("upstream body")
+})
+
+test("reports a stored skill off with an installed denial as absent", async () => {
+  const { handlers, agents } = await setup()
+  const { snapshot, item } = await snapshotSkill(handlers)
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [offRecord(item)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // Apply installed the deny rule and no copy (a whole-item off installs no
+  // copy): the host denies the original with no replacement, so absent.
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([
+    { action: "skill", resource: "notes", effect: "deny" },
+  ])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.skills.map((entry) => entry.id)).not.toContain("notes")
 })
