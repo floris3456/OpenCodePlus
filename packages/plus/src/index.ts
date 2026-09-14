@@ -922,9 +922,11 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
 // retain (applied, upstream) pairs wherever the host now shows Plus output.
 // The next discovery unmasks those keys back to upstream via unmaskText, so
 // the publish fingerprint stays stable instead of storming. Agent roles key
-// by agent id (file-backed agents additionally reread their markdown body);
+// by agent id (file-backed agents additionally reread their markdown body:
+// `file` records that body as observed at baseline time via discovered.bodies,
+// so a later file edit is trusted only while the file still owned the prompt);
 // tools and skills key by item id.
-function captureBaselines(
+export function captureBaselines(
   ctx: Context,
   state: PlusState,
   discovered: Discovered,
@@ -944,7 +946,14 @@ function captureBaselines(
       const resolved = resolve({ upstream: item, records, splits, scopes, address: { level, agent: owner, item: item.id, section: null } })
       if (resolved.assembled === item.text) continue
       const source = discovered.agents.find((agent) => agent.id === owner)
-      next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: source?.path !== undefined })
+      const fileBacked = source?.path !== undefined
+      const file = fileBacked ? discovered.bodies.get(owner) : undefined
+      next.set(key, {
+        applied: resolved.assembled,
+        upstream: item.text,
+        fileBacked,
+        ...(file === undefined ? {} : { file }),
+      })
       continue
     }
     if (item.kind !== "tool" && item.kind !== "skill") continue

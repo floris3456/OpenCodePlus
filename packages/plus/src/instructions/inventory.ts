@@ -1,8 +1,11 @@
 // What Plus last wrote for an item plus the upstream text it replaced, so
 // discovery can report upstream while the host still shows Plus's output.
-// Prompts are keyed by agent id (file-backed agents additionally reread
-// their markdown body); tools and skills are keyed by item id
-// (`tool:<id>`, `skill:<id>`).
+// Prompts are keyed by agent id. File-backed agents additionally record the
+// markdown body observed at baseline time (`file`): a later reread of that
+// body is trusted as upstream only when `file` matched the host upstream at
+// baseline time, proving the file owned the prompt; otherwise another config
+// source owns it and the file is ignored. Tools and skills are keyed by item
+// id (`tool:<id>`, `skill:<id>`) and never set `file`.
 export interface PromptBaseline {
   readonly applied: string
   readonly upstream: string

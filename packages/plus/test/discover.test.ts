@@ -17,6 +17,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agentBody, discover, type BaseTemplate } from "../src/instructions/discover.js"
+import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
@@ -471,7 +472,89 @@ test("mcp server items serialize config without disabled and reconstruct upstrea
   expect(withDisable.servers).toEqual([{ name: "search", enabled: true }])
 })
 
-test("prompt discovery rereads file-backed upstream while the host shows Plus output", async () => {
+test("production baselines reread a directly edited file-backed body (fails while file is unset)", async () => {
+  // End-to-end through the real baseline constructor: Plus applies "custom"
+  // over the "alpha upstream" file body, then the markdown is edited directly
+  // to "alpha upstream revised" while the host still shows Plus's output.
+  // With file populated at baseline time, discovery must trust the reread.
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "alpha upstream\n")
+  const state = createState()
+  const applyCtx = fullContext({ directory, agents: [agent("alpha", "alpha upstream")] })
+  const pre = await discover({ ctx: applyCtx, records: [], baselines: state.baselines, baseTemplates: noTemplates, activeBase: noBase })
+  const custom: CustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "custom",
+    basedOn: fingerprint("alpha upstream"),
+    updated: UPDATED,
+  }
+  captureBaselines(applyCtx, state, pre, [custom], [])
+  await Bun.write(alphaPath, "alpha upstream revised\n")
+  const maskedCtx = fullContext({ directory, agents: [agent("alpha", "custom")] })
+  const discovered = await discover({
+    ctx: maskedCtx,
+    records: [],
+    baselines: state.baselines,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const role = discovered.items.find((item) => item.id === "system:role")
+  expect(role?.text).toBe("alpha upstream revised")
+})
+
+test("production baselines ignore the backing file when another config source owns the prompt", async () => {
+  // Same production path with the guard's negative case: the host prompt was
+  // replaced by another config source ("config upstream" while the markdown
+  // held "file body"), so at baseline time file !== upstream and the owner is
+  // the config source. A later edit to the markdown must still be ignored,
+  // otherwise the publish fingerprint flips on every pass.
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "file body\n")
+  const state = createState()
+  const applyCtx = fullContext({ directory, agents: [agent("alpha", "config upstream")] })
+  const pre = await discover({ ctx: applyCtx, records: [], baselines: state.baselines, baseTemplates: noTemplates, activeBase: noBase })
+  const custom: CustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "custom",
+    basedOn: fingerprint("config upstream"),
+    updated: UPDATED,
+  }
+  captureBaselines(applyCtx, state, pre, [custom], [])
+  await Bun.write(alphaPath, "file body edited\n")
+  const maskedCtx = fullContext({ directory, agents: [agent("alpha", "custom")] })
+  const discovered = await discover({
+    ctx: maskedCtx,
+    records: [],
+    baselines: state.baselines,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const role = discovered.items.find((item) => item.id === "system:role")
+  expect(role?.text).toBe("config upstream")
+})
+
+test("prompt discovery rereads a trusted file body while the host shows Plus output", async () => {
+  // Unit coverage for upstreamPrompt's trusted branch with a hand-built
+  // baseline (production construction is covered by the production tests
+  // above): file matched upstream at baseline time, so the reread wins.
+  // The beta entry documents the unmasked-host early return, not baselines:
+  // "beta upstream" differs from applied, so it flows through untouched.
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
@@ -489,7 +572,11 @@ test("prompt discovery rereads file-backed upstream while the host shows Plus ou
   expect(texts.get(JSON.stringify(["system:role", ["beta"]]))).toBe("beta upstream")
 })
 
-test("prompt discovery ignores the backing file when another config source owns the prompt", async () => {
+test("prompt discovery ignores the backing file when baseline file differs from upstream", async () => {
+  // Unit coverage for upstreamPrompt's ownership guard with a hand-built
+  // baseline (production construction is covered above): file !== upstream at
+  // baseline time means another config source owns the prompt, so the reread
+  // is rejected against the retained upstream.
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
