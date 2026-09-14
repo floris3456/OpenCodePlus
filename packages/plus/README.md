@@ -59,6 +59,36 @@ Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl
 
 RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `team.setEnabled`; events `project.changed`, `instructions.changed`. The binding contract is `SPEC.md`.
 
+## Tools
+
+Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` pins the contract, `instructions-tools` skill carries the details). Agents call `tools.instructions.list({...})` inside `execute`, never as native tools. The tools exist only while project mode is enabled (`project.disabled` otherwise), and no tool enables or disables project mode.
+
+| tool | input |
+| --- | --- |
+| `list` | `{ where?, fields?, sort?, limit?, offset? }` (`limit` defaults to 40) |
+| `show` | `{ id, view? }` (`view` defaults to `resolved`) |
+| `set` | `{ id, text?, state?, resolve? }` (`state` is `on`\|`off`; `resolve` is `keep`\|`take`\|`edit`) |
+| `reset` | `{ id }` (deletes the override at that row) |
+| `split` | `{ id, boundaries?, add? }` (`boundaries` is `[{ id, name, start }]` with character offsets; `add: { name, text }` appends a trailing section) |
+| `create` | `{ kind, ...fields }`, one row per call: agent needs `id` + `prompt`; skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction needs `name` + `text`; mcp needs `name` + `config`; team needs `team` + `level` |
+| `delete` | `{ id, confirm: true }` (refused without `confirm: true`) |
+| `log` | `{ where?, limit?, offset? }` → `{ entries, total }`, both log files merged newest-first |
+
+`show` views: `resolved` (default), `upstream` (text above the override), `mine` (stored text), `record` (raw override), `sections` (section ids), `diff` (original→mine and original→upstream unified diffs plus a one-line summary), `assembled` (full effective prompt, agent row ids only). `set` with `resolve: "keep"` acks upstream keeping text, `"take"` drops stored text and follows upstream, `"edit"` stores `text` against current upstream.
+
+Row ids name one row everywhere: the TUI filter, tool calls, log targets, and error messages all use the same string:
+
+- `item:<level>:<agent|''>:<itemId>` — a whole row (empty agent segment is the shared Defaults row)
+- `section:<level>:<agent|''>:<itemId>:<sectionId>` — one section inside a row
+- `agent:<level>:<id>` — one agent's subtree (only these accept `view: "assembled"`)
+- `team:<level>:<name>` — one team
+
+`<level>` is `project`, `global`, or `defaults`.
+
+Guards: writes for agents listed in `.opencodeplus/project.json` `protectedAgents` are refused; `delete` needs `confirm: true`; no tool enables or disables project mode; every successful write is logged with actor `tool`.
+
+Log format is `Plus.LogEntry` (`src/rpc.ts`): `{ ts, actor: { type: tui|tool, agent?, sessionID?, messageID? }, op, target, summary, revision }`. Project writes append to `<project>/.opencodeplus/instructions/log.jsonl`, global/defaults writes to `<configDir>/opencodeplus/instructions/log.jsonl`. The log's own `where` grammar is small: a bare word matches over op, target, summary, and actor agent; keyed tokens are `actor:tui|tool`, `agent:<text>`, `op:<text>`, `target:<prefix>`, `session:<text>`, `since:<instant>` / `before:<instant>` (ISO date or `<n><s|m|h|d|w>` age).
+
 ## Fork touch surface
 
 Every place core changed for this feature, and why the plugin API could not do it:

@@ -228,6 +228,13 @@ test("help overlay lists keys and closes", async () => {
     dispatch(fixture, "?")
     await fixture.waitForFrame((frame) => frame.includes("space toggle include/exclude"))
     expect(fixture.captureCharFrame()).toContain("space toggle include/exclude")
+    // The overlay lists the filter keys so the grammar is discoverable
+    // without leaving the TUI: structural keys grouped, then the slower
+    // text-dependent ones.
+    expect(fixture.captureCharFrame()).toContain("keys: kind item group")
+    expect(fixture.captureCharFrame()).toContain("has id label updated team acked excluded")
+    expect(fixture.captureCharFrame()).toContain("slow text:")
+    expect(fixture.captureCharFrame()).toContain("shadowed orphan")
     dispatch(fixture, "escape")
     await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("space toggle include/exclude"))
     expect(fixture.captureCharFrame()).not.toContain("space toggle include/exclude")
