@@ -238,8 +238,15 @@ and `globalRecordsPath`.
 
 Format: first line `{"version":2,"revision":<n>}`, then one JSON record per
 line, canonically ordered and stably keyed so an unchanged save is a no-op.
-Per-directory async write gate plus optimistic `expectedRevision` stale
-results are preserved from the previous store.
+Each store carries its own revision read from its own file header; a save
+supplies `expectedProjectRevision` and `expectedGlobalRevision`. Writes serialize
+under a process-wide async gate keyed on the resolved global records path AND
+the per-project gate, acquired in a fixed order (global then project) across
+read+write, so two different projects can no longer clobber the shared global
+file. A stale result names the losing store as `store: "project" | "global"`.
+A save only writes and bumps the store whose routed records actually changed (a
+project-only save leaves the global revision untouched and vice versa; an
+unchanged save leaves both files and revisions untouched).
 
 Migration: a store file whose header lacks `"version"` is v1
 (`{"revision":n}` header; records
