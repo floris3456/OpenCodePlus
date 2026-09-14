@@ -6,20 +6,20 @@ import type { CustomizationRecord, Level, SplitRecord } from "./model.js"
 import { globalRecordsPath, projectRecordsPath } from "./paths.js"
 
 export type { CustomizationRecord, SplitRecord }
-export type Record = CustomizationRecord | SplitRecord
+export type StoredRecord = CustomizationRecord | SplitRecord
 export type RecordState = "on" | "off"
 
 export type { Level }
 
 export interface Loaded {
   readonly revision: number
-  readonly records: readonly Record[]
+  readonly records: readonly StoredRecord[]
   readonly migrated: boolean
 }
 
 export interface SaveInput {
   readonly expectedRevision: number
-  readonly records: readonly Record[]
+  readonly records: readonly StoredRecord[]
 }
 
 export interface SaveSuccess {
@@ -131,7 +131,7 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
   return { ok: true, revision: next }
 }
 
-async function writeStore(target: string, revision: number, records: readonly Record[]): Promise<void> {
+async function writeStore(target: string, revision: number, records: readonly StoredRecord[]): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, serialize(revision, records))
 }
@@ -162,7 +162,7 @@ function combine(project: Loaded, global: Loaded): Loaded {
   }
 }
 
-function route(records: readonly Record[]): { project: Record[]; global: Record[] } {
+function route(records: readonly StoredRecord[]): { project: StoredRecord[]; global: StoredRecord[] } {
   const project = records.filter((record) => record.level === "project")
   const global = records.filter((record) => record.level !== "project")
   return { project: canonical(project), global: canonical(global) }
@@ -179,8 +179,8 @@ function parseFile(text: string | undefined): Loaded {
   return { revision: v1?.revision ?? 0, records: lines.slice(1).flatMap(migrateLine), migrated: true }
 }
 
-function parseV2(lines: string[]): Record[] {
-  return lines.flatMap((line): Record[] => {
+function parseV2(lines: string[]): StoredRecord[] {
+  return lines.flatMap((line): StoredRecord[] => {
     const record = Option.getOrUndefined(decodeV2Record(line))
     if (record === undefined) return []
     if (record.type === "split")
@@ -212,7 +212,7 @@ function parseV2(lines: string[]): Record[] {
   })
 }
 
-function migrateLine(line: string): Record[] {
+function migrateLine(line: string): StoredRecord[] {
   const record = Option.getOrUndefined(decodeV1Record(line))
   if (record === undefined) return []
   const item = migrateItem(record.item)
@@ -259,21 +259,21 @@ function migrateState(state: "inherit" | "enabled" | "disabled"): "on" | "off" |
   return undefined
 }
 
-function serialize(revision: number, records: readonly Record[]): string {
+function serialize(revision: number, records: readonly StoredRecord[]): string {
   const lines = canonical(records).map((record) => JSON.stringify(stable(record)))
   return [JSON.stringify({ version: VERSION, revision }), ...lines].join("\n") + "\n"
 }
 
 // Canonically ordered and stably keyed so an unchanged save is a no-op.
-function same(left: readonly Record[], right: readonly Record[]): boolean {
+function same(left: readonly StoredRecord[], right: readonly StoredRecord[]): boolean {
   return JSON.stringify(canonical(left).map(stable)) === JSON.stringify(canonical(right).map(stable))
 }
 
-function canonical(records: readonly Record[]): Record[] {
+function canonical(records: readonly StoredRecord[]): StoredRecord[] {
   return [...records].sort(compareRecords)
 }
 
-function compareRecords(left: Record, right: Record): number {
+function compareRecords(left: StoredRecord, right: StoredRecord): number {
   const order = [left.type, right.type]
   if (order[0] !== order[1]) return order[0] < order[1] ? -1 : 1
   if (left.item !== right.item) return left.item < right.item ? -1 : 1
@@ -285,7 +285,7 @@ function compareRecords(left: Record, right: Record): number {
   return 0
 }
 
-function stable(record: Record): Record {
+function stable(record: StoredRecord): StoredRecord {
   if (record.type === "split")
     return {
       type: "split",

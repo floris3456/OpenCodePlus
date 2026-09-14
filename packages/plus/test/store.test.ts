@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
-import { load, save, type Record } from "../src/instructions/store.js"
+import { load, save, type StoredRecord } from "../src/instructions/store.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const roots: string[] = []
@@ -27,7 +27,7 @@ async function isolated(): Promise<{ project: string }> {
   return { project: path.join(root, "project") }
 }
 
-function customization(overrides?: Partial<Extract<Record, { type: "customization" }>>): Record {
+function customization(overrides?: Partial<Extract<StoredRecord, { type: "customization" }>>): StoredRecord {
   return {
     type: "customization",
     level: "project",
@@ -47,7 +47,7 @@ test("load returns empty when both stores are absent", async () => {
 
 test("save then load round-trips project and global records", async () => {
   const { project } = await isolated()
-  const records: Record[] = [
+  const records: StoredRecord[] = [
     customization({ agent: "alpha", text: "custom" }),
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
@@ -61,7 +61,7 @@ test("save then load round-trips project and global records", async () => {
 
 test("records route into project vs global files", async () => {
   const { project } = await isolated()
-  const records: Record[] = [
+  const records: StoredRecord[] = [
     customization({ agent: "alpha", text: "p" }),
     customization({ level: "global", agent: "beta", item: "tool:other", text: "g" }),
     customization({ level: "defaults", agent: null, item: "system:role", text: "d" }),
@@ -79,7 +79,7 @@ test("records route into project vs global files", async () => {
 
 test("no-op save keeps the revision and leaves files untouched", async () => {
   const { project } = await isolated()
-  const records: Record[] = [customization({ text: "custom" })]
+  const records: StoredRecord[] = [customization({ text: "custom" })]
   await save(project, { expectedRevision: 0, records })
   const beforeProject = await Bun.file(projectRecordsPath(project)).text()
   const beforeGlobal = await Bun.file(globalRecordsPath()).text()
@@ -93,7 +93,7 @@ test("no-op save keeps the revision and leaves files untouched", async () => {
 
 test("stale save is rejected without changing stored content", async () => {
   const { project } = await isolated()
-  const first: Record[] = [customization({ text: "first" })]
+  const first: StoredRecord[] = [customization({ text: "first" })]
   await save(project, { expectedRevision: 0, records: first })
   const before = await Bun.file(projectRecordsPath(project)).text()
   const rejected = await save(project, { expectedRevision: 0, records: [customization({ text: "second" })] })
@@ -104,7 +104,7 @@ test("stale save is rejected without changing stored content", async () => {
 
 test("split records round-trip", async () => {
   const { project } = await isolated()
-  const records: Record[] = [
+  const records: StoredRecord[] = [
     {
       type: "split",
       level: "defaults",
@@ -200,6 +200,6 @@ test("load skips malformed v2 lines", async () => {
   expect((await load(project)).records).toHaveLength(1)
 })
 
-function compareForTest(left: Record, right: Record): number {
+function compareForTest(left: StoredRecord, right: StoredRecord): number {
   return JSON.stringify(left) < JSON.stringify(right) ? -1 : 1
 }

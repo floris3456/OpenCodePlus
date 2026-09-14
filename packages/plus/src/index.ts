@@ -18,7 +18,7 @@ import { apply } from "./instructions/apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { globalConfigDir } from "./instructions/paths.js"
-import { load, save, type Record } from "./instructions/store.js"
+import { load, save, type StoredRecord } from "./instructions/store.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
@@ -350,7 +350,7 @@ interface LoadedStores {
   readonly revision: number
   readonly projectRevision: number
   readonly globalRevision: number
-  readonly records: readonly Record[]
+  readonly records: readonly StoredRecord[]
   readonly protectedAgents: readonly string[]
 }
 
@@ -382,15 +382,15 @@ function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<Load
   })
 }
 
-function customizationsOf(records: readonly Record[]): CustomizationRecord[] {
+function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
   return records.filter((record): record is CustomizationRecord => record.type === "customization")
 }
 
-function splitsOf(records: readonly Record[]): SplitRecord[] {
+function splitsOf(records: readonly StoredRecord[]): SplitRecord[] {
   return records.filter((record): record is SplitRecord => record.type === "split")
 }
 
-function toRecord(record: Plus.SnapshotRecord): Record {
+function toRecord(record: Plus.SnapshotRecord): StoredRecord {
   if (record.type === "split")
     return {
       type: "split",

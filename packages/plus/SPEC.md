@@ -213,7 +213,7 @@ export interface SplitRecord {
   readonly boundaries: readonly Boundary[]
   readonly updated: string
 }
-export type Record = Customization | SplitRecord
+export type StoredRecord = Customization | SplitRecord
 ```
 
 Splits belong to the **item**, not the agent, and are stored at the level they
