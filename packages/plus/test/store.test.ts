@@ -272,3 +272,118 @@ test("two projects saving global records concurrently keep both records", async 
 function compareForTest(left: StoredRecord, right: StoredRecord): number {
   return JSON.stringify(left) < JSON.stringify(right) ? -1 : 1
 }
+
+function team(overrides?: Partial<Extract<StoredRecord, { type: "team" }>>): StoredRecord {
+  return {
+    type: "team",
+    level: "project",
+    team: "crew",
+    enabled: true,
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+test("team records round-trip through save then load", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    team({ level: "project", team: "crew", enabled: true }),
+    team({ level: "global", team: "ops", enabled: false }),
+  ]
+  const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1 })
+  const loaded = await load(project)
+  expect(loaded.migrated).toBe(false)
+  expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
+})
+
+test("team records land in the project vs global files", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    team({ level: "project", team: "crew", enabled: true }),
+    team({ level: "global", team: "ops", enabled: false }),
+  ]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const projectText = await Bun.file(projectRecordsPath(project)).text()
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  expect(projectText).toContain(`"type":"team"`)
+  expect(projectText).toContain(`"team":"crew"`)
+  expect(projectText).not.toContain(`"team":"ops"`)
+  expect(globalText).toContain(`"type":"team"`)
+  expect(globalText).toContain(`"team":"ops"`)
+  expect(globalText).not.toContain(`"team":"crew"`)
+})
+
+test("team-only save bumps only the store it wrote", async () => {
+  const { project } = await isolated()
+  const projectOnly: StoredRecord[] = [team({ level: "project", team: "crew" })]
+  const first = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: projectOnly })
+  expect(first).toEqual({ ok: true, projectRevision: 1, globalRevision: 0 })
+  expect(await Bun.file(globalRecordsPath()).exists()).toBe(false)
+  const both: StoredRecord[] = [...projectOnly, team({ level: "global", team: "ops" })]
+  const second = await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: both })
+  expect(second).toEqual({ ok: true, projectRevision: 1, globalRevision: 1 })
+})
+
+test("unchanged save containing teams is a no-op", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    team({ level: "project", team: "crew" }),
+    team({ level: "global", team: "ops", enabled: false }),
+  ]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const beforeProject = await Bun.file(projectRecordsPath(project)).text()
+  const beforeGlobal = await Bun.file(globalRecordsPath()).text()
+  expect(await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 1, records: [...records].reverse() })).toEqual({
+    ok: true,
+    projectRevision: 1,
+    globalRevision: 1,
+  })
+  expect(await Bun.file(projectRecordsPath(project)).text()).toBe(beforeProject)
+  expect(await Bun.file(globalRecordsPath()).text()).toBe(beforeGlobal)
+})
+
+test("load skips malformed or ineligible team lines", async () => {
+  const { project } = await isolated()
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [team({ team: "kept" })] })
+  const target = projectRecordsPath(project)
+  const malformed = JSON.stringify({ type: "team", level: "project", enabled: true, updated: UPDATED })
+  const ineligible = JSON.stringify({ type: "team", level: "defaults", team: "nope", enabled: true, updated: UPDATED })
+  await Bun.write(target, `${await Bun.file(target).text()}${malformed}\n${ineligible}\n`)
+  const loaded = await load(project)
+  expect(loaded.records).toHaveLength(1)
+  expect(loaded.records[0]).toEqual(team({ team: "kept" }))
+})
+
+test("canonical order sorts mixed customization, split, and team records through save and load", async () => {
+  const { project } = await isolated()
+  const customRec: StoredRecord = customization({ level: "project", agent: "alpha", item: "tool:bash" })
+  const splitRec: StoredRecord = {
+    type: "split",
+    level: "project",
+    agent: "alpha",
+    item: "tool:bash",
+    boundaries: [{ id: "flags", name: "Flags", start: 0 }],
+    updated: UPDATED,
+  }
+  const teamRec: StoredRecord = team({ level: "project", team: "crew", enabled: true })
+
+  // Save in arbitrary non-canonical order: team, split, customization
+  await save(project, {
+    expectedProjectRevision: 0,
+    expectedGlobalRevision: 0,
+    records: [teamRec, splitRec, customRec],
+  })
+
+  // Loaded records preserve canonical order: customization < split < team
+  const loaded = await load(project)
+  expect(loaded.records).toEqual([customRec, splitRec, teamRec])
+
+  // Saving again in loaded order is an unchanged no-op
+  const reSave = await save(project, {
+    expectedProjectRevision: 1,
+    expectedGlobalRevision: 0,
+    records: loaded.records,
+  })
+  expect(reSave).toEqual({ ok: true, projectRevision: 1, globalRevision: 0 })
+})
