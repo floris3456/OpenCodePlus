@@ -9,7 +9,7 @@ import { Skill } from "@opencode/schema/skill"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Deferred, Effect, Exit, Scope } from "effect"
-import { applies, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+import { applies, isCodeModeToolEntry, isCodeModeToolId, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -357,7 +357,7 @@ async function applySession(ctx: Context, input: ApplyInput): Promise<Registrati
   let tools: ToolPlan[] = []
   if (candidates.length > 0) {
     const inventory = await readTools(ctx)
-    tools = candidates.filter((plan) => !isCodeModeTool(inventory, plan.tool))
+    tools = candidates.filter((plan) => !isCodeModeToolId(inventory, plan.tool))
   }
   if (base.length === 0 && tools.length === 0 && instructions.length === 0) return undefined
   const activeByAgent = await readActiveBase(ctx, input.agents)
@@ -463,7 +463,7 @@ type ToolInventory = ReadonlyMap<string, boolean>
 async function readTools(ctx: Context): Promise<ToolInventory> {
   return readTransform(ctx.tool.transform, (editor: ToolEditor) => {
     const inventory = new Map<string, boolean>()
-    for (const tool of editor.list()) inventory.set(tool.id, tool.options?.codemode === false)
+    for (const tool of editor.list()) inventory.set(tool.id, !isCodeModeToolEntry(tool))
     return inventory
   })
 }
@@ -480,10 +480,6 @@ function readTransform<Editor, Value>(transform: Transform<Editor>, read: (edito
       }),
     ),
   )
-}
-
-function isCodeModeTool(inventory: ToolInventory, id: string): boolean {
-  return inventory.get(id) !== true
 }
 
 function applyToolPlan(event: SessionContext, plans: readonly ToolPlan[]) {

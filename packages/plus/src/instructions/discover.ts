@@ -12,6 +12,7 @@ import { idFromPath } from "../agents/files.js"
 import { unmaskText, upstreamEnabled, type PromptBaseline } from "./inventory.js"
 import {
   fingerprint,
+  isCodeModeToolEntry,
   type AgentSource,
   type CustomizationRecord,
   type Item,
@@ -235,6 +236,7 @@ function toolItems(
       text,
       enabled: upstreamEnabled(),
       fingerprint: fingerprint(text),
+      ...(isCodeModeToolEntry(tool) ? { codemode: true as const } : {}),
     }
   })
 }
@@ -250,9 +252,20 @@ function baseItems(templates: readonly BaseTemplate[]): Item[] {
       text: template.text,
       enabled: upstreamEnabled(),
       fingerprint: fingerprint(template.text),
+      ...(isUserBaseId(template.id) ? { userBase: true as const } : {}),
     }
   })
 }
+
+// The host prompt domain answers `active` only with its own template ids, so
+// a user-created template id can never be the active answer: it stays
+// listable and editable but is never applied. Built-in ids are the ones the
+// host can report (mirrors builtinBaseIds in agents/base.ts).
+function isUserBaseId(id: string): boolean {
+  return !builtinBaseTemplateIds.has(id)
+}
+
+const builtinBaseTemplateIds = new Set(["gpt", "claude", "muse", "gemini", "general", "kimi", "trinity"])
 
 function skillOrigin(skill: Skill.Info): ToolOrigin | undefined {
   return (skill as Skill.Info & { readonly origin?: ToolOrigin }).origin

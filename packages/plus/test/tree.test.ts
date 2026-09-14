@@ -315,6 +315,40 @@ test("actions: toggle/edit/split on items, reset only with an override, remove o
   })
 })
 
+test("base template rows: user templates offer delete and read inactive, host active does not", () => {
+  const all = [
+    ...items(),
+    makeItem({ id: "base:custom", kind: "base", group: "none", title: "Custom.txt", text: "custom", userBase: true }),
+  ]
+  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  const user = nodes.find((node) => node.id === "item:project:Implementer:base:custom")
+  expect(user?.actions?.remove).toBe(true)
+  expect(user?.badges.inactive).toBe(true)
+  expect(user?.badges.active).toBeUndefined()
+  const builtin = nodes.find((node) => node.id === "item:project:Implementer:base:gpt")
+  expect(builtin?.actions?.remove).toBe(false)
+  // The Implementer agent's host answer is gpt, so the builtin row is active
+  // and never inactive.
+  expect(builtin?.badges.active).toBe(true)
+  expect(builtin?.badges.inactive).toBeUndefined()
+})
+
+test("Code Mode tool rows offer no toggle/edit/split/add and read unsupported", () => {
+  const all = [
+    ...items(),
+    makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", codemode: true }),
+  ]
+  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  const coder = nodes.find((node) => node.id === "item:project:Implementer:tool:coder")
+  expect(coder?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false })
+  expect(coder?.add).toBeUndefined()
+  expect(coder?.badges.unsupported).toBe(true)
+  const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")
+  expect(bash?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: true })
+  expect(bash?.add).toBe("section")
+  expect(bash?.badges.unsupported).toBeUndefined()
+})
+
 test("badges carry state, modified, and source from resolution", () => {
   const records = [makeRecord({ item: "tool:bash", text: "mine", state: "off" })]
   const nodes = expandAll({ items: items(), records, agents: agents() })

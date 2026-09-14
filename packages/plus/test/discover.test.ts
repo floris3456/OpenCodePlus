@@ -333,6 +333,32 @@ test("base template items carry title and text with group none", async () => {
     expect.objectContaining({ id: "base:general", kind: "base", group: "none", title: "general.txt", text: "general base text", enabled: true }),
   ])
   expect(bases[0].fingerprint).toBe(fingerprint("gpt base text"))
+  // Builtin ids are the host's own answers, so they carry no user flag.
+  expect(bases.every((item) => item.userBase === undefined)).toBe(true)
+})
+
+test("discovery marks user base templates and Code Mode tools from the real registry", async () => {
+  const directory = await tempDir("plus-discover-")
+  const coder = tool("coder", "code mode tool")
+  delete (coder as { options?: unknown }).options
+  const discovered = await discover({
+    ctx: fullContext({
+      directory,
+      tools: [
+        // Real harness registry entries: options omitted means Code Mode
+        // (core defaults codemode true), explicit false means native.
+        coder,
+        nativeTool("reader", "native tool"),
+      ],
+    }),
+    records: [],
+    baseTemplates: [{ id: "custom", title: "Custom.txt", text: "custom base text" }],
+    activeBase: noBase,
+  })
+  const byId = new Map(discovered.items.map((item) => [item.id, item]))
+  expect(byId.get("base:custom")).toMatchObject({ kind: "base", userBase: true })
+  expect(byId.get("tool:coder")?.codemode).toBe(true)
+  expect(byId.get("tool:reader")?.codemode).toBeUndefined()
 })
 
 test("project skills group as project and Plus copies stay excluded", async () => {
