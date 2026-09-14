@@ -772,7 +772,11 @@ test("discover -> apply honors active base classification", async () => {
     directory,
     agents: [{ ...agent("alpha", ""), model }],
     skills: [skill("notes", "skill body", locationPath)],
-    tools: [tool("reader", "read things")],
+    // Same native registry on both sides: reader carries explicit
+    // codemode false here and in the apply-domain below, so discovery and
+    // apply classify it identically (a default Code Mode entry on one side
+    // only would prove nothing about the other side's view).
+    tools: [nativeTool("reader", "read things")],
     templates,
     models,
     classifications: { "trinity-ultra": "trinity" },
