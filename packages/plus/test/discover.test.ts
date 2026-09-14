@@ -20,7 +20,7 @@ import { agentBody, discover, type BaseTemplate } from "../src/instructions/disc
 import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
-import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
+import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness, type PromptClassificationTable } from "./harness.js"
 import type { Model as ModelNamespace } from "@opencode/schema/model"
 
 const roots: string[] = []
@@ -120,6 +120,7 @@ function fullContext(options: {
   servers?: [string, Types.DeepMutable<Mcp.ServerConfig>][]
   templates?: { id: string; title: string; text: string }[]
   models?: ModelNamespace.Info[]
+  classifications?: PromptClassificationTable
 }): Context {
   const loc = location(options.directory, options.projectDirectory ?? options.directory)
   const agents = options.agents ?? []
@@ -135,7 +136,7 @@ function fullContext(options: {
       reload: () => Effect.die("unused agent.reload"),
     },
     catalog: catalogHarness(options.models ?? []),
-    prompt: promptHarness(options.templates ?? []),
+    prompt: promptHarness(options.templates ?? [], options.classifications),
     skill: {
       list: () => Effect.succeed({ location: loc, data: skills }),
       transform: () => Effect.die("unused skill.transform"),
@@ -650,18 +651,12 @@ test("a shared off record through discover -> apply installs a real skill denial
 test("a shared off record through discover -> apply removes a native tool", async () => {
   const directory = await tempDir("plus-discover-")
   const records = [sharedRecord("tool:reader", "off")]
-  const discovered = await discover({
-    ctx: fullContext({ directory, tools: [tool("reader", "read things")] }),
-    records,
-    baseTemplates: noTemplates,
-    activeBase: noBase,
-  })
-  const item = discovered.items.find((entry) => entry.id === "tool:reader")
-  if (item === undefined) throw new Error("expected tool:reader")
-  expect(item.enabled).toBe(true)
+  const toolEntry = nativeTool("reader", "read things")
+  const toolDomain = toolDomainFor([toolEntry])
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
-    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    location: location(directory),
+    tool: toolDomain,
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -669,6 +664,16 @@ test("a shared off record through discover -> apply removes a native tool", asyn
       },
     },
   })
+  const discovered = await discover({
+    ctx,
+    records,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const item = discovered.items.find((entry) => entry.id === "tool:reader")
+  if (item === undefined) throw new Error("expected tool:reader")
+  expect(item.enabled).toBe(true)
+  expect(item.codemode).toBeUndefined()
   const applied = await apply(
     ctx,
     makeInput({
@@ -754,7 +759,7 @@ test("a zero-template host still yields a coherent fallback list", async () => {
   expect(discovered.agents.map((entry) => entry.id)).toContain("alpha")
 })
 
-test("discover -> apply through a real host honors the host base classification", async () => {
+test("discover -> apply honors active base classification", async () => {
   const directory = await tempDir("plus-discover-")
   const locationPath = path.join(directory, "skills", "notes", "SKILL.md")
   const model = modelRef("acme", "trinity-ultra")
@@ -770,6 +775,7 @@ test("discover -> apply through a real host honors the host base classification"
     tools: [tool("reader", "read things")],
     templates,
     models,
+    classifications: { "trinity-ultra": "trinity" },
   })
   const discovered = await discover({
     ctx: discoverCtx,
@@ -813,7 +819,7 @@ test("discover -> apply through a real host honors the host base classification"
     location: discoverCtx.location,
     agent: agents.domain,
     catalog: catalogHarness(models),
-    prompt: promptHarness(templates),
+    prompt: promptHarness(templates, { "trinity-ultra": "trinity" }),
     skill: skills.domain,
     tool: toolDomainFor([nativeTool("reader", "read things")]),
     session: {

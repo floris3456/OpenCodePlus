@@ -42,9 +42,20 @@ function die(message: string) {
 function agentDomain(): AgentDomain {
   return {
     get: die("unused agent.get"),
-    list: die("unused agent.list"),
-    transform: die("unused agent.transform"),
-    reload: die("unused agent.reload"),
+    list: () =>
+      Effect.succeed({
+        location: new Location.Info({
+          directory: AbsolutePath.make("/workspace"),
+          project: {
+            id: Project.ID.global,
+            directory: AbsolutePath.make("/workspace"),
+            canonical: AbsolutePath.make("/workspace"),
+          },
+        }),
+        data: [],
+      }),
+    transform: () => Effect.succeed({ dispose: Effect.void }),
+    reload: () => Effect.void,
   }
 }
 
@@ -156,8 +167,18 @@ function integrationDomain(): IntegrationDomain {
 function mcpDomain(): MCPDomain {
   return {
     list: die("unused mcp.list"),
-    transform: die("unused mcp.transform"),
-    reload: die("unused mcp.reload"),
+    transform: (callback) =>
+      Effect.sync(() => {
+        callback({
+          list: () => [],
+          get: () => undefined,
+          set: () => undefined,
+          update: () => undefined,
+          remove: () => undefined,
+        } as never)
+        return { dispose: Effect.void }
+      }),
+    reload: () => Effect.void,
   }
 }
 
@@ -171,24 +192,40 @@ function permissionDomain(): PermissionDomain {
   }
 }
 
-function promptDomain(templates: readonly { id: string; title: string; text: string }[] = []): PromptDomain {
+export type PromptClassificationTable =
+  | ReadonlyMap<string, string>
+  | Readonly<Record<string, string>>
+
+export const defaultHostTemplates: readonly { readonly id: string; readonly title: string; readonly text: string }[] = [
+  { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+  { id: "claude", title: "Claude.txt", text: "claude base prompt" },
+  { id: "muse", title: "Muse.txt", text: "muse base prompt" },
+  { id: "gemini", title: "Gemini.txt", text: "gemini base prompt" },
+  { id: "general", title: "General.txt", text: "general base prompt" },
+  { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
+  { id: "trinity", title: "Trinity.txt", text: "trinity base prompt" },
+]
+
+export function promptDomain(
+  templates: readonly { id: string; title: string; text: string }[] = defaultHostTemplates,
+  classifications: PromptClassificationTable = new Map([["", "general"]]),
+): PromptDomain {
+  const table =
+    classifications instanceof Map
+      ? new Map(classifications)
+      : new Map(Object.entries(classifications))
   const listed = templates.map((template) => ({ ...template }))
   return {
     templates: () => Effect.succeed(listed),
-    active: (model) => Effect.succeed(classify(model)),
+    active: (model) => {
+      const target =
+        table.get(model.id) ??
+        (model.name ? table.get(model.name) : undefined) ??
+        (model.id === "" && model.name === "" ? table.get("") : undefined)
+      if (target !== undefined) return Effect.succeed(target)
+      return Effect.die(`promptDomain: no classification explicitly supplied for model "${model.id || model.name || "<unspecified>"}"`)
+    },
   }
-}
-
-// Mirror of the host classifier (core/src/prompt-template.ts `active`): the
-// model id alone decides, and a non-obvious id can land anywhere. Tests use a
-// real model-aware registry instead of guessing from the provider.
-function classify(model: { id: string; name: string }): string {
-  const id = model.id.toLowerCase()
-  if (id.includes("gpt")) return "gpt"
-  if (id.includes("kimi")) return "kimi"
-  if (id.includes("trinity")) return "trinity"
-  if (id.includes("muse")) return "muse"
-  return "general"
 }
 
 function referenceDomain(): ReferenceDomain {
@@ -237,28 +274,54 @@ export function recordingSkillDomain(
   state: Map<string, Types.DeepMutable<Skill.Info>> = new Map(),
   added: Skill.Info[] = [],
 ): SkillDomain {
-  const live = state
-  const editor = {
-    list: () => Array.from(live.values()),
-    get: (id: string) => live.get(id),
-    add: (skill: Skill.Info) => {
-      added.push(skill)
-      live.set(skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>)
-    },
-    update: (id: string, update: (skill: Types.DeepMutable<Skill.Info>) => void) => {
-      const current = live.get(id)
-      if (current) update(current)
-    },
-    remove: (id: string) => {
-      live.delete(id)
-    },
+  const upstream = new Map(state)
+  const installed: Array<Parameters<SkillDomain["transform"]>[0]> = []
+  function rebuild() {
+    state.clear()
+    added.length = 0
+    for (const [id, skill] of upstream) state.set(id, structuredClone(skill) as Types.DeepMutable<Skill.Info>)
+    const editor = {
+      list: () => Array.from(state.values()),
+      get: (id: string) => state.get(id),
+      add: (skill: Skill.Info) => {
+        added.push(skill)
+        state.set(skill.id, structuredClone(skill) as Types.DeepMutable<Skill.Info>)
+      },
+      update: (id: string, update: (skill: Types.DeepMutable<Skill.Info>) => void) => {
+        const current = state.get(id)
+        if (current) update(current)
+      },
+      remove: (id: string) => {
+        state.delete(id)
+      },
+    }
+    for (const transform of installed) transform(editor)
   }
   return {
-    list: () => Effect.die("unused skill.list"),
+    list: () =>
+      Effect.succeed({
+        location: new Location.Info({
+          directory: AbsolutePath.make("/workspace"),
+          project: {
+            id: Project.ID.global,
+            directory: AbsolutePath.make("/workspace"),
+            canonical: AbsolutePath.make("/workspace"),
+          },
+        }),
+        data: Array.from(state.values()),
+      }),
     transform: (callback) =>
       Effect.sync(() => {
-        callback(editor)
-        return { dispose: Effect.void }
+        installed.push(callback)
+        rebuild()
+        return {
+          dispose: Effect.sync(() => {
+            const index = installed.indexOf(callback)
+            if (index === -1) return
+            installed.splice(index, 1)
+            rebuild()
+          }),
+        }
       }),
     reload: () => Effect.void,
   }
@@ -477,8 +540,11 @@ export function mcpHarness(initial: [string, { type: "remote"; url: string; disa
   }
 }
 
-export function promptHarness(templates: { id: string; title: string; text: string }[]): PromptDomain {
-  return promptDomain(templates)
+export function promptHarness(
+  templates: readonly { id: string; title: string; text: string }[],
+  classifications?: PromptClassificationTable,
+): PromptDomain {
+  return promptDomain(templates, classifications)
 }
 
 export function catalogHarness(models: Model.Info[]): CatalogDomain {
@@ -520,19 +586,16 @@ export function fullContext(options: {
   hooks?: { current: number }
   models?: Model.Info[]
   templates?: { id: string; title: string; text: string }[]
+  classifications?: PromptClassificationTable
+  session?: Partial<Context["session"]>
 }): Context {
   const agents = options.agents ?? []
   const skills = options.skills ?? []
   const entries = options.tools ?? []
   const servers = options.servers ?? []
   const models = options.models ?? []
-  const templates = options.templates ?? [
-    { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
-    { id: "general", title: "General.txt", text: "general base prompt" },
-    { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
-    { id: "trinity", title: "Trinity.txt", text: "trinity base prompt" },
-    { id: "muse", title: "Muse.txt", text: "muse base prompt" },
-  ]
+  const templates = options.templates ?? defaultHostTemplates
+  const classifications = options.classifications ?? new Map([["", "general"]])
   const location = new Location.Info({
     directory: AbsolutePath.make(options.directory),
     project: {
@@ -553,17 +616,17 @@ export function fullContext(options: {
     location,
     agent: agentState.domain,
     catalog: catalogDomain(models),
-    prompt: promptDomain(templates),
+    prompt: promptDomain(templates, classifications),
     skill: skillDomain,
     tool: tools.domain,
     mcp: mcp.domain,
-    session: options.hooks === undefined ? {} : {
+    session: options.session ?? (options.hooks === undefined ? {} : {
       hook: () =>
         Effect.sync(() => {
           if (options.hooks) options.hooks.current++
           return { dispose: Effect.sync(() => { if (options.hooks) options.hooks.current-- }) }
         }),
-    },
+    }),
   })
 }
 
@@ -578,8 +641,19 @@ function storageDomain(): StorageDomain {
 
 function toolDomain(): ToolDomain {
   return {
-    transform: die("unused tool.transform"),
-    reload: die("unused tool.reload"),
+    transform: (callback) =>
+      Effect.sync(() => {
+        callback({
+          list: () => [],
+          get: () => undefined,
+          namespace: () => undefined,
+          add: () => undefined,
+          update: () => undefined,
+          remove: () => undefined,
+        })
+        return { dispose: Effect.void }
+      }),
+    reload: () => Effect.void,
     hook: die("unused tool.hook"),
   }
 }
@@ -663,7 +737,7 @@ export function context(overrides: Overrides = {}): Context {
     mcp: overrides.mcp ?? mcpDomain(),
     permission: overrides.permission ?? permissionDomain(),
     plugin: overrides.plugin ?? { list: die("unused plugin.list") },
-    prompt: overrides.prompt ?? promptDomain([]),
+    prompt: overrides.prompt ?? promptDomain(defaultHostTemplates, new Map([["", "general"]])),
     reference: overrides.reference ?? referenceDomain(),
     rpc: overrides.rpc ?? rpcDomain(),
     session: sessionDomain(overrides.session),

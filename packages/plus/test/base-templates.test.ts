@@ -1,4 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
+import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
+import { Session } from "@opencode/schema/session"
+import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect, Exit } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -80,11 +85,19 @@ test("a user template that is not the host's active answer is never applied", as
     { id: "trinity", title: "Trinity.txt", text: "host trinity base" },
     { id: "general", title: "General.txt", text: "host general base" },
   ]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("alpha", "")],
     templates: hostTemplates,
     models: [],
+    classifications: { "": "general", "test-model": "trinity" },
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
   })
   const handlers = createHandlers(ctx, createState())
   await Effect.runPromise(
@@ -93,10 +106,9 @@ test("a user template that is not the host's active answer is never applied", as
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const user = snapshot.items.find((item) => item.id === "base:custom")
   expect(user?.text).toBe("custom base text")
-  // The host classifier only ever answers with its own template ids
-  // (harness harness.ts classify mirrors core: gpt/kimi/trinity/muse/general),
-  // so a user id can never be the active answer and stored edits for it wait
-  // until the agent switches model — which never selects it either.
+  // The host classifier only ever answers from its explicit classification table,
+  // so a user template id is never the active answer and session context hooks
+  // leave system[0] alone.
   const mutated = await Effect.runPromise(
     handlers["instructions.mutate"](
       {
@@ -117,6 +129,21 @@ test("a user template that is not the host's active answer is never applied", as
     ),
   )
   expect(mutated.ok).toBe(true)
-  const assembled = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
-  expect(assembled.system).not.toContain("customized user base")
+  // Base templates apply through the session context hook. Verify against the real
+  // hook callback on a session event: the user template is not applied to system[0].
+  expect(callbacks).toHaveLength(1)
+  const hook = callbacks[0]
+  if (!hook) throw new Error("missing context hook")
+  const event = {
+    sessionID: Session.ID.make("ses_test"),
+    agent: Agent.ID.make("alpha"),
+    model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") }),
+    system: [{ type: "text" as const, text: "host trinity base" }],
+    messages: [],
+    options: {},
+    tools: {},
+  }
+  await Effect.runPromise(hook(event))
+  expect(event.system[0]?.text).toBe("host trinity base")
+  expect(event.system[0]?.text).not.toContain("customized user base")
 })
