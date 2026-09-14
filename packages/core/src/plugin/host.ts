@@ -435,6 +435,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
     prompt: {
       templates: () => Effect.succeed(PromptTemplate.templates),
       active: (model) => Effect.succeed(PromptTemplate.active(model)),
+      raw: (model) => Effect.succeed(PromptTemplate.raw(model)),
     },
     reference: {
       list: () => response(reference.list()),
