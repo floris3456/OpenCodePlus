@@ -11,6 +11,9 @@ import type {
   CreateBaseInput,
   CreateInstructionInput,
   CreateSkillInput,
+  DeleteBaseInput,
+  DeleteInstructionInput,
+  DeleteSkillInput,
   ImportSkillInput,
   MutateInput,
   Snapshot,
@@ -84,8 +87,11 @@ export interface FakeRpc {
   readonly agentDeletes: { scope: string; id: string }[]
   readonly skillCreates: CreateSkillInput[]
   readonly skillImports: ImportSkillInput[]
+  readonly skillDeletes: DeleteSkillInput[]
   readonly baseCreates: CreateBaseInput[]
+  readonly baseDeletes: { id: string }[]
   readonly instructionCreates: CreateInstructionInput[]
+  readonly instructionDeletes: { name: string }[]
   readonly mcpAdds: AddMcpInput[]
   readonly mcpRemoves: { name: string }[]
   readonly dialogPrompts: string[][]
@@ -138,8 +144,11 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     agentDeletes: [],
     skillCreates: [],
     skillImports: [],
+    skillDeletes: [],
     baseCreates: [],
+    baseDeletes: [],
     instructionCreates: [],
+    instructionDeletes: [],
     mcpAdds: [],
     mcpRemoves: [],
     dialogPrompts: [],
@@ -199,12 +208,24 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fake.skillImports.push(input)
           return { id: input.path, path: input.path }
         },
+        "skill.delete": async (input: DeleteSkillInput) => {
+          fake.skillDeletes.push(input)
+          return { id: input.id, path: `/skills/${input.id}` }
+        },
         "base.create": async (input: CreateBaseInput) => {
           fake.baseCreates.push(input)
           return { id: input.id }
         },
+        "base.delete": async (input: DeleteBaseInput) => {
+          fake.baseDeletes.push(input)
+          return { id: input.id }
+        },
         "instruction.create": async (input: CreateInstructionInput) => {
           fake.instructionCreates.push(input)
+          return { id: input.name, path: `/instructions/${input.name}` }
+        },
+        "instruction.delete": async (input: DeleteInstructionInput) => {
+          fake.instructionDeletes.push(input)
           return { id: input.name, path: `/instructions/${input.name}` }
         },
         "mcp.add": async (input: AddMcpInput) => {

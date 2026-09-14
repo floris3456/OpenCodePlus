@@ -29,8 +29,11 @@ test("instructions and agent methods and the instructions.changed event are pres
   expect("agent.delete" in Plus.Definition.methods).toBe(true)
   expect("skill.create" in Plus.Definition.methods).toBe(true)
   expect("skill.import" in Plus.Definition.methods).toBe(true)
+  expect("skill.delete" in Plus.Definition.methods).toBe(true)
   expect("base.create" in Plus.Definition.methods).toBe(true)
+  expect("base.delete" in Plus.Definition.methods).toBe(true)
   expect("instruction.create" in Plus.Definition.methods).toBe(true)
+  expect("instruction.delete" in Plus.Definition.methods).toBe(true)
   expect("mcp.add" in Plus.Definition.methods).toBe(true)
   expect("mcp.remove" in Plus.Definition.methods).toBe(true)
   expect("instructions.changed" in Plus.Definition.events).toBe(true)
@@ -163,8 +166,11 @@ test("gated methods fail with project.disabled when project mode is off", async 
   await expectDeclaredError(handlers["agent.delete"]({ scope: "project", id: "a" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["skill.create"]({ name: "x", body: "y" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["skill.import"]({ path: "/tmp/x.md" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["skill.delete"]({ id: "x" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["base.create"]({ id: "x", title: "X", text: "y" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["base.delete"]({ id: "x" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["instruction.create"]({ name: "x", text: "y" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["instruction.delete"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["mcp.add"]({ name: "x", config: { type: "remote", url: "https://x.test" } }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["mcp.remove"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
   const status = await Effect.runPromise(handlers["project.status"](undefined, throwingContext(captured)))
@@ -511,6 +517,21 @@ test("skill create and import write SKILL.md and raise declared errors", async (
   await expectDeclaredError(handlers["skill.import"]({ path: bad }, throwingContext(badImport)), badImport, "skill.invalid")
 })
 
+test("skill delete removes the project SKILL.md directory and raises declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const created = await Effect.runPromise(handlers["skill.create"]({ name: "notes", body: "Take notes." }, throwingContext({})))
+  const deleted = await Effect.runPromise(handlers["skill.delete"]({ id: "notes" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "notes", path: created.path })
+  expect(await Bun.file(created.path).exists()).toBe(false)
+  expectRpcBody(deleted)
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["skill.delete"]({ id: "ghost" }, throwingContext(missing)), missing, "skill.missing")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["skill.delete"]({ id: "../evil" }, throwingContext(invalid)), invalid, "skill.invalid")
+})
+
 test("base create stores a user template and raises declared errors", async () => {
   const { project } = await tempRoot()
   await enable(project)
@@ -527,6 +548,22 @@ test("base create stores a user template and raises declared errors", async () =
   await expectDeclaredError(handlers["base.create"]({ id: "", title: "X", text: "y" }, throwingContext(invalid)), invalid, "base.invalid")
 })
 
+test("base delete removes a user template, refuses builtins, and raises declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await Effect.runPromise(handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwingContext({})))
+  const deleted = await Effect.runPromise(handlers["base.delete"]({ id: "custom" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "custom" })
+  expectRpcBody(deleted)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.some((item) => item.id === "base:custom")).toBe(false)
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["base.delete"]({ id: "ghost" }, throwingContext(missing)), missing, "base.missing")
+  const builtin: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["base.delete"]({ id: "gpt" }, throwingContext(builtin)), builtin, "base.invalid")
+})
+
 test("instruction create writes a project file core discovery picks up and raises declared errors", async () => {
   const { project } = await tempRoot()
   await enable(project)
@@ -541,6 +578,23 @@ test("instruction create writes a project file core discovery picks up and raise
   await expectDeclaredError(handlers["instruction.create"]({ name: "AGENTS.md", text: "again" }, throwingContext(duplicate)), duplicate, "instruction.exists")
   const invalid: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["instruction.create"]({ name: "../evil", text: "x" }, throwingContext(invalid)), invalid, "instruction.invalid")
+})
+
+test("instruction delete removes the project file, refuses traversal, and raises declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const created = await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})))
+  const deleted = await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "system:AGENTS.md", path: created.path })
+  expect(await Bun.file(created.path).exists()).toBe(false)
+  expectRpcBody(deleted)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.some((item) => item.id === "system:AGENTS.md")).toBe(false)
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["instruction.delete"]({ name: "ghost.md" }, throwingContext(missing)), missing, "instruction.missing")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["instruction.delete"]({ name: "../evil" }, throwingContext(invalid)), invalid, "instruction.invalid")
 })
 
 test("mcp add and remove edit the project config and raise declared errors", async () => {

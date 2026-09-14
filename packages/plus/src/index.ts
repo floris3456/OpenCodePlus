@@ -12,12 +12,13 @@ import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
+import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir } from "./agents/base.js"
 import { addMcp, removeMcp } from "./agents/mcp.js"
-import { createSkill, importSkill } from "./agents/skills.js"
+import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply } from "./instructions/apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
-import { globalConfigDir } from "./instructions/paths.js"
+import { globalConfigDir, resolveInstructionPath } from "./instructions/paths.js"
 import { load, save, type StoredRecord } from "./instructions/store.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
@@ -281,6 +282,20 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         yield* refreshAfterFileChange(ctx, state, directory)
         return { id: result.id, path: result.path }
       }),
+    "skill.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => deleteSkill({ projectDirectory: directory, id: input.id }))
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(context.error("skill.missing", `Skill ${result.id} does not exist`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
     "base.create": (input, context) =>
       Effect.gen(function* () {
         const directory = ctx.location.directory
@@ -290,6 +305,20 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         const result = yield* Effect.promise(() => createBaseTemplate(input.id, input.title, input.text))
         if (!result.ok && result.reason === "exists")
           return yield* Effect.fail(context.error("base.exists", `Base template ${result.id} already exists`, { id: result.id }))
+        if (!result.ok)
+          return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id }
+      }),
+    "base.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() => deleteBaseTemplate(input.id))
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(context.error("base.missing", `Base template ${result.id} does not exist`, { id: result.id }))
         if (!result.ok)
           return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
@@ -310,6 +339,24 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           )
         if (!result.ok)
           return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: input.name, reason: result.message }))
+        yield* refreshAfterFileChange(ctx, state, directory)
+        return { id: result.id, path: result.path }
+      }),
+    "instruction.delete": (input, context) =>
+      Effect.gen(function* () {
+        const directory = ctx.location.directory
+        yield* requireProject(directory, () =>
+          context.error("project.disabled", disabledMessage(directory), { directory }),
+        )
+        const result = yield* Effect.promise(() =>
+          deleteInstruction({ projectDirectory: directory, name: input.name }),
+        )
+        if (!result.ok && result.reason === "missing")
+          return yield* Effect.fail(
+            context.error("instruction.missing", `Instruction ${result.name} does not exist`, { name: result.name }),
+          )
+        if (!result.ok)
+          return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: result.id, reason: result.message }))
         yield* refreshAfterFileChange(ctx, state, directory)
         return { id: result.id, path: result.path }
       }),
@@ -440,10 +487,6 @@ function readUserBaseTemplates(): BaseTemplate[] {
   return readUserBaseTemplatesSync()
 }
 
-function userBaseDir(): string {
-  return path.join(globalConfigDir(), "opencodeplus", "instructions", "base")
-}
-
 function readUserBaseTemplatesSync(): BaseTemplate[] {
   // Synchronous read: discover runs inside publishFresh where every caller
   // already awaits, and the directory is tiny. A missing dir means none.
@@ -459,32 +502,12 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
     .toSorted()
     .map((entry) => {
       const id = entry.slice(0, -".txt".length)
-      const text = readUserBaseText(path.join(dir, entry))
+      const text = readUserBaseTextSync(path.join(dir, entry))
       if (text === undefined) return undefined
-      const title = readUserBaseTitle(path.join(dir, "index.json"), id)
+      const title = readUserBaseTitleSync(path.join(dir, "index.json"), id)
       return { id, title, text }
     })
     .filter((template): template is BaseTemplate => template !== undefined)
-}
-
-function readUserBaseText(target: string): string | undefined {
-  try {
-    return fsSync.readFileSync(target, "utf8")
-  } catch {
-    return undefined
-  }
-}
-
-function readUserBaseTitle(index: string, id: string): string {
-  try {
-    const parsed: unknown = JSON.parse(fsSync.readFileSync(index, "utf8"))
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return `${id}.txt`
-    const title = (parsed as Record<string, unknown>)[id]
-    if (typeof title !== "string" || title.length === 0) return `${id}.txt`
-    return title
-  } catch {
-    return `${id}.txt`
-  }
 }
 
 function fallbackActiveBase(agent: { model?: { providerID: string; id: string } }): string | undefined {
@@ -574,58 +597,22 @@ interface BaseTemplateInvalid {
 
 type BaseTemplateResult = BaseTemplateSuccess | BaseTemplateExists | BaseTemplateInvalid
 
-async function createBaseTemplate(id: string, title: string, text: string): Promise<BaseTemplateResult> {
-  const trimmed = id.trim()
-  if (trimmed.length === 0) return { ok: false, reason: "invalid", id, message: "Base template id cannot be empty" }
-  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0"))
-    return { ok: false, reason: "invalid", id, message: `Invalid base template id "${id}"` }
-  const target = path.join(userBaseDir(), `${trimmed}.txt`)
-  if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: trimmed }
-  await fs.mkdir(path.dirname(target), { recursive: true })
-  await Bun.write(target, text)
-  await appendBaseIndex(trimmed, title)
-  return { ok: true, id: trimmed }
-}
-
-// The small index next to the <id>.txt files so discover (and a future core
-// prompt domain) can list user templates with their titles alongside the
-// built-ins. Best-effort: a missing index only loses titles, never templates.
-async function appendBaseIndex(id: string, title: string): Promise<void> {
-  const target = path.join(userBaseDir(), "index.json")
-  const current = await readBaseIndex(target)
-  current[id] = title
-  await Bun.write(target, `${JSON.stringify(current, undefined, 2)}\n`)
-}
-
-async function readBaseIndex(target: string): Promise<Record<string, string>> {
-  const file = Bun.file(target)
-  if (!(await file.exists())) return {}
-  try {
-    const parsed: unknown = await file.json()
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {}
-    const entries = Object.entries(parsed as Record<string, unknown>).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    )
-    return Object.fromEntries(entries)
-  } catch {
-    return {}
-  }
-}
-
-interface InstructionSuccess {
+// Instruction create result types stay local to index.ts; deletion reuses the
+// path-confined helpers from instructions/paths.ts.
+interface CreateInstructionSuccess {
   readonly ok: true
   readonly id: string
   readonly path: string
 }
 
-interface InstructionExists {
+interface CreateInstructionExists {
   readonly ok: false
   readonly reason: "exists"
   readonly id: string
   readonly path: string
 }
 
-interface InstructionInvalid {
+interface CreateInstructionInvalid {
   readonly ok: false
   readonly reason: "invalid"
   readonly id: string
@@ -633,9 +620,9 @@ interface InstructionInvalid {
   readonly message: string
 }
 
-type InstructionResult = InstructionSuccess | InstructionExists | InstructionInvalid
+type CreateInstructionResult = CreateInstructionSuccess | CreateInstructionExists | CreateInstructionInvalid
 
-async function createInstruction(input: { projectDirectory: string; name: string; text: string }): Promise<InstructionResult> {
+async function createInstruction(input: { projectDirectory: string; name: string; text: string }): Promise<CreateInstructionResult> {
   const name = input.name.trim()
   if (name.length === 0) return { ok: false, reason: "invalid", id: input.name, path: "", message: "Instruction name cannot be empty" }
   if (name.includes("\0") || name.includes(".."))
@@ -649,6 +636,33 @@ async function createInstruction(input: { projectDirectory: string; name: string
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, input.text.endsWith("\n") ? input.text : `${input.text}\n`)
   return { ok: true, id: `system:${path.relative(root, target)}`, path: target }
+}
+
+interface InstructionMissing {
+  readonly ok: false
+  readonly reason: "missing"
+  readonly id: string
+  readonly path: string
+  readonly name: string
+}
+
+interface InstructionDeleteInvalid {
+  readonly ok: false
+  readonly reason: "invalid"
+  readonly id: string
+  readonly path: string
+  readonly message: string
+}
+
+type InstructionDeleteResult = CreateInstructionSuccess | InstructionMissing | InstructionDeleteInvalid
+
+async function deleteInstruction(input: { projectDirectory: string; name: string }): Promise<InstructionDeleteResult> {
+  const resolved = resolveInstructionPath(input.projectDirectory, input.name)
+  if (!resolved.ok) return { ok: false, reason: "invalid", id: input.name, path: "", message: resolved.message }
+  if (!(await Bun.file(resolved.path).exists()))
+    return { ok: false, reason: "missing", id: `system:${resolved.relative}`, path: resolved.path, name: input.name }
+  await fs.rm(resolved.path, { force: true })
+  return { ok: true, id: `system:${resolved.relative}`, path: resolved.path }
 }
 
 function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {

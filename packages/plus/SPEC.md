@@ -264,8 +264,11 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `agent.delete` | `{ scope, id }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid` |
 | `skill.create` | `{ name, body }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
 | `skill.import` | `{ path }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
+| `skill.delete` | `{ id }` | `SkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` |
 | `base.create` | `{ id, title, text }` | `BaseRef` | `project.disabled`, `base.exists`, `base.invalid` |
+| `base.delete` | `{ id }` | `BaseRef` | `project.disabled`, `base.missing`, `base.invalid` |
 | `instruction.create` | `{ name, text }` | `InstructionRef` | `project.disabled`, `instruction.exists`, `instruction.invalid` |
+| `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
 | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
 
@@ -299,10 +302,13 @@ export interface Assembled {
 - `agent.invalid`: `{ id: string, reason: string }`
 - `agent.unknown`: `{ agent: string }`
 - `skill.exists`: `{ id: string }`
+- `skill.missing`: `{ id: string }`
 - `skill.invalid`: `{ id: string, reason: string }`
 - `base.exists`: `{ id: string }`
+- `base.missing`: `{ id: string }`
 - `base.invalid`: `{ id: string, reason: string }`
 - `instruction.exists`: `{ path: string }`
+- `instruction.missing`: `{ name: string }`
 - `instruction.invalid`: `{ name: string, reason: string }`
 - `mcp.exists`: `{ name: string }`
 - `mcp.missing`: `{ name: string }`

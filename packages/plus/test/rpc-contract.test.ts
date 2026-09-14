@@ -26,8 +26,11 @@ test("every method and event is declared", () => {
     "agent.delete",
     "skill.create",
     "skill.import",
+    "skill.delete",
     "base.create",
+    "base.delete",
     "instruction.create",
+    "instruction.delete",
     "mcp.add",
     "mcp.remove",
   ]
@@ -67,10 +70,13 @@ test("every declared error is reachable through the definition", () => {
     "agent.invalid",
     "agent.unknown",
     "skill.exists",
+    "skill.missing",
     "skill.invalid",
     "base.exists",
+    "base.missing",
     "base.invalid",
     "instruction.exists",
+    "instruction.missing",
     "instruction.invalid",
     "mcp.exists",
     "mcp.missing",
@@ -102,8 +108,11 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "agent.delete",
     "skill.create",
     "skill.import",
+    "skill.delete",
     "base.create",
+    "base.delete",
     "instruction.create",
+    "instruction.delete",
     "mcp.add",
     "mcp.remove",
   ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
@@ -131,11 +140,20 @@ test("error schemas are correctly bound to their corresponding methods", () => {
   expect("skill.exists" in errorsOf("skill.import")).toBe(true)
   expect("skill.invalid" in errorsOf("skill.import")).toBe(true)
 
+  expect("skill.missing" in errorsOf("skill.delete")).toBe(true)
+  expect("skill.invalid" in errorsOf("skill.delete")).toBe(true)
+
   expect("base.exists" in errorsOf("base.create")).toBe(true)
   expect("base.invalid" in errorsOf("base.create")).toBe(true)
 
+  expect("base.missing" in errorsOf("base.delete")).toBe(true)
+  expect("base.invalid" in errorsOf("base.delete")).toBe(true)
+
   expect("instruction.exists" in errorsOf("instruction.create")).toBe(true)
   expect("instruction.invalid" in errorsOf("instruction.create")).toBe(true)
+
+  expect("instruction.missing" in errorsOf("instruction.delete")).toBe(true)
+  expect("instruction.invalid" in errorsOf("instruction.delete")).toBe(true)
 
   expect("mcp.exists" in errorsOf("mcp.add")).toBe(true)
   expect("mcp.invalid" in errorsOf("mcp.add")).toBe(true)

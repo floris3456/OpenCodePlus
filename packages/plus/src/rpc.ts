@@ -267,6 +267,11 @@ export const SkillRef = Schema.Struct({
   path: Schema.String,
 }).annotate({ identifier: "Plus.SkillRef" })
 
+export interface DeleteSkillInput extends Schema.Schema.Type<typeof DeleteSkillInput> {}
+export const DeleteSkillInput = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.DeleteSkillInput" })
+
 export interface CreateBaseInput extends Schema.Schema.Type<typeof CreateBaseInput> {}
 export const CreateBaseInput = Schema.Struct({
   id: Schema.String,
@@ -279,6 +284,11 @@ export const BaseRef = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.BaseRef" })
 
+export interface DeleteBaseInput extends Schema.Schema.Type<typeof DeleteBaseInput> {}
+export const DeleteBaseInput = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.DeleteBaseInput" })
+
 export interface CreateInstructionInput extends Schema.Schema.Type<typeof CreateInstructionInput> {}
 export const CreateInstructionInput = Schema.Struct({
   name: Schema.String,
@@ -290,6 +300,11 @@ export const InstructionRef = Schema.Struct({
   id: Schema.String,
   path: Schema.String,
 }).annotate({ identifier: "Plus.InstructionRef" })
+
+export interface DeleteInstructionInput extends Schema.Schema.Type<typeof DeleteInstructionInput> {}
+export const DeleteInstructionInput = Schema.Struct({
+  name: Schema.String,
+}).annotate({ identifier: "Plus.DeleteInstructionInput" })
 
 export interface AddMcpInput extends Schema.Schema.Type<typeof AddMcpInput> {}
 export const AddMcpInput = Schema.Struct({
@@ -333,6 +348,11 @@ export const SkillExists = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.SkillExists" })
 
+export interface SkillMissing extends Schema.Schema.Type<typeof SkillMissing> {}
+export const SkillMissing = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.SkillMissing" })
+
 export interface SkillInvalid extends Schema.Schema.Type<typeof SkillInvalid> {}
 export const SkillInvalid = Schema.Struct({
   id: Schema.String,
@@ -344,6 +364,11 @@ export const BaseExists = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.BaseExists" })
 
+export interface BaseMissing extends Schema.Schema.Type<typeof BaseMissing> {}
+export const BaseMissing = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.BaseMissing" })
+
 export interface BaseInvalid extends Schema.Schema.Type<typeof BaseInvalid> {}
 export const BaseInvalid = Schema.Struct({
   id: Schema.String,
@@ -354,6 +379,11 @@ export interface InstructionExists extends Schema.Schema.Type<typeof Instruction
 export const InstructionExists = Schema.Struct({
   path: Schema.String,
 }).annotate({ identifier: "Plus.InstructionExists" })
+
+export interface InstructionMissing extends Schema.Schema.Type<typeof InstructionMissing> {}
+export const InstructionMissing = Schema.Struct({
+  name: Schema.String,
+}).annotate({ identifier: "Plus.InstructionMissing" })
 
 export interface InstructionInvalid extends Schema.Schema.Type<typeof InstructionInvalid> {}
 export const InstructionInvalid = Schema.Struct({
@@ -412,12 +442,21 @@ const PortableImportSkillInput = Schema.toStandardSchemaV1(
   ImportSkillInput.annotate({ identifier: "Plus.ImportSkillInput" }),
 )
 const PortableSkillRef = Schema.toStandardSchemaV1(SkillRef.annotate({ identifier: "Plus.SkillRef" }))
+const PortableDeleteSkillInput = Schema.toStandardSchemaV1(
+  DeleteSkillInput.annotate({ identifier: "Plus.DeleteSkillInput" }),
+)
 const PortableCreateBaseInput = Schema.toStandardSchemaV1(
   CreateBaseInput.annotate({ identifier: "Plus.CreateBaseInput" }),
+)
+const PortableDeleteBaseInput = Schema.toStandardSchemaV1(
+  DeleteBaseInput.annotate({ identifier: "Plus.DeleteBaseInput" }),
 )
 const PortableBaseRef = Schema.toStandardSchemaV1(BaseRef.annotate({ identifier: "Plus.BaseRef" }))
 const PortableCreateInstructionInput = Schema.toStandardSchemaV1(
   CreateInstructionInput.annotate({ identifier: "Plus.CreateInstructionInput" }),
+)
+const PortableDeleteInstructionInput = Schema.toStandardSchemaV1(
+  DeleteInstructionInput.annotate({ identifier: "Plus.DeleteInstructionInput" }),
 )
 const PortableInstructionRef = Schema.toStandardSchemaV1(
   InstructionRef.annotate({ identifier: "Plus.InstructionRef" }),
@@ -433,11 +472,16 @@ const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ i
 const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
 const PortableAgentUnknown = Schema.toStandardSchemaV1(AgentUnknown.annotate({ identifier: "Plus.AgentUnknown" }))
 const PortableSkillExists = Schema.toStandardSchemaV1(SkillExists.annotate({ identifier: "Plus.SkillExists" }))
+const PortableSkillMissing = Schema.toStandardSchemaV1(SkillMissing.annotate({ identifier: "Plus.SkillMissing" }))
 const PortableSkillInvalid = Schema.toStandardSchemaV1(SkillInvalid.annotate({ identifier: "Plus.SkillInvalid" }))
 const PortableBaseExists = Schema.toStandardSchemaV1(BaseExists.annotate({ identifier: "Plus.BaseExists" }))
+const PortableBaseMissing = Schema.toStandardSchemaV1(BaseMissing.annotate({ identifier: "Plus.BaseMissing" }))
 const PortableBaseInvalid = Schema.toStandardSchemaV1(BaseInvalid.annotate({ identifier: "Plus.BaseInvalid" }))
 const PortableInstructionExists = Schema.toStandardSchemaV1(
   InstructionExists.annotate({ identifier: "Plus.InstructionExists" }),
+)
+const PortableInstructionMissing = Schema.toStandardSchemaV1(
+  InstructionMissing.annotate({ identifier: "Plus.InstructionMissing" }),
 )
 const PortableInstructionInvalid = Schema.toStandardSchemaV1(
   InstructionInvalid.annotate({ identifier: "Plus.InstructionInvalid" }),
@@ -536,6 +580,15 @@ export const Definition = Rpc.define({
         "skill.invalid": PortableSkillInvalid,
       },
     },
+    "skill.delete": {
+      input: PortableDeleteSkillInput,
+      output: PortableSkillRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "skill.missing": PortableSkillMissing,
+        "skill.invalid": PortableSkillInvalid,
+      },
+    },
     "base.create": {
       input: PortableCreateBaseInput,
       output: PortableBaseRef,
@@ -545,12 +598,30 @@ export const Definition = Rpc.define({
         "base.invalid": PortableBaseInvalid,
       },
     },
+    "base.delete": {
+      input: PortableDeleteBaseInput,
+      output: PortableBaseRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "base.missing": PortableBaseMissing,
+        "base.invalid": PortableBaseInvalid,
+      },
+    },
     "instruction.create": {
       input: PortableCreateInstructionInput,
       output: PortableInstructionRef,
       errors: {
         "project.disabled": PortableProjectDisabled,
         "instruction.exists": PortableInstructionExists,
+        "instruction.invalid": PortableInstructionInvalid,
+      },
+    },
+    "instruction.delete": {
+      input: PortableDeleteInstructionInput,
+      output: PortableInstructionRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "instruction.missing": PortableInstructionMissing,
         "instruction.invalid": PortableInstructionInvalid,
       },
     },
