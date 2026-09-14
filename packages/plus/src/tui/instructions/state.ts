@@ -1,17 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
-import {
-  applies,
-  fingerprint,
-  merge,
-  reset,
-  resolve,
-  resolveResolution,
-  resolveSplit,
-  scopesOf,
-  threeWay,
-} from "../../instructions/model.js"
-import { manual, slice, type Split } from "../../instructions/sections.js"
+import { applies, resolve, resolveSplit, scopesOf, threeWay } from "../../instructions/model.js"
 import type {
   Address,
   AgentSource,
@@ -19,7 +8,8 @@ import type {
   Item,
   SplitRecord,
 } from "../../instructions/model.js"
-import { expandedTree, tree, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { addSection, removalPlan, reset, resolveReview, saveSplit, saveText, setEnabled, teamPlan, toggle } from "../../instructions/ops.js"
 import { query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
@@ -454,50 +444,18 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
-  // Space: flip include/exclude state at the node's own address. Whole items
-  // toggle enabled; sections toggle their own exclusion. Team rows carry no
-  // address by design (a synthetic address would corrupt chainFor/persist),
-  // so they toggle through team.setEnabled with the inverted snapshot state.
-  // Unsupported rows (Code Mode tools and their sections, whole Role/persona
-  // and whole base rows) refuse: persisting would report "Saved"/"Disabled"
-  // for content apply discards, so the status names the row instead.
-  async function toggle(node: TreeNode): Promise<boolean> {
-    if (node.kind === "team") return toggleTeam(node)
-    if (node.address === undefined) {
-      setStatus(`"${node.label}" cannot be toggled`)
+  function memoInput(): MemoInput {
+    return { items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() }
+  }
+
+  async function toggleRow(node: TreeNode): Promise<boolean> {
+    if (node.kind === "team") return toggleTeamRow(node)
+    const result = toggle(memoInput(), node.id)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    if (node.actions?.toggle !== true) {
-      if (node.badges.unsupported === true) {
-        setStatus(
-          node.badges.unexcludable === true
-            ? `"${node.label}" cannot be excluded and remains in effect`
-            : `"${node.label}" is unsupported in Code Mode and cannot be toggled`,
-        )
-        return false
-      }
-      setStatus(`"${node.label}" cannot be toggled`)
-      return false
-    }
-    const chain = chainFor(node)
-    if (!chain) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    const resolved = resolve({
-      upstream: chain.upstream,
-      records: chain.customizations,
-      splits: chain.splits,
-      scopes: scopes(),
-      address: chain.address,
-    })
-    const next = merge(chain.customizations, chain.address, { state: resolved.enabled ? "off" : "on" }, chain.upstream)
-    return persist(
-      next,
-      chain.splits,
-      resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`,
-      `toggled "${node.label}" against a stale revision; retry to apply`,
-    )
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   // Team toggle: the tree row id is `team:<level>:<team>` (member rows hang
@@ -509,45 +467,32 @@ export function createInstructionsState(context: Plugin.Context) {
   // exactly like agent.delete/mcp.remove do — the fresh snapshot rebuilds
   // the tree with the new state. Declared errors surface as status text
   // like every other action path.
-  async function toggleTeam(node: TreeNode): Promise<boolean> {
-    if (node.actions?.toggle !== true) {
-      setStatus(`"${node.label}" cannot be toggled`)
-      return false
-    }
-    const match = node.id.match(/^team:(project|global):(.+)$/)
-    const level = match?.[1]
-    const team = match === null || match === undefined ? undefined : match[2]
-    if (level !== "project" && level !== "global") {
-      setStatus(`"${node.label}" cannot be toggled`)
-      return false
-    }
-    if (team === undefined) {
-      setStatus(`"${node.label}" cannot be toggled`)
-      return false
-    }
+  async function toggleTeamRow(node: TreeNode): Promise<boolean> {
     const current = snapshot()
     if (!current) {
       setStatus("No snapshot loaded")
       return false
     }
-    const entry = (current.teams ?? []).find((candidate) => candidate.level === level && candidate.team === team)
-    if (!entry) {
-      setStatus(`"${node.label}" cannot be toggled`)
+    const plan = teamPlan(memoInput(), node.id)
+    if ("refusal" in plan) {
+      setStatus(plan.refusal)
       return false
     }
-    const next = !entry.enabled
     const requestGen = ++generation
     setLoading(true)
     try {
-      const ref = await plus["team.setEnabled"]({ level, team, enabled: next }, { location: context.location })
+      const ref = await plus["team.setEnabled"](
+        { level: plan.level, team: plan.team, enabled: plan.enabled },
+        { location: context.location },
+      )
       if (disposed || disabled || requestGen !== generation) return false
-      if (ref.enabled !== next) {
-        setStatus(`Team "${team}" reported ${ref.enabled ? "enabled" : "disabled"} instead of the requested state`)
+      if (ref.enabled !== plan.enabled) {
+        setStatus(`Team "${plan.team}" reported ${ref.enabled ? "enabled" : "disabled"} instead of the requested state`)
         return false
       }
       await refresh()
       if (disposed || disabled) return false
-      setStatus(next ? `Enabled team "${team}"` : `Disabled team "${team}"`)
+      setStatus(plan.successStatus)
       return true
     } catch (error: unknown) {
       if (disposed || disabled || requestGen !== generation) return false
@@ -558,71 +503,28 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
-  async function setEnabled(node: TreeNode, value: boolean): Promise<boolean> {
-    if (node.address === undefined) {
-      setStatus(`"${node.label}" cannot be toggled`)
+  async function setEnabledRow(node: TreeNode, value: boolean): Promise<boolean> {
+    const result = setEnabled(memoInput(), node.id, value)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    if (node.actions?.toggle !== true) {
-      setStatus(`"${node.label}" cannot be toggled`)
-      return false
-    }
-    const chain = chainFor(node)
-    if (!chain) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream)
-    return persist(
-      next,
-      chain.splits,
-      value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
-      `toggled "${node.label}" against a stale revision; retry to apply`,
-    )
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
-  // Enter (non-review): save a text override at the current address. Gated
-  // rows refuse with the same unsupported wording as toggle so section edits
-  // on Code Mode tools cannot report "Saved" for discarded content.
-  async function saveText(node: TreeNode, text: string): Promise<boolean> {
-    if (node.address === undefined) {
-      setStatus(`"${node.label}" cannot be edited`)
+  async function saveTextRow(node: TreeNode, text: string): Promise<boolean> {
+    const result = saveText(memoInput(), node.id, text)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    if (node.actions?.edit !== true) {
-      if (node.badges.unsupported === true) {
-        setStatus(`"${node.label}" is unsupported in Code Mode and cannot be edited`)
-        return false
-      }
-      setStatus(`"${node.label}" cannot be edited`)
-      return false
-    }
-    const chain = chainFor(node)
-    if (!chain) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    const next = merge(chain.customizations, chain.address, { text }, chain.upstream)
-    return persist(
-      next,
-      chain.splits,
-      `Saved "${node.label}"`,
-      `saved "${node.label}" against a stale revision; retry to apply`,
-    )
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   async function resetNode(node: TreeNode): Promise<boolean> {
-    if (node.address === undefined) {
-      setStatus(`"${node.label}" cannot be reset`)
-      return false
-    }
-    const chain = chainFor(node)
-    if (!chain) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    if (node.actions?.reset !== true) {
-      setStatus(`"${node.label}" has no override to reset`)
+    const result = reset(memoInput(), node.id)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
     const confirmed = await context.ui.dialog.confirm({
@@ -633,46 +535,19 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus(`Reset of "${node.label}" cancelled`)
       return false
     }
-    return persist(
-      reset(chain.customizations, chain.address),
-      chain.splits,
-      `Reset "${node.label}" to default`,
-      `reset "${node.label}" against a stale revision; retry to apply`,
-    )
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
-  // s: persist the item's manual split at the level it was made.
-  async function saveSplit(
+  async function saveSplitRow(
     node: TreeNode,
     boundaries: readonly { id: string; name: string; start: number }[],
   ): Promise<boolean> {
-    const address = node.address
-    if (!address) {
-      setStatus(`"${node.label}" cannot be split`)
+    const result = saveSplit(memoInput(), node.id, boundaries)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    if (node.actions?.split !== true) {
-      setStatus(`"${node.label}" cannot be split`)
-      return false
-    }
-    const chain = chainFor(node)
-    if (!chain) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    const rest = chain.splits.filter(
-      (record) => !(record.level === address.level && record.agent === address.agent && record.item === address.item),
-    )
-    const nextSplits: (SplitRecord & { updated: string })[] = [
-      ...rest,
-      { type: "split", level: address.level, agent: address.agent, item: address.item, boundaries: [...boundaries], updated: now() },
-    ]
-    return persist(
-      chain.customizations,
-      nextSplits,
-      `Split "${node.label}"`,
-      `split "${node.label}" against a stale revision; retry to apply`,
-    )
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   // a on an item row: append one section through the manual splitter path.
@@ -680,130 +555,41 @@ export function createInstructionsState(context: Plugin.Context) {
   // and the CustomizationRecord text for the new section. Appending at the
   // end keeps existing offsets stable, so the first add on an unsplit item
   // coherently splits its existing text plus the new section.
-  async function addSection(node: TreeNode, name: string, text: string): Promise<boolean> {
-    const address = node.address
-    if (!address || node.kind !== "item") {
-      setStatus(`"${node.label}" does not support sections`)
+  async function addSectionRow(node: TreeNode, name: string, text: string): Promise<boolean> {
+    const result = addSection(memoInput(), node.id, name, text)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    if (node.actions?.split !== true) {
-      setStatus(`"${node.label}" does not support sections`)
-      return false
-    }
-    const chain = chainFor(node)
-    if (!chain) {
-      setStatus(`Item not found for "${node.label}"`)
-      return false
-    }
-    const currentText = resolvedText(node)
-    // Keep existing manual boundaries (minus any preview-only preamble) and
-    // append the new section at the end of the current text.
-    const preview = resolveSplit({
-      text: currentText,
-      title: chain.upstream.title,
-      splits: chain.splits,
-      scopes: scopes(),
-      address: chain.address,
-    })
-    const existing =
-      preview.kind === "manual"
-        ? preview.sections
-            .filter((section) => section.id !== "preamble")
-            .map((section) => ({ id: section.id, name: section.name, start: section.start }))
-        : [{ id: "existing", name: chain.upstream.title, start: 0 }]
-    const nextStart = currentText.length
-    const used = new Set(existing.map((entry) => entry.id))
-    const boundaries = [...existing, { id: claim(slugify(name), used), name, start: nextStart }]
-    // Build through the same manual() call the splitter previews with so the
-    // appended boundary and save always agree.
-    const split = manual(currentText, boundaries)
-    const added = split.sections.find((section) => section.start === nextStart && section.name === name)
-    if (!added) {
-      setStatus(`Could not add "${name}" to "${node.label}"`)
-      return false
-    }
-    const rest = chain.splits.filter(
-      (record) => !(record.level === address.level && record.agent === address.agent && record.item === address.item),
-    )
-    const nextSplits: (SplitRecord & { updated: string })[] = [
-      ...rest,
-      { type: "split", level: address.level, agent: address.agent, item: address.item, boundaries, updated: now() },
-    ]
-    const sectionAddress: Address = { ...address, section: added.id }
-    const sectionUpstream = upstreamSliceOf(split, currentText, added.id)
-    const nextCustomizations = merge(
-      chain.customizations,
-      sectionAddress,
-      { text },
-      { text: sectionUpstream, fingerprint: fingerprint(sectionUpstream) },
-      scopes(),
-      nextSplits,
-    )
-    return persist(
-      nextCustomizations,
-      nextSplits,
-      `Added "${name}" to "${node.label}"`,
-      `added "${name}" against a stale revision; retry to apply`,
-    )
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   // Yellow (review) resolutions via threeWay/resolveResolution.
   async function resolveKeep(node: TreeNode): Promise<boolean> {
-    const chain = chainFor(node)
-    if (!chain || !node.address) {
-      setStatus(`"${node.label}" cannot be resolved`)
+    const result = resolveReview(memoInput(), node.id, "keep")
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    const next = resolveResolution(
-      {
-        upstream: chain.upstream,
-        records: chain.customizations,
-        splits: chain.splits,
-        scopes: scopes(),
-        address: chain.address,
-      },
-      "keep",
-    )
-    return persist(next, chain.splits, `Kept "${node.label}"`, `resolved "${node.label}" against a stale revision; retry`)
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   async function resolveTake(node: TreeNode): Promise<boolean> {
-    const chain = chainFor(node)
-    if (!chain || !node.address) {
-      setStatus(`"${node.label}" cannot be resolved`)
+    const result = resolveReview(memoInput(), node.id, "take")
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    const next = resolveResolution(
-      {
-        upstream: chain.upstream,
-        records: chain.customizations,
-        splits: chain.splits,
-        scopes: scopes(),
-        address: chain.address,
-      },
-      "take",
-    )
-    return persist(next, chain.splits, `Took upstream for "${node.label}"`, `resolved "${node.label}" against a stale revision; retry`)
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
-    const chain = chainFor(node)
-    if (!chain || !node.address) {
-      setStatus(`"${node.label}" cannot be resolved`)
+    const result = resolveReview(memoInput(), node.id, "edit", edited)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
       return false
     }
-    const next = resolveResolution(
-      {
-        upstream: chain.upstream,
-        records: chain.customizations,
-        splits: chain.splits,
-        scopes: scopes(),
-        address: chain.address,
-      },
-      "edit",
-      edited,
-    )
-    return persist(next, chain.splits, `Edited "${node.label}"`, `resolved "${node.label}" against a stale revision; retry`)
+    return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
   function splitPreview(node: TreeNode) {
@@ -826,205 +612,41 @@ export function createInstructionsState(context: Plugin.Context) {
   // every item and section row so refusals reach the user as status text;
   // rows without remove actions never delete.
   async function remove(node: TreeNode): Promise<boolean> {
-    if (node.kind === "agent") {
-      if (node.actions?.remove !== true) {
-        setStatus(`"${node.label}" cannot be deleted`)
-        return false
-      }
-      const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
-      const agentId = match?.[2]
-      const scope = match?.[1]
-      if (!agentId || !scope) {
-        setStatus(`"${node.label}" cannot be deleted`)
-        return false
-      }
-      if (scope !== "project" && scope !== "global") {
-        setStatus(`"${node.label}" cannot be deleted: agent.delete supports scope project|global only`)
-        return false
-      }
-      const confirmed = await context.ui.dialog.confirm({
-        title: `Delete agent ${agentId}?`,
-        message: `Delete ${scope} agent "${agentId}"? This cannot be undone.`,
-      })
-      if (confirmed !== true) {
-        setStatus(`Delete of "${node.label}" cancelled`)
-        return false
-      }
-      try {
-        await plus["agent.delete"]({ scope, id: agentId }, { location: context.location })
-        if (disposed) return false
-        await refresh()
-        if (disposed) return false
-        setStatus(`Deleted agent ${agentId}`)
-        return true
-      } catch (error: unknown) {
-        setStatus(errorMessage(error))
-        return false
-      }
-    }
-    const address = node.address
-    if (node.kind === "item" && node.actions?.remove !== true) {
-      const refusal = refusalFor(node)
-      if (refusal !== undefined) {
-        setStatus(refusal)
-        return false
-      }
-      setStatus(`"${node.label}" cannot be deleted`)
+    const plan = removalPlan(memoInput(), node.id)
+    if ("refusal" in plan) {
+      setStatus(plan.refusal)
       return false
     }
-    if (node.kind === "section") {
-      setStatus(`"${node.label}" cannot be deleted: sections are toggled or split, not deleted`)
+    const confirmed = await context.ui.dialog.confirm({
+      title: plan.confirmTitle,
+      message: plan.confirmMessage,
+    })
+    if (confirmed !== true) {
+      setStatus(`Delete of "${node.label}" cancelled`)
       return false
     }
-    if (node.actions?.remove !== true) {
-      setStatus(`"${node.label}" cannot be deleted`)
+    try {
+      if (plan.kind === "agent.delete") {
+        await plus["agent.delete"]({ scope: plan.scope, id: plan.id }, { location: context.location })
+      } else if (plan.kind === "mcp.remove") {
+        await plus["mcp.remove"]({ name: plan.name }, { location: context.location })
+      } else if (plan.kind === "skill.delete") {
+        await plus["skill.delete"]({ id: plan.id }, { location: context.location })
+      } else if (plan.kind === "base.delete") {
+        await plus["base.delete"]({ id: plan.id }, { location: context.location })
+      } else {
+        await plus["instruction.delete"]({ name: plan.name }, { location: context.location })
+      }
+      if (disposed) return false
+      await refresh()
+      if (disposed) return false
+      setStatus(plan.successStatus)
+      return true
+    } catch (error: unknown) {
+      setStatus(errorMessage(error))
       return false
     }
-    if (address && address.item.startsWith("mcp:") && address.level === "defaults" && address.agent === null) {
-      const name = address.item.slice("mcp:".length)
-      const confirmed = await context.ui.dialog.confirm({
-        title: `Remove MCP server ${name}?`,
-        message: `Remove MCP server "${name}"? This cannot be undone.`,
-      })
-      if (confirmed !== true) {
-        setStatus(`Delete of "${node.label}" cancelled`)
-        return false
-      }
-      try {
-        await plus["mcp.remove"]({ name }, { location: context.location })
-        if (disposed) return false
-        await refresh()
-        if (disposed) return false
-        setStatus(`Removed MCP server ${name}`)
-        return true
-      } catch (error: unknown) {
-        setStatus(errorMessage(error))
-        return false
-      }
-    }
-    const itemId = address?.item ?? node.label
-    const item = currentItem(address)
-    if (item === undefined) {
-      setStatus(`"${node.label}" cannot be deleted`)
-      return false
-    }
-    if (item.kind === "skill" && itemId.startsWith("skill:")) {
-      const skillId = itemId.slice("skill:".length)
-      if (node.actions?.remove !== true || item.group !== "project") {
-        setStatus(`"${node.label}" cannot be deleted: skill "${skillId}" is not project-owned`)
-        return false
-      }
-      const confirmed = await context.ui.dialog.confirm({
-        title: `Delete skill ${skillId}?`,
-        message: `Delete project skill "${skillId}"? This cannot be undone.`,
-      })
-      if (confirmed !== true) {
-        setStatus(`Delete of "${node.label}" cancelled`)
-        return false
-      }
-      try {
-        await plus["skill.delete"]({ id: skillId }, { location: context.location })
-        if (disposed) return false
-        await refresh()
-        if (disposed) return false
-        setStatus(`Deleted skill ${skillId}`)
-        return true
-      } catch (error: unknown) {
-        setStatus(errorMessage(error))
-        return false
-      }
-    }
-    if (item.kind === "base" && itemId.startsWith("base:")) {
-      const templateId = itemId.slice("base:".length)
-      if (node.actions?.remove !== true) {
-        setStatus(`"${node.label}" cannot be deleted: base template "${templateId}" is built in`)
-        return false
-      }
-      const confirmed = await context.ui.dialog.confirm({
-        title: `Delete base template ${templateId}?`,
-        message: `Delete base template "${templateId}"? This cannot be undone.`,
-      })
-      if (confirmed !== true) {
-        setStatus(`Delete of "${node.label}" cancelled`)
-        return false
-      }
-      try {
-        await plus["base.delete"]({ id: templateId }, { location: context.location })
-        if (disposed) return false
-        await refresh()
-        if (disposed) return false
-        setStatus(`Deleted base template ${templateId}`)
-        return true
-      } catch (error: unknown) {
-        setStatus(errorMessage(error))
-        return false
-      }
-    }
-    if (item.kind === "system" && itemId.startsWith("system:") && itemId !== "system:role") {
-      const relative = itemId.slice("system:".length)
-      if (node.actions?.remove !== true) {
-        setStatus(`"${node.label}" cannot be deleted: instruction "${relative}" is not project-owned`)
-        return false
-      }
-      const confirmed = await context.ui.dialog.confirm({
-        title: `Delete instruction ${relative}?`,
-        message: `Delete instruction "${relative}"? This cannot be undone.`,
-      })
-      if (confirmed !== true) {
-        setStatus(`Delete of "${node.label}" cancelled`)
-        return false
-      }
-      try {
-        await plus["instruction.delete"]({ name: relative }, { location: context.location })
-        if (disposed) return false
-        await refresh()
-        if (disposed) return false
-        setStatus(`Deleted instruction ${relative}`)
-        return true
-      } catch (error: unknown) {
-        setStatus(errorMessage(error))
-        return false
-      }
-    }
-    if (item.kind === "system" && itemId === "system:role") {
-      setStatus(`"${node.label}" cannot be deleted: the agent's own prompt body is not a file`)
-      return false
-    }
-    setStatus(`"${node.label}" cannot be deleted`)
-    return false
   }
-
-  function refusalFor(node: TreeNode): string | undefined {
-    const address = node.address
-    if (address === undefined) return undefined
-    const item = currentItem(address)
-    if (item === undefined) return undefined
-    if (item.kind === "skill") {
-      const skillId = address.item.startsWith("skill:") ? address.item.slice("skill:".length) : address.item
-      return `"${node.label}" cannot be deleted: skill "${skillId}" is not project-owned`
-    }
-    if (item.kind === "base") {
-      const templateId = address.item.startsWith("base:") ? address.item.slice("base:".length) : address.item
-      return `"${node.label}" cannot be deleted: base template "${templateId}" is built in`
-    }
-    if (item.kind === "system" && item.id !== "system:role") {
-      const relative = address.item.startsWith("system:") ? address.item.slice("system:".length) : address.item
-      return `"${node.label}" cannot be deleted: instruction "${relative}" is not project-owned`
-    }
-    if (node.kind === "section") return `"${node.label}" cannot be deleted: sections are toggled or split, not deleted`
-    if (item.id === "system:role") return `"${node.label}" cannot be deleted: the agent's own prompt body is not a file`
-    if (item.kind === "tool" || item.kind === "mcp")
-      return `"${node.label}" cannot be deleted: ${item.kind} rows are not files`
-    return undefined
-  }
-
-  function currentItem(address: Address | undefined) {
-    if (address === undefined) return undefined
-    const items = snapshot()?.items
-    if (items === undefined) return undefined
-    return upstreamFor(items, address)
-  }
-
   void load()
   const unsubscribeInstructions = plus.events.on("instructions.changed", () => {
     void load()
@@ -1065,12 +687,12 @@ export function createInstructionsState(context: Plugin.Context) {
     select,
     selectAgent,
     move,
-    toggle,
-    setEnabled,
-    saveText,
+    toggle: toggleRow,
+    setEnabled: setEnabledRow,
+    saveText: saveTextRow,
     reset: resetNode,
-    saveSplit,
-    addSection,
+    saveSplit: saveSplitRow,
+    addSection: addSectionRow,
     splitPreview,
     resolvedText,
     threeWay: threeWayFor,
@@ -1084,32 +706,6 @@ export function createInstructionsState(context: Plugin.Context) {
 }
 
 export type InstructionsState = ReturnType<typeof createInstructionsState>
-
-function upstreamSliceOf(split: Split, text: string, id: string): string {
-  const section = split.sections.find((entry) => entry.id === id)
-  if (section === undefined) return ""
-  return slice(text, section)
-}
-
-// Same slug rules as the manual splitter so add-section ids match.
-function slugify(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-  return slug.length > 0 ? slug : "section"
-}
-
-function claim(base: string, used: Set<string>): string {
-  if (!used.has(base)) {
-    used.add(base)
-    return base
-  }
-  let n = 2
-  while (used.has(`${base}-${n}`)) n += 1
-  used.add(`${base}-${n}`)
-  return `${base}-${n}`
-}
 
 function now(): string {
   return new Date().toISOString()

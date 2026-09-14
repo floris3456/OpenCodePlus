@@ -69,7 +69,663 @@ export default Plugin.define({
     }),
 })
 
+export type SnapshotResult =
+  | { ok: true; value: Plus.Snapshot }
+  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+
+export type RefreshResult = SnapshotResult
+
+export type MutateResult =
+  | { ok: true; value: Plus.MutateResult }
+  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+
+export type LogResult =
+  | { ok: true; value: Plus.LogOutput }
+  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+
+export type AssembledResult =
+  | { ok: true; value: Plus.Assembled }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "agent.unknown"; message: string; data: Plus.AgentUnknown }
+    }
+
+export type CreateAgentResult =
+  | { ok: true; value: Plus.AgentRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+        | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+    }
+
+export type RenameAgentResult =
+  | { ok: true; value: Plus.RenameAgentResult }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
+        | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+        | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+    }
+
+export type DeleteAgentResult =
+  | { ok: true; value: Plus.AgentRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
+        | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+    }
+
+export type CreateSkillResult =
+  | { ok: true; value: Plus.SkillRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "skill.exists"; message: string; data: Plus.SkillExists }
+        | { code: "skill.invalid"; message: string; data: Plus.SkillInvalid }
+    }
+
+export type ImportSkillResult = CreateSkillResult
+
+export type DeleteSkillResult =
+  | { ok: true; value: Plus.SkillRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "skill.missing"; message: string; data: Plus.SkillMissing }
+        | { code: "skill.invalid"; message: string; data: Plus.SkillInvalid }
+    }
+
+export type CreateBaseResult =
+  | { ok: true; value: Plus.BaseRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "base.exists"; message: string; data: Plus.BaseExists }
+        | { code: "base.invalid"; message: string; data: Plus.BaseInvalid }
+    }
+
+export type DeleteBaseResult =
+  | { ok: true; value: Plus.BaseRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "base.missing"; message: string; data: Plus.BaseMissing }
+        | { code: "base.invalid"; message: string; data: Plus.BaseInvalid }
+    }
+
+export type CreateInstructionApiResult =
+  | { ok: true; value: Plus.InstructionRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "instruction.exists"; message: string; data: Plus.InstructionExists }
+        | { code: "instruction.invalid"; message: string; data: Plus.InstructionInvalid }
+    }
+
+export type DeleteInstructionApiResult =
+  | { ok: true; value: Plus.InstructionRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "instruction.missing"; message: string; data: Plus.InstructionMissing }
+        | { code: "instruction.invalid"; message: string; data: Plus.InstructionInvalid }
+    }
+
+export type AddMcpResult =
+  | { ok: true; value: Plus.McpRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "mcp.exists"; message: string; data: Plus.McpExists }
+        | { code: "mcp.invalid"; message: string; data: Plus.McpInvalid }
+    }
+
+export type RemoveMcpResult =
+  | { ok: true; value: Plus.McpRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "mcp.missing"; message: string; data: Plus.McpMissing }
+        | { code: "mcp.invalid"; message: string; data: Plus.McpInvalid }
+    }
+
+export type SetTeamEnabledResult =
+  | { ok: true; value: Plus.TeamRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+    }
+
+export interface PlusApi {
+  readonly snapshot: () => Promise<SnapshotResult>
+  readonly refresh: () => Promise<RefreshResult>
+  readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
+  readonly log: (input: Plus.LogInput) => Promise<LogResult>
+  readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
+  readonly createAgent: (input: Plus.CreateAgentInput) => Promise<CreateAgentResult>
+  readonly renameAgent: (input: Plus.RenameAgentInput) => Promise<RenameAgentResult>
+  readonly deleteAgent: (input: Plus.DeleteAgentInput) => Promise<DeleteAgentResult>
+  readonly createSkill: (input: Plus.CreateSkillInput) => Promise<CreateSkillResult>
+  readonly importSkill: (input: Plus.ImportSkillInput) => Promise<ImportSkillResult>
+  readonly deleteSkill: (input: Plus.DeleteSkillInput) => Promise<DeleteSkillResult>
+  readonly createBase: (input: Plus.CreateBaseInput) => Promise<CreateBaseResult>
+  readonly deleteBase: (input: Plus.DeleteBaseInput) => Promise<DeleteBaseResult>
+  readonly createInstruction: (input: Plus.CreateInstructionInput) => Promise<CreateInstructionApiResult>
+  readonly deleteInstruction: (input: Plus.DeleteInstructionInput) => Promise<DeleteInstructionApiResult>
+  readonly addMcp: (input: Plus.AddMcpInput) => Promise<AddMcpResult>
+  readonly removeMcp: (input: Plus.McpRef) => Promise<RemoveMcpResult>
+  readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput) => Promise<SetTeamEnabledResult>
+}
+
+export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
+  return {
+    snapshot: async () => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const discovered = await discoverAll(ctx, loaded, state.baselines)
+      const teams = await snapshotTeams(directory, loaded.records)
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
+    },
+    refresh: async () => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded))
+      const teams = await snapshotTeams(directory, loaded.records)
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
+    },
+    mutate: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const staleStore =
+        input.expectedRevision !== loaded.projectRevision
+          ? ("project" as const)
+          : input.expectedGlobalRevision !== loaded.globalRevision
+            ? ("global" as const)
+            : undefined
+      if (staleStore !== undefined) {
+        const discovered = await discoverAll(ctx, loaded, state.baselines)
+        const staleTeams = await snapshotTeams(directory, loaded.records)
+        return {
+          ok: true as const,
+          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) },
+        }
+      }
+      const records: StoredRecord[] = [
+        ...input.records.map(toRecord),
+        ...loaded.records.filter((record) => record.type === "team"),
+      ]
+      const saved = await save(directory, {
+        expectedProjectRevision: loaded.projectRevision,
+        expectedGlobalRevision: loaded.globalRevision,
+        records,
+      })
+      if (!saved.ok) {
+        const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
+        const discovered = await discoverAll(ctx, refreshed, state.baselines)
+        const staleTeams = await snapshotTeams(directory, refreshed.records)
+        return {
+          ok: true as const,
+          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) },
+        }
+      }
+      await logMutate({
+        directory,
+        actor: normalizeActor(input.actor),
+        before: loaded.records,
+        after: records,
+        projectRevision: saved.projectRevision,
+        globalRevision: saved.globalRevision,
+        projectChanged: saved.changed.project,
+        globalChanged: saved.changed.global,
+      })
+      const reloaded = await load(directory)
+      const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
+      const discovered = await Effect.runPromise(publishFresh(ctx, state, next))
+      const teams = await snapshotTeams(directory, next.records)
+      const snapshot = toSnapshot(discovered, next, teams)
+      return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
+    },
+    log: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const merged = await readBoth(directory, { ...(input.where === undefined ? {} : { where: input.where }) })
+      const offset = input.offset === undefined || Number.isNaN(input.offset) ? 0 : Math.max(0, Math.floor(input.offset))
+      const limit = input.limit === undefined || Number.isNaN(input.limit) ? undefined : Math.max(0, Math.floor(input.limit))
+      const total = merged.length
+      const entries = limit === undefined ? merged.slice(offset) : merged.slice(offset, offset + limit)
+      return { ok: true as const, value: { entries: [...entries], total } }
+    },
+    assembled: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const discovered = await discoverAll(ctx, loaded, state.baselines)
+      const result = await assembled({
+        ctx,
+        agent: input.agent,
+        items: discovered.items,
+        agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+        records: customizationsOf(loaded.records),
+        splits: splitsOf(loaded.records),
+        scopes: scopesOf(discovered.agents),
+        installedTools: state.installedTools,
+      })
+      if ("ok" in result)
+        return {
+          ok: false as const,
+          error: { code: "agent.unknown" as const, message: `Unknown agent ${input.agent}`, data: { agent: input.agent } },
+        }
+      return { ok: true as const, value: result }
+    },
+    createAgent: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateAgentId(input.id)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+        }
+      const seed = input.template === undefined ? undefined : await readTemplate(ctx, directory, input.template as string)
+      if (input.template !== undefined && seed === undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.invalid" as const,
+            message: `Unknown template ${input.template}`,
+            data: { id: input.id, reason: `Unknown template ${input.template}` },
+          },
+        }
+      const created = await create({
+        scope: input.scope,
+        projectDirectory: directory,
+        id: validated.id,
+        fields: seed?.fields ?? toAgentFields(input.fields),
+        prompt: seed?.prompt ?? input.prompt,
+      })
+      if (!created.ok)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.exists" as const,
+            message: `Agent ${validated.id} already exists at ${created.path}`,
+            data: { path: created.path },
+          },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: input.scope,
+        op: "agent.create",
+        target: created.path,
+        summary: `agent.create ${validated.id} (${input.scope})`,
+      })
+      return { ok: true as const, value: { id: validated.id, path: created.path } }
+    },
+    renameAgent: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const from = validateAgentId(input.from)
+      if (!from.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: from.reason, data: { id: input.from, reason: from.reason } },
+        }
+      const to = validateAgentId(input.to)
+      if (!to.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: to.reason, data: { id: input.to, reason: to.reason } },
+        }
+      const renamed = await rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id })
+      if (!renamed.ok && renamed.reason === "missing-source")
+        return {
+          ok: false as const,
+          error: { code: "agent.missing" as const, message: `Agent ${from.id} does not exist at ${renamed.path}`, data: { path: renamed.path } },
+        }
+      if (!renamed.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.exists" as const, message: `Agent ${to.id} already exists at ${renamed.path}`, data: { path: renamed.path } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: input.scope,
+        op: "agent.rename",
+        target: renamed.toPath,
+        summary: `agent.rename ${from.id} to ${to.id} (${input.scope})`,
+      })
+      return { ok: true as const, value: { from: from.id, to: to.id, path: renamed.toPath } }
+    },
+    deleteAgent: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateAgentId(input.id)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+        }
+      const removed = await remove({ scope: input.scope, projectDirectory: directory, id: validated.id })
+      if (!removed.ok)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.missing" as const,
+            message: `Agent ${validated.id} does not exist at ${removed.path}`,
+            data: { path: removed.path },
+          },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: input.scope,
+        op: "agent.delete",
+        target: removed.path,
+        summary: `agent.delete ${validated.id} (${input.scope})`,
+      })
+      return { ok: true as const, value: { id: validated.id, path: removed.path } }
+    },
+    createSkill: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await createSkill({ projectDirectory: directory, name: input.name, body: input.body })
+      if (!result.ok && result.reason === "exists")
+        return {
+          ok: false as const,
+          error: { code: "skill.exists" as const, message: `Skill ${result.id} already exists`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({ directory, scope: "project", op: "skill.create", target: result.path, summary: `skill.create ${result.id}` })
+      return { ok: true as const, value: { id: result.id, path: result.path } }
+    },
+    importSkill: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await importSkill({ projectDirectory: directory, path: input.path })
+      if (!result.ok && result.reason === "exists")
+        return {
+          ok: false as const,
+          error: { code: "skill.exists" as const, message: `Skill ${result.id} already exists`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({ directory, scope: "project", op: "skill.import", target: result.path, summary: `skill.import ${result.id}` })
+      return { ok: true as const, value: { id: result.id, path: result.path } }
+    },
+    deleteSkill: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await deleteSkill({ projectDirectory: directory, id: input.id })
+      if (!result.ok && result.reason === "missing")
+        return {
+          ok: false as const,
+          error: { code: "skill.missing" as const, message: `Skill ${result.id} does not exist`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({ directory, scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` })
+      return { ok: true as const, value: { id: result.id, path: result.path } }
+    },
+    createBase: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await createBaseTemplate(input.id, input.title, input.text)
+      if (!result.ok && result.reason === "exists")
+        return {
+          ok: false as const,
+          error: { code: "base.exists" as const, message: `Base template ${result.id} already exists`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "base.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: "global",
+        op: "base.create",
+        target: userBaseFile(result.id),
+        summary: `base.create ${result.id}`,
+      })
+      return { ok: true as const, value: { id: result.id } }
+    },
+    deleteBase: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await deleteBaseTemplate(input.id)
+      if (!result.ok && result.reason === "missing")
+        return {
+          ok: false as const,
+          error: { code: "base.missing" as const, message: `Base template ${result.id} does not exist`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "base.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: "global",
+        op: "base.delete",
+        target: userBaseFile(result.id),
+        summary: `base.delete ${result.id}`,
+      })
+      return { ok: true as const, value: { id: result.id } }
+    },
+    createInstruction: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await createInstruction({
+        sessionDirectory: directory,
+        projectDirectory: ctx.location.project.directory,
+        name: input.name,
+        text: input.text,
+      })
+      if (!result.ok && result.reason === "exists")
+        return {
+          ok: false as const,
+          error: { code: "instruction.exists" as const, message: `Instruction already exists at ${result.path}`, data: { path: result.path } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "instruction.invalid" as const, message: result.message, data: { name: input.name, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: "project",
+        op: "instruction.create",
+        target: result.path,
+        summary: `instruction.create ${input.name}`,
+      })
+      return { ok: true as const, value: { id: result.id, path: result.path } }
+    },
+    deleteInstruction: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await deleteInstruction({ projectDirectory: directory, name: input.name })
+      if (!result.ok && result.reason === "missing")
+        return {
+          ok: false as const,
+          error: { code: "instruction.missing" as const, message: `Instruction ${result.name} does not exist`, data: { name: result.name } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "instruction.invalid" as const, message: result.message, data: { name: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        scope: "project",
+        op: "instruction.delete",
+        target: result.path,
+        summary: `instruction.delete ${input.name}`,
+      })
+      return { ok: true as const, value: { id: result.id, path: result.path } }
+    },
+    addMcp: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await addMcp({ projectDirectory: directory, name: input.name, config: { ...input.config } })
+      if (!result.ok && result.reason === "exists")
+        return {
+          ok: false as const,
+          error: { code: "mcp.exists" as const, message: `MCP server ${result.name} already exists`, data: { name: result.name } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "mcp.invalid" as const, message: result.message, data: { name: result.name, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      const addedConfig = await mcpConfigTarget(directory)
+      await logFileOp({ directory, scope: "project", op: "mcp.add", target: addedConfig, summary: `mcp.add ${result.name}` })
+      return { ok: true as const, value: { name: result.name } }
+    },
+    removeMcp: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const result = await removeMcp({ projectDirectory: directory, name: input.name })
+      if (!result.ok && result.reason === "missing")
+        return {
+          ok: false as const,
+          error: { code: "mcp.missing" as const, message: `MCP server ${result.name} does not exist`, data: { name: result.name } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "mcp.invalid" as const, message: result.message, data: { name: result.name, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      const removedConfig = await mcpConfigTarget(directory)
+      await logFileOp({ directory, scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` })
+      return { ok: true as const, value: { name: result.name } }
+    },
+    setTeamEnabled: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const validated = validateTeamName(input.team)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: validated.reason, data: { team: input.team, reason: validated.reason } },
+        }
+      const known = await discoverTeams(input.level, directory)
+      if (!known.some((team) => team.team === validated.team))
+        return {
+          ok: false as const,
+          error: { code: "team.unknown" as const, message: `Unknown team ${validated.team}`, data: { level: input.level, team: validated.team } },
+        }
+      const saved = await saveTeamRecord(directory, loaded, input.level, validated.team, input.enabled)
+      if (!saved.ok)
+        return {
+          ok: false as const,
+          error: {
+            code: "team.unknown" as const,
+            message: `Team ${validated.team} changed concurrently; retry`,
+            data: { level: input.level, team: validated.team },
+          },
+        }
+      if (saved.changed)
+        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          ts: new Date().toISOString(),
+          actor: { type: "tui" },
+          op: "team.setEnabled",
+          target: `team:${input.level}:${validated.team}`,
+          summary: `team.setEnabled ${validated.team} ${input.enabled ? "enabled" : "disabled"} (${input.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
+    },
+  }
+}
+
 export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<typeof Definition> {
+  const api = createPlusApi(ctx, state)
   return {
     "project.status": () =>
       Effect.gen(function* () {
@@ -110,469 +766,195 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
       }),
     "instructions.snapshot": (_input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        const loaded = yield* loadStored(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
-        const teams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
-        return toSnapshot(discovered, loaded, teams)
+        const result = yield* Effect.promise(() => api.snapshot())
+        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+        return result.value
       }),
     "instructions.refresh": (_input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        const loaded = yield* loadStored(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const discovered = yield* publishFresh(ctx, state, loaded)
-        const teams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
-        return toSnapshot(discovered, loaded, teams)
+        const result = yield* Effect.promise(() => api.refresh())
+        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+        return result.value
       }),
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        const loaded = yield* loadStored(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const staleStore =
-          input.expectedRevision !== loaded.projectRevision
-            ? ("project" as const)
-            : input.expectedGlobalRevision !== loaded.globalRevision
-              ? ("global" as const)
-              : undefined
-        if (staleStore !== undefined) {
-          const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
-          const staleTeams = yield* Effect.promise(() => snapshotTeams(directory, loaded.records))
-          return { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) }
-        }
-        const records: StoredRecord[] = [
-          ...input.records.map(toRecord),
-          ...loaded.records.filter((record) => record.type === "team"),
-        ]
-        const saved = yield* Effect.promise(() =>
-          save(
-            directory,
-            {
-              expectedProjectRevision: loaded.projectRevision,
-              expectedGlobalRevision: loaded.globalRevision,
-              // The RPC surface has no team variant, so the client cannot see
-              // teams; merge stored team records back so a mutate round-trip
-              // cannot delete them. Stored records pass through route/same
-              // unchanged, so this keeps an otherwise unchanged save a no-op.
-              records,
-            },
-          ),
-        )
-        if (!saved.ok) {
-          const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
-          const discovered = yield* Effect.promise(() => discoverAll(ctx, refreshed, state.baselines))
-          const staleTeams = yield* Effect.promise(() => snapshotTeams(directory, refreshed.records))
-          return { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) }
-        }
-        yield* Effect.promise(() =>
-          logMutate({
-            directory,
-            actor: normalizeActor(input.actor),
-            before: loaded.records,
-            after: records,
-            projectRevision: saved.projectRevision,
-            globalRevision: saved.globalRevision,
-            projectChanged: saved.changed.project,
-            globalChanged: saved.changed.global,
-          }),
-        )
-        const reloaded = yield* Effect.promise(() => load(directory))
-        const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
-        const discovered = yield* publishFresh(ctx, state, next)
-        const teams = yield* Effect.promise(() => snapshotTeams(directory, next.records))
-        const snapshot = toSnapshot(discovered, next, teams)
-        return { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot }
+        const result = yield* Effect.promise(() => api.mutate(input))
+        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+        return result.value
       }),
     "instructions.log": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const merged = yield* Effect.promise(() =>
-          readBoth(directory, { ...(input.where === undefined ? {} : { where: input.where }) }),
-        )
-        const offset = input.offset === undefined || Number.isNaN(input.offset) ? 0 : Math.max(0, Math.floor(input.offset))
-        const limit =
-          input.limit === undefined || Number.isNaN(input.limit) ? undefined : Math.max(0, Math.floor(input.limit))
-        const total = merged.length
-        const entries = limit === undefined ? merged.slice(offset) : merged.slice(offset, offset + limit)
-        return { entries: [...entries], total }
+        const result = yield* Effect.promise(() => api.log(input))
+        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+        return result.value
       }),
     "instructions.assembled": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        const loaded = yield* loadStored(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const discovered = yield* Effect.promise(() => discoverAll(ctx, loaded, state.baselines))
-        const result = yield* Effect.promise(() =>
-          assembled({
-            ctx,
-            agent: input.agent,
-            items: discovered.items,
-            agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
-            records: customizationsOf(loaded.records),
-            splits: splitsOf(loaded.records),
-            scopes: scopesOf(discovered.agents),
-            installedTools: state.installedTools,
-          }),
-        )
-        if ("ok" in result)
-          return yield* Effect.fail(context.error("agent.unknown", `Unknown agent ${input.agent}`, { agent: input.agent }))
-        return result
+        const result = yield* Effect.promise(() => api.assembled(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.unknown", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "agent.create": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const validated = validateAgentId(input.id)
-        if (!validated.ok)
-          return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
-        const seed = input.template === undefined ? undefined : yield* Effect.promise(() => readTemplate(ctx, directory, input.template as string))
-        if (input.template !== undefined && seed === undefined)
-          return yield* Effect.fail(
-            context.error("agent.invalid", `Unknown template ${input.template}`, { id: input.id, reason: `Unknown template ${input.template}` }),
-          )
-        const created = yield* Effect.promise(() =>
-          create({
-            scope: input.scope,
-            projectDirectory: directory,
-            id: validated.id,
-            // Creating from a template must NOT copy records: the new agent
-            // simply inherits through the resolution chain. Template only
-            // selects the prompt/frontmatter seed below.
-            fields: seed?.fields ?? toAgentFields(input.fields),
-            prompt: seed?.prompt ?? input.prompt,
-          }),
-        )
-        if (!created.ok)
-          return yield* Effect.fail(
-            context.error("agent.exists", `Agent ${validated.id} already exists at ${created.path}`, {
-              path: created.path,
-            }),
-          )
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: input.scope,
-            op: "agent.create",
-            target: created.path,
-            summary: `agent.create ${validated.id} (${input.scope})`,
-          }),
-        )
-        return { id: validated.id, path: created.path }
+        const result = yield* Effect.promise(() => api.createAgent(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "agent.exists")
+            return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "agent.rename": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const from = validateAgentId(input.from)
-        if (!from.ok)
-          return yield* Effect.fail(context.error("agent.invalid", from.reason, { id: input.from, reason: from.reason }))
-        const to = validateAgentId(input.to)
-        if (!to.ok)
-          return yield* Effect.fail(context.error("agent.invalid", to.reason, { id: input.to, reason: to.reason }))
-        const renamed = yield* Effect.promise(() =>
-          rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id }),
-        )
-        if (!renamed.ok && renamed.reason === "missing-source")
-          return yield* Effect.fail(
-            context.error("agent.missing", `Agent ${from.id} does not exist at ${renamed.path}`, {
-              path: renamed.path,
-            }),
-          )
-        if (!renamed.ok)
-          return yield* Effect.fail(
-            context.error("agent.exists", `Agent ${to.id} already exists at ${renamed.path}`, {
-              path: renamed.path,
-            }),
-          )
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: input.scope,
-            op: "agent.rename",
-            target: renamed.toPath,
-            summary: `agent.rename ${from.id} to ${to.id} (${input.scope})`,
-          }),
-        )
-        return { from: from.id, to: to.id, path: renamed.toPath }
+        const result = yield* Effect.promise(() => api.renameAgent(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "agent.missing")
+            return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
+          if (result.error.code === "agent.exists")
+            return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "agent.delete": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const validated = validateAgentId(input.id)
-        if (!validated.ok)
-          return yield* Effect.fail(context.error("agent.invalid", validated.reason, { id: input.id, reason: validated.reason }))
-        const removed = yield* Effect.promise(() =>
-          remove({ scope: input.scope, projectDirectory: directory, id: validated.id }),
-        )
-        if (!removed.ok)
-          return yield* Effect.fail(
-            context.error("agent.missing", `Agent ${validated.id} does not exist at ${removed.path}`, {
-              path: removed.path,
-            }),
-          )
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: input.scope,
-            op: "agent.delete",
-            target: removed.path,
-            summary: `agent.delete ${validated.id} (${input.scope})`,
-          }),
-        )
-        return { id: validated.id, path: removed.path }
+        const result = yield* Effect.promise(() => api.deleteAgent(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "agent.missing")
+            return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "skill.create": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() =>
-          createSkill({ projectDirectory: directory, name: input.name, body: input.body }),
-        )
-        if (!result.ok && result.reason === "exists")
-          return yield* Effect.fail(context.error("skill.exists", `Skill ${result.id} already exists`, { id: result.id }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({ directory, scope: "project", op: "skill.create", target: result.path, summary: `skill.create ${result.id}` }),
-        )
-        return { id: result.id, path: result.path }
+        const result = yield* Effect.promise(() => api.createSkill(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "skill.exists")
+            return yield* Effect.fail(context.error("skill.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "skill.import": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() => importSkill({ projectDirectory: directory, path: input.path }))
-        if (!result.ok && result.reason === "exists")
-          return yield* Effect.fail(context.error("skill.exists", `Skill ${result.id} already exists`, { id: result.id }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({ directory, scope: "project", op: "skill.import", target: result.path, summary: `skill.import ${result.id}` }),
-        )
-        return { id: result.id, path: result.path }
+        const result = yield* Effect.promise(() => api.importSkill(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "skill.exists")
+            return yield* Effect.fail(context.error("skill.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "skill.delete": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() => deleteSkill({ projectDirectory: directory, id: input.id }))
-        if (!result.ok && result.reason === "missing")
-          return yield* Effect.fail(context.error("skill.missing", `Skill ${result.id} does not exist`, { id: result.id }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("skill.invalid", result.message, { id: result.id, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({ directory, scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` }),
-        )
-        return { id: result.id, path: result.path }
+        const result = yield* Effect.promise(() => api.deleteSkill(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "skill.missing")
+            return yield* Effect.fail(context.error("skill.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "base.create": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() => createBaseTemplate(input.id, input.title, input.text))
-        if (!result.ok && result.reason === "exists")
-          return yield* Effect.fail(context.error("base.exists", `Base template ${result.id} already exists`, { id: result.id }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: "global",
-            op: "base.create",
-            target: userBaseFile(result.id),
-            summary: `base.create ${result.id}`,
-          }),
-        )
-        return { id: result.id }
+        const result = yield* Effect.promise(() => api.createBase(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "base.exists")
+            return yield* Effect.fail(context.error("base.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("base.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "base.delete": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() => deleteBaseTemplate(input.id))
-        if (!result.ok && result.reason === "missing")
-          return yield* Effect.fail(context.error("base.missing", `Base template ${result.id} does not exist`, { id: result.id }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("base.invalid", result.message, { id: result.id, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: "global",
-            op: "base.delete",
-            target: userBaseFile(result.id),
-            summary: `base.delete ${result.id}`,
-          }),
-        )
-        return { id: result.id }
+        const result = yield* Effect.promise(() => api.deleteBase(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "base.missing")
+            return yield* Effect.fail(context.error("base.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("base.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "instruction.create": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() =>
-          createInstruction({
-            sessionDirectory: directory,
-            projectDirectory: ctx.location.project.directory,
-            name: input.name,
-            text: input.text,
-          }),
-        )
-        if (!result.ok && result.reason === "exists")
-          return yield* Effect.fail(
-            context.error("instruction.exists", `Instruction already exists at ${result.path}`, { path: result.path }),
-          )
-        if (!result.ok)
-          return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: input.name, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: "project",
-            op: "instruction.create",
-            target: result.path,
-            summary: `instruction.create ${input.name}`,
-          }),
-        )
-        return { id: result.id, path: result.path }
+        const result = yield* Effect.promise(() => api.createInstruction(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "instruction.exists")
+            return yield* Effect.fail(context.error("instruction.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("instruction.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "instruction.delete": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() =>
-          deleteInstruction({ projectDirectory: directory, name: input.name }),
-        )
-        if (!result.ok && result.reason === "missing")
-          return yield* Effect.fail(
-            context.error("instruction.missing", `Instruction ${result.name} does not exist`, { name: result.name }),
-          )
-        if (!result.ok)
-          return yield* Effect.fail(context.error("instruction.invalid", result.message, { name: result.id, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        yield* Effect.promise(() =>
-          logFileOp({
-            directory,
-            scope: "project",
-            op: "instruction.delete",
-            target: result.path,
-            summary: `instruction.delete ${input.name}`,
-          }),
-        )
-        return { id: result.id, path: result.path }
+        const result = yield* Effect.promise(() => api.deleteInstruction(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "instruction.missing")
+            return yield* Effect.fail(context.error("instruction.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("instruction.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "mcp.add": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() =>
-          addMcp({ projectDirectory: directory, name: input.name, config: { ...input.config } }),
-        )
-        if (!result.ok && result.reason === "exists")
-          return yield* Effect.fail(context.error("mcp.exists", `MCP server ${result.name} already exists`, { name: result.name }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("mcp.invalid", result.message, { name: result.name, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        const addedConfig = yield* Effect.promise(() => mcpConfigTarget(directory))
-        yield* Effect.promise(() =>
-          logFileOp({ directory, scope: "project", op: "mcp.add", target: addedConfig, summary: `mcp.add ${result.name}` }),
-        )
-        return { name: result.name }
+        const result = yield* Effect.promise(() => api.addMcp(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "mcp.exists")
+            return yield* Effect.fail(context.error("mcp.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("mcp.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "mcp.remove": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* requireProject(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const result = yield* Effect.promise(() => removeMcp({ projectDirectory: directory, name: input.name }))
-        if (!result.ok && result.reason === "missing")
-          return yield* Effect.fail(context.error("mcp.missing", `MCP server ${result.name} does not exist`, { name: result.name }))
-        if (!result.ok)
-          return yield* Effect.fail(context.error("mcp.invalid", result.message, { name: result.name, reason: result.message }))
-        yield* refreshAfterFileChange(ctx, state, directory)
-        const removedConfig = yield* Effect.promise(() => mcpConfigTarget(directory))
-        yield* Effect.promise(() =>
-          logFileOp({ directory, scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` }),
-        )
-        return { name: result.name }
+        const result = yield* Effect.promise(() => api.removeMcp(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "mcp.missing")
+            return yield* Effect.fail(context.error("mcp.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("mcp.invalid", result.error.message, result.error.data))
+        }
+        return result.value
       }),
     "team.setEnabled": (input, context) =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
-        const loaded = yield* loadStored(directory, () =>
-          context.error("project.disabled", disabledMessage(directory), { directory }),
-        )
-        const validated = validateTeamName(input.team)
-        if (!validated.ok)
-          return yield* Effect.fail(context.error("team.invalid", validated.reason, { team: input.team, reason: validated.reason }))
-        const known = yield* Effect.promise(() => discoverTeams(input.level, directory))
-        if (!known.some((team) => team.team === validated.team))
-          return yield* Effect.fail(
-            context.error("team.unknown", `Unknown team ${validated.team}`, { level: input.level, team: validated.team }),
-          )
-        const saved = yield* Effect.promise(() =>
-          saveTeamRecord(directory, loaded, input.level, validated.team, input.enabled),
-        )
-        if (!saved.ok)
-          return yield* Effect.fail(
-            context.error("team.unknown", `Team ${validated.team} changed concurrently; retry`, {
-              level: input.level,
-              team: validated.team,
-            }),
-          )
-        if (saved.changed)
-          yield* Effect.promise(() =>
-            append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
-              ts: new Date().toISOString(),
-              actor: { type: "tui" },
-              op: "team.setEnabled",
-              target: `team:${input.level}:${validated.team}`,
-              summary: `team.setEnabled ${validated.team} ${input.enabled ? "enabled" : "disabled"} (${input.level})`,
-              revision: saved.revision,
-            }),
-          )
-        yield* refreshAfterFileChange(ctx, state, directory)
-        return { level: input.level, team: validated.team, enabled: input.enabled }
+        const result = yield* Effect.promise(() => api.setTeamEnabled(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "team.invalid")
+            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+        }
+        return result.value
       }),
   }
 }
