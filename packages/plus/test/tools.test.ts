@@ -553,6 +553,82 @@ test("a tool write appends a log line with actor tool carrying agent/session/mes
   expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
 })
 
+test("a tool create appends a log line with actor tool", async () => {
+  const { api, tools } = await freshFixture()
+  await runOk(need(tools, "instructions_create"), { kind: "skill", name: "loggedskill", body: "Log me." })
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "skill.create")
+  if (entry === undefined) throw new Error("missing skill.create log entry")
+  expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
+})
+
+test("a tool delete appends a log line with actor tool", async () => {
+  const { project } = await tempProject()
+  const skillPath = path.join(project, ".opencode", "skill", "loggedkeeper", "SKILL.md")
+  await fs.mkdir(path.dirname(skillPath), { recursive: true })
+  await Bun.write(skillPath, "---\nname: loggedkeeper\ndescription: loggedkeeper\n---\nkeep me\n")
+  const ctx = fixtureContext(project, {
+    skills: [skillInfo("notes", "skill body"), skillInfo("loggedkeeper", "keep me", skillPath)],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "skill:loggedkeeper")
+  if (row === undefined) throw new Error("missing loggedkeeper row")
+  await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "skill.delete")
+  if (entry === undefined) throw new Error("missing skill.delete log entry")
+  expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
+})
+
+test("a tool team toggle appends a log line with actor tool", async () => {
+  const { project } = await tempProject()
+  await fs.mkdir(path.join(projectTeamsPath(project), "crew"), { recursive: true })
+  await Bun.write(path.join(projectTeamsPath(project), "crew", "alpha.md"), formatMarkdown({ description: "alpha" }, "role"))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.id === "team:project:crew")
+  if (row === undefined) throw new Error("missing team row")
+  await runOk(need(tools, "instructions_set"), { id: row.id })
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "team.setEnabled")
+  if (entry === undefined) throw new Error("missing team.setEnabled log entry")
+  expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
+})
+
+test("the same file and team writes through the RPC handlers still log tui", async () => {
+  const { project } = await tempProject()
+  await fs.mkdir(path.join(projectTeamsPath(project), "crew"), { recursive: true })
+  await Bun.write(path.join(projectTeamsPath(project), "crew", "alpha.md"), formatMarkdown({ description: "alpha" }, "role"))
+  const ctx = fixtureContext(project)
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const stub = {
+    error: (): never => {
+      throw new Error("unexpected rpc error")
+    },
+  }
+  await Effect.runPromise(handlers["skill.create"]({ name: "rpcskill", body: "RPC body." }, stub))
+  await Effect.runPromise(handlers["skill.delete"]({ id: "rpcskill" }, stub))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, stub))
+  const api = createPlusApi(ctx, state)
+  const logged = await api.log({})
+  if (!logged.ok) throw new Error("log failed")
+  for (const op of ["skill.create", "skill.delete", "team.setEnabled"] as const) {
+    const entry = logged.value.entries.find((candidate) => candidate.op === op)
+    if (entry === undefined) throw new Error(`missing ${op} log entry`)
+    expect(entry.actor).toEqual({ type: "tui" })
+  }
+})
+
 test("show with each view returns the right shape, diff returns two diffs plus summary", async () => {
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
