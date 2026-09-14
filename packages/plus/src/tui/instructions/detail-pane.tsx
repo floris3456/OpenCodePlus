@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
-import { resolve, resolveSplit, scopesOf } from "../../instructions/model.js"
+import { applies, resolve, resolveSplit, scopesOf } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, Resolved, SplitRecord } from "../../instructions/model.js"
 import type { TreeNode } from "../../instructions/tree.js"
 import type { Snapshot } from "../../rpc.js"
@@ -83,10 +83,17 @@ function splitsOf(snapshot: Snapshot): SplitRecord[] {
   return out
 }
 
+function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+  const matches = items.filter((entry) => entry.id === address.item)
+  const owner = address.agent
+  if (owner === null) return matches[0]
+  return matches.find((entry) => applies(entry, owner)) ?? matches[0]
+}
+
 export function resolveNode(node: TreeNode, snapshot: Snapshot): Resolved | undefined {
   const address = node.address
   if (address === undefined) return undefined
-  const upstream = itemsOf(snapshot).find((item) => item.id === address.item)
+  const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream === undefined) return undefined
   return resolve({
     upstream,
@@ -134,7 +141,7 @@ export interface SectionRow {
 export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
-  const upstream = itemsOf(snapshot).find((item) => item.id === address.item)
+  const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream === undefined) return []
   const records = customizationsOf(snapshot)
   const splits = splitsOf(snapshot)
@@ -151,7 +158,7 @@ export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
 export function parentItemTitle(node: TreeNode, snapshot: Snapshot): string | undefined {
   const address = node.address
   if (address === undefined || address.section === null) return undefined
-  return snapshot.items.find((item) => item.id === address.item)?.title
+  return upstreamFor(itemsOf(snapshot), address)?.title
 }
 
 export function sectionExcluded(node: TreeNode, snapshot: Snapshot): boolean {
@@ -174,7 +181,7 @@ export interface ExcludedRange {
 export function excludedRanges(node: TreeNode, snapshot: Snapshot): ExcludedRange[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
-  const upstream = itemsOf(snapshot).find((item) => item.id === address.item)
+  const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream === undefined) return []
   const records = customizationsOf(snapshot)
   const splits = splitsOf(snapshot)
