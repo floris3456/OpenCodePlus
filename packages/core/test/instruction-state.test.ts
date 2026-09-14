@@ -2,7 +2,6 @@ import { describe, expect } from "bun:test"
 import { and, asc, eq } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
 import { Event } from "@opencode/schema/event"
@@ -22,10 +21,15 @@ import {
 } from "@opencode/core/session/sql"
 import { testEffect } from "./lib/effect"
 
+// Compiled directly instead of through AppNodeBuilder: the builder imports the
+// plugin supervisor graph, which currently fails to load on the parallel
+// team's broken `@opencode/plus` export (`effective` is missing from
+// `plus/src/instructions/model.ts`). Database, projector, and persisted bus are
+// global nodes, so no Location provisioning is needed here.
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node]), [
-    Bus.node.replace(Bus.configured({ persist: true })),
-  ]),
+  LayerNode.compile(LayerNode.group([Database.node, Bus.node, SessionProjector.node]), {
+    replacements: [Bus.node.replace(Bus.configured({ persist: true }))],
+  }),
 )
 
 const source = (name: string, read: Effect.Effect<string | Instructions.Unavailable | Instructions.Removed>) =>
@@ -274,7 +278,9 @@ describe("InstructionState", () => {
 
       const assembled = yield* preview(db, sessionID, instructions)
 
-      expect(assembled).toEqual({ initial: "Changed context", update: "" })
+      // The epoch baseline is now ordered per-source parts, not one joined
+      // string; frozen historical update text stays a single rendered string.
+      expect(assembled).toEqual({ initial: ["Changed context"], update: "" })
       expect(yield* instructionEvents(db, sessionID)).toEqual(beforeEvents)
       expect(yield* db.select().from(InstructionBlobTable).all().pipe(Effect.orDie)).toEqual(beforeBlobs)
       expect(
@@ -314,7 +320,9 @@ describe("InstructionState", () => {
 
       const assembled = yield* preview(db, sessionID, instructions)
 
-      expect(assembled.initial).toBe("Initial context")
+      // The epoch baseline is now ordered per-source parts, not one joined
+      // string; frozen historical update text stays a single rendered string.
+      expect(assembled.initial).toEqual(["Initial context"])
       expect(assembled.update).toBe("Private update")
       expect(yield* instructionEvents(db, sessionID)).toEqual(beforeEvents)
       expect(yield* db.select().from(InstructionBlobTable).all().pipe(Effect.orDie)).toEqual(beforeBlobs)
@@ -392,8 +400,10 @@ describe("InstructionState", () => {
       const { db } = yield* setup(sessionID)
       const instructions = source("test/context", Effect.succeed("Initial context"))
 
+      // The epoch baseline is now ordered per-source parts, not one joined
+      // string; frozen historical update text stays a single rendered string.
       expect(yield* preview(db, sessionID, instructions)).toEqual({
-        initial: "Initial context",
+        initial: ["Initial context"],
         update: "",
       })
       expect(yield* instructionEvents(db, sessionID)).toEqual([])
@@ -417,8 +427,10 @@ describe("InstructionState", () => {
       const beforeBlobs = yield* db.select().from(InstructionBlobTable).all().pipe(Effect.orDie)
       const beforeState = yield* db.select().from(InstructionStateTable).get().pipe(Effect.orDie)
 
+      // The epoch baseline is now ordered per-source parts, not one joined
+      // string; frozen historical update text stays a single rendered string.
       expect(yield* preview(db, sessionID, instructions)).toEqual({
-        initial: "Committed context",
+        initial: ["Committed context"],
         update: "",
       })
       expect(yield* instructionEvents(db, sessionID)).toEqual(beforeEvents)
