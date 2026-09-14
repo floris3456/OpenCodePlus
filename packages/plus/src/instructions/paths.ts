@@ -19,6 +19,14 @@ export function globalRecordsPath(configDir: string = globalConfigDir()): string
   return path.join(configDir, "opencodeplus", "instructions", "records.jsonl")
 }
 
+export function projectTeamsPath(directory: string): string {
+  return path.join(directory, ".opencodeplus", "teams")
+}
+
+export function globalTeamsPath(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "opencodeplus", "teams")
+}
+
 // Only the path-confined delete types live here; creation result types stay
 // local to index.ts where createInstruction owns them.
 export interface InstructionSuccess {

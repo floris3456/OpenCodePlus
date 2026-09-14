@@ -45,6 +45,8 @@ export interface AgentSource {
   readonly id: string
   readonly scope: AgentScope
   readonly path?: string
+  /** team contributing this agent when it comes from an enabled team */
+  readonly team?: string
   /** id of the base prompt template active for this agent's model, e.g. "gpt" */
   readonly base?: string
 }
