@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
 import {
+  applies,
   merge,
   reset,
   resolve,
@@ -217,7 +218,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function selected(): TreeNode | undefined {
-    return allNodes().find((node) => node.id === selectedId())
+    return nodes().find((node) => node.id === selectedId())
   }
 
   function ensureSelection() {
@@ -317,13 +318,20 @@ export function createInstructionsState(context: Plugin.Context) {
     setSelectedId(list[next].id)
   }
 
+  function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+    const matches = items.filter((entry) => entry.id === address.item)
+    const owner = address.agent
+    if (owner === null) return matches[0]
+    return matches.find((entry) => applies(entry, owner)) ?? matches[0]
+  }
+
   function chainFor(node: TreeNode):
     | { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: (SplitRecord & { updated: string })[] }
     | undefined {
     const current = snapshot()
     const address = node.address
     if (!current || !address) return undefined
-    const found = current.items.find((entry) => entry.id === address.item)
+    const found = upstreamFor(current.items, address)
     if (!found) return undefined
     const upstream: Item = {
       id: found.id,
@@ -719,7 +727,7 @@ export function createInstructionsState(context: Plugin.Context) {
       }
     }
     const itemId = address?.item ?? node.label
-    const item = currentItem(address?.item)
+    const item = currentItem(address)
     if (item === undefined) {
       setStatus(`"${node.label}" cannot be deleted`)
       return false
@@ -813,7 +821,7 @@ export function createInstructionsState(context: Plugin.Context) {
   function refusalFor(node: TreeNode): string | undefined {
     const address = node.address
     if (address === undefined) return undefined
-    const item = currentItem(address.item)
+    const item = currentItem(address)
     if (item === undefined) return undefined
     if (item.kind === "skill") {
       const skillId = address.item.startsWith("skill:") ? address.item.slice("skill:".length) : address.item
@@ -834,9 +842,11 @@ export function createInstructionsState(context: Plugin.Context) {
     return undefined
   }
 
-  function currentItem(itemId: string | undefined) {
-    if (itemId === undefined) return undefined
-    return snapshot()?.items.find((entry) => entry.id === itemId)
+  function currentItem(address: Address | undefined) {
+    if (address === undefined) return undefined
+    const items = snapshot()?.items
+    if (items === undefined) return undefined
+    return upstreamFor(items, address)
   }
 
   void load()

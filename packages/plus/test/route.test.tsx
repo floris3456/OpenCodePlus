@@ -724,3 +724,117 @@ test("filter reveals a match nested under collapsed ancestors", async () => {
     fixture.destroy()
   }
 })
+
+test("right on an item row reveals its sections for select and toggle", async () => {
+  const text = "# Purpose\n\na\n\n# Usage\n\nb\n"
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ items: [mcpItem({ text })] })],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveDown(fixture, 8)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("Purpose"))
+    // Right expands the item row itself; the section rows appear in the tree
+    // with their on/off badge (the detail pane uses [included] instead).
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("Purpose [on]"))
+    await moveDown(fixture, 1)
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({
+      item: "mcp:sample",
+      section: "purpose",
+      state: "off",
+    })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("filtered hidden match can be selected and toggled", async () => {
+  const snapshot = createSnapshot({
+    items: [toolItem({ title: "zz-unique-tool", id: "tool:zz-unique", text: "zz-unique-body" })],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["zz-unique"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Project agents"))
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    // Filtered list is root, Tools, Native, then the revealed tool row.
+    await moveDown(fixture, 4)
+    await fixture.waitForFrame((frame) => frame.includes("zz-unique-body"))
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "zz-unique-tool"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:zz-unique", state: "off" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("reviewer persona shows its own prompt and saves only its record", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer"), projectAgent("Reviewer")],
+    items: [
+      {
+        id: "system:role",
+        kind: "system" as const,
+        group: "none" as const,
+        title: "Role/persona",
+        text: "implementer-prompt",
+        enabled: true,
+        fingerprint: "fp-implementer",
+        agents: ["Implementer"],
+      },
+      {
+        id: "system:role",
+        kind: "system" as const,
+        group: "none" as const,
+        title: "Role/persona",
+        text: "reviewer-prompt",
+        enabled: true,
+        fingerprint: "fp-reviewer",
+        agents: ["Reviewer"],
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Reviewer"))
+    await moveDown(fixture, 2)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 4)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("reviewer-prompt"))
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor).toBeDefined()
+    expect(editor?.plainText).toBe("reviewer-prompt")
+    editor?.setText("reviewer-prompt v2")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Saved "Role/persona"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const records = fixture.fake.mutateInputs[0].records
+    expect(records.length).toBe(1)
+    expect(records[0]).toMatchObject({ agent: "Reviewer", item: "system:role", text: "reviewer-prompt v2" })
+  } finally {
+    fixture.destroy()
+  }
+})

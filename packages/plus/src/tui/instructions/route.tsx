@@ -16,7 +16,7 @@ export const WIDE_THRESHOLD = 100
 type Mode = "tree" | "diff" | "split"
 
 function isExpandable(node: TreeNode): boolean {
-  return node.kind === "root" || node.kind === "group" || node.kind === "agent"
+  return node.kind === "root" || node.kind === "group" || node.kind === "agent" || node.kind === "item"
 }
 
 function canToggle(node: TreeNode | undefined): boolean {
@@ -134,7 +134,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function expandOrChild() {
     const node = current()
     if (!node) return
-    if (!wide() && node.address !== undefined && !isExpandable(node)) {
+    if (!wide() && node.address !== undefined) {
+      if (isExpandable(node) && !state.expanded().has(node.id)) state.toggleExpanded(node.id)
       setShowDetail(true)
       return
     }
