@@ -74,22 +74,20 @@ export const baseTranscript = (input: {
   readonly agent: Agent.Info
   readonly model: SessionRunnerModel.Resolved
   readonly tools: Tool.Snapshot
-  // Ordered instruction parts; callers still passing the joined baseline get one part.
-  // Each part maps to its own SystemPart; the agent's own system prompt stays the
-  // first part either way. History still passes the joined baseline until it
-  // carries per-source parts end to end.
-  readonly initial: string | ReadonlyArray<string>
+  // Ordered instruction parts; one SystemPart per part, so each instruction
+  // source file keeps its own part boundary and identity. The agent's own
+  // system prompt stays the first part.
+  readonly initial: ReadonlyArray<string>
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
-  const initial = Array.isArray(input.initial) ? input.initial : [input.initial]
   return {
     providerMetadataKey,
     system: [
       input.agent.system
         ? input.agent.system
         : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
-      ...initial,
+      ...input.initial,
     ]
       .filter((part) => part.length > 0)
       .map(SystemPart.make),
