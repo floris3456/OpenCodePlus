@@ -59,6 +59,7 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
       throw new Error("Failed to start server", { cause })
     }
   }
+
   try {
     while (true) {
       if (Date.now() >= deadline) throw new Error("Timed out waiting for the background service to start")
