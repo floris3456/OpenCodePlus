@@ -1,0 +1,490 @@
+import { expect, test } from "bun:test"
+import {
+  fingerprint,
+  type AgentSource,
+  type CustomizationRecord,
+  type Item,
+  type SplitRecord,
+} from "../src/instructions/model.js"
+import { buildMemo, type TeamInput } from "../src/instructions/resolve-memo.js"
+import { query } from "../src/instructions/query.js"
+import { expandedTree } from "../src/instructions/tree.js"
+import { badgeLabels } from "../src/tui/instructions/tree-pane.js"
+
+const OLD = "2026-01-01T00:00:00.000Z"
+
+function makeItem(overrides?: Partial<Item>): Item {
+  const text = overrides?.text ?? "default text"
+  return {
+    id: "tool:bash",
+    kind: "tool",
+    group: "native",
+    title: "bash",
+    text,
+    enabled: true,
+    fingerprint: fingerprint(text),
+    ...overrides,
+  }
+}
+
+function makeRecord(overrides?: Partial<CustomizationRecord> & { type?: "customization" }): CustomizationRecord {
+  return {
+    type: "customization",
+    level: "project",
+    agent: "Implementer",
+    item: "tool:bash",
+    section: null,
+    basedOn: fingerprint("run commands"),
+    updated: OLD,
+    ...overrides,
+  }
+}
+
+function agents(): AgentSource[] {
+  return [
+    { id: "Implementer", scope: "project", base: "gpt", path: "/agents/Implementer.md" },
+    { id: "CrewMate", scope: "project", base: "gpt", team: "crew" },
+    { id: "Helper", scope: "global", base: "claude" },
+    { id: "Template", scope: "defaults", base: "gpt" },
+  ]
+}
+
+function teams(): TeamInput[] {
+  return [
+    { level: "project", team: "crew", enabled: true, agents: ["CrewMate"] },
+    { level: "global", team: "ops", enabled: false, agents: [] },
+  ]
+}
+
+function items(): Item[] {
+  const text = (value: string, overrides?: Partial<Item>): Item => makeItem({ text: value, ...overrides })
+  return [
+    text("run commands", { id: "tool:bash", kind: "tool", group: "native", title: "bash", order: 1 }),
+    text("v2 upstream", { id: "tool:plus-one", kind: "tool", group: "plus", title: "plus-one" }),
+    text("odd-name", { id: "tool:odd-name", kind: "tool", group: "mcp", server: "sample", title: "odd-name" }),
+    text("# Alpha\n\na\n\n# Beta\n\nb\n", { id: "tool:coder", kind: "tool", group: "native", title: "coder", codemode: true }),
+    text("", { id: "tool:empty", kind: "tool", group: "native", title: "empty" }),
+    text("gpt base", { id: "base:gpt", kind: "base", group: "none", title: "gpt.txt" }),
+    text("claude base", { id: "base:claude", kind: "base", group: "none", title: "claude.txt" }),
+    text("custom base", { id: "base:custom", kind: "base", group: "none", title: "Custom.txt", userBase: true }),
+    text("native skill", { id: "skill:native-one", kind: "skill", group: "native", title: "native-one" }),
+    text("project skill", { id: "skill:proj-one", kind: "skill", group: "project", title: "proj-one" }),
+    text("review body", { id: "skill:review", kind: "skill", group: "plus", title: "Code Review" }),
+    text("# Purpose\n\na\n\n# Usage\n\nb\n", { id: "system:role", kind: "system", group: "none", title: "Role" }),
+    text("guide text", { id: "system:guide", kind: "system", group: "project", title: "guide" }),
+    text("sample-config", { id: "mcp:sample", kind: "mcp", group: "none", title: "sample" }),
+    text("extra-config", { id: "mcp:extra", kind: "mcp", group: "none", title: "extra" }),
+  ]
+}
+
+function records(): (CustomizationRecord | SplitRecord)[] {
+  const fresh = new Date().toISOString()
+  return [
+    makeRecord({ item: "tool:bash", text: "custom bash", basedOnText: "run commands" }),
+    makeRecord({ item: "tool:plus-one", text: "mine", basedOn: fingerprint("v1"), basedOnText: "v1" }),
+    makeRecord({ level: "defaults", agent: null, item: "tool:plus-one", text: "shared", basedOn: fingerprint("v2 upstream"), basedOnText: "v2 upstream" }),
+    makeRecord({ item: "skill:native-one", state: "off" }),
+    makeRecord({ level: "global", agent: "Helper", item: "skill:native-one", text: "helper edit", basedOn: fingerprint("native skill"), basedOnText: "native skill" }),
+    makeRecord({ item: "system:guide", text: "my guide", basedOn: fingerprint("guide text"), basedOnText: "guide text", acknowledged: fingerprint("guide text") }),
+    makeRecord({ item: "system:role", section: "usage", state: "off" }),
+    makeRecord({ item: "system:role", state: "off" }),
+    makeRecord({ item: "base:gpt", state: "off" }),
+    makeRecord({ item: "base:custom", text: "custom base", basedOn: fingerprint("older"), basedOnText: "older" }),
+    makeRecord({ item: "tool:coder", text: "hacked", basedOn: fingerprint("# Alpha\n\na\n\n# Beta\n\nb\n") }),
+    makeRecord({ level: "defaults", agent: null, item: "mcp:sample", text: "mine-config", basedOn: fingerprint("sample-config") }),
+    makeRecord({ level: "defaults", agent: null, item: "mcp:extra", state: "off" }),
+    makeRecord({ item: "mcp:sample", state: "off" }),
+    makeRecord({ level: "defaults", agent: "Template", item: "base:gpt", text: "tweak", basedOn: fingerprint("gpt base"), basedOnText: "gpt base", updated: fresh }),
+    makeRecord({ item: "tool:gone", text: "stale", basedOn: fingerprint("gone") }),
+    makeRecord({ item: "tool:bash", section: "nosuch", text: "stale section", basedOn: fingerprint("x") }),
+    makeRecord({ agent: "Ghost", item: "tool:bash", state: "off" }),
+    { type: "split", level: "project", agent: "Implementer", item: "system:guide", boundaries: [{ id: "a", name: "A", start: 0 }], updated: OLD },
+  ]
+}
+
+function input(overrides?: { items?: Item[]; records?: (CustomizationRecord | SplitRecord)[]; agents?: AgentSource[]; teams?: TeamInput[] }) {
+  return {
+    items: overrides?.items ?? items(),
+    records: overrides?.records ?? records(),
+    agents: overrides?.agents ?? agents(),
+    teams: overrides?.teams ?? teams(),
+  }
+}
+
+function ids(where: string, opts?: { teams?: TeamInput[] }): string[] {
+  return query(input(opts === undefined ? undefined : { teams: opts.teams }), { where }).rows.map((row) => row.id)
+}
+
+const bash = "item:project:Implementer:tool:bash"
+const sharedPlus = "item:defaults::tool:plus-one"
+
+test("kind filters by row kind", () => {
+  expect(ids("kind:item")).toContain(bash)
+  expect(ids("kind:item").some((id) => id.startsWith("group:"))).toBe(false)
+  expect(ids("kind:root")).toHaveLength(3)
+  expect(ids("kind:team", { teams: [] })).toHaveLength(0)
+})
+
+test("item filters by upstream item kind", () => {
+  expect(ids("item:tool")).toContain(bash)
+  expect(ids("item:base")).not.toContain(bash)
+  expect(ids("item:base")).toContain("item:project:Implementer:base:gpt")
+  expect(ids("item:mcp")).toContain("item:defaults::mcp:sample")
+  expect(ids("item:mcp")).not.toContain(bash)
+})
+
+test("group filters by upstream item group", () => {
+  expect(ids("group:native")).toContain(bash)
+  expect(ids("group:project")).toContain("item:project:Implementer:skill:proj-one")
+  expect(ids("group:project")).not.toContain(bash)
+})
+
+test("server matches the mcp server", () => {
+  expect(ids("server:sample")).toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("server:sample")).not.toContain(bash)
+  expect(ids("server:nope")).toHaveLength(0)
+})
+
+test("level scopes rows to their level", () => {
+  expect(ids("level:project")).toContain(bash)
+  expect(ids("level:project")).not.toContain(sharedPlus)
+  expect(ids("level:defaults")).toContain(sharedPlus)
+  expect(ids("level:defaults")).not.toContain(bash)
+})
+
+test("agent matches the row owner and _ the shared rows", () => {
+  expect(ids("agent:Implementer")).toContain(bash)
+  expect(ids("agent:Implementer")).not.toContain("item:global:Helper:tool:bash")
+  expect(ids("agent:_")).toContain(sharedPlus)
+  expect(ids("agent:_")).not.toContain(bash)
+})
+
+test("state reads the resolved on/off badge", () => {
+  expect(ids("state:off")).toContain("item:project:Implementer:skill:native-one")
+  expect(ids("state:off")).not.toContain(bash)
+  expect(ids("state:on")).toContain(bash)
+})
+
+test("modified is text-only", () => {
+  expect(ids("modified:true")).toContain(bash)
+  expect(ids("modified:true")).not.toContain("item:project:Implementer:skill:native-one")
+  expect(ids("modified:false")).toContain("item:project:Implementer:skill:native-one")
+})
+
+test("review matches the tree review badge", () => {
+  expect(ids("review:true")).toContain("item:project:Implementer:tool:plus-one")
+  expect(ids("review:true")).not.toContain(bash)
+  expect(ids("review:false")).toContain(bash)
+})
+
+test("source names the winning level", () => {
+  expect(ids("source:project")).toContain(bash)
+  expect(ids("source:upstream")).toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("source:upstream")).not.toContain(bash)
+})
+
+test("overridden means a text record at exactly this address", () => {
+  expect(ids("overridden:true")).toContain(bash)
+  expect(ids("overridden:true")).not.toContain("item:project:Implementer:skill:native-one")
+  expect(ids("overridden:false")).toContain("item:project:Implementer:skill:native-one")
+})
+
+test("active marks the agent's live base template", () => {
+  expect(ids("active:true")).toContain("item:project:Implementer:base:gpt")
+  expect(ids("active:true")).not.toContain("item:project:Implementer:base:claude")
+})
+
+test("inactive marks user base templates only", () => {
+  expect(ids("inactive:true")).toContain("item:project:Implementer:base:custom")
+  expect(ids("inactive:true")).not.toContain("item:project:Implementer:base:gpt")
+  expect(ids("inactive:false")).toContain("item:project:Implementer:base:gpt")
+})
+
+test("unsupported flags code mode and unexcludable rows", () => {
+  expect(ids("unsupported:true")).toContain("item:project:Implementer:tool:coder")
+  expect(ids("unsupported:true")).toContain("item:project:Implementer:system:role")
+  expect(ids("unsupported:false")).toContain(bash)
+})
+
+test("codemode follows the upstream item", () => {
+  expect(ids("codemode:true")).toContain("item:project:Implementer:tool:coder")
+  expect(ids("codemode:false")).toContain(bash)
+})
+
+test("can reads the row actions", () => {
+  expect(ids("can:toggle")).toContain(bash)
+  expect(ids("can:toggle")).not.toContain("item:project:Implementer:system:role")
+  expect(ids("can:reset")).toContain(bash)
+  expect(ids("can:reset")).not.toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("can:split")).toContain(bash)
+  expect(ids("can:split")).not.toContain("item:defaults::mcp:sample")
+  expect(ids("can:remove")).toContain("item:project:Implementer:skill:proj-one")
+  expect(ids("can:remove")).not.toContain(bash)
+  expect(ids("can:edit")).toContain(bash)
+  expect(ids("can:edit")).not.toContain("item:project:Implementer:tool:coder")
+})
+
+test("has covers records, splits, sections, and text", () => {
+  expect(ids("has:record")).toContain(bash)
+  expect(ids("has:record")).not.toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("has:split")).toContain("item:project:Implementer:system:guide")
+  expect(ids("has:split")).not.toContain(bash)
+  expect(ids("has:sections")).toContain(bash)
+  expect(ids("has:sections")).not.toContain("group:project:agents")
+  expect(ids("has:text")).toContain(bash)
+  expect(ids("has:text")).not.toContain("item:project:Implementer:tool:empty")
+})
+
+test("id is a prefix match on the row id", () => {
+  expect(query(input(), { where: `id:${bash}` }).rows.map((row) => row.id)).toEqual([bash])
+  expect(ids("id:zzz")).toHaveLength(0)
+})
+
+test("label is a substring match", () => {
+  expect(ids("label:bash")).toContain(bash)
+  expect(ids("label:zzz")).toHaveLength(0)
+})
+
+test("updated compares against durations and dates", () => {
+  expect(ids("updated:>7d")).toContain(bash)
+  expect(ids("updated:<7d")).not.toContain(bash)
+  expect(ids("updated:<7d")).toContain("item:defaults:Template:base:gpt")
+  expect(ids("updated:>=2026-01-01")).toContain(bash)
+  expect(ids("updated:<2026-01-01")).not.toContain(bash)
+})
+
+test("team matches team rows, members, and team agents", () => {
+  const found = ids("team:crew")
+  expect(found).toContain("team:project:crew")
+  expect(found).toContain("team:project:crew:CrewMate")
+  expect(found).toContain("agent:project:CrewMate")
+  expect(found).not.toContain("team:global:ops")
+  expect(ids("team:ops")).toContain("team:global:ops")
+  expect(ids("team:nope")).toHaveLength(0)
+})
+
+test("acked reads the record acknowledgement", () => {
+  expect(ids("acked:true")).toContain("item:project:Implementer:system:guide")
+  expect(ids("acked:true")).not.toContain(bash)
+  expect(ids("acked:false")).toContain(bash)
+})
+
+test("excluded follows section state, own or inherited", () => {
+  expect(ids("excluded:true")).toContain("section:project:Implementer:system:role:usage")
+  // The whole role is off too, so the untouched purpose section is excluded
+  // by inheritance rather than by its own state.
+  expect(ids("excluded:true")).toContain("section:project:Implementer:system:role:purpose")
+  expect(ids("excluded:true")).not.toContain("section:project:Implementer:system:guide:a")
+  expect(ids("excluded:false")).toContain("section:project:Implementer:system:guide:a")
+  expect(ids("excluded:false")).not.toContain("section:project:Implementer:system:role:usage")
+})
+
+test("identical pins a byte-identical override", () => {
+  expect(ids("identical:true")).toContain("item:project:Implementer:base:custom")
+  expect(ids("identical:true")).not.toContain(bash)
+  expect(ids("identical:false")).toContain(bash)
+})
+
+test("dead pins records that can never apply", () => {
+  expect(ids("dead:true")).toContain("item:project:Implementer:tool:coder")
+  expect(ids("dead:true")).toContain("item:defaults::mcp:sample")
+  expect(ids("dead:true")).toContain("item:project:Implementer:system:role")
+  expect(ids("dead:true")).not.toContain(bash)
+  expect(ids("dead:true")).not.toContain("section:project:Implementer:system:role:usage")
+  expect(ids("dead:false")).toContain(bash)
+  // A state-only toggle on an MCP row applies (the server enablement is
+  // file-owned, the text is not), so it is not dead.
+  expect(ids("dead:false")).toContain("item:defaults::mcp:extra")
+})
+
+test("shadowed pins an override a more specific level wins", () => {
+  expect(ids("shadowed:true")).toContain(sharedPlus)
+  expect(ids("shadowed:true")).not.toContain("item:project:Implementer:tool:plus-one")
+  expect(ids("shadowed:false")).toContain("item:project:Implementer:tool:plus-one")
+  expect(ids("shadowed:false")).toContain(bash)
+})
+
+test("orphan synthesizes rows for stale records only when asked", () => {
+  const found = ids("orphan:true").sort()
+  expect(found).toEqual(
+    [
+      "item:project:Ghost:tool:bash",
+      "item:project:Implementer:tool:gone",
+      "section:project:Implementer:tool:bash:nosuch",
+    ].sort(),
+  )
+  const labels = query(input(), { where: "orphan:true", fields: ["id", "label"] }).rows.map((row) => row.label).sort()
+  expect(labels).toEqual(["nosuch", "tool:bash", "tool:gone"].sort())
+  expect(ids("orphan:false").some((id) => id.includes("tool:gone") || id.includes("nosuch") || id.includes("Ghost"))).toBe(false)
+  expect(ids("kind:item").some((id) => id.includes("tool:gone"))).toBe(false)
+  expect(ids("orphan:true kind:item").sort()).toEqual(["item:project:Ghost:tool:bash", "item:project:Implementer:tool:gone"].sort())
+  expect(ids("orphan:true agent:Ghost")).toEqual(["item:project:Ghost:tool:bash"])
+})
+
+test("tokens counts ceil(length/4) of the resolved text", () => {
+  expect(ids("tokens:3")).toContain(bash)
+  expect(ids("tokens:>100000")).toHaveLength(0)
+  expect(ids("tokens:>0")).toContain(bash)
+})
+
+test("delta counts changed lines, zero without an override", () => {
+  expect(ids("delta:2")).toContain(bash)
+  expect(ids("delta:>2")).not.toContain(bash)
+  expect(ids("delta:0")).toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("delta:0")).not.toContain(bash)
+})
+
+test("overriders counts agents on Defaults shared rows", () => {
+  expect(ids("overriders:2")).toContain("item:defaults::skill:native-one")
+  expect(ids("overriders:>0")).not.toContain("item:project:Implementer:skill:native-one")
+  expect(ids("overriders:0")).toContain(bash)
+})
+
+test("text and upstream search resolved and upstream bodies", () => {
+  expect(ids("text:CUSTOM")).toContain(bash)
+  expect(ids("text:zzz")).toHaveLength(0)
+  expect(ids('upstream:"run commands"')).toContain(bash)
+  expect(ids("upstream:zzz")).toHaveLength(0)
+})
+
+test("bare words match label or id exactly like the TUI filter", () => {
+  const tree = expandedTree(input())
+  for (const word of ["bash", "Implementer", "zz-no-match"]) {
+    const lowered = word.toLowerCase()
+    const expected = tree
+      .filter((node) => node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered))
+      .map((node) => node.id)
+      .sort()
+    const actual = query(input(), { where: word }).rows.map((row) => row.id).sort()
+    expect(actual).toEqual(expected)
+  }
+})
+
+test("negation, OR, quotes, and combined terms", () => {
+  expect(ids("!kind:item")).not.toContain(bash)
+  expect(ids("!kind:item")).toContain("root:project")
+  expect(ids("kind:item,section")).toContain(bash)
+  expect(ids("kind:item,section")).toContain("section:project:Implementer:system:role:purpose")
+  expect(ids("kind:item,section")).not.toContain("root:project")
+  expect(ids('label:"Code Review"')).toContain("item:project:Implementer:skill:review")
+  expect(ids("kind:item label:bash").sort()).toEqual(
+    [
+      "item:project:Implementer:tool:bash",
+      "item:project:CrewMate:tool:bash",
+      "item:global:Helper:tool:bash",
+      "item:defaults:Template:tool:bash",
+      "item:defaults::tool:bash",
+    ].sort(),
+  )
+})
+
+test("sort directive, explicit sort, and ordering", () => {
+  expect(query(input(), { where: "kind:root sort:label" }).rows.map((row) => row.id)).toEqual([
+    "root:defaults",
+    "root:global",
+    "root:project",
+  ])
+  expect(query(input(), { where: "kind:root sort:label", sort: "-label" }).rows.map((row) => row.id)).toEqual([
+    "root:project",
+    "root:global",
+    "root:defaults",
+  ])
+  const byTokens = query(input(), { where: "kind:item level:project agent:Implementer", sort: "tokens" }).rows
+  const counts = byTokens.map((row) => row.tokens ?? 0)
+  expect([...counts].sort((a, b) => a - b)).toEqual(counts)
+  const byUpdated = query(input(), { where: "has:record sort:updated" }).rows
+  expect(byUpdated[byUpdated.length - 1]?.id).toBe("item:defaults:Template:base:gpt")
+  expect(query(input(), { where: "has:record sort:-updated" }).rows[0]?.id).toBe("item:defaults:Template:base:gpt")
+})
+
+test("limit, offset, and total", () => {
+  const all = query(input(), { where: "kind:item" })
+  expect(all.rows.length).toBeGreaterThan(3)
+  const limited = query(input(), { where: "kind:item", limit: 2 })
+  expect(limited.rows).toHaveLength(2)
+  expect(limited.total).toBe(all.total)
+  expect(limited.rows).toEqual(all.rows.slice(0, 2))
+  const offset = query(input(), { where: "kind:item", offset: 1, limit: 2 })
+  expect(offset.rows).toEqual(all.rows.slice(1, 3))
+  expect(offset.total).toBe(all.total)
+})
+
+test("projection defaults and opt-in fields", () => {
+  const [row] = query(input(), { where: `id:${bash}` }).rows
+  expect(Object.keys(row ?? {}).sort()).toEqual(["badges", "id", "source", "tokens"].sort())
+  expect(row).toMatchObject({ id: bash, badges: "on modified", source: "project", tokens: 3 })
+  const [reviewed] = query(input(), { where: "id:item:project:Implementer:tool:plus-one" }).rows
+  expect(reviewed?.badges).toBe("on modified review")
+  const full = query(input(), {
+    where: `id:${bash}`,
+    fields: ["id", "label", "text", "upstream", "record", "path", "updated", "sections"],
+  }).rows[0]
+  expect(full).toMatchObject({ id: bash, label: "bash", text: "custom bash", upstream: "run commands", updated: OLD })
+  expect(full?.record).toMatchObject({ text: "custom bash" })
+  expect(full?.sections).toEqual(["section:project:Implementer:tool:bash:whole"])
+  expect(full).not.toHaveProperty("path")
+  expect(full).not.toHaveProperty("tokens")
+  const [agent] = query(input(), { where: "id:agent:project:Implementer", fields: ["id", "label", "path", "text", "record"] }).rows
+  expect(agent).toMatchObject({ id: "agent:project:Implementer", label: "Implementer", path: "/agents/Implementer.md" })
+  expect(agent).not.toHaveProperty("text")
+  expect(agent).not.toHaveProperty("record")
+  for (const candidate of query(input(), { where: "kind:item", fields: ["id", "badges", "source", "tokens", "text", "upstream", "record", "label", "path", "updated", "sections"] }).rows) {
+    for (const value of Object.values(candidate)) expect(value).not.toBeUndefined()
+    expect(candidate).not.toHaveProperty("path")
+  }
+})
+
+test("query badges match the tree badges for every row", () => {
+  const tree = expandedTree(input())
+  for (const node of tree) {
+    const rows = query(input(), { where: `id:${node.id}`, fields: ["id", "badges", "source"] }).rows
+    const found = rows.find((row) => row.id === node.id)
+    expect(found).toBeDefined()
+    expect(found?.badges).toBe(badgeLabels(node).join(" "))
+    expect(found?.source).toBe(node.badges.source)
+  }
+})
+
+test("unknown keys and malformed comparisons throw naming the term", () => {
+  expect(() => query(input(), { where: "foo:bar" })).toThrow('unknown filter key in "foo:bar"')
+  expect(() => query(input(), { where: "tokens:>x" })).toThrow('bad numeric comparison in "tokens:>x"')
+  expect(() => query(input(), { where: "kind:banana" })).toThrow('bad kind value in "kind:banana"')
+  expect(() => query(input(), { where: "sort:nope" })).toThrow('bad sort key in "sort:nope"')
+  expect(() => query(input(), { where: "updated:>soon" })).toThrow('bad time comparison in "updated:>soon"')
+})
+
+test("memo shares one resolve cache with no double resolves", () => {
+  const snapshot = input()
+  const memo = buildMemo(snapshot)
+  expect(memo.whole.size).toBe(0)
+  expect(memo.section.size).toBe(0)
+  const tree = expandedTree(snapshot)
+  const itemCount = tree.filter((node) => node.kind === "item").length
+  const sectionCount = tree.filter((node) => node.kind === "section").length
+  query(snapshot, { where: "text:e tokens:>0 upstream:e" }, memo)
+  expect(memo.whole.size).toBe(itemCount)
+  expect(memo.section.size).toBe(sectionCount)
+  query(snapshot, { where: "text:e tokens:>0 upstream:e" }, memo)
+  expect(memo.whole.size).toBe(itemCount)
+  expect(memo.section.size).toBe(sectionCount)
+})
+
+test("structural misses resolve nothing", () => {
+  const snapshot = input()
+  const memo = buildMemo(snapshot)
+  const missed = query(snapshot, { where: "label:zzz-no-such-row" }, memo)
+  expect(missed.rows).toHaveLength(0)
+  expect(missed.total).toBe(0)
+  expect(memo.whole.size).toBe(0)
+  expect(memo.section.size).toBe(0)
+  const noTeams = input({ teams: [] })
+  const noTeamsMemo = buildMemo(noTeams)
+  const teamsMissed = query(noTeams, { where: "kind:team" }, noTeamsMemo)
+  expect(teamsMissed.rows).toHaveLength(0)
+  expect(noTeamsMemo.whole.size).toBe(0)
+  expect(noTeamsMemo.section.size).toBe(0)
+  const badgeMissed = query(snapshot, { where: "state:off label:zzz-no-such-row" }, memo)
+  expect(badgeMissed.rows).toHaveLength(0)
+  expect(memo.whole.size).toBe(0)
+  expect(memo.section.size).toBe(0)
+})

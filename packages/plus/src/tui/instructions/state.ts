@@ -20,6 +20,7 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { expandedTree, tree, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
@@ -203,20 +204,17 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   const nodes = createMemo<TreeNode[]>(() => {
-    const query = filter().trim().toLowerCase()
-    if (query.length === 0) return allNodes()
+    const raw = filter()
+    if (raw.trim().length === 0) return allNodes()
     // Reveal matches hidden inside collapsed ancestors: match against the
     // full logical tree and include each match with its ancestor chain.
-    // Gated Code Mode sections never surface: their toggle/edit would report
-    // success for content apply discards, and the tree path already refuses
-    // to expand them. The gated item parent still matches by its own label.
+    // Matches come from the shared query engine so the TUI and the tool
+    // layer filter the same rows. Gated Code Mode sections never surface and
+    // the ancestor chain stays here, never in the engine.
     const full = fullTree()
+    const matched = matchFilter(raw, full)
     const byId = new Map(full.map((node) => [node.id, node]))
     const indexById = new Map(full.map((node, index) => [node.id, index] as const))
-    const matched = full.filter((node) => {
-      if (node.kind === "section" && node.actions?.toggle !== true) return false
-      return node.label.toLowerCase().includes(query) || node.id.toLowerCase().includes(query)
-    })
     const included = new Map<string, TreeNode>()
     for (const node of matched) {
       for (const ancestor of ancestorsOf(full, byId, indexById, node)) included.set(ancestor.id, ancestor)
@@ -224,6 +222,26 @@ export function createInstructionsState(context: Plugin.Context) {
     }
     return [...included.values()]
   })
+
+  // Engine first so structured filters behave like the tool layer; anything
+  // the grammar rejects falls back to the legacy label/id substring match.
+  function matchFilter(raw: string, full: TreeNode[]): TreeNode[] {
+    const visible = (node: TreeNode) => node.kind !== "section" || node.actions?.toggle === true
+    try {
+      const ids = new Set(
+        query(
+          { items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() },
+          { where: raw, fields: ["id"] },
+        ).rows.map((row) => row.id),
+      )
+      return full.filter((node) => ids.has(node.id) && visible(node))
+    } catch {
+      const normalized = raw.trim().toLowerCase()
+      return full.filter(
+        (node) => visible(node) && (node.label.toLowerCase().includes(normalized) || node.id.toLowerCase().includes(normalized)),
+      )
+    }
+  }
 
   const selected = createMemo<TreeNode | undefined>(() => {
     return nodes().find((node) => node.id === selectedId())
