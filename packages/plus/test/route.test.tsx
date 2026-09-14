@@ -1133,6 +1133,142 @@ test("filtered hidden match can be selected and toggled", async () => {
   }
 })
 
+function codemodeSnapshot(): Snapshot {
+  return createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "tool:coder",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "coder",
+        text: "# Alpha\n\na\n\n# Beta\n\nb\n",
+        enabled: true,
+        fingerprint: "fp-coder",
+        codemode: true,
+      },
+    ],
+  })
+}
+
+test("Code Mode sections refuse toggle and edit without saving", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [codemodeSnapshot()], width: 120, height: 40 })
+  try {
+    // Navigate INTO the Code Mode tool by label: agent subtree, Tools group,
+    // Native subgroup, item row, then its auto-derived sections.
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveToNext(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "coder")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
+    expect(binds(fixture)).not.toContain("space")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("Alpha"))
+    await moveTo(fixture, "Alpha")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
+    expect(binds(fixture)).not.toContain("space")
+    // No space binding: the keypress cannot reach state.toggle at all.
+    expect(dispatch(fixture, "space")).toBe(false)
+    expect(fixture.fake.mutateInputs.length).toBe(0)
+    // Enter must not open the editor for a gated section either.
+    dispatch(fixture, "return")
+    await sleep(100)
+    expect(fixture.captureCharFrame()).not.toContain("ctrl+s save")
+    expect(fixture.fake.mutateInputs.length).toBe(0)
+    expect(fixture.captureCharFrame()).not.toContain("Saved")
+    expect(fixture.captureCharFrame()).not.toContain("Disabled")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("whole Role/persona and whole base rows refuse toggle without saving", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "system:role",
+        kind: "system" as const,
+        group: "none" as const,
+        title: "Role",
+        text: "# Purpose\n\na\n\n# Usage\n\nb\n",
+        enabled: true,
+        fingerprint: "fp-role",
+        agents: ["Implementer"],
+      },
+      {
+        id: "base:gpt",
+        kind: "base" as const,
+        group: "none" as const,
+        title: "gpt.txt",
+        text: "gpt base",
+        enabled: true,
+        fingerprint: "fp-gpt",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "System")
+    await expand(fixture)
+    await moveTo(fixture, "Role/persona")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
+    expect(binds(fixture)).not.toContain("space")
+    expect(dispatch(fixture, "space")).toBe(false)
+    expect(fixture.fake.mutateInputs.length).toBe(0)
+    // Section toggles under the same role still apply: exclusions assemble.
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("Purpose"))
+    await moveTo(fixture, "Purpose")
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    // Whole base row: same refusal, navigated by label through Base.
+    await moveTo(fixture, "Base")
+    await expand(fixture)
+    await moveTo(fixture, "gpt.txt")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
+    expect(binds(fixture)).not.toContain("space")
+    expect(dispatch(fixture, "space")).toBe(false)
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const frame = fixture.captureCharFrame()
+    expect(frame).not.toContain('Disabled "gpt.txt"')
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("filter matching a Code Mode section exposes no editable row", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [codemodeSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["Alpha"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    // The gated section label matches, but the filter path must not expose
+    // it as a selectable row: the tree keeps only the ancestor chain, so no
+    // row can carry the section into space/enter.
+    await fixture.waitForFrame((frame) => frame.includes("No instructions found"))
+    const frame = fixture.captureCharFrame()
+    expect(frame).not.toContain("›")
+    expect(binds(fixture)).not.toContain("space")
+    expect(dispatch(fixture, "space")).toBe(false)
+    expect(fixture.fake.mutateInputs.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("provenance flags travel real discovery -> snapshot -> rendered rows", async () => {
   // End to end through the production path: a real tool registry entry with
   // default options (Code Mode) and a real user base template on disk, read

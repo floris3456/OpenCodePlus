@@ -303,6 +303,56 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
 })
 
+test("whole Role/persona and whole base rows refuse toggle but read unsupported", () => {
+  const nodes = expandAll({ items: items(), records: [], agents: agents() })
+  const role = nodes.find((node) => node.id === "item:project:Implementer:system:role")
+  expect(role?.actions?.toggle).toBe(false)
+  expect(role?.actions?.edit).toBe(true)
+  expect(role?.actions?.split).toBe(true)
+  expect(role?.badges.unsupported).toBe(true)
+  const base = nodes.find((node) => node.id === "item:project:Implementer:base:gpt")
+  expect(base?.actions?.toggle).toBe(false)
+  expect(base?.actions?.edit).toBe(true)
+  expect(base?.actions?.split).toBe(true)
+  expect(base?.badges.unsupported).toBe(true)
+  // Their sections stay toggleable: section exclusions still assemble.
+  const sections = nodes.filter((node) => node.id.startsWith("section:project:Implementer:system:role:"))
+  expect(sections.length).toBe(2)
+  expect(sections.every((node) => node.actions?.toggle === true && node.actions?.edit === true)).toBe(true)
+  expect(sections.every((node) => node.badges.unsupported === undefined)).toBe(true)
+})
+
+test("expanding a Code Mode tool yields gated children, a normal tool stays editable", () => {
+  const all = [
+    ...items(),
+    makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", text: "# A\n\na\n", codemode: true }),
+  ]
+  const input = { items: all, records: [], agents: agents() }
+  const expanded = new Set<string>()
+  let previous = -1
+  let nodes: TreeNode[] = []
+  while (previous !== expanded.size) {
+    previous = expanded.size
+    nodes = tree({ ...input, expanded })
+    for (const node of nodes) expanded.add(node.id)
+  }
+  const children = childrenOf(nodes, "item:project:Implementer:tool:coder")
+  expect(children.length).toBeGreaterThan(0)
+  for (const child of children) {
+    expect(child.kind).toBe("section")
+    expect(child.actions?.toggle).toBe(false)
+    expect(child.actions?.edit).toBe(false)
+    expect(child.badges.unsupported).toBe(true)
+  }
+  const normal = childrenOf(nodes, "item:project:Implementer:tool:bash")
+  expect(normal.length).toBeGreaterThan(0)
+  for (const child of normal) {
+    expect(child.actions?.toggle).toBe(true)
+    expect(child.actions?.edit).toBe(true)
+    expect(child.badges.unsupported).toBeUndefined()
+  }
+})
+
 test("review rolls up to Native, Tools, Implementer, Agents, and Project while collapsed", () => {
   const upstream = makeItem({ id: "tool:bash", kind: "tool", group: "native", title: "bash", text: "v2" })
   const rest = items().filter((item) => item.id !== "tool:bash" && item.id !== "tool:aaa")
