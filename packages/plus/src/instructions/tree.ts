@@ -1,3 +1,4 @@
+import { builtinBaseIds } from "../agents/base.js"
 import { applies, canReset, resolve, resolveSplit, scopesOf } from "./model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, Level, Resolved, Scopes, SplitRecord } from "./model.js"
 import type { Section, Split } from "./sections.js"
@@ -703,6 +704,12 @@ function itemBadges(
 ): TreeNodeBadges {
   const resolved = wholeOf(memo, level, owner, item)
   const active = agent?.base !== undefined && item.id === `base:${agent.base}`
+  // A builtin-id shadow CAN be the host active answer (the classifier answers
+  // host ids like `gpt`, and the shadow carries that id), so marking it
+  // inactive would lie. Only non-builtin user ids — which the host never
+  // reports as active — read inactive. Creation refuses builtin ids outright;
+  // shadows reaching here predate that refusal and stay deletable cleanup.
+  const shadowedBuiltin = item.kind === "base" && item.userBase === true && builtinBaseIds().has(baseIdOf(item.id))
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
@@ -712,7 +719,7 @@ function itemBadges(
     // applicable while never reaching system[0]. `inactive` reuses the
     // existing active/state badge slot the tree already uses for base
     // liveness: it is the negation of active, not a new visual language.
-    ...(item.kind === "base" && item.userBase === true ? { inactive: true } : {}),
+    ...(item.kind === "base" && item.userBase === true && !shadowedBuiltin ? { inactive: true } : {}),
     // Stored Code Mode customizations are filtered out of apply and never
     // reach the session, so the row must not read as live state. `unsupported`
     // reuses the existing review-family slot for content that will not take
@@ -783,15 +790,24 @@ function sectionBadges(
 }
 
 // User-owned rows can be deleted outright: shared MCP servers, project-group
-// items (skills, added instructions, added base prompts), user-created base
-// templates (which carry group "none" with userBase, deletable through
-// base.delete while builtins stay refused), and agents. The
+// items (skills, the project-owned AGENTS.md instruction, added base
+// prompts), user-created base templates (which carry group "none" with
+// userBase, deletable through base.delete while builtins stay refused —
+// builtin-id shadows pre-dating the creation refusal included, so deleting
+// them restores the host template), and agents. The
 // agent's own Role/persona body is owned but not deletable.
 function removable(level: Level, owner: string | null, item: Item): boolean {
   if (level === "defaults" && owner === null && item.kind === "mcp") return true
   if (item.id === "system:role") return false
   if (item.kind === "base" && item.userBase === true) return true
   return item.group === "project"
+}
+
+// Built-in base ids live in agents/base.ts (the creation refusal source): a
+// user template with one of these ids shadows the host template and can be
+// its agent's active answer, so it must never read `inactive`.
+function baseIdOf(id: string): string {
+  return id.startsWith("base:") ? id.slice("base:".length) : id
 }
 
 function sortedKind(ctx: BuildContext, kind: Item["kind"], owner: string | null): Item[] {

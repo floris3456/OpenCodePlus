@@ -655,6 +655,41 @@ test("skill delete removes the project SKILL.md directory and raises declared er
   await expectDeclaredError(handlers["skill.delete"]({ id: "../evil" }, throwingContext(invalid)), invalid, "skill.invalid")
 })
 
+test("base create refuses a builtin id so user templates can never shadow the host", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const builtin: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["base.create"]({ id: "gpt", title: "gpt.txt", text: "shadow" }, throwingContext(builtin)),
+    builtin,
+    "base.invalid",
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.some((item) => item.id === "base:gpt" && item.userBase === true)).toBe(false)
+})
+
+test("base delete removes a legacy builtin-id shadow file to restore the host template", async () => {
+  // Migration path for shadows created before the creation refusal: the user
+  // file exists on disk, so base.delete removes it instead of refusing as
+  // builtin. Deleting the shadow restores the host template in the snapshot.
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const { userBaseFile } = await import("../src/agents/base.js")
+  await fs.mkdir(path.dirname(userBaseFile("gpt")), { recursive: true })
+  await Bun.write(userBaseFile("gpt"), "shadow base")
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(before.items.find((item) => item.id === "base:gpt")?.userBase).toBe(true)
+  expect(before.items.find((item) => item.id === "base:gpt")?.text).toBe("shadow base")
+  const deleted = await Effect.runPromise(handlers["base.delete"]({ id: "gpt" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "gpt" })
+  expect(await Bun.file(userBaseFile("gpt")).exists()).toBe(false)
+  const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(after.items.find((item) => item.id === "base:gpt")?.userBase).toBeUndefined()
+  expect(after.items.find((item) => item.id === "base:gpt")?.text).toBe("gpt base prompt")
+})
+
 test("base create stores a user template and raises declared errors", async () => {
   const { project } = await tempRoot()
   await enable(project)
@@ -671,7 +706,7 @@ test("base create stores a user template and raises declared errors", async () =
   await expectDeclaredError(handlers["base.create"]({ id: "", title: "X", text: "y" }, throwingContext(invalid)), invalid, "base.invalid")
 })
 
-test("base delete removes a user template, refuses builtins, and raises declared errors", async () => {
+test("base delete removes a user template, refuses missing, and refuses builtins without a shadow", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
@@ -683,6 +718,7 @@ test("base delete removes a user template, refuses builtins, and raises declared
   expect(snapshot.items.some((item) => item.id === "base:custom")).toBe(false)
   const missing: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["base.delete"]({ id: "ghost" }, throwingContext(missing)), missing, "base.missing")
+  // No user shadow file on disk: the host template itself cannot be deleted.
   const builtin: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["base.delete"]({ id: "gpt" }, throwingContext(builtin)), builtin, "base.invalid")
 })
