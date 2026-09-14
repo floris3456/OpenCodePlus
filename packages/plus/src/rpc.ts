@@ -9,69 +9,140 @@ export const Status = Schema.Struct({
   directory: Schema.String,
 }).annotate({ identifier: "Plus.Status" })
 
-export interface SnapshotCustomization extends Schema.Schema.Type<typeof SnapshotCustomization> {}
-export const SnapshotCustomization = Schema.Struct({
+export type Level = typeof Level.Type
+export const Level = Schema.Union([
+  Schema.Literal("defaults"),
+  Schema.Literal("global"),
+  Schema.Literal("project"),
+]).annotate({ identifier: "Plus.Level" })
+
+export interface Address extends Schema.Schema.Type<typeof Address> {}
+export const Address = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
   item: Schema.String,
-  agent: Schema.String,
-  text: Schema.optionalKey(Schema.String),
-  state: Schema.Union([Schema.Literal("inherit"), Schema.Literal("enabled"), Schema.Literal("disabled")]),
-  basedOn: Schema.String,
-  reviewed: Schema.optionalKey(Schema.String),
-  updated: Schema.String,
-}).annotate({ identifier: "Plus.SnapshotCustomization" })
+  section: Schema.NullOr(Schema.String),
+}).annotate({ identifier: "Plus.Address" })
+
+export type ItemKind = typeof ItemKind.Type
+export const ItemKind = Schema.Union([
+  Schema.Literal("tool"),
+  Schema.Literal("base"),
+  Schema.Literal("skill"),
+  Schema.Literal("system"),
+  Schema.Literal("mcp"),
+]).annotate({ identifier: "Plus.ItemKind" })
+
+export type ItemGroup = typeof ItemGroup.Type
+export const ItemGroup = Schema.Union([
+  Schema.Literal("native"),
+  Schema.Literal("plus"),
+  Schema.Literal("mcp"),
+  Schema.Literal("project"),
+  Schema.Literal("none"),
+]).annotate({ identifier: "Plus.ItemGroup" })
 
 export interface SnapshotItem extends Schema.Schema.Type<typeof SnapshotItem> {}
 export const SnapshotItem = Schema.Struct({
   id: Schema.String,
-  kind: Schema.Union([
-    Schema.Literal("prompt"),
-    Schema.Literal("skill"),
-    Schema.Literal("tool"),
-    Schema.Literal("mcp"),
-    Schema.Literal("instruction"),
-  ]),
-  owner: Schema.String,
+  kind: ItemKind,
+  group: ItemGroup,
+  server: Schema.optionalKey(Schema.String),
   title: Schema.String,
   text: Schema.String,
-  agents: Schema.Array(Schema.String),
+  enabled: Schema.Boolean,
   fingerprint: Schema.String,
-  available: Schema.Boolean,
+  agents: Schema.optionalKey(Schema.Array(Schema.String)),
+  order: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.SnapshotItem" })
+
+export interface Boundary extends Schema.Schema.Type<typeof Boundary> {}
+export const Boundary = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  start: Schema.Number,
+}).annotate({ identifier: "Plus.Boundary" })
+
+export type RecordState = typeof RecordState.Type
+export const RecordState = Schema.Union([Schema.Literal("on"), Schema.Literal("off")]).annotate({
+  identifier: "Plus.RecordState",
+})
+
+export interface SnapshotCustomizationRecord extends Schema.Schema.Type<typeof SnapshotCustomizationRecord> {}
+export const SnapshotCustomizationRecord = Schema.Struct({
+  type: Schema.Literal("customization"),
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  item: Schema.String,
+  section: Schema.NullOr(Schema.String),
+  text: Schema.optionalKey(Schema.String),
+  state: Schema.optionalKey(RecordState),
+  basedOn: Schema.String,
+  basedOnText: Schema.optionalKey(Schema.String),
+  acknowledged: Schema.optionalKey(Schema.String),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotCustomizationRecord" })
+
+export interface SnapshotSplitRecord extends Schema.Schema.Type<typeof SnapshotSplitRecord> {}
+export const SnapshotSplitRecord = Schema.Struct({
+  type: Schema.Literal("split"),
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  item: Schema.String,
+  boundaries: Schema.Array(Boundary),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotSplitRecord" })
+
+export type SnapshotRecord = typeof SnapshotRecord.Type
+export const SnapshotRecord = Schema.Union([SnapshotCustomizationRecord, SnapshotSplitRecord]).annotate({
+  identifier: "Plus.SnapshotRecord",
+})
+
+export type AgentScope = typeof AgentScope.Type
+export const AgentScope = Schema.Union([
+  Schema.Literal("project"),
+  Schema.Literal("global"),
+  Schema.Literal("defaults"),
+]).annotate({ identifier: "Plus.AgentScope" })
 
 export interface AgentEntry extends Schema.Schema.Type<typeof AgentEntry> {}
 export const AgentEntry = Schema.Struct({
   id: Schema.String,
-  scope: Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("builtin")]),
+  scope: AgentScope,
   path: Schema.optionalKey(Schema.String),
+  base: Schema.optionalKey(Schema.String),
   fileBacked: Schema.Boolean,
 }).annotate({ identifier: "Plus.AgentEntry" })
 
-export interface ToolEntry extends Schema.Schema.Type<typeof ToolEntry> {}
-export const ToolEntry = Schema.Struct({
-  id: Schema.String,
-  native: Schema.Boolean,
-}).annotate({ identifier: "Plus.ToolEntry" })
+export interface ServerEntry extends Schema.Schema.Type<typeof ServerEntry> {}
+export const ServerEntry = Schema.Struct({
+  name: Schema.String,
+  enabled: Schema.Boolean,
+}).annotate({ identifier: "Plus.ServerEntry" })
 
 export interface Snapshot extends Schema.Schema.Type<typeof Snapshot> {}
 export const Snapshot = Schema.Struct({
   revision: Schema.Number,
+  globalRevision: Schema.Number,
   agents: Schema.Array(AgentEntry),
-  tools: Schema.Array(ToolEntry),
   items: Schema.Array(SnapshotItem),
-  customizations: Schema.Array(SnapshotCustomization),
+  records: Schema.Array(SnapshotRecord),
+  servers: Schema.Array(ServerEntry),
   protectedAgents: Schema.Array(Schema.String),
 }).annotate({ identifier: "Plus.Snapshot" })
 
 export interface MutateInput extends Schema.Schema.Type<typeof MutateInput> {}
 export const MutateInput = Schema.Struct({
   expectedRevision: Schema.Number,
-  customizations: Schema.Array(SnapshotCustomization),
+  expectedGlobalRevision: Schema.Number,
+  records: Schema.Array(SnapshotRecord),
 }).annotate({ identifier: "Plus.MutateInput" })
 
 export interface MutateSuccess extends Schema.Schema.Type<typeof MutateSuccess> {}
 export const MutateSuccess = Schema.Struct({
   ok: Schema.Literal(true),
   revision: Schema.Number,
+  globalRevision: Schema.Number,
   snapshot: Snapshot,
 }).annotate({ identifier: "Plus.MutateSuccess" })
 
@@ -90,7 +161,33 @@ export const MutateResult = Schema.Union([MutateSuccess, MutateConflict]).annota
 export interface InstructionsChanged extends Schema.Schema.Type<typeof InstructionsChanged> {}
 export const InstructionsChanged = Schema.Struct({
   revision: Schema.Number,
+  globalRevision: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.InstructionsChanged" })
+
+export interface AssembledInput extends Schema.Schema.Type<typeof AssembledInput> {}
+export const AssembledInput = Schema.Struct({
+  agent: Schema.String,
+}).annotate({ identifier: "Plus.AssembledInput" })
+
+export interface AssembledTool extends Schema.Schema.Type<typeof AssembledTool> {}
+export const AssembledTool = Schema.Struct({
+  id: Schema.String,
+  description: Schema.String,
+}).annotate({ identifier: "Plus.AssembledTool" })
+
+export interface AssembledSkill extends Schema.Schema.Type<typeof AssembledSkill> {}
+export const AssembledSkill = Schema.Struct({
+  id: Schema.String,
+  content: Schema.String,
+}).annotate({ identifier: "Plus.AssembledSkill" })
+
+export interface Assembled extends Schema.Schema.Type<typeof Assembled> {}
+export const Assembled = Schema.Struct({
+  agent: Schema.String,
+  system: Schema.Array(Schema.String),
+  tools: Schema.Array(AssembledTool),
+  skills: Schema.Array(AssembledSkill),
+}).annotate({ identifier: "Plus.Assembled" })
 
 export type FileScope = typeof FileScope.Type
 export const FileScope = Schema.Union([Schema.Literal("project"), Schema.Literal("global")]).annotate({
@@ -122,6 +219,7 @@ export interface CreateAgentInput extends Schema.Schema.Type<typeof CreateAgentI
 export const CreateAgentInput = Schema.Struct({
   scope: FileScope,
   id: Schema.String,
+  template: Schema.optionalKey(Schema.String),
   fields: Schema.optionalKey(CreateAgentFields),
   prompt: Schema.String,
 }).annotate({ identifier: "Plus.CreateAgentInput" })
@@ -152,22 +250,132 @@ export const DeleteAgentInput = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.DeleteAgentInput" })
 
-const ProjectDisabled = Schema.Struct({
+export interface CreateSkillInput extends Schema.Schema.Type<typeof CreateSkillInput> {}
+export const CreateSkillInput = Schema.Struct({
+  name: Schema.String,
+  body: Schema.String,
+}).annotate({ identifier: "Plus.CreateSkillInput" })
+
+export interface ImportSkillInput extends Schema.Schema.Type<typeof ImportSkillInput> {}
+export const ImportSkillInput = Schema.Struct({
+  path: Schema.String,
+}).annotate({ identifier: "Plus.ImportSkillInput" })
+
+export interface SkillRef extends Schema.Schema.Type<typeof SkillRef> {}
+export const SkillRef = Schema.Struct({
+  id: Schema.String,
+  path: Schema.String,
+}).annotate({ identifier: "Plus.SkillRef" })
+
+export interface CreateBaseInput extends Schema.Schema.Type<typeof CreateBaseInput> {}
+export const CreateBaseInput = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  text: Schema.String,
+}).annotate({ identifier: "Plus.CreateBaseInput" })
+
+export interface BaseRef extends Schema.Schema.Type<typeof BaseRef> {}
+export const BaseRef = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.BaseRef" })
+
+export interface CreateInstructionInput extends Schema.Schema.Type<typeof CreateInstructionInput> {}
+export const CreateInstructionInput = Schema.Struct({
+  name: Schema.String,
+  text: Schema.String,
+}).annotate({ identifier: "Plus.CreateInstructionInput" })
+
+export interface InstructionRef extends Schema.Schema.Type<typeof InstructionRef> {}
+export const InstructionRef = Schema.Struct({
+  id: Schema.String,
+  path: Schema.String,
+}).annotate({ identifier: "Plus.InstructionRef" })
+
+export interface AddMcpInput extends Schema.Schema.Type<typeof AddMcpInput> {}
+export const AddMcpInput = Schema.Struct({
+  name: Schema.String,
+  config: Schema.Record(Schema.String, Schema.Unknown),
+}).annotate({ identifier: "Plus.AddMcpInput" })
+
+export interface McpRef extends Schema.Schema.Type<typeof McpRef> {}
+export const McpRef = Schema.Struct({
+  name: Schema.String,
+}).annotate({ identifier: "Plus.McpRef" })
+
+export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
+export const ProjectDisabled = Schema.Struct({
   directory: Schema.String,
 }).annotate({ identifier: "Plus.ProjectDisabled" })
 
-const AgentExists = Schema.Struct({
+export interface AgentExists extends Schema.Schema.Type<typeof AgentExists> {}
+export const AgentExists = Schema.Struct({
   path: Schema.String,
 }).annotate({ identifier: "Plus.AgentExists" })
 
-const AgentMissing = Schema.Struct({
+export interface AgentMissing extends Schema.Schema.Type<typeof AgentMissing> {}
+export const AgentMissing = Schema.Struct({
   path: Schema.String,
 }).annotate({ identifier: "Plus.AgentMissing" })
 
-const AgentInvalid = Schema.Struct({
+export interface AgentInvalid extends Schema.Schema.Type<typeof AgentInvalid> {}
+export const AgentInvalid = Schema.Struct({
   id: Schema.String,
   reason: Schema.String,
 }).annotate({ identifier: "Plus.AgentInvalid" })
+
+export interface AgentUnknown extends Schema.Schema.Type<typeof AgentUnknown> {}
+export const AgentUnknown = Schema.Struct({
+  agent: Schema.String,
+}).annotate({ identifier: "Plus.AgentUnknown" })
+
+export interface SkillExists extends Schema.Schema.Type<typeof SkillExists> {}
+export const SkillExists = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.SkillExists" })
+
+export interface SkillInvalid extends Schema.Schema.Type<typeof SkillInvalid> {}
+export const SkillInvalid = Schema.Struct({
+  id: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.SkillInvalid" })
+
+export interface BaseExists extends Schema.Schema.Type<typeof BaseExists> {}
+export const BaseExists = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.BaseExists" })
+
+export interface BaseInvalid extends Schema.Schema.Type<typeof BaseInvalid> {}
+export const BaseInvalid = Schema.Struct({
+  id: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.BaseInvalid" })
+
+export interface InstructionExists extends Schema.Schema.Type<typeof InstructionExists> {}
+export const InstructionExists = Schema.Struct({
+  path: Schema.String,
+}).annotate({ identifier: "Plus.InstructionExists" })
+
+export interface InstructionInvalid extends Schema.Schema.Type<typeof InstructionInvalid> {}
+export const InstructionInvalid = Schema.Struct({
+  name: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.InstructionInvalid" })
+
+export interface McpExists extends Schema.Schema.Type<typeof McpExists> {}
+export const McpExists = Schema.Struct({
+  name: Schema.String,
+}).annotate({ identifier: "Plus.McpExists" })
+
+export interface McpMissing extends Schema.Schema.Type<typeof McpMissing> {}
+export const McpMissing = Schema.Struct({
+  name: Schema.String,
+}).annotate({ identifier: "Plus.McpMissing" })
+
+export interface McpInvalid extends Schema.Schema.Type<typeof McpInvalid> {}
+export const McpInvalid = Schema.Struct({
+  name: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.McpInvalid" })
 
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
@@ -177,6 +385,10 @@ const PortableStatus = Schema.toStandardSchemaV1(Status.annotate({ identifier: "
 const PortableSnapshot = Schema.toStandardSchemaV1(Snapshot.annotate({ identifier: "Plus.Snapshot" }))
 const PortableMutateInput = Schema.toStandardSchemaV1(MutateInput.annotate({ identifier: "Plus.MutateInput" }))
 const PortableMutateResult = Schema.toStandardSchemaV1(MutateResult.annotate({ identifier: "Plus.MutateResult" }))
+const PortableAssembledInput = Schema.toStandardSchemaV1(
+  AssembledInput.annotate({ identifier: "Plus.AssembledInput" }),
+)
+const PortableAssembled = Schema.toStandardSchemaV1(Assembled.annotate({ identifier: "Plus.Assembled" }))
 const PortableInstructionsChanged = Schema.toStandardSchemaV1(
   InstructionsChanged.annotate({ identifier: "Plus.InstructionsChanged" }),
 )
@@ -193,12 +405,46 @@ const PortableRenameAgentResult = Schema.toStandardSchemaV1(
 const PortableDeleteAgentInput = Schema.toStandardSchemaV1(
   DeleteAgentInput.annotate({ identifier: "Plus.DeleteAgentInput" }),
 )
+const PortableCreateSkillInput = Schema.toStandardSchemaV1(
+  CreateSkillInput.annotate({ identifier: "Plus.CreateSkillInput" }),
+)
+const PortableImportSkillInput = Schema.toStandardSchemaV1(
+  ImportSkillInput.annotate({ identifier: "Plus.ImportSkillInput" }),
+)
+const PortableSkillRef = Schema.toStandardSchemaV1(SkillRef.annotate({ identifier: "Plus.SkillRef" }))
+const PortableCreateBaseInput = Schema.toStandardSchemaV1(
+  CreateBaseInput.annotate({ identifier: "Plus.CreateBaseInput" }),
+)
+const PortableBaseRef = Schema.toStandardSchemaV1(BaseRef.annotate({ identifier: "Plus.BaseRef" }))
+const PortableCreateInstructionInput = Schema.toStandardSchemaV1(
+  CreateInstructionInput.annotate({ identifier: "Plus.CreateInstructionInput" }),
+)
+const PortableInstructionRef = Schema.toStandardSchemaV1(
+  InstructionRef.annotate({ identifier: "Plus.InstructionRef" }),
+)
+const PortableAddMcpInput = Schema.toStandardSchemaV1(AddMcpInput.annotate({ identifier: "Plus.AddMcpInput" }))
+const PortableMcpRef = Schema.toStandardSchemaV1(McpRef.annotate({ identifier: "Plus.McpRef" }))
+
 const PortableProjectDisabled = Schema.toStandardSchemaV1(
   ProjectDisabled.annotate({ identifier: "Plus.ProjectDisabled" }),
 )
 const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ identifier: "Plus.AgentExists" }))
 const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
 const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
+const PortableAgentUnknown = Schema.toStandardSchemaV1(AgentUnknown.annotate({ identifier: "Plus.AgentUnknown" }))
+const PortableSkillExists = Schema.toStandardSchemaV1(SkillExists.annotate({ identifier: "Plus.SkillExists" }))
+const PortableSkillInvalid = Schema.toStandardSchemaV1(SkillInvalid.annotate({ identifier: "Plus.SkillInvalid" }))
+const PortableBaseExists = Schema.toStandardSchemaV1(BaseExists.annotate({ identifier: "Plus.BaseExists" }))
+const PortableBaseInvalid = Schema.toStandardSchemaV1(BaseInvalid.annotate({ identifier: "Plus.BaseInvalid" }))
+const PortableInstructionExists = Schema.toStandardSchemaV1(
+  InstructionExists.annotate({ identifier: "Plus.InstructionExists" }),
+)
+const PortableInstructionInvalid = Schema.toStandardSchemaV1(
+  InstructionInvalid.annotate({ identifier: "Plus.InstructionInvalid" }),
+)
+const PortableMcpExists = Schema.toStandardSchemaV1(McpExists.annotate({ identifier: "Plus.McpExists" }))
+const PortableMcpMissing = Schema.toStandardSchemaV1(McpMissing.annotate({ identifier: "Plus.McpMissing" }))
+const PortableMcpInvalid = Schema.toStandardSchemaV1(McpInvalid.annotate({ identifier: "Plus.McpInvalid" }))
 
 export const Definition = Rpc.define({
   id: "opencode.plus",
@@ -222,6 +468,13 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
       },
     },
+    "instructions.refresh": {
+      input: Empty,
+      output: PortableSnapshot,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+      },
+    },
     "instructions.mutate": {
       input: PortableMutateInput,
       output: PortableMutateResult,
@@ -229,11 +482,12 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
       },
     },
-    "instructions.refresh": {
-      input: Empty,
-      output: PortableSnapshot,
+    "instructions.assembled": {
+      input: PortableAssembledInput,
+      output: PortableAssembled,
       errors: {
         "project.disabled": PortableProjectDisabled,
+        "agent.unknown": PortableAgentUnknown,
       },
     },
     "agent.create": {
@@ -262,6 +516,60 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "agent.missing": PortableAgentMissing,
         "agent.invalid": PortableAgentInvalid,
+      },
+    },
+    "skill.create": {
+      input: PortableCreateSkillInput,
+      output: PortableSkillRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "skill.exists": PortableSkillExists,
+        "skill.invalid": PortableSkillInvalid,
+      },
+    },
+    "skill.import": {
+      input: PortableImportSkillInput,
+      output: PortableSkillRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "skill.exists": PortableSkillExists,
+        "skill.invalid": PortableSkillInvalid,
+      },
+    },
+    "base.create": {
+      input: PortableCreateBaseInput,
+      output: PortableBaseRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "base.exists": PortableBaseExists,
+        "base.invalid": PortableBaseInvalid,
+      },
+    },
+    "instruction.create": {
+      input: PortableCreateInstructionInput,
+      output: PortableInstructionRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "instruction.exists": PortableInstructionExists,
+        "instruction.invalid": PortableInstructionInvalid,
+      },
+    },
+    "mcp.add": {
+      input: PortableAddMcpInput,
+      output: PortableMcpRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "mcp.exists": PortableMcpExists,
+        "mcp.invalid": PortableMcpInvalid,
+      },
+    },
+    "mcp.remove": {
+      input: PortableMcpRef,
+      output: PortableMcpRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "mcp.missing": PortableMcpMissing,
+        "mcp.invalid": PortableMcpInvalid,
       },
     },
   },

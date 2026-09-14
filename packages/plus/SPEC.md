@@ -245,3 +245,59 @@ level: "project", agent }`; `enabled` → `"on"`, `disabled` → `"off"`,
 unchanged; `section: null`. Defaults-level records found in a v1 project file
 route into the **global** store. Migration is idempotent and the first save
 after a migrating load writes v2 to both stores. v1 is never written.
+
+## §10 RPC
+
+Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
+
+| Method | Input | Output | Errors |
+| --- | --- | --- | --- |
+| `project.status` | `void` | `Status` | — |
+| `project.enable` | `void` | `Status` | — |
+| `project.disable` | `void` | `Status` | — |
+| `instructions.snapshot` | `void` | `Snapshot` | `project.disabled` |
+| `instructions.refresh` | `void` | `Snapshot` | `project.disabled` |
+| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records }` | `MutateResult` | `project.disabled` |
+| `instructions.assembled` | `{ agent }` | `Assembled` | `project.disabled`, `agent.unknown` |
+| `agent.create` | `{ scope, id, template?, fields?, prompt }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid` |
+| `agent.rename` | `{ scope, from, to }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid` |
+| `agent.delete` | `{ scope, id }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid` |
+| `skill.create` | `{ name, body }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
+| `skill.import` | `{ path }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
+| `base.create` | `{ id, title, text }` | `BaseRef` | `project.disabled`, `base.exists`, `base.invalid` |
+| `instruction.create` | `{ name, text }` | `InstructionRef` | `project.disabled`, `instruction.exists`, `instruction.invalid` |
+| `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
+| `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
+
+Events: `project.changed`, `instructions.changed`.
+
+### `Assembled` Shape
+
+Host-applied assembled instructions read back after application:
+
+```ts
+export interface Assembled {
+  readonly agent: string
+  readonly system: readonly string[]
+  readonly tools: readonly { readonly id: string; readonly description: string }[]
+  readonly skills: readonly { readonly id: string; readonly content: string }[]
+}
+```
+
+### Errors
+
+- `project.disabled`: `{ directory: string }`
+- `agent.exists`: `{ path: string }`
+- `agent.missing`: `{ path: string }`
+- `agent.invalid`: `{ id: string, reason: string }`
+- `agent.unknown`: `{ agent: string }`
+- `skill.exists`: `{ id: string }`
+- `skill.invalid`: `{ id: string, reason: string }`
+- `base.exists`: `{ id: string }`
+- `base.invalid`: `{ id: string, reason: string }`
+- `instruction.exists`: `{ path: string }`
+- `instruction.invalid`: `{ name: string, reason: string }`
+- `mcp.exists`: `{ name: string }`
+- `mcp.missing`: `{ name: string }`
+- `mcp.invalid`: `{ name: string, reason: string }`
+
