@@ -31,10 +31,10 @@ async function tempRoot(): Promise<{ project: string }> {
   return { project: path.join(root, "project") }
 }
 
-async function writeTeamAgent(teamDir: string, id: string): Promise<string> {
+async function writeTeamAgent(teamDir: string, id: string, body = "role"): Promise<string> {
   const target = path.join(teamDir, `${id}.md`)
   await fs.mkdir(path.dirname(target), { recursive: true })
-  await Bun.write(target, formatMarkdown({ description: `${path.basename(teamDir)}/${id}` }, "role"))
+  await Bun.write(target, formatMarkdown({ description: `${path.basename(teamDir)}/${id}` }, body))
   return target
 }
 
@@ -87,8 +87,9 @@ test("snapshot lists a disk team as disabled with member ids when no record exis
 test("toggling a team on writes a real TeamRecord and the next snapshot reports it enabled", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
@@ -101,6 +102,14 @@ test("toggling a team on writes a real TeamRecord and the next snapshot reports 
   expect(snapshot.teams).toEqual([{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }])
   // Team records stay out of `records`.
   expect(snapshot.records).toEqual([])
+  // The toggle has host effect, not just a record and a badge: the member's
+  // markdown body is visible in the host agent registry.
+  const listed = await Effect.runPromise(ctx.agent.list())
+  expect(listed.data.find((entry) => String(entry.id) === "alpha")?.system).toBe("crew alpha body")
+  // Toggling back off removes the member from the host registry.
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
+  const reloaded = await Effect.runPromise(ctx.agent.list())
+  expect(reloaded.data.some((entry) => String(entry.id) === "alpha")).toBe(false)
 })
 
 test("toggling an unknown team name raises team.unknown and an invalid name raises team.invalid", async () => {

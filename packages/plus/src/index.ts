@@ -17,6 +17,7 @@ import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserB
 import { addMcp, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply } from "./instructions/apply.js"
+import { dedupeAgents, installTeamAgents, resolveTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { globalConfigDir, resolveInstructionPath } from "./instructions/paths.js"
@@ -521,6 +522,10 @@ async function saveTeamRecord(
   return { ok: false }
 }
 
+function isTeamRecord(record: StoredRecord): record is TeamRecord {
+  return record.type === "team"
+}
+
 function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
   return records.filter((record): record is CustomizationRecord => record.type === "customization")
 }
@@ -883,7 +888,7 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       if (state.globalRevision !== undefined && stored.globalRevision < state.globalRevision) return discovered
       const customizations = customizationsOf(stored.records)
       const splits = splitsOf(stored.records)
-      const fingerprint = fingerprintPublish(discovered, stored.records)
+      const fingerprint = yield* Effect.promise(() => fingerprintPublish(discovered, stored.records, ctx.location.directory))
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
         return discovered
       }
@@ -899,14 +904,33 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       const applied = yield* Effect.promise(() =>
         apply(ctx, {
           items: discovered.items,
-          agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope), base: agent.base })),
+          // First entry per id wins downstream: discover returns the effective
+          // agent followed by its shadowed scope identities, and apply loops
+          // iterate agents in order with last write winning — applying every
+          // identity would let the shadowed copy overwrite the effective one.
+          // Discovery keeps the shadows for scope resolution and the UI.
+          agents: dedupeAgents(discovered.agents).map((agent) => ({
+            id: agent.id,
+            level: scopeLevel(agent.scope),
+            base: agent.base,
+          })),
           records: customizations,
           splits,
           scopes: scopesOf(discovered.agents),
         }),
       )
+      // Enabled teams become real core-visible agents: resolve the enabled
+      // teams against the discovered regular sources (resolveTeams already
+      // favours an established same-level regular, so losing team copies never
+      // reach the installer) and register each winner's markdown body with the
+      // host. Team registrations install after apply's own and dispose with
+      // the same superseded set when the next publish replaces them.
+      const teamAgents = yield* Effect.promise(() =>
+        resolveTeamAgents(ctx.location.directory, stored.records.filter(isTeamRecord), discovered.agents),
+      )
+      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, teamAgents))
       const previous = state.applied
-      state.applied = [...applied.registrations]
+      state.applied = [...applied.registrations, ...teamApplied.registrations]
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
@@ -983,20 +1007,40 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
   return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
 }
 
-// The publish fingerprint covers what apply consumes: the unmasked upstream
+// The publish fingerprint covers what publish installs: the unmasked upstream
 // discovery plus the customization and split records (and the scopes derived
-// from the discovered agents). Discovery already unmasks Plus's own output
-// back to upstream, so a self-triggered refresh keeps an identical
-// fingerprint and stays a no-op instead of a dispose/reinstall loop.
-function fingerprintPublish(discovered: Discovered, records: readonly StoredRecord[]): string {
+// from the discovered agents), plus the resolved team agents. Discovery
+// already unmasks Plus's own output back to upstream, so a self-triggered
+// refresh keeps an identical fingerprint and stays a no-op instead of a
+// dispose/reinstall loop. An enable/disable toggle changes nothing in apply's
+// own inputs, so only the resolved team winners (with their markdown bodies)
+// make the toggle change the fingerprint.
+async function fingerprintPublish(
+  discovered: Discovered,
+  records: readonly StoredRecord[],
+  directory: string,
+): Promise<string> {
   const scopes = scopesOf(discovered.agents)
+  const teamAgents = await resolveTeamAgents(directory, records.filter(isTeamRecord), discovered.agents)
+  const teamBodies = await Promise.all(
+    teamAgents.map(async (agent) => ({
+      id: agent.id,
+      scope: agent.scope,
+      body: agent.path === undefined ? undefined : await readTeamBody(agent.path),
+    })),
+  )
   return JSON.stringify({
     items: discovered.items,
     agents: discovered.agents,
     servers: discovered.servers,
     records,
+    teamBodies,
     scopes: { global: [...scopes.global].toSorted(), defaults: [...scopes.defaults].toSorted() },
   })
+}
+
+async function readTeamBody(file: string): Promise<string | undefined> {
+  return fs.readFile(file, "utf8").catch(() => undefined)
 }
 
 // The canonical event names, not string guesses: agent and skill reloads
