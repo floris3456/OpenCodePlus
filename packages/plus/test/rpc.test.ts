@@ -1,22 +1,15 @@
 import { afterEach, expect, test } from "bun:test"
-import { Agent } from "@opencode/schema/agent"
-import { Location } from "@opencode/schema/location"
-import { Project } from "@opencode/schema/project"
 import type { Rpc } from "@opencode/schema/rpc"
-import { AbsolutePath } from "@opencode/schema/schema"
-import type { Tool } from "@opencode/schema/tool"
-import type { Mcp } from "@opencode/schema/mcp"
-import type { MCPDomain, MCPEditor } from "@opencode/plugin/effect/mcp"
-import { Effect, Exit, Schema, Scope, type Types } from "effect"
+import { Schema } from "effect"
+import { Effect, Exit } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import PlusPlugin, { createHandlers, createState, type PlusState } from "../src/index.js"
-import { effective, fingerprint, type Customization, type Item } from "../src/instructions/model.js"
-import { load, save } from "../src/instructions/store.js"
+import { createHandlers, createState, type PlusState } from "../src/index.js"
+import { fingerprint } from "../src/instructions/model.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { agentHarness, context, mcpHarness } from "./harness.js"
+import { agentHarness, agentInfo, context, fullContext, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -26,25 +19,20 @@ test("definition id, methods, and events contract", () => {
   expect("project.changed" in Plus.Definition.events).toBe(true)
 })
 
-test("status schema round-trip", () => {
-  const status = { enabled: true, directory: "/path/to/project" }
-  const encoded = Schema.encodeSync(Plus.Status)(status)
-  const decoded = Schema.decodeUnknownSync(Plus.Status)(encoded)
-  expect(decoded).toEqual(status)
-
-  const disabledStatus = { enabled: false, directory: "/another/dir" }
-  const encodedDisabled = Schema.encodeSync(Plus.Status)(disabledStatus)
-  const decodedDisabled = Schema.decodeUnknownSync(Plus.Status)(encodedDisabled)
-  expect(decodedDisabled).toEqual(disabledStatus)
-})
-
 test("instructions and agent methods and the instructions.changed event are present", () => {
   expect("instructions.snapshot" in Plus.Definition.methods).toBe(true)
   expect("instructions.mutate" in Plus.Definition.methods).toBe(true)
   expect("instructions.refresh" in Plus.Definition.methods).toBe(true)
+  expect("instructions.assembled" in Plus.Definition.methods).toBe(true)
   expect("agent.create" in Plus.Definition.methods).toBe(true)
   expect("agent.rename" in Plus.Definition.methods).toBe(true)
   expect("agent.delete" in Plus.Definition.methods).toBe(true)
+  expect("skill.create" in Plus.Definition.methods).toBe(true)
+  expect("skill.import" in Plus.Definition.methods).toBe(true)
+  expect("base.create" in Plus.Definition.methods).toBe(true)
+  expect("instruction.create" in Plus.Definition.methods).toBe(true)
+  expect("mcp.add" in Plus.Definition.methods).toBe(true)
+  expect("mcp.remove" in Plus.Definition.methods).toBe(true)
   expect("instructions.changed" in Plus.Definition.events).toBe(true)
 })
 
@@ -74,259 +62,21 @@ test("every method input, output, declared error, and event schema is portable",
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
 const roots: string[] = []
+const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
 afterEach(async () => {
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-async function tempDir(): Promise<string> {
+async function tempRoot(): Promise<{ project: string; config: string }> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-rpc-"))
   roots.push(root)
-  return root
-}
-
-function testLocation(directory: string): Location.Info {
-  const absolute = AbsolutePath.make(directory)
-  return new Location.Info({
-    directory: absolute,
-    project: { id: Project.ID.global, directory: absolute, canonical: absolute },
-  })
-}
-
-function emptyHost(directory: string, agents: Agent.Info[] = []) {
-  const location = testLocation(directory)
-  return context({
-    location,
-    agent: {
-      get: () => Effect.die("unused agent.get"),
-      list: () => Effect.succeed({ location, data: agents }),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location, data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => [],
-            get: () => undefined,
-            namespace: () => undefined,
-            add: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => [],
-            get: () => undefined,
-            set: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-}
-
-function staticToolHost(
-  directory: string,
-  tools: readonly (Tool.Info & { readonly id: string })[],
-) {
-  const location = testLocation(directory)
-  return context({
-    location,
-    agent: {
-      get: () => Effect.die("unused agent.get"),
-      list: () => Effect.succeed({ location, data: [] }),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location, data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => tools,
-            get: (id) => tools.find((tool) => tool.id === id),
-            namespace: () => undefined,
-            add: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => [],
-            get: () => undefined,
-            set: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-}
-
-function toolHost(
-  directory: string,
-  tools: readonly (Tool.Info & { readonly id: string })[],
-  hooks: { current: number },
-) {
-  const location = testLocation(directory)
-  const current = { tools }
-  const host = context({
-    location,
-    agent: {
-      get: () => Effect.die("unused agent.get"),
-      list: () => Effect.succeed({ location, data: [{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }] }),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location, data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => current.tools,
-            get: (id) => current.tools.find((tool) => tool.id === id),
-            namespace: () => undefined,
-            add: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => [],
-            get: () => undefined,
-            set: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-    session: {
-      hook: () =>
-        Effect.sync(() => {
-          hooks.current++
-          return { dispose: Effect.sync(() => { hooks.current-- }) }
-        }),
-    },
-  })
-  return {
-    ctx: host,
-    setTools(next: readonly (Tool.Info & { readonly id: string })[]): void {
-      current.tools = next
-    },
-  }
-}
-
-function hostTool(id: string, description: string, options?: Tool.Info["options"]): Tool.Info & { readonly id: string } {
-  return {
-    id,
-    name: id,
-    description,
-    input: Schema.Void,
-    ...(options === undefined ? {} : { options }),
-    execute: () => Effect.die("unused tool.execute"),
-  }
-}
-
-function liveAgentHost(directory: string, agents: ReturnType<typeof agentHarness>, mcp?: ReturnType<typeof mcpHarness>) {
-  const location = testLocation(directory)
-  return context({
-    location,
-    agent: {
-      get: agents.domain.get,
-      list: () => agents.domain.list(),
-      transform: agents.domain.transform,
-      reload: agents.domain.reload,
-    },
-    skill: {
-      list: () => Effect.succeed({ location, data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback({
-            list: () => [],
-            get: () => undefined,
-            namespace: () => undefined,
-            add: () => undefined,
-            update: () => undefined,
-            remove: () => undefined,
-          })
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp:
-      mcp === undefined
-        ? {
-            list: () => Effect.die("unused mcp.list"),
-            transform: (callback) =>
-              Effect.sync(() => {
-                callback({
-                  list: () => [],
-                  get: () => undefined,
-                  set: () => undefined,
-                  update: () => undefined,
-                  remove: () => undefined,
-                })
-                return { dispose: Effect.void }
-              }),
-            reload: () => Effect.die("unused mcp.reload"),
-          }
-        : {
-            list: mcp.domain.list,
-            transform: mcp.domain.transform,
-            reload: mcp.domain.reload,
-          },
-  })
+  const config = path.join(root, "config")
+  process.env.OPENCODE_CONFIG_DIR = config
+  return { project: path.join(root, "project"), config }
 }
 
 interface CapturedError {
@@ -374,17 +124,6 @@ function captureEmits(state: PlusState): Array<{ name: string; data: unknown }> 
   return emitted
 }
 
-function customization(item: string, overrides?: { text?: string; agent?: string }) {
-  return {
-    item,
-    agent: overrides?.agent ?? "*",
-    ...(overrides?.text === undefined ? {} : { text: overrides.text }),
-    state: "inherit" as const,
-    basedOn: "fingerprint-1",
-    updated: UPDATED,
-  }
-}
-
 // Core serves RPC results as JSON through HttpApi, whose success schema is
 // the canonical JSON codec of RpcOutput. Unknown encodes to Json on that
 // path, so a present-but-undefined key fails with "Expected JSON value".
@@ -394,1528 +133,296 @@ function expectRpcBody(value: unknown) {
   expect(() => Schema.encodeUnknownSync(RpcBody)({ output: value })).not.toThrow()
 }
 
-type RpcSnapshot = Effect.Success<ReturnType<ReturnType<typeof createHandlers>["instructions.refresh"]>>
-
-function snapshotOf(snapshot: RpcSnapshot): { revision: number; items: Item[]; customizations: Customization[] } {
+function record(item: string, overrides?: Partial<Plus.SnapshotCustomizationRecord>): Plus.SnapshotCustomizationRecord {
   return {
-    revision: snapshot.revision,
-    items: snapshot.items.map(itemOf),
-    customizations: snapshot.customizations.map((record: RpcSnapshot["customizations"][number]) => ({ ...record })),
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item,
+    section: null,
+    basedOn: fingerprint("upstream"),
+    updated: UPDATED,
+    ...overrides,
   }
-}
-
-function itemOf(item: RpcSnapshot["items"][number]): Item {
-  return { ...item, agents: [...item.agents] }
 }
 
 test("gated methods fail with project.disabled when project mode is off", async () => {
-  const directory = await tempDir()
-  const handlers = createHandlers(emptyHost(directory), createState())
+  const { project } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
   const captured: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["instructions.snapshot"](undefined, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["instructions.refresh"](undefined, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(
-    handlers["instructions.snapshot"](undefined, throwingContext(captured)),
+    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [] }, throwingContext(captured)),
     captured,
     "project.disabled",
   )
-  await expectDeclaredError(
-    handlers["instructions.mutate"]({ expectedRevision: 0, customizations: [] }, throwingContext(captured)),
-    captured,
-    "project.disabled",
-  )
-  await expectDeclaredError(
-    handlers["instructions.refresh"](undefined, throwingContext(captured)),
-    captured,
-    "project.disabled",
-  )
-  await expectDeclaredError(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "hello" }, throwingContext(captured)),
-    captured,
-    "project.disabled",
-  )
-  await expectDeclaredError(
-    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "beta" }, throwingContext(captured)),
-    captured,
-    "project.disabled",
-  )
-  await expectDeclaredError(
-    handlers["agent.delete"]({ scope: "project", id: "alpha" }, throwingContext(captured)),
-    captured,
-    "project.disabled",
-  )
+  await expectDeclaredError(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "hi" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["agent.rename"]({ scope: "project", from: "a", to: "b" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["agent.delete"]({ scope: "project", id: "a" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["skill.create"]({ name: "x", body: "y" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["skill.import"]({ path: "/tmp/x.md" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["base.create"]({ id: "x", title: "X", text: "y" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["instruction.create"]({ name: "x", text: "y" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["mcp.add"]({ name: "x", config: { type: "remote", url: "https://x.test" } }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["mcp.remove"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
   const status = await Effect.runPromise(handlers["project.status"](undefined, throwingContext(captured)))
-  expect(status).toEqual({ enabled: false, directory })
+  expect(status).toEqual({ enabled: false, directory: project })
 })
 
-test("stale mutate returns a conflict without discarding stored data", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const handlers = createHandlers(emptyHost(directory), createState())
-  const seeded = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1", { text: "first" })] },
-      throwingContext({}),
-    ),
-  )
-  expect(seeded.ok).toBe(true)
-  if (!seeded.ok) throw new Error("expected seed to succeed")
-
-  const stale = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1", { text: "second" })] },
-      throwingContext({}),
-    ),
-  )
-  expect(stale.ok).toBe(false)
-  if (stale.ok) throw new Error("expected stale conflict")
-  expect(stale.reason).toBe("stale")
-  expect(stale.snapshot.revision).toBe(1)
-  expect(stale.snapshot.customizations).toEqual(seeded.snapshot.customizations)
-  expect(await load(directory)).toEqual({ revision: 1, customizations: [...seeded.snapshot.customizations] })
-})
-
-test("successful mutate persists, emits instructions.changed, and skips no-op emits", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const state = createState()
-  const emitted = captureEmits(state)
-  const handlers = createHandlers(emptyHost(directory), state)
-
-  const first = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1", { text: "first" })] },
-      throwingContext({}),
-    ),
-  )
-  expect(first.ok).toBe(true)
-  if (!first.ok) throw new Error("expected mutate to succeed")
-  expect(first.revision).toBe(1)
-  expect(await load(directory)).toEqual({ revision: 1, customizations: [...first.snapshot.customizations] })
-  expect(emitted).toEqual([{ name: "instructions.changed", data: { revision: 1 } }])
-
-  const noop = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 1, customizations: [customization("item-1", { text: "first" })] },
-      throwingContext({}),
-    ),
-  )
-  expect(noop.ok).toBe(true)
-  if (!noop.ok) throw new Error("expected no-op mutate to succeed")
-  expect(noop.revision).toBe(1)
-  expect(emitted).toHaveLength(1)
-})
-
-test("agent.create writes the file and the snapshot marks it file-backed", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const state = createState()
-  const emitted = captureEmits(state)
-  const hostAgents = [Agent.Info.default(Agent.ID.make("alpha"))]
-  const handlers = createHandlers(emptyHost(directory, hostAgents), state)
-
-  const created = await Effect.runPromise(
-    handlers["agent.create"](
-      { scope: "project", id: "alpha", fields: { description: "test agent" }, prompt: "Be helpful." },
-      throwingContext({}),
-    ),
-  )
-  expect(created).toEqual({ id: "alpha", path: path.join(directory, ".opencode", "agent", "alpha.md") })
-  expect(await Bun.file(created.path).text()).toContain("Be helpful.")
-  expect(emitted).toEqual([{ name: "instructions.changed", data: { revision: 0 } }])
-
+test("snapshot shape carries both revisions, agents, items, records, servers, and protectedAgents", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] }), createState())
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.revision).toBe(0)
-  expect(snapshot.agents).toEqual([
-    { id: "alpha", scope: "project", path: created.path, fileBacked: true },
-  ])
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expect(refreshed).toEqual(snapshot)
-  expect(emitted).toHaveLength(1)
-})
-
-test("agent file conflicts surface as declared errors", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const handlers = createHandlers(emptyHost(directory), createState())
-
-  await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "first" }, throwingContext({})),
-  )
-  const duplicate: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "second" }, throwingContext(duplicate)),
-    duplicate,
-    "agent.exists",
-  )
-
-  const missingRename: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.rename"](
-      { scope: "project", from: "ghost", to: "beta" },
-      throwingContext(missingRename),
-    ),
-    missingRename,
-    "agent.missing",
-  )
-
-  const missingDelete: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.delete"]({ scope: "project", id: "ghost" }, throwingContext(missingDelete)),
-    missingDelete,
-    "agent.missing",
-  )
-
-  const renamed = await Effect.runPromise(
-    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "beta" }, throwingContext({})),
-  )
-  expect(renamed).toEqual({
-    from: "alpha",
-    to: "beta",
-    path: path.join(directory, ".opencode", "agent", "beta.md"),
-  })
-  expect(await Bun.file(renamed.path).exists()).toBe(true)
-
-  const deleted = await Effect.runPromise(
-    handlers["agent.delete"]({ scope: "project", id: "beta" }, throwingContext({})),
-  )
-  expect(deleted).toEqual({ id: "beta", path: path.join(directory, ".opencode", "agent", "beta.md") })
-  expect(await Bun.file(deleted.path).exists()).toBe(false)
-  expectRpcBody(deleted)
-
-  const missingDeletedAgain: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.delete"]({ scope: "project", id: "beta" }, throwingContext(missingDeletedAgain)),
-    missingDeletedAgain,
-    "agent.missing",
-  )
-})
-
-test("agent.delete fails with declared agent.missing when agent does not exist and succeeds when present", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const handlers = createHandlers(emptyHost(directory), createState())
-
-  const missing: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.delete"]({ scope: "project", id: "non-existent" }, throwingContext(missing)),
-    missing,
-    "agent.missing",
-  )
-
-  const created = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "present", prompt: "Present prompt" }, throwingContext({})),
-  )
-  expect(await Bun.file(created.path).exists()).toBe(true)
-
-  const deleted = await Effect.runPromise(
-    handlers["agent.delete"]({ scope: "project", id: "present" }, throwingContext({})),
-  )
-  expect(deleted).toEqual({ id: "present", path: created.path })
-  expect(await Bun.file(created.path).exists()).toBe(false)
-  expectRpcBody(deleted)
-
-  const missingAgain: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.delete"]({ scope: "project", id: "present" }, throwingContext(missingAgain)),
-    missingAgain,
-    "agent.missing",
-  )
-})
-
-test("snapshot with a builtin agent omits path and survives core's rpc body check", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const hostAgents = [Agent.Info.default(Agent.ID.make("ghost"))]
-  const handlers = createHandlers(emptyHost(directory, hostAgents), createState())
-
-  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expect(snapshot.agents).toEqual([{ id: "ghost", scope: "builtin", fileBacked: false }])
-  expect("path" in snapshot.agents[0]).toBe(false)
+  expect(snapshot.globalRevision).toBe(0)
+  expect(snapshot.agents.map((agent) => agent.id)).toContain("alpha")
+  expect(snapshot.items.length).toBeGreaterThan(0)
+  expect(snapshot.records).toEqual([])
+  expect(snapshot.servers).toEqual([])
+  expect(snapshot.protectedAgents).toEqual([])
   expectRpcBody(snapshot)
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expect(refreshed).toEqual(snapshot)
-  expectRpcBody(refreshed)
 })
 
-test("mutate returning a customization without text or reviewed survives core's rpc body check", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const hostAgents = [Agent.Info.default(Agent.ID.make("ghost"))]
-  const handlers = createHandlers(emptyHost(directory, hostAgents), createState())
-
+test("mutate routes project records to the project store and global/defaults records to the global store", async () => {
+  const { project, config } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const records: Plus.SnapshotRecord[] = [
+    record("tool:reader", { agent: "alpha", level: "project", text: "project text" }),
+    record("tool:reader", { agent: "beta", level: "global", text: "global text" }),
+    record("tool:reader", { agent: null, level: "defaults", text: "shared text" }),
+  ]
   const result = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1")] },
-      throwingContext({}),
-    ),
+    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records }, throwingContext({})),
   )
   expect(result.ok).toBe(true)
   if (!result.ok) throw new Error("expected mutate to succeed")
-  expect(result.snapshot.customizations).toHaveLength(1)
-  expect("text" in result.snapshot.customizations[0]).toBe(false)
-  expect("reviewed" in result.snapshot.customizations[0]).toBe(false)
+  expectRpcBody(result)
+  const { load } = await import("../src/instructions/store.js")
+  const stored = await load(project)
+  expect(stored.records.filter((entry) => entry.level === "project")).toHaveLength(1)
+  expect(stored.records.filter((entry) => entry.level !== "project")).toHaveLength(2)
+  const { projectRecordsPath, globalRecordsPath } = await import("../src/instructions/paths.js")
+  const projectText = await Bun.file(projectRecordsPath(project)).text()
+  expect(projectText).toContain(`"level":"project"`)
+  expect(projectText).not.toContain(`"level":"global"`)
+  const globalText = await Bun.file(globalRecordsPath(config)).text()
+  expect(globalText).toContain(`"level":"global"`)
+  expect(globalText).toContain(`"level":"defaults"`)
+})
+
+test("mutate stale on either revision returns the fresh snapshot without writing", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const seeded = await Effect.runPromise(
+    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" })] }, throwingContext({})),
+  )
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error("expected seed to succeed")
+  const staleProject = await Effect.runPromise(
+    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: seeded.globalRevision, records: [record("tool:a", { text: "second" })] }, throwingContext({})),
+  )
+  expect(staleProject.ok).toBe(false)
+  if (staleProject.ok) throw new Error("expected stale conflict")
+  expect(staleProject.reason).toBe("stale")
+  expectRpcBody(staleProject)
+  const staleGlobal = await Effect.runPromise(
+    handlers["instructions.mutate"]({ expectedRevision: seeded.revision, expectedGlobalRevision: 0, records: [record("tool:a", { text: "second" })] }, throwingContext({})),
+  )
+  expect(staleGlobal.ok).toBe(false)
+  if (staleGlobal.ok) throw new Error("expected stale conflict")
+  expectRpcBody(staleGlobal)
+})
+
+test("successful mutate persists, republishes, and emits instructions.changed with both revisions", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const state = createState()
+  const emitted = captureEmits(state)
+  const handlers = createHandlers(fullContext({ directory: project }), state)
+  const result = await Effect.runPromise(
+    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" })] }, throwingContext({})),
+  )
+  expect(result.ok).toBe(true)
+  if (!result.ok) throw new Error("expected mutate to succeed")
+  expect(emitted).toEqual([{ name: "instructions.changed", data: { revision: result.revision, globalRevision: result.globalRevision } }])
   expectRpcBody(result)
 })
 
-test("snapshots carry protectedAgents from the project config across snapshot, refresh, and mutate results", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  await Bun.write(
-    path.join(directory, ".opencodeplus", "project.json"),
-    JSON.stringify({ version: 1, protectedAgents: ["builder"] }) + "\n",
-  )
-  const handlers = createHandlers(emptyHost(directory), createState())
-
-  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expect(snapshot.protectedAgents).toEqual(["builder"])
-  expectRpcBody(snapshot)
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expect(refreshed.protectedAgents).toEqual(["builder"])
-  expectRpcBody(refreshed)
-
-  const success = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1")] },
-      throwingContext({}),
-    ),
-  )
-  expect(success.ok).toBe(true)
-  if (!success.ok) throw new Error("expected mutate to succeed")
-  expect(success.snapshot.protectedAgents).toEqual(["builder"])
-  expectRpcBody(success)
-
-  const conflict = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1", { text: "stale" })] },
-      throwingContext({}),
-    ),
-  )
-  expect(conflict.ok).toBe(false)
-  if (conflict.ok) throw new Error("expected stale conflict")
-  expect(conflict.snapshot.protectedAgents).toEqual(["builder"])
-  expectRpcBody(conflict)
-})
-
-test("snapshots carry tool native flags from the live inventory across snapshot, refresh, and mutate results", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const tools = [hostTool("reader", "read things", { codemode: false }), hostTool("helper", "help things")]
-  const expected = [
-    { id: "reader", native: true },
-    { id: "helper", native: false },
-  ]
-  const handlers = createHandlers(staticToolHost(directory, tools), createState())
-
-  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expect(snapshot.tools).toEqual(expected)
-  expectRpcBody(snapshot)
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expect(refreshed.tools).toEqual(expected)
-  expectRpcBody(refreshed)
-
-  const success = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1")] },
-      throwingContext({}),
-    ),
-  )
-  expect(success.ok).toBe(true)
-  if (!success.ok) throw new Error("expected mutate to succeed")
-  expect(success.snapshot.tools).toEqual(expected)
-  expectRpcBody(success)
-
-  const conflict = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      { expectedRevision: 0, customizations: [customization("item-1", { text: "stale" })] },
-      throwingContext({}),
-    ),
-  )
-  expect(conflict.ok).toBe(false)
-  if (conflict.ok) throw new Error("expected stale conflict")
-  expect(conflict.snapshot.tools).toEqual(expected)
-  expectRpcBody(conflict)
-})
-
-test("agent methods reject traversal ids with agent.invalid and leave the filesystem untouched", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const outside = path.join(directory, ".opencode", "AGENTS.md")
-  await Bun.write(outside, "keep me\n")
-  const handlers = createHandlers(emptyHost(directory), createState())
-
-  const created: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.create"]({ scope: "project", id: "../../AGENTS", prompt: "evil" }, throwingContext(created)),
-    created,
-    "agent.invalid",
-  )
-  const renamed: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.rename"]({ scope: "project", from: "../../AGENTS", to: "beta" }, throwingContext(renamed)),
-    renamed,
-    "agent.invalid",
-  )
-  const renamedTo: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "../../AGENTS" }, throwingContext(renamedTo)),
-    renamedTo,
-    "agent.invalid",
-  )
-  const deleted: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["agent.delete"]({ scope: "project", id: "../../AGENTS" }, throwingContext(deleted)),
-    deleted,
-    "agent.invalid",
-  )
-  expect(await Bun.file(outside).exists()).toBe(true)
-  expect(await Bun.file(outside).text()).toBe("keep me\n")
-})
-
-test("a prompt customization converges: repeated refreshes are no-ops and keep the override applied", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+test("instructions.assembled reads the host after application and reflects an excluded section's absence", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
-  await Bun.write(alphaPath, "upstream\n")
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const state = createState()
-  const emitted = captureEmits(state)
-  const handlers = createHandlers(liveAgentHost(directory, agents), state)
-
-  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  const item = before.items.find((entry) => entry.id === "prompt:alpha")
-  if (!item) throw new Error("expected prompt:alpha in snapshot")
-  expect(item.text).toBe("upstream")
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 0,
-        customizations: [
-          {
-            item: "prompt:alpha",
-            agent: "alpha",
-            text: "custom",
-            state: "inherit",
-            basedOn: fingerprint("upstream"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-  // The override really reached the host: list observes the applied text.
-  expect(agents.state.get("alpha")?.system).toBe("custom")
-  const afterApply = { transforms: agents.transforms, disposes: agents.disposes, reloads: agents.reloads }
-  expect(afterApply.transforms).toBe(1)
-  expect(afterApply.reloads).toBe(1)
-  const emittedAfterApply = emitted.length
-
-  // Drive the refresh cycle the way agent.updated would, twice: each pass
-  // must short-circuit on the unchanged fingerprint instead of disposing
-  // and reinstalling registrations.
-  for (let pass = 0; pass < 2; pass++) {
-    const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-    expectRpcBody(refreshed)
-    expect(refreshed.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream")
-    expect(agents.transforms).toBe(afterApply.transforms)
-    expect(agents.disposes).toBe(afterApply.disposes)
-    expect(agents.reloads).toBe(afterApply.reloads)
-    expect(agents.state.get("alpha")?.system).toBe("custom")
-  }
-  expect(emitted).toHaveLength(emittedAfterApply)
-})
-
-test("a genuine upstream prompt edit while a customization is active is discovered and needs review", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
-  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
-  await Bun.write(alphaPath, "upstream\n")
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents), state)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 0,
-        customizations: [
-          {
-            item: "prompt:alpha",
-            agent: "alpha",
-            text: "custom",
-            state: "inherit",
-            basedOn: fingerprint("upstream"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-
-  // A host edit outside Plus replaces the upstream text underneath the
-  // installed override. The customization stays active, yet discovery rereads
-  // the file-backed prompt so the genuine edit surfaces and the "needs review"
-  // badge fires.
-  await Bun.write(alphaPath, "upstream revised\n")
-  agents.setUpstream("alpha", "upstream revised")
-  expect(agents.upstream("alpha")).toBe("upstream revised")
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  const item = refreshed.items.find((entry) => entry.id === "prompt:alpha")
-  expect(item?.text).toBe("upstream revised")
-  expect(item?.fingerprint).toBe(fingerprint("upstream revised"))
-  if (!item) throw new Error("expected prompt:alpha in refreshed snapshot")
-  const record = refreshed.customizations.find((entry) => entry.item === item.id && entry.agent === "alpha")
-  if (!record) throw new Error("expected prompt:alpha customization in refreshed snapshot")
-  expect(record.basedOn).toBe(fingerprint("upstream"))
-  expect(record.basedOn).not.toBe(item.fingerprint)
-  expect(effective(snapshotOf(refreshed), itemOf(item), "alpha").review).toBe(true)
-  expect(agents.state.get("alpha")?.system).toBe("custom")
-
-  // The edit changes the publish fingerprint once, so discovery settles after
-  // one dispose/reinstall instead of storming on every pass.
-  const afterEdit = { transforms: agents.transforms, disposes: agents.disposes, reloads: agents.reloads }
-  const settled = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(settled)
-  expect(settled.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream revised")
-  expect(agents.transforms).toBe(afterEdit.transforms)
-  expect(agents.disposes).toBe(afterEdit.disposes)
-  expect(agents.reloads).toBe(afterEdit.reloads)
-  expect(agents.state.get("alpha")?.system).toBe("custom")
-})
-
-test("a flags-only tool partition transition rebuilds the applied plan in both directions", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const native = hostTool("reader", "read things", { codemode: false })
-  const codeMode = hostTool("reader", "read things")
-  const hooks = { current: 0 }
-  const host = toolHost(directory, [codeMode], hooks)
-  const state = createState()
-  const handlers = createHandlers(host.ctx, state)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 0,
-        customizations: [
-          {
-            item: "tool:reader",
-            agent: "alpha",
-            text: "custom description",
-            state: "inherit",
-            basedOn: fingerprint("read things"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-  expect(mutated.snapshot.tools).toEqual([{ id: "reader", native: false }])
-  expect(hooks.current).toBe(0)
-
-  // Only the partition flag changes; id, name, and description stay identical,
-  // so the tool item text and agents are unchanged. The plan must still
-  // install because the native flag decides whether applyTools applies at all.
-  host.setTools([native])
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  expect(refreshed.tools).toEqual([{ id: "reader", native: true }])
-  expect(refreshed.items.find((entry) => entry.id === "tool:reader")?.text).toBe("read things")
-  expect(hooks.current).toBe(1)
-
-  // The reverse transition uninstalls the now-inapplicable plan instead of
-  // leaving it installed for a Code Mode tool.
-  host.setTools([codeMode])
-  const reverted = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(reverted)
-  expect(reverted.tools).toEqual([{ id: "reader", native: false }])
-  expect(reverted.items.find((entry) => entry.id === "tool:reader")?.text).toBe("read things")
-  expect(hooks.current).toBe(0)
-})
-
-test("a builtin agent gaining a backing file re-establishes ownership while the customization stays active", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("ghost")), system: "builtin upstream" }])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents), state)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 0,
-        customizations: [
-          {
-            item: "prompt:ghost",
-            agent: "ghost",
-            text: "custom",
-            state: "inherit",
-            basedOn: fingerprint("builtin upstream"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-
-  // A markdown file appears for the same id. Core decodes it as the new
-  // upstream prompt, but the host view still shows Plus's override, so the
-  // source transition must re-derive ownership from the file instead of
-  // pinning the stale builtin text forever.
-  const ghostPath = path.join(directory, ".opencode", "agent", "ghost.md")
-  await fs.mkdir(path.dirname(ghostPath), { recursive: true })
-  await Bun.write(ghostPath, "file upstream\n")
-  agents.setUpstream("ghost", "file upstream")
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  expect(refreshed.agents.find((entry) => entry.id === "ghost")?.fileBacked).toBe(true)
-  const item = refreshed.items.find((entry) => entry.id === "prompt:ghost")
-  expect(item?.text).toBe("file upstream")
-  expect(item?.fingerprint).toBe(fingerprint("file upstream"))
-  if (!item) throw new Error("expected prompt:ghost in refreshed snapshot")
-  const record = refreshed.customizations.find((entry) => entry.item === item.id && entry.agent === "ghost")
-  if (!record) throw new Error("expected prompt:ghost customization in refreshed snapshot")
-  expect(record.basedOn).toBe(fingerprint("builtin upstream"))
-  expect(record.basedOn).not.toBe(item.fingerprint)
-  expect(effective(snapshotOf(refreshed), itemOf(item), "ghost").review).toBe(true)
-  expect(agents.state.get("ghost")?.system).toBe("custom")
-
-  const afterTransition = { transforms: agents.transforms, disposes: agents.disposes, reloads: agents.reloads }
-  const settled = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(settled)
-  expect(settled.items.find((entry) => entry.id === "prompt:ghost")?.text).toBe("file upstream")
-  expect(agents.transforms).toBe(afterTransition.transforms)
-  expect(agents.disposes).toBe(afterTransition.disposes)
-  expect(agents.reloads).toBe(afterTransition.reloads)
-  expect(agents.state.get("ghost")?.system).toBe("custom")
-})
-
-test("deleting and recreating a backing file re-establishes ownership while the customization stays active", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const betaPath = path.join(directory, ".opencode", "agent", "beta.md")
-  await fs.mkdir(path.dirname(betaPath), { recursive: true })
-  await Bun.write(betaPath, "file upstream\n")
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("beta")), system: "file upstream" }])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents), state)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 0,
-        customizations: [
-          {
-            item: "prompt:beta",
-            agent: "beta",
-            text: "custom",
-            state: "inherit",
-            basedOn: fingerprint("file upstream"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-
-  // The file disappears: the builtin prompt underneath owns the id again, but
-  // the host still shows Plus's override, so discovery keeps reporting the
-  // retained file text rather than inventing an upstream it cannot observe.
-  await fs.rm(betaPath)
-  agents.setUpstream("beta", "builtin upstream")
-  const deleted = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(deleted)
-  expect(deleted.agents.find((entry) => entry.id === "beta")?.fileBacked).toBe(false)
-  expect(deleted.items.find((entry) => entry.id === "prompt:beta")?.text).toBe("file upstream")
-  expect(agents.state.get("beta")?.system).toBe("custom")
-
-  // Recreating the file is another source transition: the new body becomes
-  // upstream again instead of being rejected against the stale retained value.
-  await Bun.write(betaPath, "file upstream revised\n")
-  agents.setUpstream("beta", "file upstream revised")
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  expect(refreshed.agents.find((entry) => entry.id === "beta")?.fileBacked).toBe(true)
-  const item = refreshed.items.find((entry) => entry.id === "prompt:beta")
-  expect(item?.text).toBe("file upstream revised")
-  expect(item?.fingerprint).toBe(fingerprint("file upstream revised"))
-  if (!item) throw new Error("expected prompt:beta in refreshed snapshot")
-  const record = refreshed.customizations.find((entry) => entry.item === item.id && entry.agent === "beta")
-  if (!record) throw new Error("expected prompt:beta customization in refreshed snapshot")
-  expect(record.basedOn).toBe(fingerprint("file upstream"))
-  expect(record.basedOn).not.toBe(item.fingerprint)
-  expect(effective(snapshotOf(refreshed), itemOf(item), "beta").review).toBe(true)
-  expect(agents.state.get("beta")?.system).toBe("custom")
-})
-
-test("a disabled MCP server stays continuously disabled across replacement publishes", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
-  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
-  await Bun.write(alphaPath, "upstream\n")
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test" }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-  const upstreamText = JSON.stringify({ type: "remote", url: "https://example.test" })
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 0,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "disabled",
-            basedOn: fingerprint(upstreamText),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-  expect(mcp.disabled("search")).toBe(true)
-  const settled = mcp.starts
-
-  // An unrelated prompt edit forces a changed publish that disposes and
-  // reinstalls every registration. The replacement must install before the
-  // superseded disable is disposed, so the editor never observes the upstream
-  // enabled config and the server never starts in between.
-  await Bun.write(alphaPath, "upstream revised\n")
-  agents.setUpstream("alpha", "upstream revised")
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  expect(refreshed.items.find((entry) => entry.id === "prompt:alpha")?.text).toBe("upstream revised")
-  expect(mcp.disabled("search")).toBe(true)
-  expect(mcp.starts).toBe(settled)
-
-  // A second unrelated mutation republishes again while the disable stays in
-  // force; it must not start the server either.
-  const second = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: 1,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "disabled",
-            basedOn: fingerprint(upstreamText),
-            updated: UPDATED,
-          },
-          {
-            item: "prompt:alpha",
-            agent: "alpha",
-            text: "custom",
-            state: "inherit",
-            basedOn: fingerprint("upstream revised"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(second.ok).toBe(true)
-  if (!second.ok) throw new Error("expected second mutate to succeed")
-  expectRpcBody(second)
-  expect(mcp.disabled("search")).toBe(true)
-  expect(agents.state.get("alpha")?.system).toBe("custom")
-  expect(mcp.starts).toBe(settled)
-})
-
-test("through the real snapshot -> mutate -> apply path, an upstream disabled: true server is discovered unavailable and enabling it clears disabled in the config core sees", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-  expect(serverItem?.available).toBe(false)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-  expect(mcp.disabled("search")).toBeUndefined()
-})
-
-test("through the real snapshot -> mutate -> apply handler path, enabling an upstream disabled server clears disabled in config and reports effective enabled true in refreshed snapshot", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-  expect(serverItem?.available).toBe(false)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-  expect(mcp.disabled("search")).toBeUndefined()
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
-  if (!refreshedItem) throw new Error("expected mcp:search item on refresh")
-  const eff = effective(snapshotOf(refreshed), itemOf(refreshedItem), "*")
-  expect(eff.enabled).toBe(true)
-})
-
-test("disable, then refresh twice, asserting effective().review === false and an unchanged fingerprint on both passes", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test" }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const initialItem = initial.items.find((entry) => entry.id === "mcp:search")
-  if (!initialItem) throw new Error("expected mcp:search item")
-  const initialFingerprint = initialItem.fingerprint
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "disabled",
-            basedOn: initialFingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-
-  for (let pass = 1; pass <= 2; pass++) {
-    const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-    expectRpcBody(refreshed)
-    const item = refreshed.items.find((entry) => entry.id === "mcp:search")
-    if (!item) throw new Error("expected mcp:search item on refresh")
-    expect(item.fingerprint).toBe(initialFingerprint)
-    const eff = effective(snapshotOf(refreshed), itemOf(item), "*")
-    expect(eff.review).toBe(false)
-  }
-})
-
-test("redundant explicit enabled state for upstream-enabled server is normalized to inherit and does not poison discovery", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test" }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-  expect(serverItem?.available).toBe(true)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-
-  const stored = await load(directory)
-  const persisted = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(persisted?.state).toBe("inherit")
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
-  expect(refreshedItem?.available).toBe(true)
-})
-
-test("genuine explicit enabled state for upstream-disabled server persists enabled and reports effective enabled true", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = mcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-  expect(serverItem?.available).toBe(false)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-
-  const stored = await load(directory)
-  const persisted = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(persisted?.state).toBe("enabled")
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
-  if (!refreshedItem) throw new Error("expected mcp:search item on refresh")
-  const eff = effective(snapshotOf(refreshed), itemOf(refreshedItem), "*")
-  expect(eff.enabled).toBe(true)
-})
-
-function pluginHost(directory: string, agents: ReturnType<typeof agentHarness>) {
-  const host = liveAgentHost(directory, agents)
-  return {
-    ...host,
-    rpc: Object.assign(
-      () => {
-        throw new Error("unused rpc.client")
-      },
-      {
-        register: () =>
-          Effect.succeed({
-            dispose: Effect.void,
-            events: { emit: () => Effect.void },
-          }),
-      },
-    ),
-  }
-}
-
-test("closing the plugin activation scope disposes applied registrations", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
-  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
-  await Bun.write(alphaPath, "upstream\n")
-  await save(directory, {
-    expectedRevision: 0,
-    customizations: [
-      {
-        item: "prompt:alpha",
-        agent: "alpha",
-        text: "custom",
-        state: "inherit",
-        basedOn: fingerprint("upstream"),
-        updated: UPDATED,
-      },
-    ],
+  await Bun.write(alphaPath, text)
+  const agents = agentHarness([agentInfo("alpha", text)])
+  const tools = toolHarness([{ id: "reader", description: "read things", options: { codemode: false } }])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([skillInfo("notes", "skill body")])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill: { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) },
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
   })
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const host = pluginHost(directory, agents)
-
-  await Effect.runPromise(
-    Effect.gen(function* () {
-      const scope = yield* Scope.make()
-      yield* PlusPlugin.effect(host).pipe(Scope.provide(scope))
-
-      expect(agents.transforms).toBe(1)
-      expect(agents.disposes).toBe(0)
-      expect(agents.state.get("alpha")?.system).toBe("custom")
-
-      yield* Scope.close(scope, Exit.void)
-      expect(agents.disposes).toBe(1)
-      expect(agents.state.get("alpha")?.system).toBe("upstream")
-    }),
-  )
-})
-
-function toMutableConfig(config: Mcp.ServerConfig): Types.DeepMutable<Mcp.ServerConfig> {
-  if (config.type === "local") {
-    return {
-      type: "local",
-      command: [...config.command],
-      ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
-      ...(config.environment === undefined ? {} : { environment: { ...config.environment } }),
-      ...(config.disabled === undefined ? {} : { disabled: config.disabled }),
-      ...(config.codemode === undefined ? {} : { codemode: config.codemode }),
-      ...(config.timeout === undefined ? {} : { timeout: { ...config.timeout } }),
-    }
-  }
-  return {
-    type: "remote",
-    url: config.url,
-    ...(config.headers === undefined ? {} : { headers: { ...config.headers } }),
-    ...(config.disabled === undefined ? {} : { disabled: config.disabled }),
-    ...(config.codemode === undefined ? {} : { codemode: config.codemode }),
-    ...(config.timeout === undefined ? {} : { timeout: { ...config.timeout } }),
-  }
-}
-
-function dynamicMcpHarness(initial: readonly [string, Types.DeepMutable<Mcp.ServerConfig>][]) {
-  const upstream = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>(initial)
-  const installed: Array<(editor: MCPEditor) => void> = []
-  const counts = { starts: 0 }
-  function visible(): Map<string, Types.DeepMutable<Mcp.ServerConfig>> {
-    const servers = new Map<string, Types.DeepMutable<Mcp.ServerConfig>>()
-    for (const [name, config] of upstream) {
-      servers.set(name, structuredClone(config))
-    }
-    const editor: MCPEditor = {
-      list: () => Array.from(servers.entries()),
-      get: (name: string) => servers.get(name),
-      set: (name: string, config: Mcp.ServerConfig) => {
-        servers.set(name, toMutableConfig(config))
-      },
-      update: (name: string, update: (config: Types.DeepMutable<Mcp.ServerConfig>) => void) => {
-        const current = servers.get(name)
-        if (current) update(current)
-      },
-      remove: (name: string) => {
-        servers.delete(name)
-      },
-    }
-    for (const transform of installed) transform(editor)
-    return servers
-  }
-  function reconcile() {
-    for (const config of visible().values()) {
-      if (config.disabled === true) continue
-      counts.starts++
-    }
-  }
-  reconcile()
-  return {
-    domain: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback: (editor: MCPEditor) => void) =>
-        Effect.sync(() => {
-          installed.push(callback)
-          reconcile()
-          return {
-            dispose: Effect.sync(() => {
-              const index = installed.indexOf(callback)
-              if (index === -1) return
-              installed.splice(index, 1)
-              reconcile()
-            }),
-          }
-        }),
-      reload: () =>
-        Effect.sync(() => {
-          reconcile()
-        }),
-    } satisfies MCPDomain,
-    get starts() {
-      return counts.starts
-    },
-    disabled: (name: string) => visible().get(name)?.disabled,
-    add: (name: string, config: Types.DeepMutable<Mcp.ServerConfig>) => {
-      upstream.set(name, structuredClone(config))
-      reconcile()
-    },
-    remove: (name: string) => {
-      upstream.delete(name)
-      reconcile()
-    },
-  }
-}
-
-test("shared explicit enabled record for absent mcp item normalizes to inherit and does not poison discovery", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = dynamicMcpHarness([])
   const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  expect(initial.items.some((entry) => entry.id === "mcp:search")).toBe(false)
-
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.some((item) => item.id === "system:role")).toBe(true)
+  const role = snapshot.items.find((item) => item.id === "system:role")
+  if (!role) throw new Error("expected system:role")
   const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            text: "saved text",
-            basedOn: fingerprint("server"),
-            reviewed: "saved review",
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [{
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "system:role",
+        section: "two",
+        state: "off",
+        basedOn: role.fingerprint,
+        updated: UPDATED,
+      }],
+    }, throwingContext({})),
   )
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-
-  const stored = await load(directory)
-  const persisted = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(persisted).toBeDefined()
-  expect(persisted?.state).toBe("inherit")
-  expect(persisted?.text).toBe("saved text")
-  expect(persisted?.reviewed).toBe("saved review")
-  expect(persisted?.basedOn).toBe(fingerprint("server"))
-  expect(persisted?.updated).toBe(UPDATED)
-
-  mcp.add("search", { type: "remote", url: "https://example.test" })
-
-  const refreshed = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshed)
-  const refreshedItem = refreshed.items.find((entry) => entry.id === "mcp:search")
-  expect(refreshedItem).toBeDefined()
-  expect(refreshedItem?.available).toBe(true)
+  const assembled = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(assembled.agent).toBe("alpha")
+  expect(assembled.system.join("\n")).toContain("a")
+  expect(assembled.system.join("\n")).not.toContain("b")
+  expect(assembled.tools.map((tool) => tool.id)).toContain("reader")
+  expect(assembled.skills.map((skill) => skill.id)).toContain("notes")
+  expectRpcBody(assembled)
+  const unknown: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["instructions.assembled"]({ agent: "ghost" }, throwingContext(unknown)), unknown, "agent.unknown")
 })
 
-test("absent mcp item with explicit disabled state normalizes to inherit", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:ghost",
-            agent: "*",
-            state: "disabled",
-            text: "ghost text",
-            basedOn: fingerprint("ghost"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
+test("agent create/rename/delete work at both scopes and create accepts a template seed", async () => {
+  const { project, config } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const createdProject = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "Be helpful." }, throwingContext({})),
   )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-
-  const stored = await load(directory)
-  const persisted = stored.customizations.find((record) => record.item === "mcp:ghost" && record.agent === "*")
-  expect(persisted?.state).toBe("inherit")
-  expect(persisted?.text).toBe("ghost text")
+  expect(createdProject).toEqual({ id: "alpha", path: path.join(project, ".opencode", "agent", "alpha.md") })
+  expect(await Bun.file(createdProject.path).text()).toContain("Be helpful.")
+  const createdGlobal = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "global", id: "beta", prompt: "Global prompt." }, throwingContext({})),
+  )
+  expect(createdGlobal).toEqual({ id: "beta", path: path.join(config, "agent", "beta.md") })
+  const seeded = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "gamma", template: "alpha", prompt: "ignored" }, throwingContext({})),
+  )
+  expect(await Bun.file(seeded.path).text()).toContain("Be helpful.")
+  const renamed = await Effect.runPromise(handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2" }, throwingContext({})))
+  expect(renamed).toEqual({ from: "alpha", to: "alpha2", path: path.join(project, ".opencode", "agent", "alpha2.md") })
+  const deleted = await Effect.runPromise(handlers["agent.delete"]({ scope: "global", id: "beta" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "beta", path: createdGlobal.path })
+  expectRpcBody(deleted)
 })
 
-test("non-MCP absent item round-trips its explicit state unchanged", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents), state)
-
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  expect(initial.items.some((entry) => entry.id === "skill:absent")).toBe(false)
-
-  const mutated = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "skill:absent",
-            agent: "*",
-            state: "disabled",
-            text: "custom instructions",
-            basedOn: fingerprint("skill-content"),
-            reviewed: "reviewed-flag",
-            updated: UPDATED,
-          },
-          {
-            item: "tool:absent",
-            agent: "alpha",
-            state: "enabled",
-            basedOn: fingerprint("tool-content"),
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(mutated.ok).toBe(true)
-  if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(mutated)
-
-  const stored = await load(directory)
-  const persistedSkill = stored.customizations.find((record) => record.item === "skill:absent" && record.agent === "*")
-  expect(persistedSkill).toBeDefined()
-  expect(persistedSkill?.state).toBe("disabled")
-  expect(persistedSkill?.text).toBe("custom instructions")
-  expect(persistedSkill?.reviewed).toBe("reviewed-flag")
-  expect(persistedSkill?.basedOn).toBe(fingerprint("skill-content"))
-  expect(persistedSkill?.updated).toBe(UPDATED)
-
-  const persistedTool = stored.customizations.find((record) => record.item === "tool:absent" && record.agent === "alpha")
-  expect(persistedTool).toBeDefined()
-  expect(persistedTool?.state).toBe("enabled")
-  expect(persistedTool?.basedOn).toBe(fingerprint("tool-content"))
-  expect(persistedTool?.updated).toBe(UPDATED)
+test("agent methods raise every declared error", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "x" }, throwingContext({})))
+  const exists: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "y" }, throwingContext(exists)), exists, "agent.exists")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "../../x", prompt: "y" }, throwingContext(invalid)), invalid, "agent.invalid")
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["agent.rename"]({ scope: "project", from: "ghost", to: "b" }, throwingContext(missing)), missing, "agent.missing")
+  const missingDelete: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["agent.delete"]({ scope: "project", id: "ghost" }, throwingContext(missingDelete)), missingDelete, "agent.missing")
 })
 
-test("reviewer lifecycle: unrelated save preserves verified disabled state for temporarily absent mcp server", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = dynamicMcpHarness([["search", { type: "remote", url: "https://example.test" }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  // 1. Present upstream-enabled MCP server
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-  expect(serverItem?.available).toBe(true)
-
-  // 2. Disable it through the real mutate handler
-  const disabledMutate = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "disabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(disabledMutate.ok).toBe(true)
-  if (!disabledMutate.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(disabledMutate)
-
-  const storedAfterDisable = await load(directory)
-  const disabledRecord = storedAfterDisable.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(disabledRecord?.state).toBe("disabled")
-
-  // 3. Make the item absent from discovery
-  mcp.remove("search")
-  const refreshAbsent = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshAbsent)
-  expect(refreshAbsent.items.some((entry) => entry.id === "mcp:search")).toBe(false)
-
-  // 4. Submit an unrelated change while resubmitting the whole collection (as the client does)
-  const promptItem = refreshAbsent.items.find((entry) => entry.id === "prompt:alpha")
-  expect(promptItem).toBeDefined()
-  const unrelatedMutate = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: refreshAbsent.revision,
-        customizations: [
-          ...refreshAbsent.customizations,
-          {
-            item: "prompt:alpha",
-            agent: "alpha",
-            text: "new prompt instructions",
-            state: "inherit",
-            basedOn: promptItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(unrelatedMutate.ok).toBe(true)
-  if (!unrelatedMutate.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(unrelatedMutate)
-
-  // 5. Assert the MCP record STILL has state: "disabled"
-  const storedAfterUnrelated = await load(directory)
-  const preservedRecord = storedAfterUnrelated.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(preservedRecord).toBeDefined()
-  expect(preservedRecord?.state).toBe("disabled")
-
-  // 6. Make the server present again upstream-enabled
-  mcp.add("search", { type: "remote", url: "https://example.test" })
-
-  // 7. Assert it is still effectively disabled
-  const restoredRefresh = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(restoredRefresh)
-  const restoredItem = restoredRefresh.items.find((entry) => entry.id === "mcp:search")
-  expect(restoredItem).toBeDefined()
-  expect(restoredItem?.available).toBe(true)
-  const eff = effective(snapshotOf(restoredRefresh), itemOf(restoredItem!), "*")
-  expect(eff.enabled).toBe(false)
-  expect(mcp.disabled("search")).toBe(true)
+test("skill create and import write SKILL.md and raise declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const created = await Effect.runPromise(handlers["skill.create"]({ name: "notes", body: "Take notes." }, throwingContext({})))
+  expect(created).toEqual({ id: "notes", path: path.join(project, ".opencode", "skill", "notes", "SKILL.md") })
+  expect(await Bun.file(created.path).text()).toContain("Take notes.")
+  expectRpcBody(created)
+  const duplicate: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["skill.create"]({ name: "notes", body: "again" }, throwingContext(duplicate)), duplicate, "skill.exists")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["skill.create"]({ name: "../evil", body: "x" }, throwingContext(invalid)), invalid, "skill.invalid")
+  const source = path.join(project, "external", "SKILL.md")
+  await fs.mkdir(path.dirname(source), { recursive: true })
+  await Bun.write(source, "---\nname: imported\ndescription: imported skill\n---\nImported body.\n")
+  const imported = await Effect.runPromise(handlers["skill.import"]({ path: source }, throwingContext({})))
+  expect(imported.id).toBe("imported")
+  expectRpcBody(imported)
+  const bad = path.join(project, "bad", "SKILL.md")
+  await fs.mkdir(path.dirname(bad), { recursive: true })
+  await Bun.write(bad, "no frontmatter here\n")
+  const badImport: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["skill.import"]({ path: bad }, throwingContext(badImport)), badImport, "skill.invalid")
 })
 
-test("unrelated save preserves verified enabled state for temporarily absent upstream-disabled server", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = dynamicMcpHarness([["search", { type: "remote", url: "https://example.test", disabled: true }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
-
-  // 1. Present upstream-disabled MCP server
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expectRpcBody(initial)
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-  expect(serverItem?.available).toBe(false)
-
-  // 2. Enable it through the real mutate handler
-  const enabledMutate = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(enabledMutate.ok).toBe(true)
-  if (!enabledMutate.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(enabledMutate)
-
-  const storedAfterEnable = await load(directory)
-  const enabledRecord = storedAfterEnable.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(enabledRecord?.state).toBe("enabled")
-
-  // 3. Make the item absent from discovery
-  mcp.remove("search")
-  const refreshAbsent = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(refreshAbsent)
-  expect(refreshAbsent.items.some((entry) => entry.id === "mcp:search")).toBe(false)
-
-  // 4. Submit an unrelated change while resubmitting the whole collection
-  const promptItem = refreshAbsent.items.find((entry) => entry.id === "prompt:alpha")
-  expect(promptItem).toBeDefined()
-  const unrelatedMutate = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: refreshAbsent.revision,
-        customizations: [
-          ...refreshAbsent.customizations,
-          {
-            item: "prompt:alpha",
-            agent: "alpha",
-            text: "unrelated instructions",
-            state: "inherit",
-            basedOn: promptItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
-  )
-  expect(unrelatedMutate.ok).toBe(true)
-  if (!unrelatedMutate.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(unrelatedMutate)
-
-  // 5. Assert the MCP record STILL has state: "enabled"
-  const storedAfterUnrelated = await load(directory)
-  const preservedRecord = storedAfterUnrelated.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(preservedRecord).toBeDefined()
-  expect(preservedRecord?.state).toBe("enabled")
-
-  // 6. Make the server present again upstream-disabled
-  mcp.add("search", { type: "remote", url: "https://example.test", disabled: true })
-
-  // 7. Assert it is still effectively enabled
-  const restoredRefresh = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expectRpcBody(restoredRefresh)
-  const restoredItem = restoredRefresh.items.find((entry) => entry.id === "mcp:search")
-  expect(restoredItem).toBeDefined()
-  expect(restoredItem?.available).toBe(false)
-  const eff = effective(snapshotOf(restoredRefresh), itemOf(restoredItem!), "*")
-  expect(eff.enabled).toBe(true)
-  expect(mcp.disabled("search")).toBeUndefined()
+test("base create stores a user template and raises declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const created = await Effect.runPromise(handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwingContext({})))
+  expect(created).toEqual({ id: "custom" })
+  expectRpcBody(created)
+  const duplicate: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["base.create"]({ id: "custom", title: "X", text: "y" }, throwingContext(duplicate)), duplicate, "base.exists")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["base.create"]({ id: "", title: "X", text: "y" }, throwingContext(invalid)), invalid, "base.invalid")
 })
 
-test("changed explicit state for absent mcp server normalizes to inherit", async () => {
-  const directory = await tempDir()
-  await enable(directory)
-  const agents = agentHarness([{ ...Agent.Info.default(Agent.ID.make("alpha")), system: "upstream" }])
-  const mcp = dynamicMcpHarness([["search", { type: "remote", url: "https://example.test" }]])
-  const state = createState()
-  const handlers = createHandlers(liveAgentHost(directory, agents, mcp), state)
+test("instruction create writes a project file core discovery picks up and raises declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const created = await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})))
+  expect(created.path).toBe(path.join(project, "AGENTS.md"))
+  expect(await Bun.file(created.path).text()).toContain("Follow the guide.")
+  expectRpcBody(created)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.some((item) => item.id === "system:AGENTS.md")).toBe(true)
+  const duplicate: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["instruction.create"]({ name: "AGENTS.md", text: "again" }, throwingContext(duplicate)), duplicate, "instruction.exists")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["instruction.create"]({ name: "../evil", text: "x" }, throwingContext(invalid)), invalid, "instruction.invalid")
+})
 
-  // 1. Disable server when present
-  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  const serverItem = initial.items.find((entry) => entry.id === "mcp:search")
-  expect(serverItem).toBeDefined()
-
-  const disabledMutate = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: initial.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "disabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
+test("mcp add and remove edit the project config and raise declared errors", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const added = await Effect.runPromise(
+    handlers["mcp.add"]({ name: "search", config: { type: "remote", url: "https://example.test" } }, throwingContext({})),
   )
-  expect(disabledMutate.ok).toBe(true)
-  if (!disabledMutate.ok) throw new Error("expected mutate to succeed")
-
-  // 2. Remove server so it is absent
-  mcp.remove("search")
-  const refreshAbsent = await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
-  expect(refreshAbsent.items.some((entry) => entry.id === "mcp:search")).toBe(false)
-
-  // 3. Mutate with changed explicit state (disabled -> enabled) while absent
-  const changedMutate = await Effect.runPromise(
-    handlers["instructions.mutate"](
-      {
-        expectedRevision: refreshAbsent.revision,
-        customizations: [
-          {
-            item: "mcp:search",
-            agent: "*",
-            state: "enabled",
-            basedOn: serverItem!.fingerprint,
-            updated: UPDATED,
-          },
-        ],
-      },
-      throwingContext({}),
-    ),
+  expect(added).toEqual({ name: "search" })
+  expectRpcBody(added)
+  // The project's own config file carries the new server; the fake MCP host
+  // cannot reread config files, so the file itself is the assertion.
+  const configText = await Bun.file(path.join(project, ".opencode", "opencode.json")).text()
+  expect(configText).toContain(`"search"`)
+  expect(configText).toContain(`https://example.test`)
+  const duplicate: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["mcp.add"]({ name: "search", config: { type: "remote", url: "https://example.test" } }, throwingContext(duplicate)),
+    duplicate,
+    "mcp.exists",
   )
-  expect(changedMutate.ok).toBe(true)
-  if (!changedMutate.ok) throw new Error("expected mutate to succeed")
-  expectRpcBody(changedMutate)
-
-  // 4. State was changed relative to stored while absent, so it must normalize to inherit
-  const stored = await load(directory)
-  const normalizedRecord = stored.customizations.find((record) => record.item === "mcp:search" && record.agent === "*")
-  expect(normalizedRecord?.state).toBe("inherit")
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["mcp.add"]({ name: "", config: { type: "remote", url: "https://x.test" } }, throwingContext(invalid)), invalid, "mcp.invalid")
+  const removed = await Effect.runPromise(handlers["mcp.remove"]({ name: "search" }, throwingContext({})))
+  expect(removed).toEqual({ name: "search" })
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(handlers["mcp.remove"]({ name: "ghost" }, throwingContext(missing)), missing, "mcp.missing")
 })
