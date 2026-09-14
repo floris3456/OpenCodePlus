@@ -10,6 +10,7 @@ import {
   resolveResolution,
   resolveSplit,
   threeWay,
+  upstreamForEdit,
   type Address,
   type ChainInput,
   type CustomizationRecord,
@@ -296,4 +297,147 @@ test("item id forms ride through resolution untouched", () => {
     const resolved = resolve(input({ upstream, address: { level: "project", agent: "alpha", item: id, section: null } }))
     expect(resolved.text).toBe(upstream.text)
   }
+})
+
+function sectionItem(): Item {
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  return makeItem({ id: "system:role", kind: "system", group: "none", title: "role", text })
+}
+
+function sectionAddress(section: string, overrides?: Partial<Address>): Address {
+  return { level: "project", agent: "alpha", item: "system:role", section, ...overrides }
+}
+
+test("whole assembled incorporates a section-only text edit", () => {
+  const upstream = sectionItem()
+  const edited = "# Two\n\nb edited\n"
+  const records = [
+    makeRecord({ item: "system:role", section: "two", text: edited, basedOn: fingerprint("# Two\n\nb\n"), basedOnText: "# Two\n\nb\n" }),
+  ]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.assembled).toContain("b edited")
+  expect(resolved.assembled).not.toContain("# Two\n\nb\n")
+})
+
+test("whole assembled inherits a Defaults section edit", () => {
+  const upstream = sectionItem()
+  const edited = "# Two\n\nshared edit\n"
+  const records = [
+    makeRecord({
+      level: "defaults",
+      agent: null,
+      item: "system:role",
+      section: "two",
+      text: edited,
+      basedOn: fingerprint("# Two\n\nb\n"),
+      basedOnText: "# Two\n\nb\n",
+    }),
+  ]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.assembled).toContain("shared edit")
+  expect(resolve(input({ upstream, records, address: sectionAddress("two") })).text).toBe(edited)
+})
+
+test("excluding a parent still drops an edited child", () => {
+  const text = "# Communication\n\nTalk well.\n\n## Intermediate Commentary\n\nNarrate progress.\n\n# Working in codebases\n\nRead before editing.\n"
+  const upstream = makeItem({ id: "system:role", kind: "system", group: "none", title: "role", text })
+  const records = [
+    makeRecord({
+      item: "system:role",
+      section: "communication/intermediate-commentary",
+      text: "edited",
+      basedOn: fingerprint("x"),
+      basedOnText: "x",
+    }),
+    makeRecord({ item: "system:role", section: "communication", state: "off" }),
+  ]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.assembled).not.toContain("edited")
+  expect(resolved.assembled).not.toContain("Narrate progress.")
+  expect(resolved.assembled).toContain("Read before editing.")
+})
+
+test("editing a child does not resurrect an excluded parent, but keeps siblings", () => {
+  const text = "# Communication\n\nTalk well.\n\n## Intermediate Commentary\n\nNarrate progress.\n\n## Final Answer\n\nAnswer crisply.\n"
+  const upstream = makeItem({ id: "system:role", kind: "system", group: "none", title: "role", text })
+  const records = [
+    makeRecord({
+      item: "system:role",
+      section: "communication/intermediate-commentary",
+      text: "edited",
+      basedOn: fingerprint("x"),
+      basedOnText: "x",
+    }),
+    makeRecord({ item: "system:role", section: "communication/final-answer", state: "off" }),
+  ]
+  const resolved = resolve(input({ upstream, records }))
+  expect(resolved.assembled).toContain("Talk well.")
+  expect(resolved.assembled).toContain("edited")
+  expect(resolved.assembled).not.toContain("Answer crisply.")
+})
+
+test("editing a section when upstream has not moved leaves it not-in-review", () => {
+  const upstream = sectionItem()
+  const original = "# Two\n\nb\n"
+  const edited = "# Two\n\nb edited\n"
+  const basedOn = fingerprint(original)
+  const records = [
+    makeRecord({ item: "system:role", section: "two", text: edited, basedOn, basedOnText: original, acknowledged: basedOn }),
+  ]
+  expect(resolve(input({ upstream, records, address: sectionAddress("two") })).review).toBe(false)
+})
+
+test("keep and edit each clear a genuine section review", () => {
+  const upstream = sectionItem()
+  const original = "# Two\n\nb\n"
+  const stale = fingerprint("older")
+  const records = [
+    makeRecord({ item: "system:role", section: "two", text: "# Two\n\nmine\n", basedOn: stale, basedOnText: "older" }),
+  ]
+  const address = sectionAddress("two")
+  expect(resolve(input({ upstream, records, address })).review).toBe(true)
+  const kept = resolveResolution(input({ upstream, records, address }), "keep")
+  expect(kept[0].acknowledged).toBe(fingerprint(upstreamForEdit(input({ upstream, records, address }))))
+  expect(resolve(input({ upstream, records: kept, address })).review).toBe(false)
+  const edited = resolveResolution(input({ upstream, records, address }), "edit", "# Two\n\nnewer\n")
+  expect(edited[0].basedOn).toBe(fingerprint(upstreamForEdit(input({ upstream, records, address }))))
+  expect(edited[0].acknowledged).toBe(fingerprint(upstreamForEdit(input({ upstream, records, address }))))
+  expect(resolve(input({ upstream, records: edited, address })).review).toBe(false)
+})
+
+test("project override over global text reviews only on global moves, and keep clears it", () => {
+  const upstream = makeItem({ text: "upstream" })
+  const projectAddress: Address = { level: "project", agent: "alpha", item: upstream.id, section: null }
+  const records = [
+    makeRecord({ level: "global", agent: "alpha", text: "global v1" }),
+    makeRecord({
+      text: "mine",
+      basedOn: fingerprint("global v1"),
+      basedOnText: "global v1",
+      acknowledged: fingerprint("global v1"),
+    }),
+  ]
+  expect(resolve(input({ upstream, records, address: projectAddress })).review).toBe(false)
+  const moved = [makeRecord({ level: "global", agent: "alpha", text: "global v2" }), records[1]]
+  expect(resolve(input({ upstream, records: moved, address: projectAddress })).review).toBe(true)
+  const kept = resolveResolution(input({ upstream, records: moved, address: projectAddress }), "keep")
+  expect(resolve(input({ upstream, records: kept, address: projectAddress })).review).toBe(false)
+})
+
+test("aboveSectionText honors an ancestor section edit", () => {
+  const upstream = sectionItem()
+  const edited = "# Two\n\nshared edit\n"
+  const records = [
+    makeRecord({
+      level: "defaults",
+      agent: null,
+      item: "system:role",
+      section: "two",
+      text: edited,
+      basedOn: fingerprint("x"),
+      basedOnText: "x",
+    }),
+  ]
+  const seen = upstreamForEdit(input({ upstream, records, address: sectionAddress("two") }))
+  expect(seen).toBe(edited)
 })

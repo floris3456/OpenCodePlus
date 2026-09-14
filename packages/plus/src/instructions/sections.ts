@@ -65,6 +65,37 @@ export function assemble(text: string, split: Split, excluded: ReadonlySet<strin
   return parts.join("").replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
 }
 
+export function assembleWithOverrides(
+  text: string,
+  split: Split,
+  excluded: ReadonlySet<string>,
+  overrides: ReadonlyMap<string, string>,
+): string {
+  const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
+  const parents = parentIndexes(ordered)
+  const children = new Map<number, number[]>()
+  parents.forEach((parent, index) => {
+    if (parent === undefined) return
+    const list = children.get(parent) ?? []
+    list.push(index)
+    children.set(parent, list)
+  })
+  const effective = (index: number): string => {
+    const section = ordered[index]
+    if (section === undefined) return ""
+    if (isDropped(section.id, excluded)) return ""
+    const override = overrides.get(section.id)
+    if (override !== undefined) return override
+    const kids = children.get(index) ?? []
+    if (kids.length === 0) return text.slice(section.start, section.end)
+    const starts = kids.map((child) => ordered[child]?.start ?? section.end)
+    const own = text.slice(section.start, Math.min(...starts))
+    return own + kids.map(effective).join("")
+  }
+  const tops = ordered.map((_, index) => index).filter((index) => parents[index] === undefined)
+  return tops.map(effective).join("").replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
+}
+
 export function slice(text: string, section: Section): string {
   return text.slice(section.start, section.end)
 }
