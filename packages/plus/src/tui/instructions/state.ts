@@ -17,7 +17,7 @@ import type {
   Item,
   SplitRecord,
 } from "../../instructions/model.js"
-import { tree, type TreeNode } from "../../instructions/tree.js"
+import { expandedTree, tree, type TreeNode } from "../../instructions/tree.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
@@ -159,21 +159,7 @@ export function createInstructionsState(context: Plugin.Context) {
   const fullTree = createMemo<TreeNode[]>(() => {
     const current = snapshot()
     if (!current) return []
-    // Expanding every id found in one fell swoop gets closer, then one more
-    // pass after expanding those catches rows hidden two levels deep, and so
-    // on until no new ids appear. Each pass reuses the same converted inputs.
-    const items = itemsForTree()
-    const records = recordsForTree()
-    const agents = agentsForTree()
-    const grown = new Set<string>()
-    let previous = -1
-    let built = tree({ items, records, agents, expanded: grown })
-    while (previous !== grown.size) {
-      previous = grown.size
-      for (const node of built) grown.add(node.id)
-      built = tree({ items, records, agents, expanded: grown })
-    }
-    return built
+    return expandedTree({ items: itemsForTree(), records: recordsForTree(), agents: agentsForTree() })
   })
 
   function ancestorsOf(

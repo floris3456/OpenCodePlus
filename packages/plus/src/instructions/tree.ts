@@ -48,6 +48,17 @@ export function tree(input: TreeInput): TreeNode[] {
   return roots.flatMap((root) => emit(root, expanded))
 }
 
+// Single-pass full expansion for filter matching: the skeleton already knows
+// every id without resolving anything, so walk it directly instead of
+// converging by repeated expanded builds. Output matches tree() with every id
+// expanded.
+export function expandedTree(input: Omit<TreeInput, "expanded">): TreeNode[] {
+  const ctx = contextOf(input)
+  const memo = memoOf(ctx)
+  const roots = [lazyRoot(ctx, memo, "project"), lazyRoot(ctx, memo, "global"), lazyRoot(ctx, memo, "defaults")]
+  return roots.flatMap(emitAll)
+}
+
 interface BuildContext {
   readonly items: readonly Item[]
   readonly customizations: readonly CustomizationRecord[]
@@ -234,6 +245,11 @@ function emit(lazy: Lazy, expanded: ReadonlySet<string>): TreeNode[] {
   const head = [finalizeLazy(lazy)]
   if (!expanded.has(lazy.id)) return head
   return head.concat(lazy.children().flatMap((child) => emit(child, expanded)))
+}
+
+function emitAll(lazy: Lazy): TreeNode[] {
+  const head = [finalizeLazy(lazy)]
+  return head.concat(lazy.children().flatMap(emitAll))
 }
 
 // Same badge rule as before: sections carry their own flags, every other row
