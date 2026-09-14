@@ -16,7 +16,7 @@ The launcher executes this fork directly from source (the installed `opencode2` 
 
 ## Layout
 
-Three top-level trees, in order: `Project`, `Global`, `Defaults`. `Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose children are the agents with the identical subtree:
+Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the three holds an `Agents` group (`[a: add agent]`) whose children are the agents with the identical subtree:
 
 ```
 <Agent>
@@ -35,7 +35,7 @@ Three top-level trees, in order: `Project`, `Global`, `Defaults`. `Project` and 
       <section>
 ```
 
-`Defaults` holds `Agents` (template agents with the full subtree, `[a: add agent template]`) followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on an Agents group adds an agent at that level. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
+`Defaults` holds `Agents` followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on an Agents group adds an agent at that level. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
 
 ## Inheritance
 
@@ -55,7 +55,7 @@ Up/down move, left collapse/parent, right expand, Enter edit text (or diff on ye
 
 ## Storage
 
-Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl` (`level === "project"` only), global scope and Defaults in `<configDir>/opencodeplus/instructions/records.jsonl` (global and defaults levels). Mutations carry both expected revisions against one combined revision (the max of both headers) and lose on stale. Format is v2 JSONL: a `{"version":2,"revision":n}` header line, then one canonical record per line. A v1 `records.jsonl` header (no `version`) is migrated on load and the first save writes v2 to both stores, so v1 is never written and the two formats never sit side by side.
+Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl` (`level === "project"` only), global scope and Defaults in `<configDir>/opencodeplus/instructions/records.jsonl` (global and defaults levels). Each store tracks its own revision from its file header. Saves supply separate expected project and global revisions and serialize under a process-wide global gate plus the per-project gate in a fixed order, so concurrent projects cannot clobber the shared global file. Stale saves identify the conflicting store (`project` or `global`), and a save only writes and bumps the store whose routed records actually changed (a project-only save leaves the global revision untouched and vice versa). Format is v2 JSONL: a `{"version":2,"revision":n}` header line, then one canonical record per line. A v1 `records.jsonl` header (no `version`) is migrated on load and the first save writes v2 to both stores, so v1 is never written and the two formats never sit side by side.
 
 RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`; events `project.changed`, `instructions.changed`. The binding contract is `SPEC.md`.
 
