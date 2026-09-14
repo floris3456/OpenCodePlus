@@ -427,3 +427,100 @@ test("append caps the summary at 200 chars on a single line", async () => {
   expect(first.summary.length).toBeLessThanOrEqual(200)
   expect(first.summary).not.toContain("\n")
 })
+
+test("a mutate with many unchanged records logs exactly the edited row", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const seeded = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: 0,
+      expectedGlobalRevision: 0,
+      records: [
+        record("tool:a", { text: "a" }),
+        record("tool:b", { text: "b" }),
+        record("tool:c", { level: "global", agent: "beta", text: "c" }),
+      ],
+    }, throwingContext({})),
+  )
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error("expected seed to succeed")
+  const edited = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: seeded.revision,
+      expectedGlobalRevision: seeded.globalRevision,
+      records: [
+        record("tool:a", { text: "a" }),
+        record("tool:b", { text: "b-edited" }),
+        record("tool:c", { level: "global", agent: "beta", text: "c" }),
+      ],
+    }, throwingContext({})),
+  )
+  expect(edited.ok).toBe(true)
+  if (!edited.ok) throw new Error("expected edit to succeed")
+  expect(await projectLines(project)).toHaveLength(2)
+  expect(await globalLines()).toHaveLength(1)
+  const line = JSON.parse((await projectLines(project))[1] ?? "")
+  expect(line.target).toBe("item:project:alpha:tool:b")
+  expect(line.summary).toBe("mutate item:project:alpha:tool:b")
+  expect(line.revision).toBe(2)
+})
+
+test("a mutate changing two rows in one store names both ids in canonical order", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const seeded = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: 0,
+      expectedGlobalRevision: 0,
+      records: [record("tool:b", { text: "b" }), record("tool:a", { text: "a" })],
+    }, throwingContext({})),
+  )
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error("expected seed to succeed")
+  const edited = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: seeded.revision,
+      expectedGlobalRevision: seeded.globalRevision,
+      records: [record("tool:b", { text: "b2" }), record("tool:a", { text: "a2" })],
+    }, throwingContext({})),
+  )
+  expect(edited.ok).toBe(true)
+  if (!edited.ok) throw new Error("expected edit to succeed")
+  const lines = await projectLines(project)
+  expect(lines).toHaveLength(2)
+  const line = JSON.parse(lines[1] ?? "")
+  expect(line.target).toBe("item:project:alpha:tool:a")
+  expect(line.summary).toBe("mutate 2 rows (project): item:project:alpha:tool:a, item:project:alpha:tool:b")
+})
+
+test("one changed row per store logs the correct per-store target in each file", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const seeded = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: 0,
+      expectedGlobalRevision: 0,
+      records: [record("tool:p", { text: "p" }), record("tool:g", { level: "global", agent: "beta", text: "g" })],
+    }, throwingContext({})),
+  )
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error("expected seed to succeed")
+  const edited = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: seeded.revision,
+      expectedGlobalRevision: seeded.globalRevision,
+      records: [record("tool:p", { text: "p2" }), record("tool:g", { level: "global", agent: "beta", text: "g2" })],
+    }, throwingContext({})),
+  )
+  expect(edited.ok).toBe(true)
+  if (!edited.ok) throw new Error("expected edit to succeed")
+  const projectEntry = JSON.parse((await projectLines(project))[1] ?? "")
+  expect(projectEntry.target).toBe("item:project:alpha:tool:p")
+  expect(projectEntry.summary).toBe("mutate item:project:alpha:tool:p")
+  const globalEntry = JSON.parse((await globalLines())[1] ?? "")
+  expect(globalEntry.target).toBe("item:global:beta:tool:g")
+  expect(globalEntry.summary).toBe("mutate item:global:beta:tool:g")
+})

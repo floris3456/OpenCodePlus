@@ -343,7 +343,10 @@ function same(left: readonly StoredRecord[], right: readonly StoredRecord[]): bo
   return JSON.stringify(canonical(left).map(stable)) === JSON.stringify(canonical(right).map(stable))
 }
 
-function canonical(records: readonly StoredRecord[]): StoredRecord[] {
+// Canonical order and stably keyed content for callers that diff record sets
+// (the change log names added/removed/modified rows without reimplementing
+// the comparison).
+export function canonical(records: readonly StoredRecord[]): StoredRecord[] {
   return [...records].sort(compareRecords)
 }
 
@@ -363,7 +366,7 @@ function sortKey(record: StoredRecord): string[] {
   return [record.type, record.item, String(record.agent), record.level, record.type === "customization" ? String(record.section) : ""]
 }
 
-function stable(record: StoredRecord): StoredRecord {
+export function stable(record: StoredRecord): StoredRecord {
   if (record.type === "team")
     return {
       type: "team",

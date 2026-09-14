@@ -22,7 +22,7 @@ import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, projectLogPath, resolveInstructionPath } from "./instructions/paths.js"
-import { load, save, type StoredRecord } from "./instructions/store.js"
+import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
 import { discoverTeams, isTeamEnabled, validateTeamName, type TeamRecord } from "./instructions/teams.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
@@ -173,7 +173,8 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
           logMutate({
             directory,
             actor: normalizeActor(input.actor),
-            records,
+            before: loaded.records,
+            after: records,
             projectRevision: saved.projectRevision,
             globalRevision: saved.globalRevision,
             projectChanged: saved.changed.project,
@@ -680,55 +681,112 @@ function recordTarget(record: StoredRecord): string {
   return `item:${record.level}:${agent}:${record.item}`
 }
 
-function targetOf(records: readonly StoredRecord[]): string {
-  const first = records[0]
+function mutateTarget(rows: readonly StoredRecord[]): string {
+  const first = rows[0]
   if (first === undefined) return "records"
   return recordTarget(first)
 }
 
-function mutateSummary(records: readonly StoredRecord[], level: string): string {
-  if (records.length === 0) return `mutate (${level}, migrated records)`
-  if (records.length === 1) {
-    const only = records[0]
-    if (only === undefined) return `mutate (${level})`
-    return `mutate ${recordTarget(only)}`
+// Multiset difference keyed by row identity (type plus level/agent/item/
+// section, or level/team): a row counts as changed when it was added,
+// removed, or its stored content differs, and a modified row is named once
+// (the after version). Content compares on the store's canonical serialized
+// form. Team rows merged back verbatim cancel out, so a pure mutate never
+// names them.
+function deltaRows(before: readonly StoredRecord[], after: readonly StoredRecord[]): StoredRecord[] {
+  const beforeGroups = groupByIdentity(before)
+  const afterGroups = groupByIdentity(after)
+  const changed: StoredRecord[] = []
+  for (const key of new Set([...beforeGroups.keys(), ...afterGroups.keys()])) {
+    const olds = sortByContent(beforeGroups.get(key) ?? [])
+    const news = sortByContent(afterGroups.get(key) ?? [])
+    const paired = Math.min(olds.length, news.length)
+    for (let index = 0; index < paired; index++) {
+      const oldRow = olds[index]
+      const newRow = news[index]
+      if (oldRow === undefined || newRow === undefined) continue
+      if (contentOf(oldRow) !== contentOf(newRow)) changed.push(newRow)
+    }
+    for (let index = paired; index < olds.length; index++) {
+      const removed = olds[index]
+      if (removed !== undefined) changed.push(removed)
+    }
+    for (let index = paired; index < news.length; index++) {
+      const added = news[index]
+      if (added !== undefined) changed.push(added)
+    }
   }
-  return `mutate ${records.length} records (${level}): ${records.map(recordTarget).join(", ")}`
+  return changed
 }
 
-// One log line per store actually changed; a no-op or stale save logs
-// nothing. The revision is the store's revision after the write — logging
-// never bumps a revision, never enters the records file, and never feeds the
-// publish fingerprint.
+function groupByIdentity(records: readonly StoredRecord[]): Map<string, StoredRecord[]> {
+  const groups = new Map<string, StoredRecord[]>()
+  for (const record of records) {
+    const key = `${record.type} ${recordTarget(record)}`
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [record])
+    else group.push(record)
+  }
+  return groups
+}
+
+function contentOf(record: StoredRecord): string {
+  return JSON.stringify(stable(record))
+}
+
+function sortByContent(records: readonly StoredRecord[]): StoredRecord[] {
+  return [...records].sort((left, right) => {
+    const leftKey = contentOf(left)
+    const rightKey = contentOf(right)
+    if (leftKey === rightKey) return 0
+    return leftKey < rightKey ? -1 : 1
+  })
+}
+
+function mutateSummary(changed: readonly StoredRecord[], level: string): string {
+  const first = changed[0]
+  // A reported-changed store with an empty delta is the v1→v2 migration
+  // rewrite: same logical rows, new serialization, both files rewritten.
+  if (first === undefined) return `mutate (${level}, migrated records)`
+  if (changed.length === 1) return `mutate ${recordTarget(first)}`
+  return `mutate ${changed.length} rows (${level}): ${changed.map(recordTarget).join(", ")}`
+}
+
+// One log line per store actually changed, naming only the rows that changed
+// in that store; a no-op or stale save logs nothing. The revision is the
+// store's revision after the write — logging never bumps a revision, never
+// enters the records file, and never feeds the publish fingerprint.
 async function logMutate(input: {
   directory: string
   actor: Plus.Actor
-  records: readonly StoredRecord[]
+  before: readonly StoredRecord[]
+  after: readonly StoredRecord[]
   projectRevision: number
   globalRevision: number
   projectChanged: boolean
   globalChanged: boolean
 }): Promise<void> {
   const ts = new Date().toISOString()
+  const delta = deltaRows(input.before, input.after)
   if (input.projectChanged) {
-    const project = input.records.filter((record) => record.level === "project")
+    const rows = canonical(delta.filter((record) => record.level === "project"))
     await append(projectLogPath(input.directory), {
       ts,
       actor: { ...input.actor },
       op: "mutate",
-      target: targetOf(project),
-      summary: mutateSummary(project, "project"),
+      target: mutateTarget(rows),
+      summary: mutateSummary(rows, "project"),
       revision: input.projectRevision,
     })
   }
   if (input.globalChanged) {
-    const global = input.records.filter((record) => record.level !== "project")
+    const rows = canonical(delta.filter((record) => record.level !== "project"))
     await append(globalLogPath(), {
       ts,
       actor: { ...input.actor },
       op: "mutate",
-      target: targetOf(global),
-      summary: mutateSummary(global, "global"),
+      target: mutateTarget(rows),
+      summary: mutateSummary(rows, "global"),
       revision: input.globalRevision,
     })
   }
