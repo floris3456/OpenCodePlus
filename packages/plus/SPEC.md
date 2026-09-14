@@ -7,8 +7,14 @@ migration (`src/instructions/store.ts`, `src/instructions/paths.ts`).
 
 ## Tree shape
 
-Three top-level roots in this order: `Project agents`, `Global agents`,
-`Defaults`. Every agent in all three roots has the identical subtree:
+Three top-level roots in this order: `Project`, `Global`, `Defaults`.
+`Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose
+children are that level's agents with the identical subtree. `Defaults` holds
+`Agents` (template agents, each with the full subtree, `[a: add agent template]`)
+and then the shared inventories: `Tools`, `Base` `[a]`, `Skills`, `System`
+`[a]`, `MCP` `[a: add MCP server]`.
+
+Every agent in all three roots has the identical subtree:
 
 ```
 <Agent>

@@ -308,17 +308,15 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
       label: "Defaults",
       depth: 0,
       actions: noActions(),
-      children: () => [lazyAgentsGroup(ctx, memo), ...lazySharedGroups(ctx, memo)],
+      children: () => [lazyAgentsGroup(ctx, memo, "defaults"), ...lazySharedGroups(ctx, memo)],
     })
-  const scope: "project" | "global" = level === "project" ? "project" : "global"
   return branch(memo, {
     kind: "root",
     id: `root:${level}`,
-    label: scope === "project" ? "Project agents" : "Global agents",
+    label: level === "project" ? "Project" : "Global",
     depth: 0,
-    add: "agent",
     actions: noActions(),
-    children: () => ctx.agents.filter((agent) => agent.scope === scope).map((agent) => lazyAgent(ctx, memo, level, agent, 1)),
+    children: () => [lazyAgentsGroup(ctx, memo, level)],
   })
 }
 
@@ -338,16 +336,16 @@ function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSour
   })
 }
 
-function lazyAgentsGroup(ctx: BuildContext, memo: Memo): Lazy {
+function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   return branch(memo, {
     kind: "group",
-    id: "group:defaults:agents",
+    id: `group:${level}:agents`,
     label: "Agents",
     depth: 1,
     add: "agent",
     actions: noActions(),
     children: () =>
-      ctx.agents.filter((agent) => agent.scope === "defaults").map((agent) => lazyAgent(ctx, memo, "defaults", agent, 2)),
+      ctx.agents.filter((agent) => agent.scope === level).map((agent) => lazyAgent(ctx, memo, level, agent, 2)),
   })
 }
 

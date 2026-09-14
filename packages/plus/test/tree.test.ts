@@ -89,9 +89,16 @@ function childrenOf(nodes: readonly TreeNode[], id: string): TreeNode[] {
 
 test("Implementer subtree shape under the project root", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
+  expect(nodes.find((node) => node.id === "root:project")?.label).toBe("Project")
+  expect(nodes.find((node) => node.id === "root:global")?.label).toBe("Global")
+  expect(nodes.find((node) => node.id === "root:defaults")?.label).toBe("Defaults")
+  const agentGroup = nodes.find((node) => node.id === "group:project:agents")
+  expect(agentGroup?.kind).toBe("group")
+  expect(agentGroup?.label).toBe("Agents")
+  expect(agentGroup?.depth).toBe(1)
   const agent = nodes.find((node) => node.id === "agent:project:Implementer")
   expect(agent?.kind).toBe("agent")
-  expect(agent?.depth).toBe(1)
+  expect(agent?.depth).toBe(2)
   expect(childrenOf(nodes, "agent:project:Implementer").map((node) => node.label)).toEqual([
     "Tools",
     "Base",
@@ -118,8 +125,8 @@ test("Implementer subtree shape under the project root", () => {
 test("identical subtree under each of the three roots", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   for (const [level, agent, depth] of [
-    ["project", "Implementer", 1],
-    ["global", "Helper", 1],
+    ["project", "Implementer", 2],
+    ["global", "Helper", 2],
     ["defaults", "Template", 2],
   ] as const) {
     const id = `agent:${level}:${agent}`
@@ -141,6 +148,14 @@ test("Defaults holds Agents plus the five shared inventories in order", () => {
   expect(childrenOf(nodes, "group:defaults:agents").map((node) => node.id)).toEqual(["agent:defaults:Template"])
   const shared = nodes.find((node) => node.id === "item:defaults::mcp:sample")
   expect(shared?.address).toEqual({ level: "defaults", agent: null, item: "mcp:sample", section: null })
+})
+
+test("Project and Global hold Agents group", () => {
+  const nodes = expandAll({ items: items(), records: [], agents: agents() })
+  expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents"])
+  expect(childrenOf(nodes, "group:project:agents").map((node) => node.id)).toEqual(["agent:project:Implementer"])
+  expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents"])
+  expect(childrenOf(nodes, "group:global:agents").map((node) => node.id)).toEqual(["agent:global:Helper"])
 })
 
 test("MCP tools group by item.server, never the tool name", () => {
@@ -182,12 +197,12 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
     { level: "project", agent: "Implementer", item: "system:role", section: "purpose" },
     { level: "project", agent: "Implementer", item: "system:role", section: "usage" },
   ])
-  expect(sections.map((node) => node.depth)).toEqual([4, 4])
+  expect(sections.map((node) => node.depth)).toEqual([5, 5])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
 })
 
-test("review rolls up to Native, Tools, Implementer, and Project agents while collapsed", () => {
+test("review rolls up to Native, Tools, Implementer, Agents, and Project while collapsed", () => {
   const upstream = makeItem({ id: "tool:bash", kind: "tool", group: "native", title: "bash", text: "v2" })
   const rest = items().filter((item) => item.id !== "tool:bash" && item.id !== "tool:aaa")
   const records = [
@@ -198,13 +213,14 @@ test("review rolls up to Native, Tools, Implementer, and Project agents while co
   const root = collapsed.find((node) => node.id === "root:project")
   expect(root?.badges.review).toBe(true)
   expect(root?.badges.reviewCount).toBe(1)
-  const agentOnly = tree({ ...input, expanded: new Set(["root:project"]) })
+  const agentOnly = tree({ ...input, expanded: new Set(["root:project", "group:project:agents"]) })
   const agentNode = agentOnly.find((node) => node.id === "agent:project:Implementer")
   expect(agentNode?.badges.review).toBe(true)
   expect(agentNode?.badges.reviewCount).toBe(1)
   const full = expandAll(input)
   for (const id of [
     "root:project",
+    "group:project:agents",
     "agent:project:Implementer",
     "group:project:Implementer:tools",
     "group:project:Implementer:tools:native",
@@ -219,9 +235,11 @@ test("review rolls up to Native, Tools, Implementer, and Project agents while co
 test("add affordances land on exactly the listed groups", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   const adds = new Map(nodes.filter((node) => node.add !== undefined).map((node) => [node.id, node.add]))
-  expect(adds.get("root:project")).toBe("agent")
-  expect(adds.get("root:global")).toBe("agent")
+  expect(adds.get("root:project")).toBeUndefined()
+  expect(adds.get("root:global")).toBeUndefined()
   expect(adds.get("root:defaults")).toBeUndefined()
+  expect(adds.get("group:project:agents")).toBe("agent")
+  expect(adds.get("group:global:agents")).toBe("agent")
   expect(adds.get("group:defaults:agents")).toBe("agent")
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
@@ -242,10 +260,22 @@ test("expansion emits only expanded children", () => {
     "root:defaults",
   ])
   const roots = tree({ ...input, expanded: new Set(["root:project"]) })
-  expect(roots.map((node) => node.id)).toEqual(["root:project", "agent:project:Implementer", "root:global", "root:defaults"])
-  const agent = tree({ ...input, expanded: new Set(["root:project", "agent:project:Implementer"]) })
+  expect(roots.map((node) => node.id)).toEqual(["root:project", "group:project:agents", "root:global", "root:defaults"])
+  const agentsGroup = tree({ ...input, expanded: new Set(["root:project", "group:project:agents"]) })
+  expect(agentsGroup.map((node) => node.id)).toEqual([
+    "root:project",
+    "group:project:agents",
+    "agent:project:Implementer",
+    "root:global",
+    "root:defaults",
+  ])
+  const agent = tree({
+    ...input,
+    expanded: new Set(["root:project", "group:project:agents", "agent:project:Implementer"]),
+  })
   expect(agent.map((node) => node.id)).toEqual([
     "root:project",
+    "group:project:agents",
     "agent:project:Implementer",
     "group:project:Implementer:tools",
     "group:project:Implementer:base",

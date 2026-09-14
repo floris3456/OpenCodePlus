@@ -16,7 +16,7 @@ The launcher executes this fork directly from source (the installed `opencode2` 
 
 ## Layout
 
-Three top-level trees, in order: `Project agents`, `Global agents`, `Defaults`. Every agent in all three roots has the identical subtree:
+Three top-level trees, in order: `Project`, `Global`, `Defaults`. `Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose children are the agents with the identical subtree:
 
 ```
 <Agent>
@@ -35,7 +35,7 @@ Three top-level trees, in order: `Project agents`, `Global agents`, `Defaults`. 
       <section>
 ```
 
-`Defaults` holds `Agents` (template agents with the full subtree, `[a: add agent template]`) followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on a project or global root adds an agent there. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
+`Defaults` holds `Agents` (template agents with the full subtree, `[a: add agent template]`) followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on an Agents group adds an agent at that level. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
 
 ## Inheritance
 
