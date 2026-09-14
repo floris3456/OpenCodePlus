@@ -6,25 +6,25 @@ import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
 import type { Mcp } from "@opencode/schema/mcp"
 import { AbsolutePath } from "@opencode/schema/schema"
-import { Permission } from "@opencode/schema/permission"
-import { Project } from "@opencode/schema/project"
 import { Skill } from "@opencode/schema/skill"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema, type Types } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { agentBody, discover } from "../src/instructions/discover.js"
-import { copyName } from "../src/instructions/apply.js"
-import { effective, fingerprint } from "../src/instructions/model.js"
+import { agentBody, discover, type BaseTemplate } from "../src/instructions/discover.js"
+import { fingerprint, type CustomizationRecord } from "../src/instructions/model.js"
 import { context } from "./harness.js"
 
 const roots: string[] = []
 const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
+const previousTestHome = process.env.OPENCODE_TEST_HOME
 
 afterEach(async () => {
   if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = previousConfigDir
+  if (previousTestHome === undefined) delete process.env.OPENCODE_TEST_HOME
+  else process.env.OPENCODE_TEST_HOME = previousTestHome
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -35,18 +35,18 @@ async function tempDir(prefix: string): Promise<string> {
   return root
 }
 
-function location(directory: string): Location.Info {
+function location(directory: string, projectDirectory: string = directory): Location.Info {
   return new Location.Info({
     directory: AbsolutePath.make(directory),
     project: {
-      id: Project.ID.make("test"),
-      directory: AbsolutePath.make(directory),
-      canonical: AbsolutePath.make(directory),
+      id: "test" as never,
+      directory: AbsolutePath.make(projectDirectory),
+      canonical: AbsolutePath.make(projectDirectory),
     },
   })
 }
 
-function agent(id: string, system: string, permissions: Permission.Ruleset = []): Agent.Info {
+function agent(id: string, system: string): Agent.Info {
   return {
     id: Agent.ID.make(id),
     name: Agent.Name.make(id),
@@ -54,34 +54,27 @@ function agent(id: string, system: string, permissions: Permission.Ruleset = [])
     system,
     mode: "primary",
     hidden: false,
-    permissions,
+    permissions: [],
   }
 }
 
-function tool(id: string, description: string): Tool.Info & { readonly id: string } {
+type ToolEntry = Tool.Info & { readonly id: string; readonly origin?: { type: "mcp" | "plugin"; name: string } }
+
+function tool(id: string, description: string, origin?: ToolEntry["origin"]): ToolEntry {
   return {
     id,
     name: id,
     description,
     input: Schema.Void,
     execute: () => Effect.die("unused tool.execute"),
+    ...(origin === undefined ? {} : { origin }),
   }
 }
 
-function toolWithOptions(
-  id: string,
-  description: string,
-  options: Tool.Info["options"],
-): Tool.Info & { readonly id: string } {
-  const base = tool(id, description)
-  if (options === undefined) return base
-  return { ...base, options }
-}
-
-function toolEditor(tools: readonly (Tool.Info & { readonly id: string })[] = []): ToolEditor {
+function toolEditor(tools: readonly ToolEntry[] = []): ToolEditor {
   return {
     list: () => tools,
-    get: (id) => tools.find((tool) => tool.id === id),
+    get: (id) => tools.find((entry) => entry.id === id),
     namespace: () => {},
     add: () => {},
     update: () => {},
@@ -99,24 +92,47 @@ function mcpEditor(servers: readonly [string, Types.DeepMutable<Mcp.ServerConfig
   }
 }
 
-function agentContext(directory: string, agents: Agent.Info[]): Context {
+type SkillEntry = Skill.Info & { readonly origin?: { type: "mcp" | "plugin"; name: string } }
+
+function skill(id: string, content: string, locationPath: string): Skill.Info {
+  return Skill.Info.make({
+    id: Skill.ID.make(id),
+    name: Skill.Name.make(id),
+    location: AbsolutePath.make(locationPath),
+    content,
+  })
+}
+
+function fullContext(options: {
+  directory: string
+  projectDirectory?: string
+  agents?: Agent.Info[]
+  skills?: SkillEntry[]
+  tools?: ToolEntry[]
+  servers?: [string, Types.DeepMutable<Mcp.ServerConfig>][]
+}): Context {
+  const loc = location(options.directory, options.projectDirectory ?? options.directory)
+  const agents = options.agents ?? []
+  const skills = options.skills ?? []
+  const tools = options.tools ?? []
+  const servers = options.servers ?? []
   return context({
-    location: location(directory),
+    location: loc,
     agent: {
-      list: () => Effect.succeed({ location: location(directory), data: agents }),
+      list: () => Effect.succeed({ location: loc, data: agents }),
       get: () => Effect.die("unused agent.get"),
       transform: () => Effect.die("unused agent.transform"),
       reload: () => Effect.die("unused agent.reload"),
     },
     skill: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
+      list: () => Effect.succeed({ location: loc, data: skills }),
       transform: () => Effect.die("unused skill.transform"),
       reload: () => Effect.die("unused skill.reload"),
     },
     tool: {
       transform: (callback) =>
         Effect.sync(() => {
-          callback(toolEditor())
+          callback(toolEditor(tools))
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused tool.reload"),
@@ -126,7 +142,7 @@ function agentContext(directory: string, agents: Agent.Info[]): Context {
       list: () => Effect.die("unused mcp.list"),
       transform: (callback) =>
         Effect.sync(() => {
-          callback(mcpEditor())
+          callback(mcpEditor(servers))
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused mcp.reload"),
@@ -134,7 +150,22 @@ function agentContext(directory: string, agents: Agent.Info[]): Context {
   })
 }
 
-test("project, global, and builtin agents resolve by file location", async () => {
+const noBase = () => undefined
+const noTemplates: BaseTemplate[] = []
+
+function record(item: string, state: "on" | "off", agent: string | null = null): CustomizationRecord {
+  return {
+    level: agent === null ? "defaults" : "project",
+    agent,
+    item,
+    section: null,
+    state,
+    basedOn: fingerprint("upstream"),
+    updated: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+test("project, global, and defaults agents resolve by file location with active base", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
@@ -143,205 +174,193 @@ test("project, global, and builtin agents resolve by file location", async () =>
   await fs.mkdir(path.join(global, "agents"), { recursive: true })
   await Bun.write(path.join(global, "agents", "reviewer.md"), "# reviewer\n")
   const agents = [agent("planner", "plan"), agent("reviewer", "review"), agent("ghost", "ghost")]
-  const discovered = await discover(agentContext(directory, agents), { revision: 3, customizations: [] })
+  const templates: BaseTemplate[] = [{ id: "gpt", title: "GPT.txt", text: "gpt base" }]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: templates,
+    activeBase: (candidate) => (candidate.id === "planner" ? "gpt" : undefined),
+  })
 
-  expect(discovered.snapshot.revision).toBe(3)
   expect(discovered.agents).toEqual([
-    { id: "planner", scope: "project", path: path.join(directory, ".opencode", "agent", "planner.md") },
+    { id: "planner", scope: "project", path: path.join(directory, ".opencode", "agent", "planner.md"), base: "gpt" },
     { id: "reviewer", scope: "global", path: path.join(global, "agents", "reviewer.md") },
-    { id: "ghost", scope: "builtin" },
-  ])
-  expect(discovered.snapshot.items.filter((item) => item.kind === "prompt")).toHaveLength(3)
-})
-
-function skill(id: string, content: string): Skill.Info {
-  return Skill.Info.make({
-    id: Skill.ID.make(id),
-    name: Skill.Name.make(id),
-    location: AbsolutePath.make(`/skills/${id}.md`),
-    content,
-  })
-}
-
-test("personalized skill copies are excluded from discovery", async () => {
-  const directory = await tempDir("plus-discover-")
-  const copy = copyName("alpha", "notes")
-  const skills = [skill("notes", "skill body"), skill(copy, "custom body")]
-  const ctx = context({
-    location: location(directory),
-    agent: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location: location(directory), data: skills }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(toolEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(mcpEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-
-  const discovered = await discover(ctx, { revision: 0, customizations: [] })
-  expect(discovered.snapshot.items.filter((item) => item.kind === "skill")).toEqual([
-    expect.objectContaining({ id: "skill:notes", owner: "notes", text: "skill body", available: true }),
+    { id: "ghost", scope: "defaults" },
   ])
 })
 
-test("tool items are collected through tool.transform", async () => {
+test("tools group by origin without inferring the server from the namespace", async () => {
   const directory = await tempDir("plus-discover-")
-  const global = await tempDir("plus-discover-global-")
-  process.env.OPENCODE_CONFIG_DIR = global
-  const tools = [tool("reader", "read things"), tool("writer", "write things")]
-  let sawTransform = false
-  const ctx = context({
-    location: location(directory),
-    agent: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      // The tool domain exposes no list(); inventory must be read inside transform.
-      transform: (callback) =>
-        Effect.sync(() => {
-          sawTransform = true
-          callback(toolEditor(tools))
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(mcpEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-
-  const discovered = await discover(ctx, { revision: 0, customizations: [] })
-  expect(sawTransform).toBe(true)
-  expect("list" in ctx.tool).toBe(false)
-  expect(discovered.snapshot.items.filter((item) => item.kind === "tool")).toEqual([
-    expect.objectContaining({ id: "tool:reader", owner: "reader", text: "read things", available: true }),
-    expect.objectContaining({ id: "tool:writer", owner: "writer", text: "write things", available: true }),
-  ])
-})
-
-test("discovery reports native status from the live tool inventory", async () => {
-  const directory = await tempDir("plus-discover-")
-  const global = await tempDir("plus-discover-global-")
-  process.env.OPENCODE_CONFIG_DIR = global
+  const server = "my.server:name"
   const tools = [
-    toolWithOptions("reader", "read things", { codemode: false }),
-    toolWithOptions("helper", "help things", { codemode: true }),
-    tool("writer", "write things"),
+    tool("read", "read things"),
+    tool("plus-helper", "plus helper", { type: "plugin", name: "opencode.plus" }),
+    tool("other-plugin-tool", "other", { type: "plugin", name: "some.other" }),
+    tool("mcp-tool", "mcp tool", { type: "mcp", name: server }),
   ]
-  const ctx = context({
-    location: location(directory),
-    agent: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(toolEditor(tools))
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(mcpEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
+  const discovered = await discover({
+    ctx: fullContext({ directory, tools }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
   })
+  const byId = new Map(discovered.items.map((item) => [item.id, item]))
+  expect(byId.get("tool:read")).toMatchObject({ kind: "tool", group: "native", title: "read", text: "read things", enabled: true })
+  expect(byId.get("tool:read")?.server).toBeUndefined()
+  expect(byId.get("tool:plus-helper")).toMatchObject({ kind: "tool", group: "plus" })
+  // A non-Plus plugin origin is not Plus inventory.
+  expect(byId.get("tool:other-plugin-tool")).toMatchObject({ kind: "tool", group: "native" })
+  // The exact server name survives even though the namespace sanitizer would
+  // rewrite "." and ":" to "_".
+  expect(byId.get("tool:mcp-tool")).toMatchObject({ kind: "tool", group: "mcp", server })
+})
 
-  const discovered = await discover(ctx, { revision: 0, customizations: [] })
-  // Same rule as apply.ts: only options.codemode === false is native. A tool
-  // with no options is a Code Mode tool, exactly like one with codemode: true.
-  expect(discovered.tools).toEqual([
-    { id: "reader", native: true },
-    { id: "helper", native: false },
-    { id: "writer", native: false },
+test("base template items carry title and text with group none", async () => {
+  const directory = await tempDir("plus-discover-")
+  const templates: BaseTemplate[] = [
+    { id: "gpt", title: "GPT.txt", text: "gpt base text" },
+    { id: "general", title: "general.txt", text: "general base text" },
+  ]
+  const discovered = await discover({
+    ctx: fullContext({ directory }),
+    records: [],
+    baseTemplates: templates,
+    activeBase: noBase,
+  })
+  const bases = discovered.items.filter((item) => item.kind === "base")
+  expect(bases).toEqual([
+    expect.objectContaining({ id: "base:gpt", kind: "base", group: "none", title: "GPT.txt", text: "gpt base text", enabled: true }),
+    expect.objectContaining({ id: "base:general", kind: "base", group: "none", title: "general.txt", text: "general base text", enabled: true }),
+  ])
+  expect(bases[0].fingerprint).toBe(fingerprint("gpt base text"))
+})
+
+test("project skills group as project and Plus copies stay excluded", async () => {
+  const directory = await tempDir("plus-discover-")
+  const projectSkillPath = path.join(directory, ".opencode", "skills", "notes", "SKILL.md")
+  const nativeSkillPath = path.join(directory, "elsewhere", "SKILL.md")
+  await fs.mkdir(path.dirname(projectSkillPath), { recursive: true })
+  const copy = "plus/alpha/notes"
+  const skills: SkillEntry[] = [
+    skill("notes", "skill body", projectSkillPath),
+    skill("other", "other body", nativeSkillPath),
+    skill(copy, "custom body", nativeSkillPath),
+  ]
+  const discovered = await discover({
+    ctx: fullContext({ directory, skills }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const found = discovered.items.filter((item) => item.kind === "skill")
+  expect(found).toEqual([
+    expect.objectContaining({ id: "skill:notes", group: "project", text: "skill body", enabled: true }),
+    expect.objectContaining({ id: "skill:other", group: "native", text: "other body", enabled: true }),
   ])
 })
 
-test("nested agent files resolve to nested ids with their scope and path", async () => {
+test("system:role is one per agent with scoped agents and order 0", async () => {
   const directory = await tempDir("plus-discover-")
-  const global = await tempDir("plus-discover-global-")
-  process.env.OPENCODE_CONFIG_DIR = global
-  const nestedPath = path.join(directory, ".opencode", "agent", "team", "lead.md")
-  await fs.mkdir(path.dirname(nestedPath), { recursive: true })
-  await Bun.write(nestedPath, "# lead\n")
-  const agents = [agent("team/lead", "lead")]
-  const discovered = await discover(agentContext(directory, agents), { revision: 0, customizations: [] })
-
-  expect(discovered.agents).toEqual([{ id: "team/lead", scope: "project", path: nestedPath }])
+  const agents = [agent("alpha", "alpha prompt"), agent("beta", "beta prompt")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const roles = discovered.items.filter((item) => item.id === "system:role")
+  expect(roles).toHaveLength(2)
+  expect(roles[0]).toMatchObject({ kind: "system", group: "none", title: "Role/persona", text: "alpha prompt", agents: ["alpha"], order: 0 })
+  expect(roles[1]).toMatchObject({ text: "beta prompt", agents: ["beta"], order: 0 })
 })
 
-test("prompt discovery rereads file-backed upstream while the host shows Plus output, and new host text otherwise", async () => {
+test("instruction files follow core order: global first, then nearest-to-farthest", async () => {
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const project = await tempDir("plus-discover-")
+  const nested = path.join(project, "nested")
+  await fs.mkdir(nested, { recursive: true })
+  await Bun.write(path.join(global, "AGENTS.md"), "global instructions\n")
+  await Bun.write(path.join(project, "AGENTS.md"), "project instructions\n")
+  await Bun.write(path.join(nested, "AGENTS.md"), "nested instructions\n")
+  const discovered = await discover({
+    ctx: fullContext({ directory: nested, projectDirectory: project }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const files = discovered.items.filter((item) => item.kind === "system" && item.id !== "system:role")
+  expect(files.map((item) => item.id)).toEqual([
+    `system:${path.relative(nested, path.join(global, "AGENTS.md")) || path.join(global, "AGENTS.md")}`,
+    "system:AGENTS.md",
+    `system:${path.relative(nested, path.join(project, "AGENTS.md"))}`,
+  ])
+  expect(files.map((item) => item.order)).toEqual([0, 1, 2])
+  expect(files[0].text).toBe("global instructions\n")
+})
+
+test("descendant instruction files are not inventory", async () => {
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const project = await tempDir("plus-discover-")
+  await Bun.write(path.join(project, "AGENTS.md"), "project instructions\n")
+  await fs.mkdir(path.join(project, "child"), { recursive: true })
+  await Bun.write(path.join(project, "child", "AGENTS.md"), "descendant instructions\n")
+  const discovered = await discover({
+    ctx: fullContext({ directory: project, projectDirectory: project }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const files = discovered.items.filter((item) => item.kind === "system" && item.id !== "system:role")
+  expect(files.map((item) => item.id)).toEqual(["system:AGENTS.md"])
+})
+
+test("mcp server items serialize config without disabled and reconstruct upstream enablement", async () => {
+  const directory = await tempDir("plus-discover-")
+  const servers: [string, Types.DeepMutable<Mcp.ServerConfig>][] = [
+    ["search", { type: "remote", url: "https://example.test", disabled: true }],
+  ]
+  const expectedSanitized = JSON.stringify({ type: "remote", url: "https://example.test" })
+  const withoutRecords = await discover({
+    ctx: fullContext({ directory, servers: servers.map(([name, config]) => [name, structuredClone(config)] as [string, Types.DeepMutable<Mcp.ServerConfig>]) }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const plain = withoutRecords.items.find((item) => item.id === "mcp:search")
+  expect(plain).toMatchObject({ kind: "mcp", group: "none", text: expectedSanitized, enabled: false })
+  expect(plain?.fingerprint).toBe(fingerprint(expectedSanitized))
+  expect(withoutRecords.servers).toEqual([{ name: "search", enabled: false }])
+
+  const withDisable = await discover({
+    ctx: fullContext({ directory, servers: servers.map(([name, config]) => [name, structuredClone(config)] as [string, Types.DeepMutable<Mcp.ServerConfig>]) }),
+    records: [record("mcp:search", "off")],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const reconstructed = withDisable.items.find((item) => item.id === "mcp:search")
+  expect(reconstructed?.enabled).toBe(true)
+  expect(reconstructed?.text).toBe(expectedSanitized)
+  expect(withDisable.servers).toEqual([{ name: "search", enabled: true }])
+})
+
+test("prompt discovery rereads file-backed upstream while the host shows Plus output", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
   await Bun.write(alphaPath, "alpha upstream revised\n")
-  const applied = agentContext(directory, [agent("alpha", "custom"), agent("beta", "beta upstream")])
+  const ctx = fullContext({ directory, agents: [agent("alpha", "custom"), agent("beta", "beta upstream")] })
   const baselines = new Map([
     ["alpha", { applied: "custom", upstream: "alpha upstream", fileBacked: true, file: "alpha upstream" }],
     ["beta", { applied: "stale override", upstream: "stale upstream", fileBacked: false }],
   ])
-  const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
-  const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
-  // Alpha still shows exactly what Plus wrote, but the backing file changed
-  // underneath the override, so discovery reports the reread body rather than
-  // the stale retained upstream.
-  expect(texts.get("prompt:alpha")).toBe("alpha upstream revised")
-  // Beta's host text matches neither the retained override nor stale
-  // upstream — a genuine host edit — so it flows through untouched.
-  expect(texts.get("prompt:beta")).toBe("beta upstream")
+  const discovered = await discover({ ctx, records: [], baselines, baseTemplates: noTemplates, activeBase: noBase })
+  const texts = new Map(discovered.items.map((item) => [JSON.stringify([item.id, item.agents]), item.text]))
+  expect(texts.get(JSON.stringify(["system:role", ["alpha"]]))).toBe("alpha upstream revised")
+  expect(texts.get(JSON.stringify(["system:role", ["beta"]]))).toBe("beta upstream")
 })
 
 test("prompt discovery ignores the backing file when another config source owns the prompt", async () => {
@@ -351,207 +370,55 @@ test("prompt discovery ignores the backing file when another config source owns 
   const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
   await Bun.write(alphaPath, "file body\n")
-  const applied = agentContext(directory, [agent("alpha", "custom")])
+  const ctx = fullContext({ directory, agents: [agent("alpha", "custom")] })
   const baselines = new Map([
     ["alpha", { applied: "custom", upstream: "config upstream", fileBacked: true, file: "file body" }],
   ])
-  const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
-  const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
-  // The file body did not match the host upstream when the baseline was
-  // retained, so the file is ignored and the retained upstream is reported.
-  expect(texts.get("prompt:alpha")).toBe("config upstream")
+  const discovered = await discover({ ctx, records: [], baselines, baseTemplates: noTemplates, activeBase: noBase })
+  const role = discovered.items.find((item) => item.id === "system:role")
+  expect(role?.text).toBe("config upstream")
 })
 
-test("prompt discovery retains the baseline for builtin agents while the host shows Plus output", async () => {
+test("a Plus-applied tool description is never reported as upstream", async () => {
   const directory = await tempDir("plus-discover-")
-  const global = await tempDir("plus-discover-global-")
-  process.env.OPENCODE_CONFIG_DIR = global
-  const applied = agentContext(directory, [agent("ghost", "custom")])
-  const baselines = new Map([["ghost", { applied: "custom", upstream: "ghost upstream", fileBacked: false }]])
-  const discovered = await discover(applied, { revision: 0, customizations: [] }, baselines)
-  const texts = new Map(discovered.snapshot.items.map((item) => [item.id, item.text]))
-  // Builtins have no backing file to reread, so the retained upstream is the
-  // only available source: genuine host edits stay masked until the override
-  // is removed.
-  expect(texts.get("prompt:ghost")).toBe("ghost upstream")
+  const tools = [tool("reader", "custom description")]
+  const ctx = fullContext({ directory, tools })
+  const baselines = new Map([["tool:reader", { applied: "custom description", upstream: "upstream description", fileBacked: false }]])
+  const discovered = await discover({ ctx, records: [], baselines, baseTemplates: noTemplates, activeBase: noBase })
+  const item = discovered.items.find((entry) => entry.id === "tool:reader")
+  expect(item?.text).toBe("upstream description")
+  expect(item?.fingerprint).toBe(fingerprint("upstream description"))
+})
+
+test("a Plus-applied skill description is never reported as upstream", async () => {
+  const directory = await tempDir("plus-discover-")
+  const locationPath = path.join(directory, "skills", "notes", "SKILL.md")
+  const skills: SkillEntry[] = [skill("notes", "custom body", locationPath)]
+  const ctx = fullContext({ directory, skills })
+  const baselines = new Map([["skill:notes", { applied: "custom body", upstream: "upstream body", fileBacked: false }]])
+  const discovered = await discover({ ctx, records: [], baselines, baseTemplates: noTemplates, activeBase: noBase })
+  const item = discovered.items.find((entry) => entry.id === "skill:notes")
+  expect(item?.text).toBe("upstream body")
+  expect(item?.fingerprint).toBe(fingerprint("upstream body"))
+})
+
+test("a Plus state record disables the reported tool enablement", async () => {
+  const directory = await tempDir("plus-discover-")
+  const tools = [tool("reader", "read things")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, tools }),
+    records: [record("tool:reader", "off")],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  expect(discovered.items.find((entry) => entry.id === "tool:reader")?.enabled).toBe(false)
 })
 
 test("agentBody matches core's trimmed markdown content for frontmatter and body-only files", () => {
-  // Core decodes file-backed agents as { ...frontmatter, system: content.trim() }.
   expect(agentBody("---\nmode: subagent\n---\nBe helpful.\n")).toBe("Be helpful.")
   expect(agentBody("---\nmode: subagent\n---\n")).toBe("")
   expect(agentBody("Be helpful.\n")).toBe("Be helpful.")
   expect(agentBody("  spaced  ")).toBe("spaced")
-  // `---` inside the body is content, not a second fence.
   expect(agentBody("---\ndescription: x\n---\nfirst\n---\nsecond\n")).toBe("first\n---\nsecond")
-  // No opening fence means the whole file is the body.
   expect(agentBody("not frontmatter\n---\nstill body\n")).toBe("not frontmatter\n---\nstill body")
-})
-
-test("a server with upstream disabled: true and no customization is discovered with available === false, and its text/fingerprint exclude the disabled key", async () => {
-  const directory = await tempDir("plus-discover-")
-  const serverConfig: Mcp.ServerConfig = { type: "remote", url: "https://example.test", disabled: true }
-  const servers: [string, Types.DeepMutable<Mcp.ServerConfig>][] = [["search", structuredClone(serverConfig)]]
-  const ctx = context({
-    location: location(directory),
-    agent: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(toolEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(mcpEditor(servers))
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-
-  const discovered = await discover(ctx, { revision: 0, customizations: [] })
-  const mcpItem = discovered.snapshot.items.find((item) => item.id === "mcp:search")
-  expect(mcpItem).toBeDefined()
-  expect(mcpItem?.available).toBe(false)
-  const expectedSanitized = JSON.stringify({ type: "remote", url: "https://example.test" })
-  expect(mcpItem?.text).toBe(expectedSanitized)
-  expect(mcpItem?.fingerprint).toBe(fingerprint(expectedSanitized))
-})
-
-test("the same server WITH a shared disabled customization reports available === true and the identical stable text/fingerprint", async () => {
-  const directory = await tempDir("plus-discover-")
-  const serverConfig: Mcp.ServerConfig = { type: "remote", url: "https://example.test", disabled: true }
-  const servers: [string, Types.DeepMutable<Mcp.ServerConfig>][] = [["search", structuredClone(serverConfig)]]
-  const ctx = context({
-    location: location(directory),
-    agent: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location: location(directory), data: [] }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(toolEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(mcpEditor(servers))
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-
-  const expectedSanitized = JSON.stringify({ type: "remote", url: "https://example.test" })
-  const customizations = [
-    {
-      item: "mcp:search",
-      agent: "*",
-      state: "disabled" as const,
-      basedOn: fingerprint(expectedSanitized),
-      updated: "2026-01-01T00:00:00.000Z",
-    },
-  ]
-  const discovered = await discover(ctx, { revision: 0, customizations })
-  const mcpItem = discovered.snapshot.items.find((item) => item.id === "mcp:search")
-  expect(mcpItem).toBeDefined()
-  expect(mcpItem?.available).toBe(true)
-  expect(mcpItem?.text).toBe(expectedSanitized)
-  expect(mcpItem?.fingerprint).toBe(fingerprint(expectedSanitized))
-})
-
-test("discovery reports an upstream-denied skill as available (known limitation)", async () => {
-  // Known limitation: Plus discovers skills and tools globally with available: true
-  // regardless of agent upstream permissions. Core filters denied skills in
-  // Skill.available (packages/core/src/skill.ts) and denied tools in Tool.snapshot
-  // (packages/core/src/tool.ts) before session hooks run, so an agent that upstream
-  // denies a skill or tool cannot use it even when discovery reports available: true.
-  const directory = await tempDir("plus-discover-")
-  const global = await tempDir("plus-discover-global-")
-  process.env.OPENCODE_CONFIG_DIR = global
-
-  const deniedPermissions: Permission.Ruleset = [
-    { action: "skill", resource: "deploy", effect: "deny" },
-    { action: "git", resource: "*", effect: "deny" },
-  ]
-  const agents = [agent("restricted", "restricted agent", deniedPermissions)]
-  const skills = [skill("deploy", "deploy to production")]
-  const tools = [toolWithOptions("git", "run git commands", { codemode: false })]
-
-  const ctx = context({
-    location: location(directory),
-    agent: {
-      list: () => Effect.succeed({ location: location(directory), data: agents }),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("unused agent.transform"),
-      reload: () => Effect.die("unused agent.reload"),
-    },
-    skill: {
-      list: () => Effect.succeed({ location: location(directory), data: skills }),
-      transform: () => Effect.die("unused skill.transform"),
-      reload: () => Effect.die("unused skill.reload"),
-    },
-    tool: {
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(toolEditor(tools))
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused tool.reload"),
-      hook: () => Effect.die("unused tool.hook"),
-    },
-    mcp: {
-      list: () => Effect.die("unused mcp.list"),
-      transform: (callback) =>
-        Effect.sync(() => {
-          callback(mcpEditor())
-          return { dispose: Effect.void }
-        }),
-      reload: () => Effect.die("unused mcp.reload"),
-    },
-  })
-
-  const discovered = await discover(ctx, { revision: 0, customizations: [] })
-  const skillItem = discovered.snapshot.items.find((item) => item.id === "skill:deploy")
-  const toolItem = discovered.snapshot.items.find((item) => item.id === "tool:git")
-
-  // The skill and native tool are surfaced to plugin APIs by core, but Plus
-  // assigns available: true unconditionally rather than inspecting agent permissions.
-  expect(skillItem).toBeDefined()
-  expect(skillItem?.available).toBe(true)
-  expect(toolItem).toBeDefined()
-  expect(toolItem?.available).toBe(true)
-
-  // Downstream effect: effective() also reports enabled: true for the restricted agent
-  expect(effective(discovered.snapshot, skillItem!, "restricted").enabled).toBe(true)
-  expect(effective(discovered.snapshot, toolItem!, "restricted").enabled).toBe(true)
 })
