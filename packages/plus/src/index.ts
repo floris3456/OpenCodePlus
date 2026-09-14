@@ -482,16 +482,25 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // none. Classification always comes from the host: the agent's catalog
 // model resolves through `resolveCatalogModel`, then `ctx.prompt.active`
 // answers. User templates created via `base.create` are layered on top so
-// discover lists them alongside the built-ins. Host templates pass through
-// verbatim: the bundled text is raw, and core's optimize plugins render it
+// discover lists them alongside the built-ins in BOTH paths, not only the
+// zero-template fallback. User data wins over upstream the way the rest of
+// Plus layers it (custom records override discovered text, project shadows
+// global shadows defaults): on an id collision the user entry wins and the
+// host entry is dropped. Application is still gated by the host: only the
+// template `ctx.prompt.active` answers for the agent's model is applied, so
+// a user id the host never reports as active stays listable and editable
+// but is never applied. Host templates pass through verbatim: the bundled
+// text is raw, and core's optimize plugins render it
 // into `system[0]` before Plus's later (`post`) hook overwrites it with
 // stored custom text.
 async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
   const templates = await Effect.runPromise(ctx.prompt.templates())
+  const user = readUserBaseTemplates()
+  const userIds = new Set(user.map((template) => template.id))
   const listed =
     templates.length === 0
-      ? [...fallbackBaseTemplates(), ...readUserBaseTemplates()]
-      : templates.map((template) => ({ ...template }))
+      ? [...fallbackBaseTemplates().filter((template) => !userIds.has(template.id)), ...user]
+      : [...templates.filter((template) => !userIds.has(template.id)).map((template) => ({ ...template })), ...user]
   const catalog = await Effect.runPromise(
     ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
   )
