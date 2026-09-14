@@ -61,7 +61,8 @@ test("derive treats a parent range as running to the next same-or-shallower head
   const split = derive(GPT, "General")
   const communication = split.sections.find((section) => section.id === "communication")
   const codebases = split.sections.find((section) => section.id === "working-in-codebases")
-  expect(communication !== undefined && codebases !== undefined && communication.end).toBe(codebases.start)
+  if (codebases === undefined) throw new Error("expected working-in-codebases section")
+  expect(communication !== undefined && communication.end).toBe(codebases.start)
 })
 
 test("derive adds a Preamble for text before the first heading", () => {

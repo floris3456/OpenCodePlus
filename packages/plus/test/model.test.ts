@@ -15,6 +15,7 @@ import {
   type CustomizationRecord,
   type Item,
   type Scopes,
+  type SplitRecord,
 } from "../src/instructions/model.js"
 import { derive } from "../src/instructions/sections.js"
 
@@ -34,8 +35,9 @@ function makeItem(overrides?: Partial<Item>): Item {
   }
 }
 
-function makeRecord(overrides?: Partial<CustomizationRecord>): CustomizationRecord {
+function makeRecord(overrides?: Partial<CustomizationRecord> & { type?: "customization" }): CustomizationRecord {
   return {
+    type: "customization",
     level: "project",
     agent: "alpha",
     item: "tool:bash",
@@ -269,9 +271,9 @@ test("resolveSplit prefers a manual split record down the chain", () => {
   const upstream = makeItem({ text: "plain text", title: "bash" })
   const address: Address = { level: "project", agent: "alpha", item: upstream.id, section: null }
   expect(resolveSplit({ text: upstream.text, title: "bash", splits: [], scopes, address }).kind).toBe("whole")
-  const splits = [
-    { level: "defaults", agent: null, item: upstream.id, boundaries: [{ id: "a", name: "A", start: 0 }] },
-  ] as const
+  const splits: SplitRecord[] = [
+    { type: "split", level: "defaults", agent: null, item: upstream.id, boundaries: [{ id: "a", name: "A", start: 0 }], updated: UPDATED },
+  ]
   const split = resolveSplit({
     text: upstream.text,
     title: "bash",

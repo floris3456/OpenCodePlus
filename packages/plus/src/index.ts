@@ -18,7 +18,7 @@ import { apply } from "./instructions/apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { globalConfigDir } from "./instructions/paths.js"
-import { load, save, type Record } from "./instructions/store.js"
+import { load, save, type StoredRecord } from "./instructions/store.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
@@ -350,7 +350,7 @@ interface LoadedStores {
   readonly revision: number
   readonly projectRevision: number
   readonly globalRevision: number
-  readonly records: readonly Record[]
+  readonly records: readonly StoredRecord[]
   readonly protectedAgents: readonly string[]
 }
 
@@ -382,15 +382,15 @@ function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<Load
   })
 }
 
-function customizationsOf(records: readonly Record[]): CustomizationRecord[] {
+function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
   return records.filter((record): record is CustomizationRecord => record.type === "customization")
 }
 
-function splitsOf(records: readonly Record[]): SplitRecord[] {
+function splitsOf(records: readonly StoredRecord[]): SplitRecord[] {
   return records.filter((record): record is SplitRecord => record.type === "split")
 }
 
-function toRecord(record: Plus.SnapshotRecord): Record {
+function toRecord(record: Plus.SnapshotRecord): StoredRecord {
   if (record.type === "split")
     return {
       type: "split",
@@ -415,16 +415,18 @@ function toRecord(record: Plus.SnapshotRecord): Record {
   }
 }
 
-// The parallel core change adds a plugin Context domain exposing base prompt
-// templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`). This
-// worktree does not have that domain yet (Context has no `prompt`), so this
-// takes the fallback path: a local table of the seven ids with placeholder
-// text plus the same id-matching rule. User templates created via
-// `base.create` are layered on top so discover lists them alongside the
-// built-ins.
-function resolveBaseTemplates(ctx: Context): { templates: BaseTemplate[]; active: (agent: { model?: { providerID: string; id: string } }) => string | undefined } {
-  const prompt = (ctx as unknown as { prompt?: { templates(): unknown; active(model: unknown): unknown } }).prompt
-  if (prompt !== undefined) return { templates: [], active: () => undefined }
+// The plugin Context prompt domain exposes the host's base prompt
+// templates (`ctx.prompt.templates()` / `ctx.prompt.active(model)`); the
+// local table below is only the fallback when the host reports none. User
+// templates created via `base.create` are layered on top so discover lists
+// them alongside the built-ins.
+function resolveBaseTemplates(ctx: Context): { templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined } {
+  const templates = Effect.runSync(ctx.prompt.templates())
+  if (templates.length > 0)
+    return {
+      templates: templates.map((template) => ({ ...template })),
+      active: (agent) => Effect.runSync(ctx.prompt.active({ id: String(agent.id), name: String(agent.name) })),
+    }
   return { templates: [...fallbackBaseTemplates(), ...readUserBaseTemplates()], active: (agent) => fallbackActiveBase(agent) }
 }
 
@@ -649,11 +651,11 @@ async function createInstruction(input: { projectDirectory: string; name: string
   return { ok: true, id: `system:${path.relative(root, target)}`, path: target }
 }
 
-function activate(ctx: Context, state: PlusState): Effect.Effect<void> {
+function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
   return Effect.gen(function* () {
     const config = yield* Effect.promise(() => read(ctx.location.directory))
     if (config === undefined) return
-    const stored = yield* loadCurrent(ctx.location.directory)
+    const stored = yield* Effect.promise(() => loadCurrent(ctx.location.directory))
     yield* publishFresh(ctx, state, stored)
   })
 }

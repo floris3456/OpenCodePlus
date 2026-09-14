@@ -7,6 +7,7 @@ import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import type { Tool } from "@opencode/schema/tool"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
+import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Effect, Schema } from "effect"
 import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "../src/instructions/apply.js"
 import type { ApplyInput } from "../src/instructions/apply.js"
@@ -30,8 +31,9 @@ function makeItem(overrides: Partial<Item> & { id: string; kind: Item["kind"] })
   return { ...base, fingerprint: overrides.fingerprint ?? fingerprint(text) }
 }
 
-function makeRecord(overrides: Partial<CustomizationRecord> & { item: string }): CustomizationRecord {
+function makeRecord(overrides: Partial<CustomizationRecord> & { item: string; type?: "customization" }): CustomizationRecord {
   return {
+    type: "customization",
     level: "project",
     agent: "alpha",
     section: null,
@@ -97,10 +99,27 @@ function nativeTool(id: string, description: string): Tool.Info & { readonly id:
 }
 
 function toolDomainFor(tools: readonly (Tool.Info & { readonly id: string })[]) {
+  const live = tools.map((tool) => ({ ...tool }))
+  const editor: ToolEditor = {
+    list: () => live,
+    get: (id) => live.find((tool) => tool.id === id),
+    namespace: () => {},
+    add: (tool) => {
+      live.push({ ...tool, id: tool.name } as Tool.Info & { readonly id: string })
+    },
+    update: (id, update) => {
+      const current = live.find((tool) => tool.id === id)
+      if (current !== undefined) update(current as never)
+    },
+    remove: (id) => {
+      const index = live.findIndex((tool) => tool.id === id)
+      if (index !== -1) live.splice(index, 1)
+    },
+  }
   return {
-    transform: (callback: (editor: { list(): readonly (Tool.Info & { readonly id: string })[] }) => void) =>
+    transform: (callback: (editor: ToolEditor) => void) =>
       Effect.sync(() => {
-        callback({ list: () => tools } as never)
+        callback(editor)
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,

@@ -22,7 +22,7 @@ interface AssembledInput {
 export async function assembled(input: AssembledInput): Promise<Plus.Assembled | { ok: false; agent: string }> {
   const owner = input.agents.find((entry) => entry.id === input.agent)
   if (owner === undefined) return { ok: false, agent: input.agent }
-  const addressOf = (item: Item) => ({ level: owner.level, agent: owner.id, item: item.id, section: null as const })
+  const addressOf = (item: Item) => ({ level: owner.level, agent: owner.id, item: item.id, section: null })
   const resolved = new Map(input.items.map((item) => [item.id, resolve({
     upstream: item,
     records: input.records,

@@ -69,13 +69,13 @@ export function createAgentActions(context: Plugin.Context) {
     const snapshot = await loadSnapshot()
     if (disposed) return undefined
     if (!snapshot) return undefined
-    const prompts = snapshot.items.filter((item) => item.kind === "prompt")
+    const prompts = snapshot.items.filter((item) => item.kind === "system")
     const choice = await context.ui.dialog.select<string>({
       title: "Starting prompt",
       options: [
         { title: "Blank", value: "", description: "Start with an empty prompt" },
         ...prompts.map((item) => ({
-          title: `Copy from ${item.owner}`,
+          title: `Copy from ${item.agents?.[0] ?? item.title}`,
           value: item.id,
           description: item.title,
         })),
@@ -125,7 +125,7 @@ export function createAgentActions(context: Plugin.Context) {
       return undefined
     }
     const blocked = ineligibility(entry, protectedAgents)
-    if (blocked === "builtin") {
+    if (blocked === "defaults") {
       context.ui.toast.show({ variant: "error", message: `Agent "${entry.id}" is builtin and cannot be ${verb}` })
       return undefined
     }
@@ -293,15 +293,15 @@ function isEligible(entry: AgentEntry, protectedAgents: ReadonlySet<string>): bo
   return ineligibility(entry, protectedAgents) === undefined
 }
 
-function ineligibility(entry: AgentEntry, protectedAgents: ReadonlySet<string>): "builtin" | "protected" | undefined {
-  if (!entry.fileBacked || entry.scope === "builtin") return "builtin"
+function ineligibility(entry: AgentEntry, protectedAgents: ReadonlySet<string>): "defaults" | "protected" | undefined {
+  if (!entry.fileBacked || entry.scope === "defaults") return "defaults"
   if (protectedAgents.has(entry.id)) return "protected"
   return undefined
 }
 
 function describeAgent(entry: AgentEntry, protectedAgents: ReadonlySet<string>): string | undefined {
   const blocked = ineligibility(entry, protectedAgents)
-  if (blocked === "builtin") return "Builtin (not file-backed)"
+  if (blocked === "defaults") return "Defaults (not file-backed)"
   if (blocked === "protected") return "Protected"
   if (entry.path) return `${entry.scope} · ${entry.path}`
   return entry.scope

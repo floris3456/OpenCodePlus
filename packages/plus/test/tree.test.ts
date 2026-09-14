@@ -18,8 +18,9 @@ function makeItem(overrides?: Partial<Item>): Item {
   }
 }
 
-function makeRecord(overrides?: Partial<CustomizationRecord>): CustomizationRecord {
+function makeRecord(overrides?: Partial<CustomizationRecord> & { type?: "customization" }): CustomizationRecord {
   return {
+    type: "customization",
     level: "project",
     agent: "Implementer",
     item: "tool:bash",

@@ -51,6 +51,7 @@ function customizationsOf(snapshot: Snapshot): CustomizationRecord[] {
   for (const record of snapshot.records) {
     if (record.type !== "customization") continue
     out.push({
+      type: "customization",
       level: record.level,
       agent: record.agent,
       item: record.item,
@@ -71,10 +72,12 @@ function splitsOf(snapshot: Snapshot): SplitRecord[] {
   for (const record of snapshot.records) {
     if (record.type !== "split") continue
     out.push({
+      type: "split",
       level: record.level,
       agent: record.agent,
       item: record.item,
       boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+      updated: record.updated,
     })
   }
   return out

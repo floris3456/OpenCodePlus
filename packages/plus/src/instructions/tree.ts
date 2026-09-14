@@ -58,8 +58,8 @@ interface BuildContext {
 function contextOf(input: TreeInput): BuildContext {
   return {
     items: input.items,
-    customizations: input.records.filter((record): record is CustomizationRecord => !("boundaries" in record)),
-    splits: input.records.filter((record): record is SplitRecord => "boundaries" in record),
+    customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
+    splits: input.records.filter((record): record is SplitRecord => record.type === "split"),
     scopes: scopesOf(input.agents),
     agents: input.agents,
   }
