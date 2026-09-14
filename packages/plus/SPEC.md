@@ -284,6 +284,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
 | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
+| `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
 
 Events: `project.changed`, `instructions.changed`.
 
@@ -326,8 +327,10 @@ export interface Assembled {
 - `mcp.exists`: `{ name: string }`
 - `mcp.missing`: `{ name: string }`
 - `mcp.invalid`: `{ name: string, reason: string }`
+- `team.invalid`: `{ team: string, reason: string }`
+- `team.unknown`: `{ level: FileScope, team: string }`
 
-## Teams (`teams.ts`, `paths.ts`)
+## Teams (`teams.ts`, `paths.ts`, `store.ts`, `rpc.ts`)
 
 A team is a named set of agent files toggled as a unit. When a team is
 enabled its agents become visible to core as real agents. Teams are not a
@@ -357,6 +360,22 @@ export function resolveTeams(
   records: readonly TeamRecord[],
   regular: readonly AgentSource[],
 ): { teams: readonly TeamContribution[]; agents: readonly AgentSource[] }
+export interface TeamEntry {
+  readonly level: FileScope
+  readonly team: string
+  readonly enabled: boolean
+  readonly agents: readonly string[]
+}
+export interface SetTeamEnabledInput {
+  readonly level: FileScope
+  readonly team: string
+  readonly enabled: boolean
+}
+export interface TeamRef {
+  readonly level: FileScope
+  readonly team: string
+  readonly enabled: boolean
+}
 ```
 
 On-disk layout (mirrors how `projectRecordsPath`/`globalRecordsPath`
@@ -391,8 +410,39 @@ regular global agent beats a global team copy, and only a team copy outranks
 a defaults template. Among enabled team copies at the same level with the
 same agent id, the lexicographically smallest team name wins.
 
-Not yet implemented: the `Teams` tree group beside `Agents`, the `V2Team`
-store schema/union addition in `store.ts`, and the RPC surface. The
-`resolveTeams` output shape is the input the discovery/apply follow-up will
-merge into core-visible agents.
+Store persistence (`store.ts`): team records persist through the `V2Team`
+schema (`type: "team"`, `level: "global" | "project"`, `team`, `enabled`,
+`updated`) as part of `V2Record` / `StoredRecord`. Team records route by level:
+`project` to the project file and `global` to the global file; teams are never
+defaults-level (rejected on decode), so they never route into defaults.
+Canonical ordering keys team records by `["team", record.team, record.level,
+String(record.enabled), record.updated]`, stably serialized so an unchanged
+save is a no-op (neither file touched, neither revision moves).
+
+RPC surface (`rpc.ts`, `index.ts`):
+- `Snapshot.teams` (`readonly TeamEntry[]`, optional key in schema for older
+  clients/fixtures, always emitted by server): populated by `snapshotTeams()`,
+  where membership comes from disk discovery (`discoverTeams`) and enablement
+  from stored team records (`isTeamEnabled`). A discovered team with no record
+  reads as disabled; a record with no matching directory on disk never
+  surfaces in `snapshot.teams`.
+- Team-record exclusion invariant: team records are deliberately EXCLUDED from
+  `Snapshot.records` in `toSnapshot`. Clients inspect teams through
+  `Snapshot.teams` and toggle them via `team.setEnabled`.
+- Mutate-preservation invariant: `instructions.mutate` re-merges stored team
+  records (`loaded.records.filter((record) => record.type === "team")`) before
+  saving. A client that cannot see team records in `snapshot.records` cannot
+  delete them on a mutate round-trip. Preserved records pass through `route`/`same`
+  unchanged, keeping an otherwise unchanged save a no-op without moving revisions.
+- `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
+  `FileScope` (`"project" | "global"`). Gated by project mode
+  (`project.disabled`). Fails with `team.invalid` on invalid name, or
+  `team.unknown` when the directory is not found on disk at that level.
+  `saveTeamRecord` replaces only the matching `(level, team)` record and leaves
+  customization and split records undisturbed; toggling to an unchanged state
+  stays a no-op without moving revisions. Retries once on concurrent conflict
+  before raising `team.unknown`.
+
+Not yet implemented: the `Teams` tree group beside `Agents` in the TUI, and
+TUI wiring. Store persistence and the RPC surface are implemented.
 
