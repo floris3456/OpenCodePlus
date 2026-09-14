@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { resolve, scopesOf } from "../src/instructions/model.js"
 import type { Snapshot } from "../src/rpc.js"
 import { createSnapshot, renderInstructionsRoute } from "./tui.js"
 import type { TestFixture } from "./tui.js"
@@ -147,6 +148,268 @@ test("add agent chooses Defaults template then id and scope", async () => {
     await sleep(200)
     expect(fixture.fake.agentCreates.length).toBe(1)
     expect(fixture.fake.agentCreates[0]).toMatchObject({ scope: "project", id: "my-agent", template: "Template" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on an instruction row adds a section with split plus customization records", async () => {
+  const body = "# Purpose\n\na\n\n# Usage\n\nb\n"
+  const after: Snapshot = createSnapshot({
+    items: [
+      {
+        id: "system:AGENTS.md",
+        kind: "system" as const,
+        group: "none" as const,
+        title: "AGENTS.md",
+        text: body,
+        enabled: true,
+        fingerprint: "fp-guide",
+      },
+    ],
+    records: [
+      {
+        type: "split" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        item: "system:AGENTS.md",
+        boundaries: [
+          { id: "existing", name: "AGENTS.md", start: 0 },
+          { id: "notes", name: "Notes", start: body.length },
+        ],
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+      {
+        type: "customization" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        item: "system:AGENTS.md",
+        section: "notes",
+        text: "follow the guide",
+        basedOn: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        basedOnText: "",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+  const before = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "system:AGENTS.md",
+        kind: "system" as const,
+        group: "none" as const,
+        title: "AGENTS.md",
+        text: body,
+        enabled: true,
+        fingerprint: "fp-guide",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [before, after],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["Notes", "follow the guide"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    // Project agent subtree: agent(1) right, System group(4) right, item(1).
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 4)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes(body.split("\n")[0]))
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes('Added "Notes"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const records = fixture.fake.mutateInputs[0].records
+    const split = records.find((record) => record.type === "split")
+    const customization = records.find((record) => record.type === "customization")
+    expect(split).toMatchObject({
+      type: "split",
+      level: "project",
+      agent: "Implementer",
+      item: "system:AGENTS.md",
+    })
+    if (split?.type !== "split") throw new Error("expected a split record")
+    expect(split.boundaries).toHaveLength(2)
+    expect(split.boundaries[1]).toMatchObject({ name: "Notes", start: body.length })
+    expect(customization).toMatchObject({
+      type: "customization",
+      level: "project",
+      agent: "Implementer",
+      item: "system:AGENTS.md",
+      section: split.boundaries[1].id,
+      text: "follow the guide",
+    })
+    // Both halves of the boundary contract land together: the boundary id
+    // exists in the split record and the customization targets exactly it.
+    const boundaryIds = new Set(split.boundaries.map((boundary) => boundary.id))
+    if (customization?.type !== "customization") throw new Error("expected a customization record")
+    expect(customization.section).not.toBeNull()
+    expect(boundaryIds.has(customization.section ?? "")).toBe(true)
+    // Rebuilt tree shows the new section row under the item: the emitted
+    // snapshot carries the same split, so the row renders by name.
+    await fixture.emitChanged()
+    await fixture.waitForFrame((frame) => frame.includes("Notes"))
+    expect(fixture.captureCharFrame()).toContain("Notes")
+    // The assembled host text carries the new section content after the old
+    // body: resolve the emitted snapshot exactly like apply does.
+    const written = fixture.fake.mutateInputs[0].records
+    const customizations = written.flatMap((record) =>
+      record.type === "customization"
+        ? [
+            {
+              type: "customization" as const,
+              level: record.level,
+              agent: record.agent,
+              item: record.item,
+              section: record.section,
+              ...(record.text === undefined ? {} : { text: record.text }),
+              ...(record.state === undefined ? {} : { state: record.state }),
+              basedOn: record.basedOn,
+              ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+              ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+              updated: record.updated,
+            },
+          ]
+        : [],
+    )
+    const splits = written.flatMap((record) =>
+      record.type === "split"
+        ? [
+            {
+              type: "split" as const,
+              level: record.level,
+              agent: record.agent,
+              item: record.item,
+              boundaries: [...record.boundaries],
+              updated: record.updated,
+            },
+          ]
+        : [],
+    )
+    const upstream = before.items.find((item) => item.id === "system:AGENTS.md")
+    if (!upstream) throw new Error("expected system:AGENTS.md upstream")
+    const assembled = resolve({
+      upstream: {
+        id: upstream.id,
+        kind: upstream.kind,
+        group: upstream.group,
+        title: upstream.title,
+        text: upstream.text,
+        enabled: upstream.enabled,
+        fingerprint: upstream.fingerprint,
+      },
+      records: customizations,
+      splits,
+      scopes: scopesOf([{ id: "Implementer", scope: "project" }]),
+      address: { level: "project", agent: "Implementer", item: "system:AGENTS.md", section: null },
+    }).assembled
+    expect(assembled).toContain("follow the guide")
+    expect(assembled.indexOf(body.split("\n")[0])).toBeLessThan(assembled.indexOf("follow the guide"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a tool row adds a section", async () => {
+  const before = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [toolItem()],
+  })
+  const body = "run commands"
+  const after: Snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [toolItem()],
+    records: [
+      {
+        type: "split" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        item: "tool:bash",
+        boundaries: [
+          { id: "existing", name: "bash", start: 0 },
+          { id: "flags", name: "Flags", start: body.length },
+        ],
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+      {
+        type: "customization" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        item: "tool:bash",
+        section: "flags",
+        text: "extra flags",
+        basedOn: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        basedOnText: "",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [before, after],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["Flags", "extra flags"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
+    // Project agent subtree: agent(1) right, Tools group(1) right, Native(1) right, item(1).
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("run commands"))
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes('Added "Flags"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+    const records = fixture.fake.mutateInputs[0].records
+    const split = records.find((record) => record.type === "split")
+    const customization = records.find((record) => record.type === "customization")
+    expect(split).toMatchObject({ type: "split", item: "tool:bash" })
+    if (split?.type !== "split") throw new Error("expected a split record")
+    expect(split.boundaries[1]).toMatchObject({ name: "Flags", start: body.length })
+    expect(customization).toMatchObject({
+      type: "customization",
+      item: "tool:bash",
+      section: split.boundaries[1].id,
+      text: "extra flags",
+    })
+    await fixture.emitChanged()
+    await fixture.waitForFrame((frame) => frame.includes("Flags"))
+    expect(fixture.captureCharFrame()).toContain("Flags")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a row without section support keeps the generic picker", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["skill", "create"], prompts: ["my-skill", "skill body"] },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // group:defaults::tools has no add, so a opens the generic picker.
+    await moveDown(fixture, 4)
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => fixture.fake.skillCreates.length === 1)
+    expect(fixture.fake.skillCreates.length).toBe(1)
   } finally {
     fixture.destroy()
   }
@@ -611,12 +874,22 @@ test("enter on a yellow node resolves e edit through the route", async () => {
 test("s opens the manual splitter and saves two named sections", async () => {
   const text = "Purpose tells when.\n\nQuoting details here.\n"
   const fixture = await renderInstructionsRoute({
-    snapshots: [createSnapshot({ items: [mcpItem({ text })] })],
+    snapshots: [createSnapshot({ items: [toolItem({ text })] })],
     width: 120,
     height: 40,
   })
   try {
-    await gotoReviewRow(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // Defaults tools branch: group:defaults::tools is index 4, expand it,
+    // move to the Native subgroup, expand, then move to the item.
+    await moveDown(fixture, 4)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    dispatch(fixture, "right")
+    await sleep(50)
+    await moveDown(fixture, 1)
+    await fixture.waitForFrame((frame) => frame.includes("Purpose tells when."))
     expect(binds(fixture)).toContain("s")
     dispatch(fixture, "s")
     await fixture.waitForFrame((frame) => frame.includes("split into sections"))
@@ -633,10 +906,10 @@ test("s opens the manual splitter and saves two named sections", async () => {
     dispatch(fixture, "ctrl+s")
     await fixture.waitForFrame((frame) => frame.includes("Quoting"))
     dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes('Split "sample"'))
+    await fixture.waitForFrame((frame) => frame.includes('Split "bash"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
     const split = fixture.fake.mutateInputs[0].records.find((record) => record.type === "split")
-    expect(split).toMatchObject({ type: "split", item: "mcp:sample" })
+    expect(split).toMatchObject({ type: "split", item: "tool:bash" })
     if (split?.type !== "split") throw new Error("expected a split record")
     expect(split.boundaries.map((boundary) => boundary.name)).toEqual(["Purpose", "Quoting"])
     expect(split.boundaries.map((boundary) => boundary.start)).toEqual([0, text.indexOf("Quoting")])
