@@ -56,9 +56,25 @@ export function isBuiltinBaseId(id: string): boolean {
   return builtinBaseIds().has(id)
 }
 
+export function builtinBaseIds(): Set<string> {
+  return new Set(["gpt", "claude", "muse", "gemini", "general", "kimi", "trinity"])
+}
+
 export async function createBaseTemplate(id: string, title: string, text: string): Promise<BaseTemplateResult> {
   const validated = validateBaseId(id)
   if (!validated.ok) return { ok: false, reason: "invalid", id, message: validated.reason }
+  // Builtin ids are reserved: a user file with one would shadow the host
+  // template in resolveBaseTemplates (user wins on collision) while
+  // deleteBaseTemplate refuses those exact ids as builtin — pinning an
+  // irreversible shadow that the host classifier can genuinely apply. Refuse
+  // at creation so no new shadow can form.
+  if (isBuiltinBaseId(validated.id))
+    return {
+      ok: false,
+      reason: "invalid",
+      id: validated.id,
+      message: `Base template "${validated.id}" is built in; choose another id`,
+    }
   const target = userBaseFile(validated.id)
   if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: validated.id }
   await fs.mkdir(path.dirname(target), { recursive: true })
@@ -70,10 +86,17 @@ export async function createBaseTemplate(id: string, title: string, text: string
 export async function deleteBaseTemplate(id: string): Promise<BaseTemplateDeleteResult> {
   const validated = validateBaseId(id)
   if (!validated.ok) return { ok: false, reason: "invalid", id, message: validated.reason }
-  if (isBuiltinBaseId(validated.id))
-    return { ok: false, reason: "invalid", id: validated.id, message: `Base template "${validated.id}" is built in and cannot be deleted` }
   const target = userBaseFile(validated.id)
-  if (!(await Bun.file(target).exists())) return { ok: false, reason: "missing", id: validated.id }
+  if (!(await Bun.file(target).exists())) {
+    // No user file: a builtin id names the host template itself, which Plus
+    // must not delete; any other id is simply unknown.
+    if (isBuiltinBaseId(validated.id))
+      return { ok: false, reason: "invalid", id: validated.id, message: `Base template "${validated.id}" is built in and cannot be deleted` }
+    return { ok: false, reason: "missing", id: validated.id }
+  }
+  // A user file exists — including a builtin-id shadow predating the creation
+  // refusal — so remove it. Deleting a shadow restores the host template in
+  // the next discovery.
   await fs.rm(target, { force: true })
   await removeBaseIndexEntry(validated.id)
   return { ok: true, id: validated.id }
@@ -130,8 +153,4 @@ async function readBaseIndex(target: string): Promise<Record<string, string>> {
   } catch {
     return {}
   }
-}
-
-function builtinBaseIds(): Set<string> {
-  return new Set(["gpt", "claude", "muse", "gemini", "general", "kimi", "trinity"])
 }

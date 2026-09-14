@@ -569,10 +569,15 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // zero-template fallback. User data wins over upstream the way the rest of
 // Plus layers it (custom records override discovered text, project shadows
 // global shadows defaults): on an id collision the user entry wins and the
-// host entry is dropped. Application is still gated by the host: only the
-// template `ctx.prompt.active` answers for the agent's model is applied, so
-// a user id the host never reports as active stays listable and editable
-// but is never applied. Host templates pass through verbatim: the bundled
+// host entry is dropped. Builtin ids are reserved at creation (base.create
+// refuses them as base.invalid), so new collisions cannot form; a legacy
+// builtin-id shadow file still on disk keeps shadowing until deleted through
+// base.delete, which restores the host template. Application is still gated
+// by the host: only the template `ctx.prompt.active` answers for the agent's
+// model is applied, so a non-builtin user id the host never reports as active
+// stays listable and editable but is never applied — which is why the tree
+// marks exactly those rows `inactive`. Host templates pass through verbatim:
+// the bundled
 // text is raw, and core's optimize plugins render it
 // into `system[0]` before Plus's later (`post`) hook overwrites it with
 // stored custom text.

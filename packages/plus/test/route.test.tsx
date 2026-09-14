@@ -14,7 +14,7 @@ import { Definition } from "../src/rpc.js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import type { TestFixture } from "./tui.js"
-import { fullContext } from "./harness.js"
+import { agentInfo, fullContext } from "./harness.js"
 
 const e2eRoots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -709,6 +709,110 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
     expect(fixture.fake.skillDeletes.length).toBe(0)
     expect(fixture.fake.agentDeletes.length).toBe(0)
     expect(fixture.fake.mcpRemoves.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("created project instruction deletes through instruction.delete and the row disappears", async () => {
+  // End to end through the production path: real instruction.create writes
+  // <project>/AGENTS.md, real instructions.snapshot discovers it with
+  // project-owned group, the route renders it with a d binding, d calls the
+  // real instruction.delete, and the refreshed snapshot drops the row.
+  // The group:"project" item is the project-owned AGENTS.md; the
+  // group:"none" item is an ancestor file outside the project and must offer
+  // no delete.
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-instruction-delete-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwing))
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+  const owned = before.items.find((item) => item.id === "system:AGENTS.md")
+  expect(owned?.text).toContain("Follow the guide.")
+  expect(owned?.group).toBe("project")
+  expect(before.items.some((item) => item.id === "system:AGENTS.md" && item.group !== "project")).toBe(false)
+  const ancestor: Snapshot = {
+    ...before,
+    items: [
+      ...before.items,
+      {
+        id: "system:../AGENTS.md",
+        kind: "system",
+        group: "none",
+        title: "../AGENTS.md",
+        text: "ancestor guide",
+        enabled: true,
+        fingerprint: "fp-ancestor",
+      },
+    ],
+  }
+  const afterCreate = await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwing))
+  expect(afterCreate).toEqual({ id: "system:AGENTS.md", path: path.join(project, "AGENTS.md") })
+  const afterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+  expect(afterDelete.items.some((item) => item.id === "system:AGENTS.md")).toBe(false)
+  // Re-create so the route renders the row, then delete through the UI.
+  await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwing))
+  const live = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+  const liveSnapshots: Snapshot[] = [{ ...live, items: [...live.items, ancestor.items[ancestor.items.length - 1]] }]
+  const ancestorItem = liveSnapshots[0].items[liveSnapshots[0].items.length - 1]
+  if (ancestorItem === undefined) throw new Error("expected the injected ancestor item")
+  const instructionDeletes: { name: string }[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { confirms: [true] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          const fresh = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+          // The ancestor row is synthetic (the real project has no ancestor
+          // file): keep it across the refresh so the refusal half of this
+          // test still has a row to navigate to.
+          liveSnapshots.push(
+            fresh.items.some((item) => item.id === ancestorItem.id) ? fresh : { ...fresh, items: [...fresh.items, ancestorItem] },
+          )
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "instruction.delete": async (input: { name: string }) => {
+          instructionDeletes.push({ ...input })
+          return Effect.runPromise(handlers["instruction.delete"](input, throwing))
+        },
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // Project-owned row offers d and deletes through the real handler.
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "System")
+    await expand(fixture)
+    await moveTo(fixture, "AGENTS.md")
+    await fixture.waitForFrame((frame) => frame.includes("Follow the guide."))
+    expect(binds(fixture)).toContain("d")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("Deleted instruction AGENTS.md"))
+    expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
+    await fixture.waitForFrame((frame) => !frame.includes("Follow the guide."))
+    // Ancestor row offers d only as a refusal path: the handler would reject
+    // traversal, so state.remove refuses without calling instruction.delete.
+    await moveTo(fixture, "../AGENTS.md")
+    expect(binds(fixture)).toContain("d")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("is not project-owned"))
+    expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
   } finally {
     fixture.destroy()
   }

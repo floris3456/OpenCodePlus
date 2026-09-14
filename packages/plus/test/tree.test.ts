@@ -484,6 +484,34 @@ test("base template rows: user templates offer delete and read inactive, host ac
   expect(builtin?.badges.inactive).toBeUndefined()
 })
 
+test("instruction rows are removable only when project-owned", () => {
+  const owned = makeItem({ id: "system:AGENTS.md", kind: "system", group: "project", title: "AGENTS.md" })
+  const ambient = makeItem({ id: "system:../AGENTS.md", kind: "system", group: "none", title: "../AGENTS.md" })
+  const ancestor = makeItem({ id: "system:../../AGENTS.md", kind: "system", group: "none", title: "../../AGENTS.md" })
+  const nodes = expandAll({ items: [owned, ambient, ancestor], records: [], agents: agents() })
+  expect(nodes.find((node) => node.id === "item:defaults::system:AGENTS.md")?.actions?.remove).toBe(true)
+  expect(nodes.find((node) => node.id === "item:defaults::system:../AGENTS.md")?.actions?.remove).toBe(false)
+  expect(nodes.find((node) => node.id === "item:defaults::system:../../AGENTS.md")?.actions?.remove).toBe(false)
+})
+
+test("builtin-id user base shadows stay deletable and never read inactive", () => {
+  // Legacy shadow predating the creation refusal: the host entry is dropped
+  // by resolveBaseTemplates, so only the user copy is listed.
+  const withoutHost = items().filter((item) => item.id !== "base:gpt")
+  const all = [
+    ...withoutHost,
+    makeItem({ id: "base:gpt", kind: "base", group: "none", title: "gpt.txt", text: "user gpt shadow", userBase: true }),
+  ]
+  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  const shadow = nodes.find((node) => node.id === "item:project:Implementer:base:gpt")
+  // Deletable cleanup: removing it restores the host template.
+  expect(shadow?.actions?.remove).toBe(true)
+  // The Implementer agent's host answer is gpt and this row CAN be that
+  // answer, so it must read active — never inactive.
+  expect(shadow?.badges.active).toBe(true)
+  expect(shadow?.badges.inactive).toBeUndefined()
+})
+
 test("Code Mode tool rows offer no toggle/edit/split/add and read unsupported", () => {
   const all = [
     ...items(),

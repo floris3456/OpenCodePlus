@@ -477,6 +477,16 @@ export function instructionCandidates(directory: string, projectDirectory: strin
   return [...new Set([...candidates, ...ancestorFiles(start, stop)])]
 }
 
+// Ownership for the delete path: the session file (<session>/AGENTS.md) is
+// the only instruction `instruction.delete` can reach — its resolver confines
+// resolution to the project root, which the session file satisfies exactly
+// when the session is the project root (the only layout `instruction.create`
+// writes). The global-config AGENTS.md and ancestor files outside the session
+// are ambient inventory: the tree must not offer `d` on them because the
+// handler would reject the traversal. Group carries the signal so no model,
+// RPC, or snapshot change is needed: `removable()` already grants delete to
+// project-group items, and `instructionFileItems` sets it above.
+
 function ancestorFiles(start: string, stop: string): string[] {
   const files: string[] = []
   let current = start
@@ -508,13 +518,14 @@ function instructionFileItems(
   directory: string,
   files: readonly { path: string; text: string }[],
 ): Item[] {
+  const owned = path.resolve(directory, "AGENTS.md")
   return files.map((file, index): Item => {
     const relative = path.relative(directory, file.path) || file.path
     const id = `system:${relative}`
     return {
       id,
       kind: "system",
-      group: "none",
+      group: path.resolve(file.path) === owned ? "project" : "none",
       title: relative,
       text: file.text,
       enabled: upstreamEnabled(),
