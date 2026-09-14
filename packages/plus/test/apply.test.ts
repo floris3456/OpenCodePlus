@@ -844,6 +844,88 @@ test("a customized gpt base keeps astra-rendered tool guidance on a gpt-6 reques
   expect(event.system[0]?.text).toContain("Use the write tool")
 })
 
+test("live system prompt with mismatched prefix leaves system[0] untouched", async () => {
+  // When live system text before the tool guidance marker does not match the
+  // raw template's prefix (for example, foreign middleware modified system[0]
+  // ahead of guidance), alignment cannot safely locate where guidance begins.
+  // Plus aborts the base plan so the live prompt and tool guidance are kept intact.
+  const upstream = "base header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const guidance = "GUIDANCE-WRITE-EDIT-SHELL-123"
+  const live = `foreign header\n${guidance}\nbase footer`
+  const customized = "edited header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: upstream }]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: customized })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent(
+    "alpha",
+    { write: { description: "write", input: { type: "object" } } },
+    [{ type: "text", text: live }],
+    { providerID: "openai", id: "gpt-4o" },
+  )
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe(live)
+  expect(event.system[0]?.text).toContain(guidance)
+  expect(event.system[0]?.text).not.toContain("edited header")
+})
+
+test("live system prompt with mismatched suffix leaves system[0] untouched", async () => {
+  // When live system text after the tool guidance marker does not match the
+  // raw template's suffix (for example, foreign middleware altered text following
+  // guidance), alignment cannot safely locate where guidance ends. Plus aborts
+  // the base plan so the live prompt and tool guidance are kept intact.
+  const upstream = "base header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const guidance = "GUIDANCE-WRITE-EDIT-SHELL-123"
+  const live = `base header\n${guidance}\nforeign footer`
+  const customized = "edited header\n${OPENCODE_TOOL_GUIDANCE}\nbase footer"
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: upstream }]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "")])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: customized })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  expect(applied.registrations).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent(
+    "alpha",
+    { write: { description: "write", input: { type: "object" } } },
+    [{ type: "text", text: live }],
+    { providerID: "openai", id: "gpt-4o" },
+  )
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe(live)
+  expect(event.system[0]?.text).toContain(guidance)
+  expect(event.system[0]?.text).not.toContain("edited header")
+})
+
 test("an untouched base template with a trailing newline installs no base plan", async () => {
   // DEFECT B (no-op half): assemble trims, so a raw template ending in a
   // newline never round-trips byte-identically. With records present for an
