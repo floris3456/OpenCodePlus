@@ -16,24 +16,28 @@ import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "../src/instructions/apply.js"
 import type { ApplyInput } from "../src/instructions/apply.js"
-import { fingerprint, resolve } from "../src/instructions/model.js"
-import type { CustomizationRecord, Item, Level } from "../src/instructions/model.js"
+import { discover } from "../src/instructions/discover.js"
+import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
+import type { CustomizationRecord, Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
+import type { Context } from "@opencode/plugin/effect/plugin"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
-function makeItem(overrides: Partial<Item> & { id: string; kind: Item["kind"] }): Item {
-  const text = overrides.text ?? "upstream"
-  const base = {
-    group: "none" as const,
-    title: overrides.id,
-    enabled: true,
-    ...overrides,
-    id: overrides.id,
-    kind: overrides.kind,
-    text,
-  }
-  return { ...base, fingerprint: overrides.fingerprint ?? fingerprint(text) }
+async function discoverFor(
+  ctx: Context,
+  options: {
+    records?: CustomizationRecord[]
+    baseTemplates?: { id: string; title: string; text: string }[]
+    activeBase?: (candidate: Agent.Info) => string | undefined
+  } = {},
+) {
+  return discover({
+    ctx,
+    records: options.records ?? [],
+    baseTemplates: options.baseTemplates ?? [],
+    activeBase: options.activeBase ?? (() => undefined),
+  })
 }
 
 function makeRecord(overrides: Partial<CustomizationRecord> & { item: string; type?: "customization" }): CustomizationRecord {
@@ -155,12 +159,17 @@ function mcpState(entries: [string, { type: "remote"; url: string; disabled?: bo
 
 test("per-agent role applies assembled text to the owning agent only", async () => {
   const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
-  const items = [makeItem({ id: "system:role", kind: "system", text: "upstream" })]
-  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", text: "custom alpha" })]
   const ctx = context({ agent: agents.domain })
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", text: "custom alpha" })]
   const applied = await apply(
     ctx,
-    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
   )
   expect(applied.registrations).toHaveLength(1)
   expect(agents.state.get("alpha")?.system).toBe("custom alpha")
@@ -171,10 +180,10 @@ test("per-agent role applies assembled text to the owning agent only", async () 
 test("section exclusion removes that text from what is installed", async () => {
   const text = "# One\n\na\n\n# Two\n\nb\n"
   const agents = agentHarness([agentInfo("alpha", text)])
-  const items = [makeItem({ id: "system:role", kind: "system", text, title: "role" })]
-  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", section: "two", state: "off" })]
   const ctx = context({ agent: agents.domain })
-  const applied = await apply(ctx, makeInput({ items, records }))
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", section: "two", state: "off" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
   expect(applied.registrations).toHaveLength(1)
   const installed = agents.state.get("alpha")?.system ?? ""
   expect(installed).toContain("a")
@@ -184,8 +193,9 @@ test("section exclusion removes that text from what is installed", async () => {
 test("section text edit installs for that agent, including an inherited Defaults edit", async () => {
   const text = "# One\n\na\n\n# Two\n\nb\n"
   const edited = "# Two\n\nb edited\n"
-  const items = [makeItem({ id: "system:role", kind: "system", text, title: "role" })]
   const agents = agentHarness([agentInfo("alpha", text), agentInfo("beta", text)])
+  const ctx = context({ agent: agents.domain })
+  const discovered = await discoverFor(ctx)
   const records = [
     makeRecord({
       item: "system:role",
@@ -197,17 +207,22 @@ test("section text edit installs for that agent, including an inherited Defaults
       basedOnText: "# Two\n\nb\n",
     }),
   ]
-  const ctx = context({ agent: agents.domain })
   const applied = await apply(
     ctx,
-    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
   )
   expect(applied.registrations).toHaveLength(1)
   expect(agents.state.get("alpha")?.system ?? "").toContain("b edited")
   expect(agents.state.get("beta")?.system ?? "").not.toContain("b edited")
   const shared = [makeRecord({ item: "system:role", agent: null, level: "defaults", section: "two", text: edited })]
+  const roleItem = discovered.items.find((item) => item.id === "system:role")!
   const probe = resolve({
-    upstream: items[0] as Item,
+    upstream: roleItem,
     records: shared,
     splits: [],
     scopes: { global: new Set<string>(), defaults: new Set<string>() },
@@ -217,14 +232,6 @@ test("section text edit installs for that agent, including an inherited Defaults
 })
 
 test("tool description reaches the target agent and disablement deletes the tool", async () => {
-  const items = [
-    makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),
-    makeItem({ id: "tool:writer", kind: "tool", text: "write things", title: "writer" }),
-  ]
-  const records = [
-    makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" }),
-    makeRecord({ item: "tool:writer", agent: "alpha", level: "project", state: "off" }),
-  ]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
     tool: toolDomainFor([nativeTool("reader", "read things"), nativeTool("writer", "write things")]),
@@ -235,8 +242,13 @@ test("tool description reaches the target agent and disablement deletes the tool
       },
     },
   })
+  const discovered = await discoverFor(ctx)
+  const records = [
+    makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" }),
+    makeRecord({ item: "tool:writer", agent: "alpha", level: "project", state: "off" }),
+  ]
   const input = makeInput({
-    items,
+    items: discovered.items,
     agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }],
     records,
   })
@@ -271,13 +283,6 @@ test("an uncustomized skill with lossy assemble output installs nothing", async 
   const raw = "# One\n\n\n\na\n\n"
   const skills = skillHarness([skillInfo("notes", raw)])
   const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
-  const items = [
-    makeItem({ id: "skill:notes", kind: "skill", text: raw, title: "notes" }),
-    makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),
-  ]
-  const records = [makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" })]
-  const permissionsBefore = agents.state.get("alpha")?.permissions.length
-  const betaBefore = agents.state.get("beta")?.permissions.length
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
     agent: agents.domain,
@@ -290,9 +295,18 @@ test("an uncustomized skill with lossy assemble output installs nothing", async 
       },
     },
   })
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" })]
+  const permissionsBefore = agents.state.get("alpha")?.permissions.length
+  const betaBefore = agents.state.get("beta")?.permissions.length
   const applied = await apply(
     ctx,
-    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
   )
   // The tool record still applies through the session hook; the skill side
   // installs no copy and no rule.
@@ -306,12 +320,17 @@ test("an uncustomized skill with lossy assemble output installs nothing", async 
 test("skill content registers a private copy and denial, and disablement only denies", async () => {
   const skills = skillHarness([skillInfo("notes", "upstream body")])
   const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
-  const items = [makeItem({ id: "skill:notes", kind: "skill", text: "upstream body", title: "notes" })]
-  const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", text: "custom body" })]
   const ctx = context({ agent: agents.domain, skill: skills.domain })
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", text: "custom body" })]
   const applied = await apply(
     ctx,
-    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
   )
   expect(applied.registrations).toHaveLength(2)
   expect(skills.added.map((entry) => entry.id as string)).toEqual([copyName("alpha", "notes")])
@@ -330,10 +349,12 @@ test("a section-only skill exclusion installs a private copy for that agent only
   const text = "# Before\n\na\n\n# Checks\n\nb\n\n# Publishing\n\nc\n"
   const skills = skillHarness([skillInfo("notes", text)])
   const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
-  const items = [makeItem({ id: "skill:notes", kind: "skill", text, title: "notes" })]
+  const ctx = context({ agent: agents.domain, skill: skills.domain })
+  const discovered = await discoverFor(ctx)
+  const skillItem = discovered.items.find((item) => item.id === "skill:notes")!
   const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", section: "publishing", state: "off" })]
   const probe = resolve({
-    upstream: items[0] as Item,
+    upstream: skillItem,
     records,
     splits: [],
     scopes: { global: new Set<string>(), defaults: new Set<string>() },
@@ -343,10 +364,14 @@ test("a section-only skill exclusion installs a private copy for that agent only
   expect(probe.assembled).toContain("Checks")
   expect(probe.assembled).not.toContain("Publishing")
   expect(probe.enabled).toBe(true)
-  const ctx = context({ agent: agents.domain, skill: skills.domain })
   const applied = await apply(
     ctx,
-    makeInput({ items, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }], records }),
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
   )
   expect(applied.registrations).toHaveLength(2)
   expect(skills.added.map((entry) => entry.id as string)).toEqual([copyName("alpha", "notes")])
@@ -365,10 +390,10 @@ test("a section-only skill exclusion installs a private copy for that agent only
 test("a disabled skill only denies without a copy", async () => {
   const skills = skillHarness([skillInfo("notes", "skill body")])
   const agents = agentHarness([agentInfo("alpha", "upstream")])
-  const items = [makeItem({ id: "skill:notes", kind: "skill", text: "skill body", title: "notes" })]
-  const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", state: "off" })]
   const ctx = context({ agent: agents.domain, skill: skills.domain })
-  const applied = await apply(ctx, makeInput({ items, records }))
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", state: "off" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
   expect(applied.registrations).toHaveLength(1)
   expect(skills.added).toEqual([])
   expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "skill", resource: "notes", effect: "deny" }])
@@ -377,8 +402,6 @@ test("a disabled skill only denies without a copy", async () => {
 test("mcp enablement applies while stored text never applies", async () => {
   const mcp = mcpState([["search", { type: "remote", url: "https://example.test" }]])
   let reloaded = 0
-  const items = [makeItem({ id: "mcp:search", kind: "mcp", text: "{}", title: "search" })]
-  const records = [makeRecord({ item: "mcp:search", agent: null, level: "defaults", state: "off" })]
   const ctx = context({
     mcp: {
       list: () => Effect.die("unused mcp.list"),
@@ -393,7 +416,9 @@ test("mcp enablement applies while stored text never applies", async () => {
         }),
     },
   })
-  const applied = await apply(ctx, makeInput({ items, agents: [{ id: "alpha", level: "project" }], records }))
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "mcp:search", agent: null, level: "defaults", state: "off" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, agents: [{ id: "alpha", level: "project" }], records }))
   expect(applied.registrations).toHaveLength(1)
   expect(mcp.servers.get("search")?.disabled).toBe(true)
   expect(reloaded).toBe(1)
@@ -401,10 +426,6 @@ test("mcp enablement applies while stored text never applies", async () => {
 
 test("mcp text alone registers nothing", async () => {
   const mcp = mcpState([["search", { type: "remote", url: "https://example.test" }]])
-  const items = [makeItem({ id: "mcp:search", kind: "mcp", text: "{}", title: "search" })]
-  const records = [
-    makeRecord({ item: "mcp:search", agent: null, level: "defaults", text: '{"replaced":true}' }),
-  ]
   const ctx = context({
     mcp: {
       list: () => Effect.die("unused mcp.list"),
@@ -416,28 +437,25 @@ test("mcp text alone registers nothing", async () => {
       reload: () => Effect.die("mcp reload must not run"),
     },
   })
-  const applied = await apply(ctx, makeInput({ items, agents: [{ id: "alpha", level: "project" }], records }))
+  const discovered = await discoverFor(ctx)
+  const records = [
+    makeRecord({ item: "mcp:search", agent: null, level: "defaults", text: '{"replaced":true}' }),
+  ]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, agents: [{ id: "alpha", level: "project" }], records }))
   expect(applied.registrations).toEqual([])
   expect(mcp.servers.get("search")).toEqual({ type: "remote", url: "https://example.test" })
 })
 
 test("only the active base template is applied", async () => {
-  const items = [
-    makeItem({ id: "base:gpt", kind: "base", text: "gpt upstream", title: "gpt" }),
-    makeItem({ id: "base:general", kind: "base", text: "general upstream", title: "general" }),
-  ]
-  const records = [
-    makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
-    makeRecord({ item: "base:general", agent: "alpha", level: "project", text: "custom general" }),
+  const baseTemplates = [
+    { id: "gpt", title: "GPT.txt", text: "gpt upstream" },
+    { id: "general", title: "General.txt", text: "general upstream" },
   ]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "")])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([
-      { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
-      { id: "general", title: "General.txt", text: "general base prompt" },
-    ]),
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
     catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
@@ -446,9 +464,14 @@ test("only the active base template is applied", async () => {
       },
     },
   })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [
+    makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
+    makeRecord({ item: "base:general", agent: "alpha", level: "project", text: "custom general" }),
+  ]
   const applied = await apply(
     ctx,
-    makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+    makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
   )
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
@@ -462,16 +485,15 @@ test("only the active base template is applied", async () => {
 })
 
 test("a stored base edit for a non-active template leaves system[0] alone", async () => {
-  const items = [makeItem({ id: "base:general", kind: "base", text: "general upstream", title: "general" })]
-  const records = [makeRecord({ item: "base:general", agent: "alpha", level: "project", text: "custom general" })]
+  const baseTemplates = [
+    { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+    { id: "general", title: "General.txt", text: "general upstream" },
+  ]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "")])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([
-      { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
-      { id: "general", title: "General.txt", text: "general base prompt" },
-    ]),
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
     catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
@@ -480,9 +502,11 @@ test("a stored base edit for a non-active template leaves system[0] alone", asyn
       },
     },
   })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:general", agent: "alpha", level: "project", text: "custom general" })]
   const applied = await apply(
     ctx,
-    makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+    makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
   )
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
@@ -496,19 +520,15 @@ test("a stored base edit for a non-active template leaves system[0] alone", asyn
 })
 
 test("a non-obvious model id takes the host classification, not a provider guess", async () => {
-  const items = [
-    makeItem({ id: "base:trinity", kind: "base", text: "trinity upstream", title: "trinity" }),
-    makeItem({ id: "base:general", kind: "base", text: "general upstream", title: "general" }),
+  const baseTemplates = [
+    { id: "trinity", title: "Trinity.txt", text: "trinity upstream" },
+    { id: "general", title: "General.txt", text: "general upstream" },
   ]
-  const records = [makeRecord({ item: "base:trinity", agent: "alpha", level: "project", text: "custom trinity" })]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "", modelRef("acme", "trinity-ultra"))])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([
-      { id: "trinity", title: "Trinity.txt", text: "trinity base prompt" },
-      { id: "general", title: "General.txt", text: "general base prompt" },
-    ]),
+    prompt: promptHarness(baseTemplates, { "trinity-ultra": "trinity" }),
     catalog: catalogHarness([modelInfo("acme", "trinity-ultra")]),
     session: {
       hook: (name, callback) => {
@@ -517,7 +537,9 @@ test("a non-obvious model id takes the host classification, not a provider guess
       },
     },
   })
-  const applied = await apply(ctx, makeInput({ items, records }))
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "trinity" })
+  const records = [makeRecord({ item: "base:trinity", agent: "alpha", level: "project", text: "custom trinity" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
@@ -530,13 +552,12 @@ test("a non-obvious model id takes the host classification, not a provider guess
 })
 
 test("a custom-system agent keeps its own system[0]", async () => {
-  const items = [makeItem({ id: "base:gpt", kind: "base", text: "gpt upstream", title: "gpt" })]
-  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" })]
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: "gpt upstream" }]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "my own prompt")])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([{ id: "gpt", title: "GPT.txt", text: "gpt base prompt" }]),
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
     catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
@@ -545,9 +566,11 @@ test("a custom-system agent keeps its own system[0]", async () => {
       },
     },
   })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" })]
   const applied = await apply(
     ctx,
-    makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+    makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
   )
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
@@ -561,19 +584,20 @@ test("a custom-system agent keeps its own system[0]", async () => {
 })
 
 test("per-file instructions drop or replace one part by canonical path", async () => {
-  const items = [
-    makeItem({ id: "system:AGENTS.md", kind: "system", text: "upstream guide", title: "AGENTS.md" }),
-    makeItem({ id: "system:OTHER.md", kind: "system", text: "other upstream", title: "OTHER.md" }),
-  ]
-  const records = [
-    makeRecord({ item: "system:AGENTS.md", agent: "alpha", level: "project", text: "custom guide" }),
-    makeRecord({ item: "system:OTHER.md", agent: "alpha", level: "project", state: "off" }),
-  ]
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-canonical-"))
+  applyRoots.push(parent)
+  const root = path.join(parent, "repo")
+  const project = path.join(root, "session")
+  await fs.mkdir(project, { recursive: true })
+  const projectAgents = path.join(project, "AGENTS.md")
+  const ancestorAgents = path.join(root, "AGENTS.md")
+  await fs.writeFile(projectAgents, "project guide\n")
+  await fs.writeFile(ancestorAgents, "ancestor guide\n")
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
     location: new Location.Info({
-      directory: AbsolutePath.make("/repo"),
-      project: { id: Project.ID.global, directory: AbsolutePath.make("/repo"), canonical: AbsolutePath.make("/repo") },
+      directory: AbsolutePath.make(project),
+      project: { id: Project.ID.global, directory: AbsolutePath.make(root), canonical: AbsolutePath.make(root) },
     }),
     session: {
       hook: (name, callback) => {
@@ -582,20 +606,31 @@ test("per-file instructions drop or replace one part by canonical path", async (
       },
     },
   })
-  const applied = await apply(ctx, makeInput({ items, records }))
+  const discovered = await discoverFor(ctx)
+  const records = [
+    makeRecord({ item: "system:AGENTS.md", agent: "alpha", level: "project", text: "custom guide\n" }),
+    makeRecord({ item: "system:../AGENTS.md", agent: "alpha", level: "project", state: "off" }),
+  ]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
+  // One session registration: applySession installs a single context hook
+  // carrying both instruction plans (the project-file replace and the
+  // ancestor-file drop).
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
   const event = sessionEvent(
     "alpha",
     {},
-    // Parts as production produces them: canonical absolute paths on metadata.
     [
-      { type: "text", text: "upstream guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
-      { type: "text", text: "other upstream", metadata: { instruction: { path: "/repo/OTHER.md" } } },
+      { type: "text", text: "project guide\n", metadata: { instruction: { path: projectAgents } } },
+      { type: "text", text: "ancestor guide\n", metadata: { instruction: { path: ancestorAgents } } },
     ],
   )
   await Effect.runPromise(run(event))
+  // resolve assembles custom text trimmed (the same normalization the
+  // neighboring global/ancestor test pins: "custom ancestor\n" reads back as
+  // "custom ancestor"), so the replaced project part reads back without its
+  // trailing newline while the dropped ancestor part is gone.
   expect(event.system.map((part) => part.text)).toEqual(["custom guide"])
   // Direct unit path: no string surgery on a merged blob.
   const direct: SessionHooks["context"]["system"] = [{ type: "text", text: "merged blob" }]
@@ -603,7 +638,11 @@ test("per-file instructions drop or replace one part by canonical path", async (
   expect(direct).toHaveLength(1)
 })
 
-test("excluding one instruction removes exactly that production part", async () => {
+// Direct unit test of applyInstructions array mutation: synthetic system parts
+// isolate part removal without disk instruction discovery. The full
+// discover -> apply -> real-hook path is covered by the neighboring per-file
+// tests; synthesizing here keeps this a pure mutation unit.
+test("excluding one instruction removes exactly that part (direct applyInstructions unit)", async () => {
   const system: SessionHooks["context"]["system"] = [
     { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
     { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
@@ -612,7 +651,11 @@ test("excluding one instruction removes exactly that production part", async () 
   expect(system.map((part) => part.text)).toEqual(["guide"])
 })
 
-test("editing one instruction replaces its production part rather than appending", async () => {
+// Direct unit test of applyInstructions array mutation: synthetic system parts
+// isolate in-place part replacement without disk instruction discovery. The
+// full discover -> apply -> real-hook path is covered by the neighboring
+// per-file tests; synthesizing here keeps this a pure mutation unit.
+test("editing one instruction replaces its part rather than appending (direct applyInstructions unit)", async () => {
   const system: SessionHooks["context"]["system"] = [
     { type: "text", text: "guide", metadata: { instruction: { path: "/repo/AGENTS.md" } } },
     { type: "text", text: "other", metadata: { instruction: { path: "/repo/OTHER.md" } } },
@@ -628,22 +671,15 @@ test("a request model switch gets the request model's customization, not the con
   // request arrives on a kimi model. Per-request classification must apply
   // the kimi customization, not the configured gpt one. Items use real host
   // template text, matching what discovery passes through verbatim.
-  const items = [
-    makeItem({ id: "base:gpt", kind: "base", text: "gpt base prompt", title: "GPT.txt" }),
-    makeItem({ id: "base:kimi", kind: "base", text: "kimi base prompt", title: "Kimi.txt" }),
-  ]
-  const records = [
-    makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
-    makeRecord({ item: "base:kimi", agent: "alpha", level: "project", text: "custom kimi" }),
+  const baseTemplates = [
+    { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+    { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
   ]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "", modelRef("openai", "gpt-4o"))])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([
-      { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
-      { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
-    ]),
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt", "kimi-k2": "kimi" }),
     catalog: catalogHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
     session: {
       hook: (name, callback) => {
@@ -652,7 +688,12 @@ test("a request model switch gets the request model's customization, not the con
       },
     },
   })
-  const applied = await apply(ctx, makeInput({ items, records }))
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [
+    makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: "custom gpt" }),
+    makeRecord({ item: "base:kimi", agent: "alpha", level: "project", text: "custom kimi" }),
+  ]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
@@ -671,13 +712,12 @@ test("a customized raw base template renders tool guidance instead of the placeh
   // placeholders. Uses a trailing-newline template so a byte compare against
   // assembled text cannot pass as a no-op.
   const raw = "custom base\n${OPENCODE_TOOL_GUIDANCE}\n"
-  const items = [makeItem({ id: "base:gpt", kind: "base", text: raw, title: "gpt" })]
-  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: `${raw}edited\n` })]
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: raw }]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "")])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([{ id: "gpt", title: "GPT.txt", text: raw }]),
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
     catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
@@ -686,7 +726,9 @@ test("a customized raw base template renders tool guidance instead of the placeh
       },
     },
   })
-  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "base:gpt", agent: "alpha", level: "project", text: `${raw}edited\n` })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
@@ -708,16 +750,12 @@ test("an untouched base template with a trailing newline installs no base plan",
   // pre-fix it overwrites system[0] with trimmed RAW text (restoring the
   // placeholder) during an unrelated save.
   const raw = "gpt base prompt\n${OPENCODE_TOOL_GUIDANCE}\n"
-  const items = [
-    makeItem({ id: "base:gpt", kind: "base", text: raw, title: "gpt" }),
-    makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),
-  ]
-  const records = [makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" })]
+  const baseTemplates = [{ id: "gpt", title: "GPT.txt", text: raw }]
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const agents = agentHarness([agentInfo("alpha", "")])
   const ctx = context({
     agent: agents.domain,
-    prompt: promptHarness([{ id: "gpt", title: "GPT.txt", text: raw }]),
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
     catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
     tool: toolDomainFor([nativeTool("reader", "read things")]),
     session: {
@@ -727,7 +765,9 @@ test("an untouched base template with a trailing newline installs no base plan",
       },
     },
   })
-  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const records = [makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom description" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records, agents: [{ id: "alpha", level: "project", base: "gpt" }] }))
   expect(applied.registrations).toHaveLength(1)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
@@ -783,15 +823,6 @@ test("disabling the global instruction file removes that part, not the project o
     expect(direct.map((part) => part.text)).toEqual(["custom ancestor\n", "project guide\n"])
     // Full hook path: records keyed by real discovery ids resolve against the
     // owning session directory to the same canonical paths.
-    const items = [
-      makeItem({ id: "system:AGENTS.md", kind: "system", text: "project guide\n", title: "AGENTS.md" }),
-      makeItem({ id: "system:../AGENTS.md", kind: "system", text: "ancestor guide\n", title: "../AGENTS.md" }),
-      makeItem({ id: globalId, kind: "system", text: "global guide\n", title: path.relative(project, path.join(config, "AGENTS.md")) }),
-    ]
-    const records = [
-      makeRecord({ item: globalId, agent: "alpha", level: "project", state: "off" }),
-      makeRecord({ item: "system:../AGENTS.md", agent: "alpha", level: "project", text: "custom ancestor\n" }),
-    ]
     const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
     const ctx = context({
       location: new Location.Info({
@@ -805,7 +836,12 @@ test("disabling the global instruction file removes that part, not the project o
         },
       },
     })
-    const applied = await apply(ctx, makeInput({ items, records }))
+    const discovered = await discoverFor(ctx)
+    const records = [
+      makeRecord({ item: globalId, agent: "alpha", level: "project", state: "off" }),
+      makeRecord({ item: "system:../AGENTS.md", agent: "alpha", level: "project", text: "custom ancestor\n" }),
+    ]
+    const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
     expect(applied.registrations).toHaveLength(1)
     const run = callbacks[0]
     if (!run) throw new Error("missing context hook")
@@ -830,54 +866,53 @@ test("disabling the global instruction file removes that part, not the project o
 })
 
 test("no-op updates install nothing and reload nothing", async () => {
-  const items = [makeItem({ id: "system:role", kind: "system", text: "upstream" })]
-  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", text: "upstream" })]
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
   const ctx = context({
-    agent: {
-      list: () => Effect.die("unused agent.list"),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("agent.transform must not run"),
-      reload: () => Effect.die("agent.reload must not run"),
-    },
-    session: {
-      hook: () => Effect.die("session.hook must not run"),
-    },
+    agent: agents.domain,
   })
-  const applied = await apply(ctx, makeInput({ items, records }))
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", text: "upstream" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records }))
   expect(applied.registrations).toEqual([])
 })
 
 test("empty records install nothing", async () => {
-  const items = [makeItem({ id: "system:role", kind: "system", text: "upstream" })]
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
   const ctx = context({
-    agent: {
-      list: () => Effect.die("unused agent.list"),
-      get: () => Effect.die("unused agent.get"),
-      transform: () => Effect.die("agent.transform must not run"),
-      reload: () => Effect.die("agent.reload must not run"),
-    },
+    agent: agents.domain,
   })
-  const applied = await apply(ctx, makeInput({ items, records: [] }))
+  const discovered = await discoverFor(ctx)
+  const applied = await apply(ctx, makeInput({ items: discovered.items, records: [] }))
   expect(applied.registrations).toEqual([])
 })
 
 test("a mid-way failure unwinds earlier registrations in reverse order", async () => {
   const events: string[] = []
-  const items = [
-    makeItem({ id: "system:role", kind: "system", text: "upstream" }),
-    makeItem({ id: "skill:notes", kind: "skill", text: "skill body", title: "notes" }),
-    makeItem({ id: "tool:reader", kind: "tool", text: "read things", title: "reader" }),
-    makeItem({ id: "mcp:search", kind: "mcp", text: "{}", title: "search" }),
-  ]
+  const skills = skillHarness([skillInfo("notes", "skill body")])
+  const stateAgents = agentHarness([agentInfo("alpha", "upstream")])
+  const tools = toolDomainFor([nativeTool("reader", "read things")])
+  const mcp = mcpState([["search", { type: "remote", url: "https://example.test" }]])
+  const discoverCtx = context({
+    agent: stateAgents.domain,
+    skill: skills.domain,
+    tool: tools,
+    mcp: {
+      list: () => Effect.die("unused mcp.list"),
+      transform: (callback) =>
+        Effect.sync(() => {
+          callback(mcp.editor as never)
+          return { dispose: Effect.void }
+        }),
+      reload: () => Effect.void,
+    },
+  })
+  const discovered = await discoverFor(discoverCtx)
   const records = [
     makeRecord({ item: "system:role", agent: "alpha", level: "project", text: "custom prompt" }),
     makeRecord({ item: "skill:notes", agent: "alpha", level: "project", text: "custom skill" }),
     makeRecord({ item: "tool:reader", agent: "alpha", level: "project", text: "custom tool" }),
     makeRecord({ item: "mcp:search", agent: null, level: "defaults", state: "off" }),
   ]
-  const skills = skillHarness([skillInfo("notes", "skill body")])
-  const stateAgents = agentHarness([agentInfo("alpha", "upstream")])
-  void stateAgents
   const ctx = context({
     agent: {
       list: () => Effect.die("unused agent.list"),
@@ -886,10 +921,11 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
         Effect.sync(() => {
           const tag = events.some((entry) => entry.startsWith("install:")) ? "skill-agent-rules" : "prompt"
           events.push(`install:${tag}`)
-          callback({ get: () => undefined, update: () => undefined } as never)
+          const res = Effect.runSync(Effect.scoped(stateAgents.domain.transform(callback)))
           return {
             dispose: Effect.sync(() => {
               events.push(`dispose:${tag}`)
+              Effect.runSync(res.dispose)
             }),
           }
         }),
@@ -910,7 +946,7 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
         }),
       reload: () => Effect.void,
     },
-    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    tool: tools,
     session: {
       hook: () => {
         events.push("install:tool")
@@ -928,7 +964,7 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
     },
   })
   await expect(
-    apply(ctx, makeInput({ items, records })),
+    apply(ctx, makeInput({ items: discovered.items, records })),
   ).rejects.toThrow("mcp transform failed")
   expect(events).toEqual([
     "install:prompt",
@@ -940,4 +976,12 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
     "dispose:skill-copy",
     "dispose:prompt",
   ])
+  expect(skills.added).toEqual([])
+  expect(skills.state.get(copyName("alpha", "notes"))).toBeUndefined()
+  expect(skills.state.get("notes")?.content).toBe("skill body")
+  expect(stateAgents.state.get("alpha")?.system).toBe("upstream")
+  // apply() installs two agent transforms in this scenario (the role prompt
+  // via install:prompt and the skill agent rules via install:skill-agent-rules),
+  // so a correct unwind disposes every installed agent transform.
+  expect(stateAgents.disposes).toBe(stateAgents.transforms)
 })
