@@ -159,11 +159,100 @@ export function sectionExcluded(node: TreeNode, snapshot: Snapshot): boolean {
   return !resolved.enabled
 }
 
+export interface ExcludedRange {
+  readonly start: number
+  readonly end: number
+}
+
+// Whole-item detail shows the resolved text the agent receives with excluded
+// section ranges struck through. Ranges come from resolveSplit + section
+// ranges (never string matching): excluded parents cover their full range,
+// leaf ranges keep text from doubling, matching assemble() semantics.
+export function excludedRanges(node: TreeNode, snapshot: Snapshot): ExcludedRange[] {
+  const address = node.address
+  if (address === undefined || address.section !== null) return []
+  const upstream = itemsOf(snapshot).find((item) => item.id === address.item)
+  if (upstream === undefined) return []
+  const records = customizationsOf(snapshot)
+  const splits = splitsOf(snapshot)
+  const scopes = scopesOf(agentsOf(snapshot))
+  const whole = resolve({ upstream, records, splits, scopes, address })
+  const split = resolveSplit({ text: whole.text, title: upstream.title, splits, scopes, address })
+  const excluded = new Set<string>()
+  for (const section of split.sections) {
+    const sectionAddress: Address = { ...address, section: section.id }
+    const sectionResolved = resolve({ upstream, records, splits, scopes, address: sectionAddress })
+    if (!sectionResolved.enabled) excluded.add(section.id)
+  }
+  if (excluded.size === 0) return []
+  const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
+  const dropped = (id: string) => {
+    const parts = id.split("/")
+    return parts.some((_, index) => excluded.has(parts.slice(0, index + 1).join("/")))
+  }
+  const children = new Map<number, number[]>()
+  const parents: (number | undefined)[] = ordered.map(() => undefined)
+  const stack: number[] = []
+  ordered.forEach((section, index) => {
+    while (stack.length > 0) {
+      const top = ordered[stack[stack.length - 1]]
+      if (top.depth < section.depth && top.end > section.start) break
+      stack.pop()
+    }
+    parents[index] = stack.length > 0 ? stack[stack.length - 1] : undefined
+    stack.push(index)
+  })
+  parents.forEach((parent, index) => {
+    if (parent === undefined) return
+    const list = children.get(parent) ?? []
+    list.push(index)
+    children.set(parent, list)
+  })
+  const ranges: ExcludedRange[] = []
+  ordered.forEach((section, index) => {
+    if (!dropped(section.id)) return
+    const parent = parents[index]
+    if (parent !== undefined && dropped(ordered[parent].id)) return
+    const starts = (children.get(index) ?? []).map((child) => ordered[child].start)
+    const ownEnd = starts.length > 0 ? Math.min(...starts) : section.end
+    if (ownEnd > section.start) ranges.push({ start: section.start, end: ownEnd })
+  })
+  return ranges.sort((left, right) => left.start - right.start)
+}
+
+export function isExcludedOffset(ranges: readonly ExcludedRange[], offset: number): boolean {
+  return ranges.some((range) => offset >= range.start && offset < range.end)
+}
+
 // Excluded rows render struck through via the supported OpenTUI text
 // attribute. The visible "[excluded]" label carries the same fact as text so
 // the state survives renderers that drop attributes.
 export function excludedAttributes(excluded: boolean) {
   return excluded ? TextAttributes.STRIKETHROUGH : undefined
+}
+
+function wholeItemText(node: TreeNode, snapshot: Snapshot): { text: string; ranges: ExcludedRange[] } {
+  const text = resolvedText(node, snapshot)
+  if (node.address?.section !== null) return { text, ranges: [] }
+  return { text, ranges: excludedRanges(node, snapshot) }
+}
+
+function renderRanges(text: string, ranges: readonly ExcludedRange[]): { body: string; excluded: boolean }[] {
+  if (ranges.length === 0) return [{ body: text, excluded: false }]
+  const points = [0, text.length]
+  for (const range of ranges) {
+    points.push(Math.max(0, Math.min(text.length, range.start)))
+    points.push(Math.max(0, Math.min(text.length, range.end)))
+  }
+  const sorted = [...new Set(points)].sort((left, right) => left - right)
+  const parts: { body: string; excluded: boolean }[] = []
+  for (let index = 0; index + 1 < sorted.length; index++) {
+    const start = sorted[index]
+    const end = sorted[index + 1]
+    if (start === undefined || end === undefined || end <= start) continue
+    parts.push({ body: text.slice(start, end), excluded: isExcludedOffset(ranges, start) })
+  }
+  return parts
 }
 
 function addressLine(node: TreeNode): string | undefined {
@@ -316,13 +405,36 @@ export function DetailPane(props: DetailPaneProps) {
                     when={isEditing()}
                     fallback={
                       <scrollbox flexGrow={1}>
-                        <text
-                          flexShrink={0}
-                          fg={props.context.theme.text.default}
-                          attributes={excludedAttributes(sectionExcluded(node(), snapshot()))}
+                        <Show
+                          when={node().address?.section === null}
+                          fallback={
+                            <text
+                              flexShrink={0}
+                              fg={props.context.theme.text.default}
+                              attributes={excludedAttributes(sectionExcluded(node(), snapshot()))}
+                            >
+                              {resolvedText(node(), snapshot())}
+                            </text>
+                          }
                         >
-                          {resolvedText(node(), snapshot())}
-                        </text>
+                          <Show when={wholeItemText(node(), snapshot())}>
+                            {(whole) => (
+                              <box flexDirection="column" flexShrink={0}>
+                                <For each={renderRanges(whole().text, whole().ranges)}>
+                                  {(part) => (
+                                    <text
+                                      flexShrink={0}
+                                      fg={props.context.theme.text.default}
+                                      attributes={excludedAttributes(part.excluded)}
+                                    >
+                                      {`${part.body}${part.excluded ? " [excluded]" : ""}`}
+                                    </text>
+                                  )}
+                                </For>
+                              </box>
+                            )}
+                          </Show>
+                        </Show>
                       </scrollbox>
                     }
                   >
