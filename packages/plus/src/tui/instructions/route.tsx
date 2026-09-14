@@ -316,7 +316,13 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   props.context.keymap.layer(() => {
     if (showHelp()) {
-      return { commands: [{ bind: "escape", title: "Close help", group: "Instructions", run: back }] }
+      // Help floats above every sub-pane: outrank the newer detail/diff/
+      // splitter editing escapes (same default priority) so one press closes
+      // only help. Higher priority wins, then newer layers win.
+      return {
+        priority: 1,
+        commands: [{ bind: "escape", title: "Close help", group: "Instructions", run: back }],
+      }
     }
     if (state.snapshot() === undefined)
       return {
