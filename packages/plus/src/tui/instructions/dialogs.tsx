@@ -201,7 +201,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addInstruction(): Promise<void> {
     if (disposed) return
-    const name = await context.ui.dialog.prompt({ title: "AGENTS.md", placeholder: "AGENTS.md" })
+    const name = await context.ui.dialog.prompt({ title: "Instruction name", placeholder: "AGENTS.md" })
     if (disposed) return
     if (name === undefined) return
     const text = await context.ui.dialog.prompt({ title: "Instruction text", placeholder: "Instruction text" })
