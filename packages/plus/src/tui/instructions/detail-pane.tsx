@@ -43,6 +43,8 @@ function itemsOf(snapshot: Snapshot): Item[] {
     fingerprint: item.fingerprint,
     ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
     ...(item.order === undefined ? {} : { order: item.order }),
+    ...(item.userBase === true ? { userBase: true as const } : {}),
+    ...(item.codemode === true ? { codemode: true as const } : {}),
   }))
 }
 

@@ -195,6 +195,27 @@ test("snapshot shape carries both revisions, agents, items, records, servers, an
   expectRpcBody(snapshot)
 })
 
+test("snapshot carries userBase and codemode flags on the right items", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const coder = { id: "coder", description: "code mode tool" }
+  const ctx = fullContext({ directory: project, tools: [coder, { id: "reader", description: "native tool", options: { codemode: false } }] })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const custom = snapshot.items.find((item) => item.id === "base:custom")
+  expect(custom?.userBase).toBe(true)
+  const coderItem = snapshot.items.find((item) => item.id === "tool:coder")
+  expect(coderItem?.codemode).toBe(true)
+  const reader = snapshot.items.find((item) => item.id === "tool:reader")
+  expect(reader?.codemode).toBeUndefined()
+  const builtin = snapshot.items.find((item) => item.kind === "base" && item.userBase !== true)
+  expect(builtin).toBeDefined()
+  expect(builtin?.userBase).toBeUndefined()
+  expectRpcBody(snapshot)
+})
+
 test("mutate routes project records to the project store and global/defaults records to the global store", async () => {
   const { project, config } = await tempRoot()
   await enable(project)

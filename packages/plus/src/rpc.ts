@@ -54,6 +54,8 @@ export const SnapshotItem = Schema.Struct({
   fingerprint: Schema.String,
   agents: Schema.optionalKey(Schema.Array(Schema.String)),
   order: Schema.optionalKey(Schema.Number),
+  userBase: Schema.optionalKey(Schema.Boolean),
+  codemode: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.SnapshotItem" })
 
 export interface Boundary extends Schema.Schema.Type<typeof Boundary> {}

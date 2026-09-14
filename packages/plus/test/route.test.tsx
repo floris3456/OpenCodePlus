@@ -1,8 +1,24 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { Effect } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { createHandlers, createState } from "../src/index.js"
 import { resolve, scopesOf } from "../src/instructions/model.js"
+import { enable } from "../src/project.js"
 import type { Snapshot } from "../src/rpc.js"
 import { createSnapshot, renderInstructionsRoute } from "./tui.js"
 import type { TestFixture } from "./tui.js"
+import { fullContext } from "./harness.js"
+
+const e2eRoots: string[] = []
+const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+
+afterEach(async () => {
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  await Promise.all(e2eRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
+})
 
 function dispatch(fixture: TestFixture, key: string): boolean {
   for (const cmd of fixture.commands()) {
@@ -1112,6 +1128,62 @@ test("filtered hidden match can be selected and toggled", async () => {
   }
 })
 
+test("provenance flags travel real discovery -> snapshot -> rendered rows", async () => {
+  // End to end through the production path: a real tool registry entry with
+  // default options (Code Mode) and a real user base template on disk, read
+  // by real discovery, encoded by the real toSnapshot, rendered by the route.
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-e2e-"))
+  e2eRoots.push(root)
+  const config = path.join(root, "config")
+  process.env.OPENCODE_CONFIG_DIR = config
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    tools: [
+      { id: "coder", description: "code mode tool" },
+      { id: "reader", description: "native tool", options: { codemode: false } },
+    ],
+  })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(
+    handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwing),
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+  expect(snapshot.items.find((item) => item.id === "base:custom")?.userBase).toBe(true)
+  expect(snapshot.items.find((item) => item.id === "tool:coder")?.codemode).toBe(true)
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    // Shared-group order is Tools before Base, and moveTo only walks down.
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "coder")
+    const toolRow = selectedRow(fixture.captureCharFrame())
+    expect(toolRow).toContain("coder")
+    expect(toolRow).toContain("[unsupported]")
+    const keys = binds(fixture)
+    expect(keys).not.toContain("space")
+    expect(keys).not.toContain("s")
+    await fixture.waitForFrame((frame) => frame.includes("code mode tool"))
+    expect(fixture.captureCharFrame()).toContain("[unsupported]")
+    await moveTo(fixture, "Base")
+    await expand(fixture)
+    await moveTo(fixture, "Custom.txt")
+    const baseRow = selectedRow(fixture.captureCharFrame())
+    expect(baseRow).toContain("Custom.txt")
+    expect(baseRow).toContain("[inactive]")
+    expect(binds(fixture)).toContain("d")
+  } finally {
+    fixture.destroy()
+  }
+})
 test("reviewer persona shows its own prompt and saves only its record", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer"), projectAgent("Reviewer")],

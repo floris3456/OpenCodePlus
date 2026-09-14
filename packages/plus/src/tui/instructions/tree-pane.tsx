@@ -38,6 +38,8 @@ export function badgeLabels(node: TreeNode): string[] {
   if (node.address !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
   if (node.badges.modified === true) labels.push("modified")
   if (node.badges.active === true) labels.push("active")
+  if (node.badges.inactive === true) labels.push("inactive")
+  if (node.badges.unsupported === true) labels.push("unsupported")
   const count = node.badges.reviewCount ?? 0
   if (count > 0) labels.push(`${count} to review`)
   else if (node.badges.review === true) labels.push("review")
@@ -49,9 +51,13 @@ export function isReviewLabel(label: string): boolean {
 }
 
 export function badgeColor(context: Plugin.Context, label: string) {
-  // The review warning owns the feedback token; every other badge is plain
-  // subdued body text. Yellow is used only for review.
+  // Review and unsupported both flag saved content needing user attention:
+  // review means upstream changed under an override, unsupported means edits
+  // never reach the session. Both are warning status feedback, so both own
+  // the feedback warning token. Active/inactive describe base liveness and
+  // stay plain subdued body text like every other non-review badge.
   if (isReviewLabel(label)) return context.theme.text.feedback.warning.default
+  if (label === "unsupported") return context.theme.text.feedback.warning.default
   return context.theme.text.subdued
 }
 
