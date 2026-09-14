@@ -54,7 +54,17 @@ function items(): Item[] {
     enabled: true,
     fingerprint: fingerprint("gpt base"),
   }
-  return [role, bash, gpt]
+  const coder: Item = {
+    id: "tool:coder",
+    kind: "tool",
+    group: "native",
+    title: "coder",
+    text: "run code",
+    enabled: true,
+    codemode: true,
+    fingerprint: fingerprint("run code"),
+  }
+  return [role, bash, gpt, coder]
 }
 
 function record(overrides?: Partial<CustomizationRecord> & { type?: "customization" }): CustomizationRecord {
@@ -111,7 +121,7 @@ function snapshot(records: Snapshot["records"]): Snapshot {
 }
 
 function yellowOnly(label: string): boolean {
-  return isReviewLabel(label)
+  return isReviewLabel(label) || label === "unsupported"
 }
 
 test("roots render with depth, badges, and collapsed review roll-up", () => {
@@ -257,7 +267,7 @@ test("provenance wording and resolved text through resolve", () => {
   expect(displayLevel("global")).toBe("Global")
 })
 
-test("review badge owns yellow and nothing else borrows it", () => {
+test("review and unsupported badges own yellow and nothing else borrows it", () => {
   const yellow = RGBA.fromHex("#ffff00")
   const gray = RGBA.fromHex("#888888")
   const context = {
@@ -267,9 +277,27 @@ test("review badge owns yellow and nothing else borrows it", () => {
   } as unknown as Parameters<typeof badgeColor>[0]
   expect(badgeColor(context, "review")).toBe(yellow)
   expect(badgeColor(context, "1 to review")).toBe(yellow)
-  for (const label of ["on", "off", "modified", "active"]) {
+  expect(badgeColor(context, "unsupported")).toBe(yellow)
+  for (const label of ["on", "off", "modified", "active", "inactive"]) {
     expect(badgeColor(context, label)).toBe(gray)
   }
+
+  const nodes = expandAll()
+  const coder = nodes.find((node) => node.id === "item:project:Implementer:tool:coder")
+  expect(coder).toBeDefined()
+  expect(coder?.badges.unsupported).toBe(true)
+  expect(badgeLabels(coder!)).toContain("unsupported")
+
+  const warningBadges = new Set(["review", "unsupported"])
+  let sawUnsupported = false
+  for (const node of nodes) {
+    for (const label of badgeLabels(node)) {
+      const isWarning = warningBadges.has(label) || isReviewLabel(label)
+      if (label === "unsupported") sawUnsupported = true
+      expect(badgeColor(context, label)).toBe(isWarning ? yellow : gray)
+    }
+  }
+  expect(sawUnsupported).toBe(true)
 })
 
 test("whole-item detail strikes the excluded section range", () => {
