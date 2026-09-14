@@ -424,6 +424,14 @@ test("project override over global text reviews only on global moves, and keep c
   expect(resolve(input({ upstream, records: kept, address: projectAddress })).review).toBe(false)
 })
 
+test("fingerprint caches identical text and separates different texts", () => {
+  const first = fingerprint("cache me")
+  const second = fingerprint("cache me")
+  expect(second).toBe(first)
+  expect(first).toMatch(/^[0-9a-f]{64}$/)
+  expect(fingerprint("cache me not")).not.toBe(first)
+})
+
 test("aboveSectionText honors an ancestor section edit", () => {
   const upstream = sectionItem()
   const edited = "# Two\n\nshared edit\n"
