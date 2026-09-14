@@ -28,6 +28,8 @@ export type EnsureReason = "missing" | "version-mismatch"
 export type EnsureOptions = DiscoverOptions & {
   /** Service command and arguments. Defaults to `opencode serve --service`. */
   readonly command?: ReadonlyArray<string>
+  /** Service working directory. Defaults to the inherited working directory. */
+  readonly directory?: string
   /** Environment variables added to the inherited service process environment. */
   readonly env?: Readonly<Record<string, string>>
   /** Called once before spawning a new service process. */
