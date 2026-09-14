@@ -5,15 +5,26 @@ import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createComponent } from "solid-js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
-import type { Snapshot, Status } from "../src/rpc.js"
+import type {
+  AddMcpInput,
+  CreateAgentInput,
+  CreateBaseInput,
+  CreateInstructionInput,
+  CreateSkillInput,
+  ImportSkillInput,
+  MutateInput,
+  Snapshot,
+  Status,
+} from "../src/rpc.js"
 
 export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
   return {
     revision: overrides?.revision ?? 1,
+    globalRevision: overrides?.globalRevision ?? 1,
     agents: overrides?.agents ?? [],
-    tools: overrides?.tools ?? [],
     items: overrides?.items ?? [],
-    customizations: overrides?.customizations ?? [],
+    records: overrides?.records ?? [],
+    servers: overrides?.servers ?? [],
     protectedAgents: overrides?.protectedAgents ?? [],
   }
 }
@@ -67,9 +78,31 @@ export type TestKeymapLayer = ReturnType<Parameters<Plugin.Context["keymap"]["la
 export type TestKeymapCommand = NonNullable<TestKeymapLayer["commands"]>[number]
 type KeymapLayerCallback = Parameters<Plugin.Context["keymap"]["layer"]>[0]
 
+export interface FakeRpc {
+  readonly mutateInputs: MutateInput[]
+  readonly agentCreates: CreateAgentInput[]
+  readonly agentDeletes: { scope: string; id: string }[]
+  readonly skillCreates: CreateSkillInput[]
+  readonly skillImports: ImportSkillInput[]
+  readonly baseCreates: CreateBaseInput[]
+  readonly instructionCreates: CreateInstructionInput[]
+  readonly mcpAdds: AddMcpInput[]
+  readonly mcpRemoves: { name: string }[]
+  readonly dialogPrompts: string[][]
+  readonly dialogSelects: unknown[][]
+  readonly dialogConfirms: unknown[][]
+}
+
+export interface DialogScript {
+  readonly prompts?: readonly (string | undefined)[]
+  readonly selects?: readonly (unknown | undefined)[]
+  readonly confirms?: readonly (boolean | undefined)[]
+}
+
 export interface TestFixture {
   readonly context: Plugin.Context
   readonly renderer: CliRenderer
+  readonly fake: FakeRpc
   readonly captureCharFrame: () => string
   readonly waitForFrame: (predicate: (frame: string) => boolean) => Promise<string>
   readonly emitChanged: (next?: Snapshot) => Promise<void>
@@ -86,6 +119,8 @@ export interface RenderFixtureOptions {
   readonly width?: number
   readonly height?: number
   readonly routeData?: unknown
+  readonly dialogs?: DialogScript
+  readonly mutateResult?: unknown
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -97,6 +132,23 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   })
 
   const queue: Snapshot[] = [...options.snapshots]
+  const fake: FakeRpc = {
+    mutateInputs: [],
+    agentCreates: [],
+    agentDeletes: [],
+    skillCreates: [],
+    skillImports: [],
+    baseCreates: [],
+    instructionCreates: [],
+    mcpAdds: [],
+    mcpRemoves: [],
+    dialogPrompts: [],
+    dialogSelects: [],
+    dialogConfirms: [],
+  }
+  const promptScript = [...(options.dialogs?.prompts ?? [])]
+  const selectScript = [...(options.dialogs?.selects ?? [])]
+  const confirmScript = [...(options.dialogs?.confirms ?? [])]
   type RpcListener = (event: { data: Status }) => void
   const instructionsListeners = new Set<RpcListener>()
   const projectListeners = new Set<RpcListener>()
@@ -126,7 +178,43 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       rpc: () => ({
         "instructions.snapshot": async () => nextSnapshot(),
         "instructions.refresh": async () => nextSnapshot(),
-        "instructions.mutate": async () => ({ ok: true, revision: 1, snapshot: nextSnapshot() }),
+        "instructions.mutate": async (input: MutateInput) => {
+          fake.mutateInputs.push(input)
+          if (options.mutateResult !== undefined) return options.mutateResult
+          return { ok: true, revision: 1, globalRevision: 1, snapshot: nextSnapshot() }
+        },
+        "agent.create": async (input: CreateAgentInput) => {
+          fake.agentCreates.push(input)
+          return { id: input.id, path: `/agents/${input.id}.md` }
+        },
+        "agent.delete": async (input: { scope: string; id: string }) => {
+          fake.agentDeletes.push(input)
+          return { id: input.id, path: `/agents/${input.id}.md` }
+        },
+        "skill.create": async (input: CreateSkillInput) => {
+          fake.skillCreates.push(input)
+          return { id: input.name, path: `/skills/${input.name}` }
+        },
+        "skill.import": async (input: ImportSkillInput) => {
+          fake.skillImports.push(input)
+          return { id: input.path, path: input.path }
+        },
+        "base.create": async (input: CreateBaseInput) => {
+          fake.baseCreates.push(input)
+          return { id: input.id }
+        },
+        "instruction.create": async (input: CreateInstructionInput) => {
+          fake.instructionCreates.push(input)
+          return { id: input.name, path: `/instructions/${input.name}` }
+        },
+        "mcp.add": async (input: AddMcpInput) => {
+          fake.mcpAdds.push(input)
+          return { name: input.name }
+        },
+        "mcp.remove": async (input: { name: string }) => {
+          fake.mcpRemoves.push(input)
+          return { name: input.name }
+        },
         events: {
           on: (name: string, handler: RpcListener) => {
             if (name === "project.changed") {
@@ -183,9 +271,21 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         set: () => {},
         clear: () => {},
         alert: async () => {},
-        confirm: async () => true,
-        prompt: async () => undefined,
-        select: async () => undefined,
+        confirm: async (input: unknown) => {
+          fake.dialogConfirms.push(input)
+          if (confirmScript.length > 0) return confirmScript.shift()
+          return true
+        },
+        prompt: async (input: { title: string }) => {
+          fake.dialogPrompts.push([input.title])
+          if (promptScript.length > 0) return promptScript.shift()
+          return undefined
+        },
+        select: async (input: { title: string }) => {
+          fake.dialogSelects.push([input.title])
+          if (selectScript.length > 0) return selectScript.shift()
+          return undefined
+        },
       },
       toast: {
         show: () => {},
@@ -257,6 +357,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   return {
     context,
     renderer: output.renderer,
+    fake,
     captureCharFrame: () => output.captureCharFrame(),
     waitForFrame: (predicate) => output.waitForFrame(predicate),
     emitChanged,
@@ -276,6 +377,8 @@ export interface RenderRouteOptions {
   readonly width?: number
   readonly height?: number
   readonly onClose?: () => void
+  readonly dialogs?: DialogScript
+  readonly mutateResult?: unknown
 }
 
 export async function renderInstructionsRoute(options: RenderRouteOptions): Promise<TestFixture> {
@@ -284,6 +387,8 @@ export async function renderInstructionsRoute(options: RenderRouteOptions): Prom
     routeData: options.data,
     width: options.width,
     height: options.height,
+    dialogs: options.dialogs,
+    mutateResult: options.mutateResult,
     render: (context) =>
       createComponent(InstructionsRoute, {
         context,
