@@ -1,41 +1,25 @@
-import { applies, canReset, effective, override, type Item, type Snapshot } from "./model.js"
-import type { AgentScope, AgentSource } from "./discover.js"
-import type { ProjectConfig } from "../project.js"
+import { applies, canReset, resolve, resolveSplit, scopesOf } from "./model.js"
+import type { Address, AgentSource, CustomizationRecord, Item, Level, Scopes, SplitRecord } from "./model.js"
+import type { Section } from "./sections.js"
 
-export type TreeNodeKind =
-  | "group"
-  | "agent"
-  | "default"
-  | "prompt"
-  | "skill"
-  | "tool"
-  | "instruction"
-  | "mcp"
-
-export type TreeNodeToggle =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly reason: string }
-
-export type TreeNodeEdit =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly reason: string }
+export type TreeNodeKind = "root" | "group" | "agent" | "item" | "section"
+export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp"
 
 export interface TreeNodeBadges {
-  readonly enabled?: boolean
-  readonly customized?: boolean
+  readonly state?: "on" | "off"
+  readonly modified?: boolean
   readonly review?: boolean
-  readonly protected?: boolean
-  readonly readOnly?: boolean
+  readonly reviewCount?: number
+  readonly active?: boolean
+  readonly source?: Level | "upstream"
 }
 
-export type TreeNodeReset =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly reason: string }
-
-export interface TreeNodeAction {
-  readonly toggle: TreeNodeToggle
-  readonly edit: TreeNodeEdit
-  readonly reset: TreeNodeReset
+export interface TreeNodeActions {
+  readonly toggle: boolean
+  readonly edit: boolean
+  readonly reset: boolean
+  readonly remove: boolean
+  readonly split: boolean
 }
 
 export interface TreeNode {
@@ -43,407 +27,454 @@ export interface TreeNode {
   readonly kind: TreeNodeKind
   readonly label: string
   readonly depth: number
+  readonly address?: Address
+  readonly add?: AddKind
   readonly badges: TreeNodeBadges
-  readonly agentId?: string
-  readonly itemId?: string
-  readonly scope?: AgentScope
-  readonly action?: TreeNodeAction
-}
-
-export interface ToolSource {
-  readonly id: string
-  readonly native: boolean
+  readonly actions?: TreeNodeActions
 }
 
 export interface TreeInput {
-  readonly snapshot: Snapshot
-  readonly agents?: readonly AgentSource[]
-  readonly tools?: readonly ToolSource[]
-  readonly project?: ProjectConfig | null
+  readonly items: readonly Item[]
+  readonly records: readonly (CustomizationRecord | SplitRecord)[]
+  readonly agents: readonly AgentSource[]
   readonly expanded?: ReadonlySet<string>
 }
 
-const codeModeReason = "code mode tools are exposed through the execute inventory, not the session tool list"
-const mcpEditReason = "mcp server configuration can only be changed in config files"
-const mcpToggleReason =
-  "Plus cannot verify the upstream state of an already-overridden server, so the row offers reset to return it to upstream rather than a toggle that might not take effect"
-const instructionReason = "the public plugin API does not expose source-aware instruction customization"
-
 export function tree(input: TreeInput): TreeNode[] {
-  const agents = input.agents ?? []
-  const expandedSet = normalizeExpanded(input.expanded)
-  const protectedSet = new Set(input.project?.protectedAgents ?? [])
-  const nativeTools = new Set((input.tools ?? []).filter((tool) => tool.native).map((tool) => tool.id))
-
-  const projectAgents = agents.filter((agent) => agent.scope === "project")
-  const globalAgents = agents.filter((agent) => agent.scope === "global")
-  const builtinAgents = agents.filter((agent) => agent.scope === "builtin")
-
-  const projectGroup = emitAgentGroup({
-    groupId: "group:project",
-    label: `Project agents (${projectAgents.length})`,
-    agents: projectAgents,
-    snapshot: input.snapshot,
-    protectedSet,
-    expandedSet,
-    groupAliases: ["project", "Project agents"],
-    nativeTools,
-  })
-
-  const globalGroup = emitAgentGroup({
-    groupId: "group:global",
-    label: `Global agents (${globalAgents.length})`,
-    agents: globalAgents,
-    snapshot: input.snapshot,
-    protectedSet,
-    expandedSet,
-    groupAliases: ["global", "Global agents"],
-    nativeTools,
-  })
-
-  const defaultsGroup = emitDefaultsGroup({
-    snapshot: input.snapshot,
-    builtinAgents,
-    protectedSet,
-    expandedSet,
-    nativeTools,
-  })
-
-  return [...projectGroup, ...globalGroup, ...defaultsGroup]
+  const ctx = contextOf(input)
+  const expanded = input.expanded ?? new Set<string>()
+  const roots = [buildRoot(ctx, "project"), buildRoot(ctx, "global"), buildRoot(ctx, "defaults")]
+  return roots.map(finalize).flatMap((root) => visible(root, expanded))
 }
 
-function normalizeExpanded(expanded?: ReadonlySet<string>): ReadonlySet<string> {
-  if (!expanded) return new Set<string>()
-  return expanded
-}
-
-function isExpanded(id: string, expandedSet: ReadonlySet<string>, aliases?: readonly string[]): boolean {
-  if (expandedSet.has(id)) return true
-  if (!aliases) return false
-  return aliases.some((alias) => expandedSet.has(alias))
-}
-
-interface AgentGroupInput {
-  readonly groupId: string
-  readonly label: string
+interface BuildContext {
+  readonly items: readonly Item[]
+  readonly customizations: readonly CustomizationRecord[]
+  readonly splits: readonly SplitRecord[]
+  readonly scopes: Scopes
   readonly agents: readonly AgentSource[]
-  readonly snapshot: Snapshot
-  readonly protectedSet: ReadonlySet<string>
-  readonly expandedSet: ReadonlySet<string>
-  readonly groupAliases: readonly string[]
-  readonly nativeTools: ReadonlySet<string>
 }
 
-function emitAgentGroup(input: AgentGroupInput): TreeNode[] {
-  const header: TreeNode = {
-    id: input.groupId,
-    kind: "group",
-    label: input.label,
-    depth: 0,
-    badges: {},
-  }
-
-  if (!isExpanded(input.groupId, input.expandedSet, input.groupAliases)) {
-    return [header]
-  }
-
-  const agentNodes = input.agents.flatMap((agent) =>
-    emitAgentNode({
-      agent,
-      snapshot: input.snapshot,
-      protectedSet: input.protectedSet,
-      expandedSet: input.expandedSet,
-      nativeTools: input.nativeTools,
-    }),
-  )
-
-  return [header, ...agentNodes]
-}
-
-interface AgentNodeInput {
-  readonly agent: AgentSource
-  readonly snapshot: Snapshot
-  readonly protectedSet: ReadonlySet<string>
-  readonly expandedSet: ReadonlySet<string>
-  readonly nativeTools: ReadonlySet<string>
-}
-
-function emitAgentNode(input: AgentNodeInput): TreeNode[] {
-  const isProtected = input.protectedSet.has(input.agent.id)
-  const agentId = input.agent.id
-  const nodeId = `agent:${agentId}`
-
-  const node: TreeNode = {
-    id: nodeId,
-    kind: "agent",
-    label: agentId,
-    depth: 1,
-    badges: {
-      protected: isProtected,
-      readOnly: isProtected,
-    },
-    agentId,
-    scope: input.agent.scope,
-  }
-
-  if (!isExpanded(nodeId, input.expandedSet, [agentId])) {
-    return [node]
-  }
-
-  const children = emitAgentChildren(agentId, input.snapshot, isProtected, input.nativeTools)
-  return [node, ...children]
-}
-
-function emitAgentChildren(
-  agentId: string,
-  snapshot: Snapshot,
-  isProtected: boolean,
-  nativeTools: ReadonlySet<string>,
-): TreeNode[] {
-  const prompts = snapshot.items
-    .filter((item) => item.kind === "prompt" && applies(item, agentId))
-    .map((item) =>
-      emitItemNode({
-        agentId,
-        item,
-        snapshot,
-        label: "Prompt",
-        isProtected,
-        toggle: { allowed: false, reason: "an agent always needs a system prompt" },
-      }),
-    )
-
-  const skills = snapshot.items
-    .filter((item) => item.kind === "skill" && applies(item, agentId))
-    .map((item) =>
-      emitItemNode({
-        agentId,
-        item,
-        snapshot,
-        label: item.title,
-        isProtected,
-      }),
-    )
-
-  const tools = snapshot.items
-    .filter((item) => item.kind === "tool" && applies(item, agentId))
-    .map((item) => {
-      if (nativeTools.has(item.owner))
-        return emitItemNode({
-          agentId,
-          item,
-          snapshot,
-          label: item.title,
-          isProtected,
-        })
-      return emitItemNode({
-        agentId,
-        item,
-        snapshot,
-        label: item.title,
-        isProtected,
-        toggle: { allowed: false, reason: codeModeReason },
-        edit: { allowed: false, reason: codeModeReason },
-      })
-    })
-
-  const instructions = snapshot.items
-    .filter((item) => item.kind === "instruction" && applies(item, agentId))
-    .map((item) =>
-      emitItemNode({
-        agentId,
-        item,
-        snapshot,
-        label: item.title,
-        isProtected,
-        toggle: { allowed: false, reason: instructionReason },
-        edit: { allowed: false, reason: instructionReason },
-      }),
-    )
-
-  return [...prompts, ...skills, ...tools, ...instructions]
-}
-
-interface ItemNodeInput {
-  readonly agentId: string
-  readonly item: Item
-  readonly snapshot: Snapshot
-  readonly label: string
-  readonly isProtected: boolean
-  readonly toggle?: TreeNodeToggle
-  readonly edit?: TreeNodeEdit
-}
-
-function emitItemNode(input: ItemNodeInput): TreeNode {
-  const eff = effective(input.snapshot, input.item, input.agentId)
-  const toggle = input.toggle ?? { allowed: true }
-  const edit = input.edit ?? { allowed: true }
+function contextOf(input: TreeInput): BuildContext {
   return {
-    id: `agent:${input.agentId}:${input.item.id}`,
-    kind: input.item.kind,
-    label: input.label,
-    depth: 2,
-    badges: {
-      enabled: eff.enabled,
-      customized: eff.customized,
-      review: eff.review,
-      readOnly: input.isProtected,
-    },
-    agentId: input.agentId,
-    itemId: input.item.id,
-    action: {
-      toggle,
-      edit,
-      reset: resetAction({ snapshot: input.snapshot, item: input.item, agent: input.agentId, toggle, edit }),
-    },
+    items: input.items,
+    customizations: input.records.filter((record): record is CustomizationRecord => !("boundaries" in record)),
+    splits: input.records.filter((record): record is SplitRecord => "boundaries" in record),
+    scopes: scopesOf(input.agents),
+    agents: input.agents,
   }
 }
 
-interface ResetInput {
-  readonly snapshot: Snapshot
-  readonly item: Item
-  readonly agent: string
-  readonly toggle: TreeNodeToggle
-  readonly edit: TreeNodeEdit
-}
-
-function resetAction(input: ResetInput): TreeNodeReset {
-  if (!canReset(input.snapshot, input.item, input.agent)) return { allowed: false, reason: "nothing to reset" }
-  if (input.item.kind === "mcp") return { allowed: true }
-  const toggleBlocked = input.toggle.allowed === false
-  const editBlocked = input.edit.allowed === false
-  if (toggleBlocked && editBlocked) {
-    if (input.toggle.allowed === false && input.edit.allowed === false && input.toggle.reason === input.edit.reason)
-      return { allowed: false, reason: input.toggle.reason }
-    return { allowed: false, reason: "resetting is not supported for this row" }
-  }
-  return { allowed: true }
-}
-
-interface DefaultsGroupInput {
-  readonly snapshot: Snapshot
-  readonly builtinAgents: readonly AgentSource[]
-  readonly protectedSet: ReadonlySet<string>
-  readonly expandedSet: ReadonlySet<string>
-  readonly nativeTools: ReadonlySet<string>
-}
-
-function emitDefaultsGroup(input: DefaultsGroupInput): TreeNode[] {
-  const header: TreeNode = {
-    id: "group:defaults",
-    kind: "group",
-    label: "Defaults",
-    depth: 0,
-    badges: {},
-  }
-
-  if (!isExpanded("group:defaults", input.expandedSet, ["defaults", "Defaults"])) {
-    return [header]
-  }
-
-  const projectDefaults = emitDefaultTarget({
-    id: "defaults:project",
-    label: "Project",
-    snapshot: input.snapshot,
-    expandedSet: input.expandedSet,
-    aliases: ["default:project"],
-    nativeTools: input.nativeTools,
-  })
-
-  const builtinNodes = input.builtinAgents.flatMap((agent) =>
-    emitAgentNode({
-      agent,
-      snapshot: input.snapshot,
-      protectedSet: input.protectedSet,
-      expandedSet: input.expandedSet,
-      nativeTools: input.nativeTools,
-    }),
-  )
-
-  return [header, ...projectDefaults, ...builtinNodes]
-}
-
-interface DefaultTargetInput {
+interface Logical {
   readonly id: string
+  readonly kind: TreeNodeKind
   readonly label: string
-  readonly snapshot: Snapshot
-  readonly expandedSet: ReadonlySet<string>
-  readonly aliases: readonly string[]
-  readonly nativeTools: ReadonlySet<string>
+  readonly depth: number
+  readonly address?: Address
+  readonly add?: AddKind
+  readonly partial: TreeNodeBadges
+  readonly actions: TreeNodeActions
+  readonly selfReview: boolean
+  readonly children: readonly Logical[]
 }
 
-function emitDefaultTarget(input: DefaultTargetInput): TreeNode[] {
-  const node: TreeNode = {
-    id: input.id,
-    kind: "default",
-    label: input.label,
-    depth: 1,
-    badges: {},
-  }
-
-  if (!isExpanded(input.id, input.expandedSet, input.aliases)) {
-    return [node]
-  }
-
-  const children = emitDefaultChildren(input.id, input.snapshot, input.nativeTools)
-  return [node, ...children]
-}
-
-function emitDefaultChildren(targetId: string, snapshot: Snapshot, nativeTools: ReadonlySet<string>): TreeNode[] {
-  const sharedAgent = "*"
-  const items = snapshot.items.filter((item) => item.kind !== "prompt" && applies(item, sharedAgent))
-  return items.map((item) => emitDefaultNode(targetId, snapshot, sharedAgent, item, nativeTools))
-}
-
-function emitDefaultNode(
-  targetId: string,
-  snapshot: Snapshot,
-  sharedAgent: string,
-  item: Item,
-  nativeTools: ReadonlySet<string>,
-): TreeNode {
-  const eff = effective(snapshot, item, sharedAgent)
-  const toggle: TreeNodeToggle = defaultToggleFor(item, nativeTools, snapshot, sharedAgent)
-  const edit: TreeNodeEdit = defaultEditFor(item, nativeTools)
-  return {
-    id: `${targetId}:${item.id}`,
-    kind: item.kind,
-    label: item.title,
-    depth: 2,
-    badges: {
-      enabled: eff.enabled,
-      customized: eff.customized,
-      review: eff.review,
-    },
-    itemId: item.id,
-    action: {
-      toggle,
-      edit,
-      reset: resetAction({ snapshot, item, agent: sharedAgent, toggle, edit }),
-    },
-  }
-}
-
-function defaultToggleFor(
-  item: Item,
-  nativeTools: ReadonlySet<string>,
-  snapshot: Snapshot,
-  agent: string,
-): TreeNodeToggle {
-  if (item.kind === "instruction") return { allowed: false, reason: instructionReason }
-  if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
-  if (item.kind === "mcp") {
-    const resolved = override(snapshot, item.id, agent)
-    if (resolved?.state === "enabled" || resolved?.state === "disabled") {
-      return { allowed: false, reason: mcpToggleReason }
+function buildRoot(ctx: BuildContext, level: Level): Logical {
+  if (level === "defaults")
+    return {
+      id: "root:defaults",
+      kind: "root",
+      label: "Defaults",
+      depth: 0,
+      partial: {},
+      actions: noActions(),
+      selfReview: false,
+      children: [buildAgentsGroup(ctx), ...buildSharedGroups(ctx)],
     }
+  const scope: "project" | "global" = level === "project" ? "project" : "global"
+  return {
+    id: `root:${level}`,
+    kind: "root",
+    label: scope === "project" ? "Project agents" : "Global agents",
+    depth: 0,
+    add: "agent",
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: ctx.agents.filter((agent) => agent.scope === scope).map((agent) => buildAgent(ctx, level, agent, 1)),
   }
-  return { allowed: true }
 }
 
-function defaultEditFor(item: Item, nativeTools: ReadonlySet<string>): TreeNodeEdit {
-  if (item.kind === "instruction") return { allowed: false, reason: instructionReason }
-  if (item.kind === "tool" && !nativeTools.has(item.owner)) return { allowed: false, reason: codeModeReason }
-  if (item.kind === "mcp") return { allowed: false, reason: mcpEditReason }
-  return { allowed: true }
+function buildAgent(ctx: BuildContext, level: Level, agent: AgentSource, depth: number): Logical {
+  return {
+    id: `agent:${level}:${agent.id}`,
+    kind: "agent",
+    label: agent.id,
+    depth,
+    partial: {},
+    actions: { ...noActions(), remove: true },
+    selfReview: false,
+    children: [
+      buildTools(ctx, level, agent.id, agent, depth + 1),
+      buildBase(ctx, level, agent.id, agent, depth + 1),
+      buildSkills(ctx, level, agent.id, agent, depth + 1),
+      buildSystem(ctx, level, agent.id, agent, depth + 1),
+    ],
+  }
+}
+
+function buildAgentsGroup(ctx: BuildContext): Logical {
+  return {
+    id: "group:defaults:agents",
+    kind: "group",
+    label: "Agents",
+    depth: 1,
+    add: "agent",
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: ctx.agents.filter((agent) => agent.scope === "defaults").map((agent) => buildAgent(ctx, "defaults", agent, 2)),
+  }
+}
+
+function buildSharedGroups(ctx: BuildContext): Logical[] {
+  return [
+    buildTools(ctx, "defaults", null, null, 1),
+    buildBase(ctx, "defaults", null, null, 1),
+    buildSkills(ctx, "defaults", null, null, 1),
+    buildSystem(ctx, "defaults", null, null, 1),
+    buildMcpInventory(ctx),
+  ]
+}
+
+function buildMcpInventory(ctx: BuildContext): Logical {
+  return {
+    id: "group:defaults::mcp",
+    kind: "group",
+    label: "MCP",
+    depth: 1,
+    add: "mcp",
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: sortedKind(ctx, "mcp", null).map((item) => buildItem(ctx, "defaults", null, null, item, 2)),
+  }
+}
+
+function buildTools(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+): Logical {
+  const tools = sortedKind(ctx, "tool", owner)
+  const prefix = `group:${level}:${owner ?? ""}:tools`
+  return {
+    id: prefix,
+    kind: "group",
+    label: "Tools",
+    depth,
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: [
+      leafGroup(ctx, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native")),
+      leafGroup(ctx, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus")),
+      mcpGroup(ctx, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp")),
+      ...strayTools(ctx, level, owner, agent, tools, depth + 1),
+    ],
+  }
+}
+
+function buildSkills(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+): Logical {
+  const skills = sortedKind(ctx, "skill", owner)
+  const prefix = `group:${level}:${owner ?? ""}:skills`
+  return {
+    id: prefix,
+    kind: "group",
+    label: "Skills",
+    depth,
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: [
+      leafGroup(ctx, level, owner, agent, `${prefix}:native`, "Native", depth + 1, skills.filter((item) => item.group === "native")),
+      leafGroup(ctx, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, skills.filter((item) => item.group === "plus")),
+      mcpGroup(ctx, level, owner, agent, `${prefix}:mcp`, depth + 1, skills.filter((item) => item.group === "mcp")),
+      leafGroup(
+        ctx,
+        level,
+        owner,
+        agent,
+        `${prefix}:project`,
+        "Project",
+        depth + 1,
+        skills.filter((item) => item.group === "project"),
+        "skill",
+      ),
+      ...straySkills(ctx, level, owner, agent, skills, depth + 1),
+    ],
+  }
+}
+
+// Tools or skills whose group belongs to no subgroup still need a row, so
+// they hang directly off the category group rather than being dropped.
+function strayTools(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  tools: readonly Item[],
+  depth: number,
+): Logical[] {
+  return tools
+    .filter((item) => item.group !== "native" && item.group !== "plus" && item.group !== "mcp")
+    .map((item) => buildItem(ctx, level, owner, agent, item, depth))
+}
+
+function straySkills(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  skills: readonly Item[],
+  depth: number,
+): Logical[] {
+  return skills
+    .filter((item) => item.group !== "native" && item.group !== "plus" && item.group !== "mcp" && item.group !== "project")
+    .map((item) => buildItem(ctx, level, owner, agent, item, depth))
+}
+
+function buildBase(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+): Logical {
+  return {
+    id: `group:${level}:${owner ?? ""}:base`,
+    kind: "group",
+    label: "Base",
+    depth,
+    add: "base",
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: sortedKind(ctx, "base", owner).map((item) => buildItem(ctx, level, owner, agent, item, depth + 1)),
+  }
+}
+
+function buildSystem(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+): Logical {
+  const systems = sortedKind(ctx, "system", owner)
+  const role = systems.find((item) => item.id === "system:role")
+  const head = role === undefined ? [] : [buildItem(ctx, level, owner, agent, role, depth + 1)]
+  return {
+    id: `group:${level}:${owner ?? ""}:system`,
+    kind: "group",
+    label: "System",
+    depth,
+    add: "instruction",
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: [
+      ...head,
+      ...systems.filter((item) => item.id !== "system:role").map((item) => buildItem(ctx, level, owner, agent, item, depth + 1)),
+    ],
+  }
+}
+
+function leafGroup(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  label: string,
+  depth: number,
+  items: readonly Item[],
+  add?: AddKind,
+): Logical {
+  return {
+    id,
+    kind: "group",
+    label,
+    depth,
+    ...(add === undefined ? {} : { add }),
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: items.map((item) => buildItem(ctx, level, owner, agent, item, depth + 1)),
+  }
+}
+
+function mcpGroup(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  depth: number,
+  items: readonly Item[],
+): Logical {
+  const servers = [...new Set(items.map((item) => item.server ?? "unknown"))].sort()
+  return {
+    id,
+    kind: "group",
+    label: "MCP",
+    depth,
+    partial: {},
+    actions: noActions(),
+    selfReview: false,
+    children: servers.map((server) =>
+      leafGroup(
+        ctx,
+        level,
+        owner,
+        agent,
+        `${id}:${server}`,
+        server,
+        depth + 1,
+        items.filter((item) => (item.server ?? "unknown") === server),
+      ),
+    ),
+  }
+}
+
+function buildItem(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  item: Item,
+  depth: number,
+): Logical {
+  const address: Address = { level, agent: owner, item: item.id, section: null }
+  const resolved = resolve({ upstream: item, records: ctx.customizations, splits: ctx.splits, scopes: ctx.scopes, address })
+  const split = resolveSplit({ text: resolved.text, title: item.title, splits: ctx.splits, scopes: ctx.scopes, address })
+  const active = agent?.base !== undefined && item.id === `base:${agent.base}`
+  return {
+    id: `item:${level}:${owner ?? ""}:${item.id}`,
+    kind: "item",
+    label: item.id === "system:role" ? "Role/persona" : item.title,
+    depth,
+    address,
+    partial: {
+      state: resolved.enabled ? "on" : "off",
+      modified: resolved.modified,
+      source: resolved.source,
+      ...(active ? { active: true } : {}),
+    },
+    actions: {
+      toggle: true,
+      edit: true,
+      reset: canReset(ctx.customizations, address),
+      remove: removable(level, owner, item),
+      split: true,
+    },
+    selfReview: resolved.review,
+    children: split.sections.map((section) => buildSection(ctx, level, owner, item, section, depth + 1 + section.depth)),
+  }
+}
+
+function buildSection(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  section: Section,
+  depth: number,
+): Logical {
+  const address: Address = { level, agent: owner, item: item.id, section: section.id }
+  const resolved = resolve({ upstream: item, records: ctx.customizations, splits: ctx.splits, scopes: ctx.scopes, address })
+  return {
+    id: `section:${level}:${owner ?? ""}:${item.id}:${section.id}`,
+    kind: "section",
+    label: section.name,
+    depth,
+    address,
+    partial: {
+      state: resolved.enabled ? "on" : "off",
+      modified: resolved.modified,
+      review: resolved.review,
+      source: resolved.source,
+    },
+    actions: { toggle: true, edit: true, reset: canReset(ctx.customizations, address), remove: false, split: false },
+    selfReview: resolved.review,
+    children: [],
+  }
+}
+
+// User-owned rows can be deleted outright: shared MCP servers, project-group
+// items (skills, added instructions, added base prompts), and agents. The
+// agent's own Role/persona body is owned but not deletable.
+function removable(level: Level, owner: string | null, item: Item): boolean {
+  if (level === "defaults" && owner === null && item.kind === "mcp") return true
+  if (item.id === "system:role") return false
+  return item.group === "project"
+}
+
+function sortedKind(ctx: BuildContext, kind: Item["kind"], owner: string | null): Item[] {
+  return ctx.items
+    .filter((item) => item.kind === kind && (owner === null || applies(item, owner)))
+    .sort(byOrderTitle)
+}
+
+function byOrderTitle(left: Item, right: Item): number {
+  const order = (left.order ?? Number.MAX_SAFE_INTEGER) - (right.order ?? Number.MAX_SAFE_INTEGER)
+  if (order !== 0) return order
+  if (left.title < right.title) return -1
+  if (left.title > right.title) return 1
+  return 0
+}
+
+function noActions(): TreeNodeActions {
+  return { toggle: false, edit: false, reset: false, remove: false, split: false }
+}
+
+interface Final {
+  readonly node: TreeNode
+  readonly selfReview: boolean
+  readonly count: number
+  readonly children: readonly Final[]
+}
+
+// Roll-up runs over the whole logical tree so collapsed ancestors still
+// report review markers for hidden descendants.
+function finalize(logical: Logical): Final {
+  const children = logical.children.map(finalize)
+  const count = children.reduce((sum, child) => sum + child.count + (child.selfReview ? 1 : 0), 0)
+  const badges: TreeNodeBadges =
+    logical.kind === "section"
+      ? logical.partial
+      : { ...logical.partial, review: logical.selfReview || count > 0, reviewCount: count }
+  const node: TreeNode = {
+    id: logical.id,
+    kind: logical.kind,
+    label: logical.label,
+    depth: logical.depth,
+    ...(logical.address === undefined ? {} : { address: logical.address }),
+    ...(logical.add === undefined ? {} : { add: logical.add }),
+    badges,
+    actions: logical.actions,
+  }
+  return { node, selfReview: logical.selfReview, count, children }
+}
+
+function visible(root: Final, expanded: ReadonlySet<string>): TreeNode[] {
+  if (!expanded.has(root.node.id)) return [root.node]
+  return [root.node, ...root.children.flatMap((child) => visible(child, expanded))]
 }
