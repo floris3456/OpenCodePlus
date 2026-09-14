@@ -133,11 +133,33 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function moveDown(fx: EscapeFixture, n: number): Promise<void> {
-  for (let i = 0; i < n; i++) {
+function selectedRow(frame: string): string {
+  const line = frame.split("\n").find((entry) => entry.includes("›"))
+  return line ?? ""
+}
+
+// Locate rows by label instead of hardcoded moveDown counts from a root, so
+// the next structural change does not shift every test. Each step waits for
+// the selection to actually move before continuing, so the walk cannot
+// outrun the renderer and blow past its target while frames are stale.
+async function moveTo(fx: EscapeFixture, label: string): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    const before = fx.fixture.captureCharFrame()
+    if (selectedRow(before).includes(label)) return
     send(fx, "down")
-    await sleep(20)
+    await fx.fixture.waitForFrame((frame) => selectedRow(frame) !== selectedRow(before))
   }
+  throw new Error(`never reached row "${label}"`)
+}
+
+async function expand(fx: EscapeFixture): Promise<void> {
+  // Idempotent: only press right when the selected row shows collapsed "+".
+  // Roots start expanded ("-"), so a blind right would collapse them.
+  const line = selectedRow(fx.fixture.captureCharFrame())
+  const rest = line.slice(line.indexOf("›") + 1)
+  if (/^\s*- /.test(rest)) return
+  send(fx, "right")
+  await sleep(50)
 }
 
 function mcpItem(overrides?: Record<string, unknown>) {
@@ -149,6 +171,19 @@ function mcpItem(overrides?: Record<string, unknown>) {
     text: "sample-config",
     enabled: true,
     fingerprint: "fp-sample",
+    ...overrides,
+  }
+}
+
+function toolItem(overrides?: Record<string, unknown>) {
+  return {
+    id: "tool:bash",
+    kind: "tool" as const,
+    group: "native" as const,
+    title: "bash",
+    text: "run commands",
+    enabled: true,
+    fingerprint: "fp-bash",
     ...overrides,
   }
 }
@@ -172,13 +207,32 @@ function reviewSnapshot(): Snapshot {
   })
 }
 
-async function gotoSampleRow(fx: EscapeFixture): Promise<void> {
+// Defaults MCP inventory: expand Defaults, the MCP group, then move to the
+// item. Each navigation step waits for the *frame* to catch up, not just a
+// sleep, so the walk cannot outrun the renderer while frames are stale.
+async function gotoMcpItem(fx: EscapeFixture): Promise<void> {
   await fx.fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  await moveDown(fx, 8)
-  send(fx, "right")
-  await sleep(50)
-  await moveDown(fx, 1)
-  await fx.fixture.waitForFrame((frame) => frame.includes("sample"))
+  await moveTo(fx, "Defaults")
+  await expand(fx)
+  await moveTo(fx, "MCP")
+  await expand(fx)
+  await moveTo(fx, "sample")
+  await fx.fixture.waitForFrame((frame) => selectedRow(frame).includes("sample"))
+}
+
+// Defaults tools branch: expand Defaults, Tools, the Native subgroup, then
+// move to the item. Tools rows genuinely support splitting (MCP rows do
+// not), so splitter tests drive from here.
+async function gotoToolItem(fx: EscapeFixture, label = "bash"): Promise<void> {
+  await fx.fixture.waitForFrame((frame) => frame.includes("Instructions"))
+  await moveTo(fx, "Defaults")
+  await expand(fx)
+  await moveTo(fx, "Tools")
+  await expand(fx)
+  await moveTo(fx, "Native")
+  await expand(fx)
+  await moveTo(fx, label)
+  await fx.fixture.waitForFrame((frame) => selectedRow(frame).includes(label))
 }
 
 test("escape on a plain tree closes the route", async () => {
@@ -241,7 +295,7 @@ test("help over detail editing unwinds help first, then editing, then the route"
     },
   })
   try {
-    await gotoSampleRow(fx)
+    await gotoMcpItem(fx)
     expect(send(fx, "return")).toBe(true)
     await fx.fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     // "?" stays reachable while editing, so help can float above the editor.
@@ -286,7 +340,7 @@ test("diff editing unwinds one level per press: edit, then mode, then route", as
     },
   })
   try {
-    await gotoSampleRow(fx)
+    await gotoMcpItem(fx)
     await fx.fixture.waitForFrame((frame) => frame.includes("review"))
     expect(send(fx, "return")).toBe(true)
     await fx.fixture.waitForFrame((frame) => frame.includes("Original upstream"))
@@ -324,7 +378,7 @@ test("split naming unwinds one level per press: naming, then mode, then route", 
   const text = "Purpose tells when.\n\nQuoting details here.\n"
   let closed = 0
   const fx = await renderRoute({
-    snapshots: [createSnapshot({ items: [mcpItem({ text })] })],
+    snapshots: [createSnapshot({ items: [toolItem({ text })] })],
     width: 120,
     height: 40,
     onClose: () => {
@@ -332,7 +386,7 @@ test("split naming unwinds one level per press: naming, then mode, then route", 
     },
   })
   try {
-    await gotoSampleRow(fx)
+    await gotoToolItem(fx)
     expect(send(fx, "s")).toBe(true)
     await fx.fixture.waitForFrame((frame) => frame.includes("split into sections"))
     expect(send(fx, "b")).toBe(true)
@@ -369,7 +423,7 @@ test("narrow detail editing unwinds one level per press: editing, detail, route"
     },
   })
   try {
-    await gotoSampleRow(fx)
+    await gotoMcpItem(fx)
     expect(send(fx, "right")).toBe(true)
     await fx.fixture.waitForFrame((frame) => frame.includes("back to tree"))
     expect(send(fx, "e")).toBe(true)
