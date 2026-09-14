@@ -17,6 +17,8 @@ import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserB
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, type ToolPlan } from "./instructions/apply.js"
+import { installTeaching } from "./instructions/teaching.js"
+import { registerInstructionTools } from "./tools.js"
 import { dedupeAgents, installTeamAgents, resolveTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
@@ -31,6 +33,7 @@ import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
 export interface PlusState {
   registration: RpcRegistration<typeof Definition> | undefined
   applied: Registration[]
+  tooling: Registration[]
   installedTools: readonly ToolPlan[]
   fingerprint: string | undefined
   projectRevision: number | undefined
@@ -43,6 +46,7 @@ export function createState(): PlusState {
   return {
     registration: undefined,
     applied: [],
+    tooling: [],
     installedTools: [],
     fingerprint: undefined,
     projectRevision: undefined,
@@ -970,22 +974,6 @@ function disabledMessage(directory: string): string {
   return `Project mode is not enabled for ${directory}`
 }
 
-function requireProject<E>(directory: string, disabled: () => E): Effect.Effect<readonly string[], E> {
-  return Effect.gen(function* () {
-    const config = yield* Effect.promise(() => read(directory))
-    if (config === undefined) return yield* Effect.fail(disabled())
-    return config.protectedAgents
-  })
-}
-
-function loadStored<E>(directory: string, disabled: () => E): Effect.Effect<LoadedStores, E> {
-  return Effect.gen(function* () {
-    const protectedAgents = yield* requireProject(directory, disabled)
-    const stored = yield* Effect.promise(() => load(directory))
-    return { ...stored, protectedAgents }
-  })
-}
-
 // Write one team record through the same save() path instructions.mutate
 // uses, with the caller's expected revisions. Only the matching (level,
 // team) record is replaced; every other record passes through unchanged, so
@@ -1536,8 +1524,38 @@ function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, ne
   return Effect.gen(function* () {
     const config = yield* Effect.promise(() => read(ctx.location.directory))
     if (config === undefined) return
+    yield* ensureTooling(ctx, state)
     const stored = yield* Effect.promise(() => loadCurrent(ctx.location.directory))
     yield* publishFresh(ctx, state, stored)
+  })
+}
+
+// Tooling (teaching instruction/skill plus the instructions tool namespace)
+// lives outside state.applied so ordinary publishes never replace it, and
+// activate is re-entry safe: a second call while tooling is installed is a
+// no-op instead of a duplicate registration.
+function ensureTooling(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
+  return Effect.gen(function* () {
+    if (state.tooling.length > 0) return
+    const installed = yield* Effect.promise(() => installTooling(ctx, state)).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("plus tooling install failed", { cause }).pipe(Effect.as([] as Registration[]))),
+    )
+    state.tooling = [...state.tooling, ...installed]
+  })
+}
+
+async function installTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
+  const api = createPlusApi(ctx, state)
+  const teaching = await installTeaching(ctx)
+  const tools = await registerInstructionTools(ctx, api)
+  return [...teaching, tools]
+}
+
+function disposeTooling(state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const registrations = state.tooling
+    state.tooling = []
+    yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
   })
 }
 
@@ -1551,6 +1569,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
       yield* disposeApplied(state)
+      yield* disposeTooling(state)
       state.fingerprint = undefined
       state.projectRevision = undefined
       state.globalRevision = undefined
