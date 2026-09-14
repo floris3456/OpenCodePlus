@@ -224,7 +224,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (node.kind === "team") return yield* setTeam(api, memo, input.id)
+          if (node.kind === "team") return yield* setTeam(api, memo, input.id, actor)
           const op = computeSet(memo, input)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
@@ -289,9 +289,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input) =>
+      execute: (input, context) =>
         Effect.gen(function* () {
-          return yield* createRow(api, input)
+          return yield* createRow(api, input, actorFrom(context))
         }),
     })
     editor.add({
@@ -301,10 +301,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input) =>
+      execute: (input, context) =>
         Effect.gen(function* () {
           if (input.confirm !== true)
             return yield* Effect.fail(new Tool.Error({ message: "delete.unconfirmed: delete requires confirm:true" }))
+          const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
           const node = findRow(memo, input.id)
@@ -313,7 +314,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           const plan = removalPlan(memo, input.id)
           if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
-          return yield* deletePlan(api, plan)
+          return yield* deletePlan(api, plan, actor)
         }),
     })
     editor.add({
@@ -522,11 +523,11 @@ function mutateWithRetry(
   })
 }
 
-function setTeam(api: PlusApi, memo: MemoInput, id: string): Effect.Effect<{ output: unknown }, Tool.Error> {
+function setTeam(api: PlusApi, memo: MemoInput, id: string, actor: Plus.Actor): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const plan = teamPlan(memo, id)
     if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
-    const result = yield* Effect.promise(() => api.setTeamEnabled({ level: plan.level, team: plan.team, enabled: plan.enabled }))
+    const result = yield* Effect.promise(() => api.setTeamEnabled({ level: plan.level, team: plan.team, enabled: plan.enabled, actor }))
     if (!result.ok)
       return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { id, status: plan.successStatus, ...result.value } }
@@ -618,6 +619,7 @@ function createRow(
     team?: string
     level?: "project" | "global"
   },
+  actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     if (input.kind === "agent") {
@@ -630,6 +632,7 @@ function createRow(
           ...(input.template === undefined ? {} : { template: input.template }),
           ...(input.fields === undefined ? {} : { fields: input.fields }),
           prompt: input.prompt as string,
+          actor,
         }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
@@ -638,7 +641,7 @@ function createRow(
     if (input.kind === "skill") {
       if (input.name === undefined || input.body === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create skill requires name and body" }))
-      const created = yield* Effect.promise(() => api.createSkill({ name: input.name as string, body: input.body as string }))
+      const created = yield* Effect.promise(() => api.createSkill({ name: input.name as string, body: input.body as string, actor }))
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       return { output: created.value }
     }
@@ -646,7 +649,7 @@ function createRow(
       if (input.id === undefined || input.title === undefined || input.text === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create base requires id, title, and text" }))
       const created = yield* Effect.promise(() =>
-        api.createBase({ id: input.id as string, title: input.title as string, text: input.text as string }),
+        api.createBase({ id: input.id as string, title: input.title as string, text: input.text as string, actor }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       return { output: created.value }
@@ -655,7 +658,7 @@ function createRow(
       if (input.name === undefined || input.text === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create instruction requires name and text" }))
       const created = yield* Effect.promise(() =>
-        api.createInstruction({ name: input.name as string, text: input.text as string }),
+        api.createInstruction({ name: input.name as string, text: input.text as string, actor }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       return { output: created.value }
@@ -663,13 +666,13 @@ function createRow(
     if (input.kind === "mcp") {
       if (input.name === undefined || input.config === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create mcp requires name and config" }))
-      const created = yield* Effect.promise(() => api.addMcp({ name: input.name as string, config: { ...(input.config as Record<string, unknown>) } }))
+      const created = yield* Effect.promise(() => api.addMcp({ name: input.name as string, config: { ...(input.config as Record<string, unknown>) }, actor }))
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       return { output: created.value }
     }
     if (input.team === undefined || input.level === undefined)
       return yield* Effect.fail(new Tool.Error({ message: "create team requires team and level" }))
-    const enabled = yield* Effect.promise(() => api.setTeamEnabled({ level: input.level as "project" | "global", team: input.team as string, enabled: true }))
+    const enabled = yield* Effect.promise(() => api.setTeamEnabled({ level: input.level as "project" | "global", team: input.team as string, enabled: true, actor }))
     if (!enabled.ok) return yield* Effect.fail(new Tool.Error({ message: `${enabled.error.code}: ${enabled.error.message}` }))
     return { output: enabled.value }
   })
@@ -683,29 +686,30 @@ function deletePlan(
     | { kind: "skill.delete"; id: string; successStatus: string }
     | { kind: "base.delete"; id: string; successStatus: string }
     | { kind: "instruction.delete"; name: string; successStatus: string },
+  actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     if (plan.kind === "agent.delete") {
-      const result = yield* Effect.promise(() => api.deleteAgent({ scope: plan.scope, id: plan.id }))
+      const result = yield* Effect.promise(() => api.deleteAgent({ scope: plan.scope, id: plan.id, actor }))
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }
     if (plan.kind === "mcp.remove") {
-      const result = yield* Effect.promise(() => api.removeMcp({ name: plan.name }))
+      const result = yield* Effect.promise(() => api.removeMcp({ name: plan.name, actor }))
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }
     if (plan.kind === "skill.delete") {
-      const result = yield* Effect.promise(() => api.deleteSkill({ id: plan.id }))
+      const result = yield* Effect.promise(() => api.deleteSkill({ id: plan.id, actor }))
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }
     if (plan.kind === "base.delete") {
-      const result = yield* Effect.promise(() => api.deleteBase({ id: plan.id }))
+      const result = yield* Effect.promise(() => api.deleteBase({ id: plan.id, actor }))
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }
-    const result = yield* Effect.promise(() => api.deleteInstruction({ name: plan.name }))
+    const result = yield* Effect.promise(() => api.deleteInstruction({ name: plan.name, actor }))
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: plan.successStatus } }
   })

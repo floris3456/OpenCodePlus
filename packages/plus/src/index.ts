@@ -225,19 +225,19 @@ export interface PlusApi {
   readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
-  readonly createAgent: (input: Plus.CreateAgentInput) => Promise<CreateAgentResult>
-  readonly renameAgent: (input: Plus.RenameAgentInput) => Promise<RenameAgentResult>
-  readonly deleteAgent: (input: Plus.DeleteAgentInput) => Promise<DeleteAgentResult>
-  readonly createSkill: (input: Plus.CreateSkillInput) => Promise<CreateSkillResult>
-  readonly importSkill: (input: Plus.ImportSkillInput) => Promise<ImportSkillResult>
-  readonly deleteSkill: (input: Plus.DeleteSkillInput) => Promise<DeleteSkillResult>
-  readonly createBase: (input: Plus.CreateBaseInput) => Promise<CreateBaseResult>
-  readonly deleteBase: (input: Plus.DeleteBaseInput) => Promise<DeleteBaseResult>
-  readonly createInstruction: (input: Plus.CreateInstructionInput) => Promise<CreateInstructionApiResult>
-  readonly deleteInstruction: (input: Plus.DeleteInstructionInput) => Promise<DeleteInstructionApiResult>
-  readonly addMcp: (input: Plus.AddMcpInput) => Promise<AddMcpResult>
-  readonly removeMcp: (input: Plus.McpRef) => Promise<RemoveMcpResult>
-  readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput) => Promise<SetTeamEnabledResult>
+  readonly createAgent: (input: Plus.CreateAgentInput & { readonly actor?: Plus.Actor }) => Promise<CreateAgentResult>
+  readonly renameAgent: (input: Plus.RenameAgentInput & { readonly actor?: Plus.Actor }) => Promise<RenameAgentResult>
+  readonly deleteAgent: (input: Plus.DeleteAgentInput & { readonly actor?: Plus.Actor }) => Promise<DeleteAgentResult>
+  readonly createSkill: (input: Plus.CreateSkillInput & { readonly actor?: Plus.Actor }) => Promise<CreateSkillResult>
+  readonly importSkill: (input: Plus.ImportSkillInput & { readonly actor?: Plus.Actor }) => Promise<ImportSkillResult>
+  readonly deleteSkill: (input: Plus.DeleteSkillInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSkillResult>
+  readonly createBase: (input: Plus.CreateBaseInput & { readonly actor?: Plus.Actor }) => Promise<CreateBaseResult>
+  readonly deleteBase: (input: Plus.DeleteBaseInput & { readonly actor?: Plus.Actor }) => Promise<DeleteBaseResult>
+  readonly createInstruction: (input: Plus.CreateInstructionInput & { readonly actor?: Plus.Actor }) => Promise<CreateInstructionApiResult>
+  readonly deleteInstruction: (input: Plus.DeleteInstructionInput & { readonly actor?: Plus.Actor }) => Promise<DeleteInstructionApiResult>
+  readonly addMcp: (input: Plus.AddMcpInput & { readonly actor?: Plus.Actor }) => Promise<AddMcpResult>
+  readonly removeMcp: (input: Plus.McpRef & { readonly actor?: Plus.Actor }) => Promise<RemoveMcpResult>
+  readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
 }
 
 export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
@@ -397,6 +397,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: input.scope,
         op: "agent.create",
         target: created.path,
@@ -435,6 +436,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: input.scope,
         op: "agent.rename",
         target: renamed.toPath,
@@ -466,6 +468,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: input.scope,
         op: "agent.delete",
         target: removed.path,
@@ -490,7 +493,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
-      await logFileOp({ directory, scope: "project", op: "skill.create", target: result.path, summary: `skill.create ${result.id}` })
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.create", target: result.path, summary: `skill.create ${result.id}` })
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     importSkill: async (input) => {
@@ -510,7 +513,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
-      await logFileOp({ directory, scope: "project", op: "skill.import", target: result.path, summary: `skill.import ${result.id}` })
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.import", target: result.path, summary: `skill.import ${result.id}` })
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     deleteSkill: async (input) => {
@@ -530,7 +533,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
-      await logFileOp({ directory, scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` })
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` })
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     createBase: async (input) => {
@@ -552,6 +555,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: "global",
         op: "base.create",
         target: userBaseFile(result.id),
@@ -578,6 +582,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: "global",
         op: "base.delete",
         target: userBaseFile(result.id),
@@ -609,6 +614,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: "project",
         op: "instruction.create",
         target: result.path,
@@ -635,6 +641,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
+        actor: normalizeActor(input.actor),
         scope: "project",
         op: "instruction.delete",
         target: result.path,
@@ -660,7 +667,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       const addedConfig = await mcpConfigTarget(directory)
-      await logFileOp({ directory, scope: "project", op: "mcp.add", target: addedConfig, summary: `mcp.add ${result.name}` })
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "mcp.add", target: addedConfig, summary: `mcp.add ${result.name}` })
       return { ok: true as const, value: { name: result.name } }
     },
     removeMcp: async (input) => {
@@ -681,7 +688,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       const removedConfig = await mcpConfigTarget(directory)
-      await logFileOp({ directory, scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` })
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` })
       return { ok: true as const, value: { name: result.name } }
     },
     setTeamEnabled: async (input) => {
@@ -716,7 +723,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       if (saved.changed)
         await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
           ts: new Date().toISOString(),
-          actor: { type: "tui" },
+          actor: normalizeActor(input.actor),
           op: "team.setEnabled",
           target: `team:${input.level}:${validated.team}`,
           summary: `team.setEnabled ${validated.team} ${input.enabled ? "enabled" : "disabled"} (${input.level})`,
@@ -1174,6 +1181,7 @@ async function logMutate(input: {
 // owning store's current revision, which the file write never moves.
 async function logFileOp(input: {
   directory: string
+  actor: Plus.Actor
   scope: "project" | "global"
   op: string
   target: string
@@ -1182,7 +1190,7 @@ async function logFileOp(input: {
   const stored = await load(input.directory)
   await append(input.scope === "project" ? projectLogPath(input.directory) : globalLogPath(), {
     ts: new Date().toISOString(),
-    actor: { type: "tui" },
+    actor: { ...input.actor },
     op: input.op,
     target: input.target,
     summary: input.summary,
