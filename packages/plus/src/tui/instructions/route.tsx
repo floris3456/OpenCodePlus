@@ -306,7 +306,6 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   props.context.keymap.layer(() => {
     if (showHelp()) {
-      if (mode() !== "tree") back()
       return { commands: [{ bind: "escape", title: "Close help", group: "Instructions", run: back }] }
     }
     if (state.snapshot() === undefined)
