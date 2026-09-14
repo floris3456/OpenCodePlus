@@ -573,7 +573,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // stored custom text.
 async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
   const templates = await Effect.runPromise(ctx.prompt.templates())
-  const user = readUserBaseTemplates()
+  const user = readUserBaseTemplates().map((template) => ({ ...template, user: true as const }))
   const userIds = new Set(user.map((template) => template.id))
   const listed =
     templates.length === 0
@@ -1051,6 +1051,8 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
       fingerprint: item.fingerprint,
       ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
       ...(item.order === undefined ? {} : { order: item.order }),
+      ...(item.userBase === true ? { userBase: true as const } : {}),
+      ...(item.codemode === true ? { codemode: true as const } : {}),
     })),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
       if (record.type === "split")

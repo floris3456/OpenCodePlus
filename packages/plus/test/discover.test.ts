@@ -352,7 +352,7 @@ test("discovery marks user base templates and Code Mode tools from the real regi
       ],
     }),
     records: [],
-    baseTemplates: [{ id: "custom", title: "Custom.txt", text: "custom base text" }],
+    baseTemplates: [{ id: "custom", title: "Custom.txt", text: "custom base text", user: true }],
     activeBase: noBase,
   })
   const byId = new Map(discovered.items.map((item) => [item.id, item]))

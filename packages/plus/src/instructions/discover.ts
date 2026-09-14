@@ -32,6 +32,8 @@ export interface BaseTemplate {
   readonly id: string
   readonly title: string
   readonly text: string
+  /** True when the template came from the user base directory (provenance known by the caller). */
+  readonly user?: boolean
 }
 
 export interface DiscoverInput {
@@ -252,20 +254,13 @@ function baseItems(templates: readonly BaseTemplate[]): Item[] {
       text: template.text,
       enabled: upstreamEnabled(),
       fingerprint: fingerprint(template.text),
-      ...(isUserBaseId(template.id) ? { userBase: true as const } : {}),
+      ...(template.user === true ? { userBase: true as const } : {}),
     }
   })
 }
 
-// The host prompt domain answers `active` only with its own template ids, so
-// a user-created template id can never be the active answer: it stays
-// listable and editable but is never applied. Built-in ids are the ones the
-// host can report (mirrors builtinBaseIds in agents/base.ts).
-function isUserBaseId(id: string): boolean {
-  return !builtinBaseTemplateIds.has(id)
-}
-
-const builtinBaseTemplateIds = new Set(["gpt", "claude", "muse", "gemini", "general", "kimi", "trinity"])
+// Base templates carry their provenance from the caller: `resolveBaseTemplates`
+// marks user-directory entries, so discovery never guesses from the id.
 
 function skillOrigin(skill: Skill.Info): ToolOrigin | undefined {
   return (skill as Skill.Info & { readonly origin?: ToolOrigin }).origin

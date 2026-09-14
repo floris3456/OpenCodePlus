@@ -131,6 +131,8 @@ export function createInstructionsState(context: Plugin.Context) {
         fingerprint: entry.fingerprint,
         ...(entry.agents === undefined ? {} : { agents: [...entry.agents] }),
         ...(entry.order === undefined ? {} : { order: entry.order }),
+        ...(entry.userBase === true ? { userBase: true as const } : {}),
+        ...(entry.codemode === true ? { codemode: true as const } : {}),
       }),
     )
   })
@@ -332,6 +334,8 @@ export function createInstructionsState(context: Plugin.Context) {
       fingerprint: found.fingerprint,
       ...(found.agents === undefined ? {} : { agents: [...found.agents] }),
       ...(found.order === undefined ? {} : { order: found.order }),
+      ...(found.userBase === true ? { userBase: true as const } : {}),
+      ...(found.codemode === true ? { codemode: true as const } : {}),
     }
     return {
       address,
