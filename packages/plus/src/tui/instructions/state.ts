@@ -10,7 +10,7 @@ import type {
 } from "../../instructions/model.js"
 import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import { agentOf, itemOf, recordOf, teamOf } from "../../instructions/snapshot.js"
-import { addSection, removalPlan, reset, resolveReview, saveSplit, saveText, setEnabled, teamPlan, toggle } from "../../instructions/ops.js"
+import { addSection, removalPlan, reset, resolveReview, saveSplit, saveText, setEnabled, setPin, teamPlan, toggle } from "../../instructions/ops.js"
 import { query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
@@ -34,6 +34,7 @@ function toRpcRecords(
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
         ...(record.state === undefined ? {} : { state: record.state }),
+        ...(record.pin === undefined ? {} : { pin: record.pin }),
         basedOn: record.basedOn,
         ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
         ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
@@ -138,8 +139,8 @@ export function createInstructionsState(context: Plugin.Context) {
     // Reveal matches hidden inside collapsed ancestors: match against the
     // full logical tree and include each match with its ancestor chain.
     // Matches come from the shared query engine so the TUI and the tool
-    // layer filter the same rows. Gated Code Mode sections never surface and
-    // the ancestor chain stays here, never in the engine.
+    // layer filter the same rows. Code Mode rows are live and filter like any
+    // other row; the ancestor chain stays here, never in the engine.
     const full = fullTree()
     const matched = matchFilter(raw, full)
     const byId = new Map(full.map((node) => [node.id, node]))
@@ -467,6 +468,19 @@ export function createInstructionsState(context: Plugin.Context) {
     return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
+  async function setPinRow(node: TreeNode, value: boolean): Promise<boolean> {
+    const result = setPin(memoInput(), node.id, value)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
+  async function togglePinRow(node: TreeNode): Promise<boolean> {
+    return setPinRow(node, node.badges.pinned !== true)
+  }
+
   async function saveTextRow(node: TreeNode, text: string): Promise<boolean> {
     const result = saveText(memoInput(), node.id, text)
     if ("refusal" in result) {
@@ -644,6 +658,8 @@ export function createInstructionsState(context: Plugin.Context) {
     move,
     toggle: toggleRow,
     setEnabled: setEnabledRow,
+    setPin: setPinRow,
+    togglePin: togglePinRow,
     saveText: saveTextRow,
     reset: resetNode,
     saveSplit: saveSplitRow,

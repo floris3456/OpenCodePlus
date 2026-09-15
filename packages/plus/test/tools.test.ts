@@ -21,6 +21,7 @@ import {
   resolveReview,
   saveSplit,
   saveText,
+  setPin,
   teamPlan,
   toggle,
   unknownRowRefusal,
@@ -101,6 +102,9 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       ...(item.order === undefined ? {} : { order: item.order }),
       ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
       ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+      ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
+      ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
+      ...(item.execute === undefined ? {} : { execute: item.execute }),
     })),
     records: snapshot.records.map((record) =>
       record.type === "split"
@@ -120,6 +124,7 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
             section: record.section,
             ...(record.text === undefined ? {} : { text: record.text }),
             ...(record.state === undefined ? {} : { state: record.state }),
+            ...(record.pin === undefined ? {} : { pin: record.pin }),
             basedOn: record.basedOn,
             ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
             ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
@@ -315,10 +320,11 @@ test("a refused toggle produces the same refusal string the TUI shows", async ()
   const tools = await readTools(ctx)
   const snapshot = await snapshotOf(api)
   const memo = memoFromSnapshot(snapshot)
-  const node = expandedTree(memo).find((candidate) => candidate.address?.item === "tool:coder")
-  if (node === undefined) throw new Error("missing coder row")
+  const node = expandedTree(memo).find((candidate) => candidate.label === "Role/persona")
+  if (node === undefined) throw new Error("missing Role/persona row")
   const expected = toggle(memo, node.id)
   if (!("refusal" in expected)) throw new Error("expected toggle refusal")
+  expect(expected.refusal).toBe(`"Role/persona" cannot be excluded and remains in effect`)
   const error = await runFail(need(tools, "instructions_set"), { id: node.id })
   expect(error.message).toBe(expected.refusal)
 })
@@ -887,7 +893,7 @@ test("team set honours explicit state and refuses text and resolve without writi
   expect(logged.value.total).toBe(beforeTotal + 2)
 })
 
-test("resolve edit on a Code Mode row refuses like a text edit", async () => {
+test("a Code Mode text edit persists and show reports it", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -900,16 +906,20 @@ test("resolve edit on a Code Mode row refuses like a text edit", async () => {
   const snapshot = await snapshotOf(api)
   const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === "tool:coder")
   if (node === undefined) throw new Error("missing coder row")
-  const textError = await runFail(need(tools, "instructions_set"), { id: node.id, text: "blocked" })
-  const editError = await runFail(need(tools, "instructions_set"), { id: node.id, resolve: "edit", text: "blocked" })
-  expect(editError.message).toBe(textError.message)
-  const missingError = await runFail(need(tools, "instructions_set"), { id: node.id, resolve: "edit" })
-  expect(missingError.message).toContain("cannot be edited")
+  const before = await snapshotOf(api)
+  const expected = saveText(memoFromSnapshot(before), node.id, "custom coder text")
+  if ("refusal" in expected) throw new Error(`expected save success: ${expected.refusal}`)
+  const output = (await runOk(need(tools, "instructions_set"), { id: node.id, text: "custom coder text" })) as { status: string }
+  expect(output.status).toBe(expected.status)
   const after = await snapshotOf(api)
-  expect(after.records).toEqual([])
+  expect(after.records.some((record) => record.type === "customization" && record.text === "custom coder text")).toBe(true)
+  const shown = (await runOk(need(tools, "instructions_show"), { id: node.id, view: "resolved" })) as { text: string }
+  expect(shown.text).toBe("custom coder text")
+  const record = (await runOk(need(tools, "instructions_show"), { id: node.id, view: "record" })) as { record: { text?: string } | null }
+  expect(record.record?.text).toBe("custom coder text")
 })
 
-test("explicit state refusal matches the toggle wording through the tool", async () => {
+test("pin through set matches ops.setPin records and status", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -922,9 +932,46 @@ test("explicit state refusal matches the toggle wording through the tool", async
   const snapshot = await snapshotOf(api)
   const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === "tool:coder")
   if (node === undefined) throw new Error("missing coder row")
-  const toggleError = await runFail(need(tools, "instructions_set"), { id: node.id })
-  const stateError = await runFail(need(tools, "instructions_set"), { id: node.id, state: "off" })
-  expect(stateError.message).toBe(toggleError.message)
+  const before = await snapshotOf(api)
+  const expected = setPin(memoFromSnapshot(before), node.id, true)
+  if ("refusal" in expected) throw new Error(`expected pin success: ${expected.refusal}`)
+  const output = (await runOk(need(tools, "instructions_set"), { id: node.id, pin: true })) as { status: string }
+  expect(output.status).toBe(expected.status)
+  expect(output.status).toBe(`Pinned "coder"`)
+  const after = await snapshotOf(api)
+  expect(withoutUpdated(after.records)).toEqual(withoutUpdated(expected.records.map((record) => ({ ...record }))))
+  const combined = (await runOk(need(tools, "instructions_set"), { id: node.id, text: "pinned text", pin: false })) as {
+    status: string
+  }
+  expect(combined.status).toBe(`Unpinned "coder"`)
+  const afterCombined = await snapshotOf(api)
+  expect(afterCombined.records.some((record) => record.type === "customization" && record.text === "pinned text")).toBe(true)
+})
+
+test("toggling the execute row through set succeeds and writes the state record", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream")],
+    tools: [{ id: "coder", description: "code mode tool" }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === "tool:execute")
+  if (node === undefined) throw new Error("missing execute row")
+  const before = await snapshotOf(api)
+  const expected = toggle(memoFromSnapshot(before), node.id)
+  if ("refusal" in expected) throw new Error(`expected execute toggle success: ${expected.refusal}`)
+  const output = (await runOk(need(tools, "instructions_set"), { id: node.id })) as { status: string }
+  expect(output.status).toBe(expected.status)
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.item === "tool:execute" && record.state === "off")).toBe(
+    true,
+  )
+  const pinError = await runFail(need(tools, "instructions_set"), { id: node.id, pin: true })
+  expect(pinError.message).toBe(`"execute" is host-owned: toggle only`)
 })
 
 test("a stale bare-id toggle reports the status that actually committed", async () => {

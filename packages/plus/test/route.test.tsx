@@ -228,10 +228,14 @@ test("help overlay lists keys and closes", async () => {
     dispatch(fixture, "?")
     await fixture.waitForFrame((frame) => frame.includes("space toggle include/exclude"))
     expect(fixture.captureCharFrame()).toContain("space toggle include/exclude")
+    expect(fixture.captureCharFrame()).toContain("p pin Code Mode tool")
     // The overlay lists the filter keys so the grammar is discoverable
     // without leaving the TUI: structural keys grouped, then the slower
     // text-dependent ones.
     expect(fixture.captureCharFrame()).toContain("keys: kind item group")
+    expect(fixture.captureCharFrame()).toContain("namespace")
+    expect(fixture.captureCharFrame()).toContain("pinned")
+    expect(fixture.captureCharFrame()).toContain("execute")
     expect(fixture.captureCharFrame()).toContain("has id label updated team acked excluded")
     expect(fixture.captureCharFrame()).toContain("slow text:")
     expect(fixture.captureCharFrame()).toContain("shadowed orphan")
@@ -1262,35 +1266,65 @@ function codemodeSnapshot(): Snapshot {
   })
 }
 
-test("Code Mode sections refuse toggle and edit without saving", async () => {
+test("Code Mode rows toggle and edit like any other tool", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [codemodeSnapshot()], width: 120, height: 40 })
   try {
     // Navigate INTO the Code Mode tool by label: agent subtree, Tools group,
-    // Native subgroup, item row, then its auto-derived sections.
+    // Native subgroup, Code Mode group, item row, then its auto-derived sections.
     await gotoAgent(fixture, "Implementer")
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
     await moveToNext(fixture, "Native")
     await expand(fixture)
+    await moveTo(fixture, "Code Mode")
+    await expand(fixture)
     await moveTo(fixture, "coder")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
-    expect(binds(fixture)).not.toContain("space")
+    expect(selectedRow(fixture.captureCharFrame())).not.toContain("[unsupported]")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[on]")
+    expect(binds(fixture)).toContain("space")
+    expect(binds(fixture)).toContain("p")
+    expect(binds(fixture)).toContain("s")
+    // Enter opens the editor for a live Code Mode row.
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    expect(fixture.captureCharFrame()).toContain("ctrl+s save")
+    dispatch(fixture, "escape")
+    await sleep(100)
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "coder"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:coder", state: "off" })
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => frame.includes("Alpha"))
     await moveTo(fixture, "Alpha")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
-    expect(binds(fixture)).not.toContain("space")
-    // No space binding: the keypress cannot reach state.toggle at all.
-    expect(dispatch(fixture, "space")).toBe(false)
-    expect(fixture.fake.mutateInputs.length).toBe(0)
-    // Enter must not open the editor for a gated section either.
-    dispatch(fixture, "return")
-    await sleep(100)
-    expect(fixture.captureCharFrame()).not.toContain("ctrl+s save")
-    expect(fixture.fake.mutateInputs.length).toBe(0)
-    expect(fixture.captureCharFrame()).not.toContain("Saved")
-    expect(fixture.captureCharFrame()).not.toContain("Disabled")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("[on]")
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "Alpha"'))
+    expect(fixture.fake.mutateInputs.length).toBe(2)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("p key writes a pin through the same status path as toggle", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [codemodeSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveToNext(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "Code Mode")
+    await expand(fixture)
+    await moveTo(fixture, "coder")
+    expect(binds(fixture)).toContain("p")
+    dispatch(fixture, "p")
+    await fixture.waitForFrame((frame) => frame.includes('Pinned "coder"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:coder", pin: true })
   } finally {
     fixture.destroy()
   }
@@ -1355,7 +1389,7 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
   }
 })
 
-test("filter matching a Code Mode section exposes no editable row", async () => {
+test("filter matching a Code Mode section reveals a live editable row", async () => {
   const fixture = await renderInstructionsRoute({
     snapshots: [codemodeSnapshot()],
     width: 120,
@@ -1366,15 +1400,16 @@ test("filter matching a Code Mode section exposes no editable row", async () => 
     await fixture.waitForFrame((frame) => frame.includes("Project"))
     expect(dispatch(fixture, "/")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Filter:"))
-    // The gated section label matches, but the filter path must not expose
-    // it as a selectable row: the tree keeps only the ancestor chain, so no
-    // row can carry the section into space/enter.
-    await fixture.waitForFrame((frame) => frame.includes("No instructions found"))
-    const frame = fixture.captureCharFrame()
-    expect(frame).not.toContain("›")
-    expect(binds(fixture)).not.toContain("space")
-    expect(dispatch(fixture, "space")).toBe(false)
-    expect(fixture.fake.mutateInputs.length).toBe(0)
+    // Code Mode sections are live, so the filter reveals the section with its
+    // ancestor chain as a selectable row that toggles.
+    await fixture.waitForFrame((frame) => frame.includes("Alpha"))
+    await moveTo(fixture, "Alpha")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("Alpha")
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Disabled "Alpha"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:coder", section: "alpha", state: "off" })
   } finally {
     fixture.destroy()
   }
@@ -1406,27 +1441,30 @@ test("provenance flags travel real discovery -> snapshot -> rendered rows", asyn
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
   expect(snapshot.items.find((item) => item.id === "base:custom")?.userBase).toBe(true)
   expect(snapshot.items.find((item) => item.id === "tool:coder")?.codemode).toBe(true)
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["coder", "Custom.txt"] },
+  })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    // Shared-group order is Tools before Base, and moveTo only walks down.
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveTo(fixture, "Native")
-    await expand(fixture)
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    await fixture.waitForFrame((frame) => frame.includes("coder"))
     await moveTo(fixture, "coder")
     const toolRow = selectedRow(fixture.captureCharFrame())
     expect(toolRow).toContain("coder")
-    expect(toolRow).toContain("[unsupported]")
+    expect(toolRow).not.toContain("[unsupported]")
+    expect(toolRow).toContain("[on]")
     const keys = binds(fixture)
-    expect(keys).not.toContain("space")
-    expect(keys).not.toContain("s")
+    expect(keys).toContain("space")
+    expect(keys).toContain("s")
+    expect(keys).toContain("p")
     await fixture.waitForFrame((frame) => frame.includes("code mode tool"))
-    expect(fixture.captureCharFrame()).toContain("[unsupported]")
-    await moveTo(fixture, "Base")
-    await expand(fixture)
+    expect(fixture.captureCharFrame()).not.toContain("[unsupported]")
+    expect(dispatch(fixture, "/")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Custom.txt"))
     await moveTo(fixture, "Custom.txt")
     const baseRow = selectedRow(fixture.captureCharFrame())
     expect(baseRow).toContain("Custom.txt")

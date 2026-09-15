@@ -278,15 +278,27 @@ test("review and unsupported badges own yellow and nothing else borrows it", () 
   expect(badgeColor(context, "review")).toBe(yellow)
   expect(badgeColor(context, "1 to review")).toBe(yellow)
   expect(badgeColor(context, "unsupported")).toBe(yellow)
-  for (const label of ["on", "off", "modified", "active", "inactive"]) {
+  for (const label of ["on", "off", "modified", "active", "inactive", "pinned"]) {
     expect(badgeColor(context, label)).toBe(gray)
   }
 
   const nodes = expandAll()
   const coder = nodes.find((node) => node.id === "item:project:Implementer:tool:coder")
   expect(coder).toBeDefined()
-  expect(coder?.badges.unsupported).toBe(true)
-  expect(badgeLabels(coder!)).toContain("unsupported")
+  expect(coder?.badges.unsupported).toBeUndefined()
+  expect(badgeLabels(coder!)).not.toContain("unsupported")
+
+  const pinnedTree = tree({
+    items: items(),
+    records: [record({ item: "tool:coder", pin: true })],
+    agents: agents(),
+    expanded: new Set(allIds({ items: items(), records: [record({ item: "tool:coder", pin: true })], agents: agents() })),
+  })
+  const pinnedCoder = pinnedTree.find((node) => node.id === "item:project:Implementer:tool:coder")
+  expect(pinnedCoder).toBeDefined()
+  expect(pinnedCoder?.badges.pinned).toBe(true)
+  expect(badgeLabels(pinnedCoder!)).toContain("pinned")
+  expect(badgeColor(context, "pinned")).toBe(gray)
 
   const warningBadges = new Set(["review", "unsupported"])
   let sawUnsupported = false

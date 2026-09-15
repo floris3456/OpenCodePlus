@@ -128,10 +128,8 @@ function toggleRefusal(node: TreeNode): string | undefined {
   if (node.kind === "team") return `"${node.label}" cannot be toggled`
   if (node.address === undefined) return `"${node.label}" cannot be toggled`
   if (node.actions?.toggle !== true) {
-    if (node.badges.unsupported === true) {
-      if (node.badges.unexcludable === true) return `"${node.label}" cannot be excluded and remains in effect`
-      return `"${node.label}" is unsupported in Code Mode and cannot be toggled`
-    }
+    if (node.badges.unsupported === true && node.badges.unexcludable === true)
+      return `"${node.label}" cannot be excluded and remains in effect`
     return `"${node.label}" cannot be toggled`
   }
   return undefined
@@ -140,9 +138,16 @@ function toggleRefusal(node: TreeNode): string | undefined {
 function editRefusal(node: TreeNode): string | undefined {
   if (node.address === undefined) return editRefusalForLabel(node.label)
   if (node.actions?.edit !== true) {
-    if (node.badges.unsupported === true) return `"${node.label}" is unsupported in Code Mode and cannot be edited`
     return editRefusalForLabel(node.label)
   }
+  return undefined
+}
+
+function pinRefusal(node: TreeNode, item: Item | undefined): string | undefined {
+  if (item?.execute === true) return `"${node.label}" is host-owned: toggle only`
+  const pinnable = node.address?.section === null && item?.kind === "tool" && item.codemode === true
+  if (!pinnable) return `"${node.label}" is not a Code Mode tool and cannot be pinned`
+  if (node.actions?.pin !== true) return `"${node.label}" is not a Code Mode tool and cannot be pinned`
   return undefined
 }
 
@@ -163,6 +168,7 @@ function customizationsEqualWithoutUpdated(left: CustomizationRecord, right: Cus
     left.section === right.section &&
     left.text === right.text &&
     left.state === right.state &&
+    left.pin === right.pin &&
     left.basedOn === right.basedOn &&
     left.basedOnText === right.basedOnText &&
     left.acknowledged === right.acknowledged
@@ -232,6 +238,35 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpR
   }
 }
 
+export function setPin(input: MemoInput, rowId: string, value: boolean): OpResult {
+  const found = findNode(input, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const memo = found.memo
+  const address = node.address
+  const item = address === undefined ? undefined : upstreamFor(memo.ctx.items, address)
+  const refusal = pinRefusal(node, item)
+  if (refusal !== undefined) return { refusal }
+  const chain = chainFor(memo, node)
+  if (!chain) return { refusal: `Item not found for "${node.label}"` }
+  const next = merge(chain.customizations, chain.address, { pin: value }, chain.upstream)
+  const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
+  const created = next.find((record) => sameAddress(record, chain.address))
+  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
+    return {
+      records: chain.customizations,
+      splits: chain.splits,
+      status: value ? `Pinned "${node.label}"` : `Unpinned "${node.label}"`,
+      retryHint: `pinned "${node.label}" against a stale revision; retry to apply`,
+    }
+  return {
+    records: next,
+    splits: chain.splits,
+    status: value ? `Pinned "${node.label}"` : `Unpinned "${node.label}"`,
+    retryHint: `pinned "${node.label}" against a stale revision; retry to apply`,
+  }
+}
+
 export function saveText(input: MemoInput, rowId: string, text: string): OpResult {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
@@ -273,7 +308,7 @@ export function reset(input: MemoInput, rowId: string): OpResult {
   const next = merge(
     chain.customizations,
     chain.address,
-    { text: null, state: null, acknowledged: null },
+    { text: null, state: null, pin: null, acknowledged: null },
     chain.upstream,
   )
   return {

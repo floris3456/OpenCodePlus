@@ -12,6 +12,7 @@ import {
   saveSplit,
   saveText,
   setEnabled,
+  setPin,
   teamPlan,
   toggle,
   unknownRowRefusal,
@@ -139,15 +140,14 @@ test("toggle success disables a shared mcp row", () => {
   expect(result.records.some((record) => record.item === "mcp:sample" && record.state === "off")).toBe(true)
 })
 
-test("toggle refuses Code Mode tooling with the unsupported wording", () => {
+test("toggle succeeds on a Code Mode row", () => {
   const input = baseInput()
   const rowId = findId(input, "tool:coder")
-  const nodes = expandedTree(input)
-  const node = nodes.find((candidate) => candidate.id === rowId)
-  if (!node) throw new Error("missing coder row")
   const result = toggle(input, rowId)
-  if (!("refusal" in result)) throw new Error("expected refusal")
-  expect(result.refusal).toBe(`"${node.label}" is unsupported in Code Mode and cannot be toggled`)
+  if ("refusal" in result) throw new Error(`expected success, got refusal ${result.refusal}`)
+  expect(result.status).toBe(`Disabled "coder"`)
+  expect(result.retryHint).toBe(`toggled "coder" against a stale revision; retry to apply`)
+  expect(result.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
 })
 
 test("toggle refuses whole Role/persona with the unexcludable wording", () => {
@@ -160,18 +160,19 @@ test("toggle refuses whole Role/persona with the unexcludable wording", () => {
   expect(result.refusal).toBe(`"Role/persona" cannot be excluded and remains in effect`)
 })
 
-test("setEnabled success and refusal", () => {
+test("setEnabled succeeds on Code Mode rows", () => {
   const input = baseInput()
   const rowId = findId(input, "mcp:sample")
   const ok = setEnabled(input, rowId, false)
   if ("refusal" in ok) throw new Error(`expected success ${ok.refusal}`)
   expect(ok.status).toBe(`Disabled "sample"`)
-  const gated = setEnabled(input, findId(input, "tool:coder"), false)
-  if (!("refusal" in gated)) throw new Error("expected refusal")
-  expect(gated.refusal).toBe(`"coder" is unsupported in Code Mode and cannot be toggled`)
+  const coder = setEnabled(input, findId(input, "tool:coder"), false)
+  if ("refusal" in coder) throw new Error(`expected Code Mode success ${coder.refusal}`)
+  expect(coder.status).toBe(`Disabled "coder"`)
+  expect(coder.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
 })
 
-test("saveText success and Code Mode refusal", () => {
+test("saveText succeeds on Code Mode rows", () => {
   const input = baseInput()
   const rowId = findId(input, "mcp:sample")
   const ok = saveText(input, rowId, "new config")
@@ -179,9 +180,10 @@ test("saveText success and Code Mode refusal", () => {
   expect(ok.status).toBe(`Saved "sample"`)
   expect(ok.retryHint).toBe(`saved "sample" against a stale revision; retry to apply`)
   expect(ok.records.some((record) => record.item === "mcp:sample" && record.text === "new config")).toBe(true)
-  const gated = saveText(input, findId(input, "tool:coder"), "x")
-  if (!("refusal" in gated)) throw new Error("expected refusal")
-  expect(gated.refusal).toBe(`"coder" is unsupported in Code Mode and cannot be edited`)
+  const coder = saveText(input, findId(input, "tool:coder"), "x")
+  if ("refusal" in coder) throw new Error(`expected Code Mode success ${coder.refusal}`)
+  expect(coder.status).toBe(`Saved "coder"`)
+  expect(coder.records.some((record) => record.item === "tool:coder" && record.text === "x")).toBe(true)
 })
 
 test("reset success clears the override and refusal names a missing override", () => {
@@ -404,16 +406,16 @@ test("refusalFor explains delete blocks and stays silent on structural rows", ()
   expect(refusalFor(input, agentId)).toBeUndefined()
 })
 
-test("setEnabled shares toggle refusal wording for Code Mode and unexcludable rows", () => {
+test("setEnabled shares toggle status for Code Mode rows and refusal for unexcludable rows", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
   const coder = nodes.find((candidate) => candidate.address?.item === "tool:coder")
   if (!coder) throw new Error("missing coder row")
   const toggledCoder = toggle(input, coder.id)
   const setCoder = setEnabled(input, coder.id, false)
-  if (!("refusal" in toggledCoder) || !("refusal" in setCoder)) throw new Error("expected both to refuse")
-  expect(setCoder.refusal).toBe(toggledCoder.refusal)
-  expect(setCoder.refusal).toBe(`"coder" is unsupported in Code Mode and cannot be toggled`)
+  if ("refusal" in toggledCoder || "refusal" in setCoder) throw new Error("expected both to succeed")
+  expect(setCoder.status).toBe(toggledCoder.status)
+  expect(setCoder.status).toBe(`Disabled "coder"`)
   const role = nodes.find((candidate) => candidate.label === "Role/persona")
   if (!role) throw new Error("missing role row")
   const toggledRole = toggle(input, role.id)
@@ -429,25 +431,80 @@ test("setEnabled shares toggle refusal wording for Code Mode and unexcludable ro
   expect(setBase.refusal).toBe(toggledBase.refusal)
 })
 
-test("setEnabled shares toggle refusal on Code Mode sections", () => {
+test("Code Mode sections toggle like any other section", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
   const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.item === "tool:coder")
   if (!section) throw new Error("missing coder section")
   const toggled = toggle(input, section.id)
+  if ("refusal" in toggled) throw new Error(`expected toggle success ${toggled.refusal}`)
+  expect(toggled.status).toBe(`Disabled "${section.label}"`)
   const set = setEnabled(input, section.id, false)
-  if (!("refusal" in toggled) || !("refusal" in set)) throw new Error("expected both to refuse")
-  expect(set.refusal).toBe(toggled.refusal)
+  if ("refusal" in set) throw new Error(`expected set success ${set.refusal}`)
+  expect(set.status).toBe(toggled.status)
 })
 
-test("resolveReview edit requires edit eligibility and edited text", () => {
+test("setPin sets and clears a Code Mode pin", () => {
+  const input = baseInput()
+  const rowId = findId(input, "tool:coder")
+  const pinned = setPin(input, rowId, true)
+  if ("refusal" in pinned) throw new Error(`expected pin success ${pinned.refusal}`)
+  expect(pinned.status).toBe(`Pinned "coder"`)
+  expect(pinned.retryHint).toBe(`pinned "coder" against a stale revision; retry to apply`)
+  expect(pinned.records.some((record) => record.item === "tool:coder" && record.pin === true)).toBe(true)
+  const withPinned: MemoInput = { ...input, records: [...pinned.records, ...pinned.splits] }
+  const unpinned = setPin(withPinned, rowId, false)
+  if ("refusal" in unpinned) throw new Error(`expected unpin success ${unpinned.refusal}`)
+  expect(unpinned.status).toBe(`Unpinned "coder"`)
+  expect(unpinned.records.some((record) => record.item === "tool:coder" && record.pin === false)).toBe(true)
+  const aged = unpinned.records.map((record) => ({ ...record, updated: "2020-01-01T00:00:00.000Z" }))
+  const withAged: MemoInput = { ...input, records: [...aged, ...unpinned.splits] }
+  const again = setPin(withAged, rowId, false)
+  if ("refusal" in again) throw new Error(`expected second unpin: ${again.refusal}`)
+  expect(again.records).toEqual(aged)
+})
+
+test("setPin refuses rows that cannot be pinned", () => {
+  const input = baseInput()
+  const nodes = expandedTree(input)
+  const bash = nodes.find((candidate) => candidate.address?.item === "tool:bash")
+  if (!bash) throw new Error("missing bash row")
+  const notCode = setPin(input, bash.id, true)
+  if (!("refusal" in notCode)) throw new Error("expected pin refusal")
+  expect(notCode.refusal).toBe(`"bash" is not a Code Mode tool and cannot be pinned`)
+  const withExecute = baseInput({
+    items: [
+      ...baseInput().items,
+      {
+        id: "tool:execute",
+        kind: "tool",
+        group: "native",
+        title: "execute",
+        text: "Host-owned Code Mode entry point",
+        enabled: true,
+        fingerprint: "fp-execute",
+        codemode: false,
+        execute: true,
+      },
+    ],
+  })
+  const executeNodes = expandedTree(withExecute)
+  const execute = executeNodes.find((candidate) => candidate.address?.item === "tool:execute")
+  if (!execute) throw new Error("missing execute row")
+  const hostOwned = setPin(withExecute, execute.id, true)
+  if (!("refusal" in hostOwned)) throw new Error("expected execute refusal")
+  expect(hostOwned.refusal).toBe(`"execute" is host-owned: toggle only`)
+})
+
+test("resolveReview edit succeeds on Code Mode rows and still requires edited text", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
   const coder = nodes.find((candidate) => candidate.address?.item === "tool:coder")
   if (!coder) throw new Error("missing coder row")
-  const gated = resolveReview(input, coder.id, "edit", "new text")
-  if (!("refusal" in gated)) throw new Error("expected edit refusal on Code Mode row")
-  expect(gated.refusal).toBe(`"coder" is unsupported in Code Mode and cannot be edited`)
+  const edited = resolveReview(input, coder.id, "edit", "new text")
+  if ("refusal" in edited) throw new Error(`expected Code Mode edit success ${edited.refusal}`)
+  expect(edited.status).toBe(`Edited "coder"`)
+  expect(edited.records.some((record) => record.item === "tool:coder" && record.text === "new text")).toBe(true)
   const sample = nodes.find((candidate) => candidate.address?.item === "mcp:sample")
   if (!sample) throw new Error("missing sample row")
   const missing = resolveReview(input, sample.id, "edit")
@@ -511,6 +568,7 @@ test("unknown row refuses for every op", () => {
   const results = [
     toggle(input, unknown),
     setEnabled(input, unknown, true),
+    setPin(input, unknown, true),
     saveText(input, unknown, "x"),
     reset(input, unknown),
     saveSplit(input, unknown, []),

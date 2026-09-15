@@ -43,6 +43,7 @@ export function badgeLabels(node: TreeNode): string[] {
   if (node.badges.modified === true) labels.push("modified")
   if (node.badges.active === true) labels.push("active")
   if (node.badges.inactive === true) labels.push("inactive")
+  if (node.badges.pinned === true) labels.push("pinned")
   if (node.badges.unsupported === true) labels.push("unsupported")
   const count = node.badges.reviewCount ?? 0
   if (count > 0) labels.push(`${count} to review`)
@@ -56,10 +57,12 @@ export function isReviewLabel(label: string): boolean {
 
 export function badgeColor(context: Plugin.Context, label: string) {
   // Review and unsupported both flag saved content needing user attention:
-  // review means upstream changed under an override, unsupported means edits
-  // never reach the session. Both are warning status feedback, so both own
-  // the feedback warning token. Active/inactive describe base liveness and
-  // stay plain subdued body text like every other non-review badge.
+  // review means upstream changed under an override, unsupported means a
+  // whole Role/persona or base row cannot be excluded. Both are warning
+  // status feedback, so both own the feedback warning token. Active,
+  // inactive, and pinned describe row state and stay plain subdued body text
+  // like every other non-review badge: pinned in particular must never borrow
+  // warning yellow.
   if (isReviewLabel(label)) return context.theme.text.feedback.warning.default
   if (label === "unsupported") return context.theme.text.feedback.warning.default
   return context.theme.text.subdued

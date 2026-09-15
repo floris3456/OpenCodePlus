@@ -75,7 +75,7 @@ test("the skill content covers the tool surface", async () => {
   for (const phrase of [
     "list({ where?, fields?, sort?, limit?, offset? })",
     'show({ id, view? })',
-    "set({ id, text?, state?, resolve? })",
+    "set({ id, text?, state?, pin?, resolve? })",
     "reset({ id })",
     "split({ id, boundaries?, add? })",
     "create({ kind, ...fields })",

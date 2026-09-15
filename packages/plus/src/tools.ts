@@ -14,6 +14,7 @@ import {
   saveSplit,
   saveText,
   setEnabled,
+  setPin,
   teamPlan,
   toggle,
   unknownRowRefusal,
@@ -41,8 +42,8 @@ const ShowDescription =
   "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary."
 
 const SetDescription =
-  "Save an override, toggle, or resolve a review row (TUI Enter/Space/k/t/e).\n" +
-  "With text save an override, with state on|off toggle explicitly, with resolve keep|take|edit resolve review.\n" +
+  "Save an override, toggle, pin, or resolve a review row (TUI Enter/Space/p/k/t/e).\n" +
+  "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with resolve keep|take|edit resolve review.\n" +
   "Bare id toggles. Writes pass actor tool and retry once when stale."
 
 const ResetDescription =
@@ -120,6 +121,7 @@ const SetInput = Schema.Struct({
   id: Schema.String,
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
+  pin: Schema.optionalKey(Schema.Boolean),
   resolve: Schema.optionalKey(Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit")])),
 })
 
@@ -383,6 +385,7 @@ function toSnapshotRecords(records: readonly CustomizationRecord[], splits: read
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
         ...(record.state === undefined ? {} : { state: record.state }),
+        ...(record.pin === undefined ? {} : { pin: record.pin }),
         basedOn: record.basedOn,
         ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
         ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
@@ -417,16 +420,54 @@ function protectedOf(snapshot: Plus.Snapshot, node: { kind: string; id: string; 
   return undefined
 }
 
-function computeSet(memo: MemoInput, input: { id: string; text?: string; state?: "on" | "off"; resolve?: "keep" | "take" | "edit" }) {
-  if (input.resolve !== undefined) return resolveReview(memo, input.id, input.resolve, input.text)
+function computeSet(
+  memo: MemoInput,
+  input: { id: string; text?: string; state?: "on" | "off"; pin?: boolean; resolve?: "keep" | "take" | "edit" },
+) {
+  if (input.resolve !== undefined) {
+    if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text)
+    const first = resolveReview(memo, input.id, input.resolve, input.text)
+    if ("refusal" in first) return first
+    let interim: MemoInput = { ...memo, records: [...first.records, ...first.splits] }
+    if (input.state !== undefined) {
+      const second = setEnabled(interim, input.id, input.state === "on")
+      if ("refusal" in second) return second
+      interim = { ...interim, records: [...second.records, ...second.splits] }
+      if (input.pin === undefined) return second
+    }
+    if (input.pin !== undefined) return setPin(interim, input.id, input.pin)
+    return first
+  }
+  if (input.text !== undefined && input.state !== undefined && input.pin !== undefined) {
+    const first = saveText(memo, input.id, input.text)
+    if ("refusal" in first) return first
+    const interim: MemoInput = { ...memo, records: [...first.records, ...first.splits] }
+    const second = setEnabled(interim, input.id, input.state === "on")
+    if ("refusal" in second) return second
+    const interim2: MemoInput = { ...interim, records: [...second.records, ...second.splits] }
+    return setPin(interim2, input.id, input.pin)
+  }
   if (input.text !== undefined && input.state !== undefined) {
     const first = saveText(memo, input.id, input.text)
     if ("refusal" in first) return first
     const interim: MemoInput = { ...memo, records: [...first.records, ...first.splits] }
     return setEnabled(interim, input.id, input.state === "on")
   }
+  if (input.text !== undefined && input.pin !== undefined) {
+    const first = saveText(memo, input.id, input.text)
+    if ("refusal" in first) return first
+    const interim: MemoInput = { ...memo, records: [...first.records, ...first.splits] }
+    return setPin(interim, input.id, input.pin)
+  }
+  if (input.state !== undefined && input.pin !== undefined) {
+    const first = setEnabled(memo, input.id, input.state === "on")
+    if ("refusal" in first) return first
+    const interim: MemoInput = { ...memo, records: [...first.records, ...first.splits] }
+    return setPin(interim, input.id, input.pin)
+  }
   if (input.text !== undefined) return saveText(memo, input.id, input.text)
   if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on")
+  if (input.pin !== undefined) return setPin(memo, input.id, input.pin)
   return toggle(memo, input.id)
 }
 
@@ -481,13 +522,18 @@ function setTeam(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { state?: "on" | "off"; text?: string; resolve?: "keep" | "take" | "edit" },
+  input: { state?: "on" | "off"; text?: string; pin?: boolean; resolve?: "keep" | "take" | "edit" },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
     if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
+    if (input.pin !== undefined) {
+      const pinned = setPin(memo, id, input.pin)
+      if ("refusal" in pinned) return yield* Effect.fail(new Tool.Error({ message: pinned.refusal }))
+      return yield* Effect.fail(new Tool.Error({ message: pinned.status }))
+    }
     const desired = input.state === undefined ? undefined : input.state === "on"
     const plan = teamPlan(memo, id, desired)
     if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))

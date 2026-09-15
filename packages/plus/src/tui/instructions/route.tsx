@@ -51,6 +51,10 @@ function canSplit(node: TreeNode | undefined): boolean {
   return node?.actions?.split === true
 }
 
+function canPin(node: TreeNode | undefined): boolean {
+  return node?.address !== undefined && node?.actions?.pin === true
+}
+
 function isReview(node: TreeNode | undefined): boolean {
   return node?.badges.review === true
 }
@@ -180,6 +184,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     void state.toggle(node)
   }
 
+  function togglePin() {
+    const node = current()
+    if (!node) return
+    void state.togglePin(node)
+  }
+
   function add() {
     void dialogs.addFor(current())
   }
@@ -296,6 +306,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       hints.push("right detail")
     hints.push("enter edit")
     if (canToggle(node)) hints.push("space toggle")
+    if (canPin(node)) hints.push("p pin")
     hints.push("a add")
     if (canDelete(node)) hints.push("d delete")
     if (canReset(node)) hints.push("r reset")
@@ -311,12 +322,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return [
       "arrows move · left collapse · right expand",
       "enter edit (diff on yellow review rows)",
-      "space toggle include/exclude · a add · d delete (confirm)",
+      "space toggle include/exclude · p pin Code Mode tool · a add · d delete (confirm)",
       "r reset override · s split into sections",
       "/ filter rows · ? help · esc back",
       "filter: words or key:value · ! negates · a,b ors · sort:key",
-      "keys: kind item group server level agent state modified review",
-      "  source overridden active inactive unsupported codemode can",
+      "keys: kind item group server namespace level agent state modified review",
+      "  source overridden active inactive unsupported codemode pinned execute can",
       "  has id label updated team acked excluded",
       "slow text: text upstream tokens delta overriders identical dead",
       "  shadowed orphan",
@@ -357,6 +368,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(canToggle(node)
           ? [{ bind: "space", title: "Toggle include", group: "Instructions", run: toggle }]
           : []),
+        ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: togglePin }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
         ...(canDelete(node)
           ? [{ bind: "d", title: "Delete", group: "Instructions", run: remove }]
