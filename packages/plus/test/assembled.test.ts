@@ -653,3 +653,120 @@ test("a pin-only record reaches assembled as pinned for that agent", async () =>
   expect(betaCoder.description).toBe("code mode tool")
   expect(betaCoder.pinned).toBe(false)
 })
+
+test("a group deny plus a later id allow still reads as absent in both orders", async () => {
+  const { handlers, agents } = await setupTools({
+    agents: ["alpha", "beta"],
+    tools: [{ id: "coder", description: "code mode tool", options: { permission: "shared-group" } }],
+  })
+  await Effect.runPromise(
+    Effect.scoped(
+      agents.domain.transform((editor) => {
+        editor.update("alpha", (agent) => {
+          agent.permissions.push({ action: "shared-group", resource: "*", effect: "deny" })
+          agent.permissions.push({ action: "coder", resource: "*", effect: "allow" })
+        })
+        editor.update("beta", (agent) => {
+          agent.permissions.push({ action: "coder", resource: "*", effect: "deny" })
+          agent.permissions.push({ action: "shared-group", resource: "*", effect: "allow" })
+        })
+      }),
+    ),
+  )
+  // Core evaluates group and id as two independent last-match checks and ORs
+  // them, so a deny on either side survives a later allow on the other.
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).not.toContain("coder")
+})
+
+test("denying execute hides other Code Mode tools too", async () => {
+  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const execute = snapshot.items.find((entry) => entry.id === "tool:execute")
+  if (!execute) throw new Error("expected tool:execute")
+  const before = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(before.tools.map((entry) => entry.id)).toContain("execute")
+  expect(before.tools.map((entry) => entry.id)).toContain("coder")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [toolOff(execute)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // Core builds neither the Code Mode executor nor the catalog once execute
+  // is denied, so none of that agent's Code Mode tools are reachable.
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("execute")
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).toContain("execute")
+  expect(forBeta.tools.map((entry) => entry.id)).toContain("coder")
+})
+
+test("a stored-but-unpublished pin reports the registry default", async () => {
+  const { project, handlers } = await setupTools({ agents: ["alpha"], tools: [{ id: "coder", description: "code mode tool" }] })
+  await save(project, {
+    expectedProjectRevision: 0,
+    expectedGlobalRevision: 0,
+    records: [
+      {
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "tool:coder",
+        section: null,
+        pin: true,
+        basedOn: "any",
+        updated: UPDATED,
+      },
+    ],
+  })
+  // The pin was saved but never published, so the host still serves the
+  // registry default and assembled must report it.
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  const coder = forAlpha.tools.find((entry) => entry.id === "coder")
+  if (!coder) throw new Error("expected coder for alpha")
+  expect(coder.pinned).toBe(false)
+})
+
+test("disposal clears the installed pin, so a stale pin record falls back to default", async () => {
+  const { handlers, state } = await setupTools({ agents: ["alpha"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  const pin: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: item.id,
+    section: null,
+    pin: true,
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [pin] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(state.installedTools).toEqual([
+    { agent: "alpha", tool: "coder", enabled: true, text: "code mode tool", codemode: true, catalogPath: "coder", pinned: true },
+  ])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.find((entry) => entry.id === "coder")?.pinned).toBe(true)
+  await Effect.runPromise(deactivate(state))
+  expect(state.installedTools).toEqual([])
+  // The record remains stored on disk, but after teardown the host serves the
+  // registry default and assembled must report it.
+  const afterTeardown = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  const coder = afterTeardown.tools.find((entry) => entry.id === "coder")
+  if (!coder) throw new Error("expected coder after teardown")
+  expect(coder.pinned).toBe(false)
+})

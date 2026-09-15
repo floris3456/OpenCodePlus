@@ -26,8 +26,8 @@ interface AssembledInput {
 // specific agent, so assembled reports the registry (upstream) description
 // even when the override applies correctly inside that agent's sessions.
 // Code Mode tool text installs through the session catalog hook instead, and
-// assembled reports the installed catalog plan's text for that agent when one
-// exists. Membership is host-effective wherever the host proves it; a stored
+// assembled reports the installed catalog plan's text and pin for that agent
+// when one exists, falling back to the live registry defaults. Membership is host-effective wherever the host proves it; a stored
 // `off` is desired state, never proof that anything was excluded. Code Mode
 // denials (including the execute row) install as agent permission rules, so an
 // installed deny decides — the same principle as the skill path below. Skill
@@ -59,28 +59,34 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       .map((plan) => plan.tool),
   )
   const liveRules = systemEntry?.permissions
+  const executeDenied = liveRules !== undefined && toolDenied("execute", "execute", liveRules)
   const visibleTools: Plus.AssembledTool[] = input.items
     .filter((item) => item.kind === "tool")
     .flatMap((item): Plus.AssembledTool[] => {
       if (item.execute === true) {
-        if (liveRules !== undefined && toolDenied("execute", "execute", liveRules)) return []
+        if (executeDenied) return []
         return [{ id: "execute", description: item.text }]
       }
       const live = tools.get(item.id.slice("tool:".length))
       if (live === undefined) return []
       // Code Mode entries install denials as agent permission rules (host-
       // effective proof, like skills) and text/pin through the session catalog
-      // hook. An installed deny excludes the tool; otherwise report the
-      // installed catalog plan's text for this agent when one exists, falling
-      // back to the registry description, with the resolved pin.
+      // hook. An installed deny excludes the tool, and denying `execute`
+      // disables the Code Mode executor and catalog in core's `Tool.snapshot`,
+      // so none of that agent's Code Mode tools are reachable. Otherwise
+      // report the installed catalog plan's text and pin for this agent when
+      // one exists, falling back to the live registry description and default
+      // pin. A stored pin that was never published — or one left behind after
+      // teardown cleared the installed set — is desired state, never proof, so
+      // it never sets `pinned`.
       if (live.codemode) {
+        if (executeDenied) return []
         if (liveRules !== undefined && toolDenied(live.id, live.group, liveRules)) return []
-        const state = resolved.get(item.id)
-        const pinned = state?.pinned ?? (item.pinned ?? false)
         const installed = (input.installedTools ?? []).find(
           (plan) => plan.agent === input.agent && plan.codemode === true && plan.catalogPath === catalogPath(item),
         )
         const description = installed?.text ?? live.description
+        const pinned = installed?.pinned ?? live.pinned
         return [{ id: live.id, description, codemode: true as const, pinned }]
       }
       // Native tool denials install through the session context hook, which no
@@ -144,15 +150,16 @@ async function readAgentEntry(ctx: Context, agent: string): Promise<Agent.Info |
   return output.data.find((entry) => String(entry.id) === agent) as Agent.Info | undefined
 }
 
-async function listTools(ctx: Context): Promise<Map<string, { id: string; description: string; codemode: boolean; group: string }>> {
+async function listTools(ctx: Context): Promise<Map<string, { id: string; description: string; codemode: boolean; group: string; pinned: boolean }>> {
   return readTransform(ctx.tool.transform, (editor: ToolEditor) => {
-    const live = new Map<string, { id: string; description: string; codemode: boolean; group: string }>()
+    const live = new Map<string, { id: string; description: string; codemode: boolean; group: string; pinned: boolean }>()
     for (const tool of editor.list())
       live.set(tool.id, {
         id: tool.id,
         description: tool.description,
         codemode: isCodeModeToolEntry(tool),
         group: tool.options?.permission ?? tool.id,
+        pinned: (tool.options as { pinned?: boolean } | undefined)?.pinned ?? false,
       })
     return live
   })
@@ -165,13 +172,18 @@ async function listSkills(ctx: Context): Promise<Map<string, string>> {
 
 // Tool denials install as agent permission rules (apply pushes
 // `{ action: <tool id>, resource: "*", effect: "deny" }` onto the owning
-// agent), mirroring core's `whollyDisabled` (core/src/tool.ts) plus the new
-// per-id rule: the last rule matching either the tool's own id or its
-// permission group with `resource === "*"` and `effect === "deny"` means
-// denied. Core filters by last-match-wins, so the host-effective tool set is
-// the registry filtered by THIS agent's live rules.
+// agent), mirroring core's `Tool.snapshot` (core/src/tool.ts): core evaluates
+// two independent last-match checks and ORs them —
+// `whollyDisabled(group) || whollyDisabled(id)` — where each check takes the
+// last rule whose action pattern matches that target and denies only when it
+// is `{ resource: "*", effect: "deny" }`. The host-effective tool set is the
+// registry filtered by THIS agent's live rules.
 function toolDenied(action: string, group: string, rules: readonly Agent.Info["permissions"][number][]): boolean {
-  const match = rules.findLast((rule) => wildcardMatch(action, rule.action) || wildcardMatch(group, rule.action))
+  return isWhollyDenied(action, rules) || isWhollyDenied(group, rules)
+}
+
+function isWhollyDenied(target: string, rules: readonly Agent.Info["permissions"][number][]): boolean {
+  const match = rules.findLast((rule) => wildcardMatch(target, rule.action))
   if (match === undefined) return false
   return match.resource === "*" && match.effect === "deny"
 }
