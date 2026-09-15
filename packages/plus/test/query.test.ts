@@ -159,10 +159,24 @@ test("agent matches the row owner and _ the shared rows", () => {
   expect(ids("agent:_")).not.toContain(bash)
 })
 
-test("agent is an exact case-insensitive match, not a substring", () => {
+test("agent is a case-insensitive substring match with exact _ sentinel", () => {
+  expect(ids("agent:impl")).toContain(bash)
+  expect(ids("agent:IMPL")).toContain(bash)
   expect(ids("agent:IMPLEMENTER")).toContain(bash)
-  expect(ids("agent:impl")).not.toContain(bash)
-  expect(ids("agent:impl")).toHaveLength(0)
+  expect(ids("agent:impl")).not.toContain("item:global:Helper:tool:bash")
+  expect(ids("agent:_")).toContain(sharedPlus)
+  expect(ids("agent:_")).not.toContain(bash)
+  const withUnderscore = input({ agents: [...agents(), { id: "my_agent", scope: "project", base: "gpt" }] })
+  const underscoreItem = "item:project:my_agent:tool:bash"
+  const underscoreAgent = "agent:project:my_agent"
+  const sharedIds = query(withUnderscore, { where: "agent:_" }).rows.map((row) => row.id)
+  expect(sharedIds).toContain(sharedPlus)
+  expect(sharedIds).not.toContain(underscoreItem)
+  expect(sharedIds).not.toContain(underscoreAgent)
+  const subIds = query(withUnderscore, { where: "agent:my_" }).rows.map((row) => row.id)
+  expect(subIds).toContain(underscoreItem)
+  expect(subIds).toContain(underscoreAgent)
+  expect(subIds).not.toContain(sharedPlus)
 })
 
 test("sections projection survives structural filtering", () => {
