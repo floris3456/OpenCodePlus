@@ -5,6 +5,7 @@ import { Permission } from "../permission.js"
 import { Context, Effect, Layer } from "effect"
 import { Agent } from "../agent.js"
 import { Catalog } from "../catalog.js"
+import { CodeModeCatalog } from "../codemode/catalog.js"
 import { CodeModeInstructions } from "../codemode/instructions.js"
 import { Database } from "../database/database.js"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -16,6 +17,7 @@ import { McpInstructions } from "../mcp/instructions.js"
 import { McpTool } from "../tool/mcp.js"
 import { ReferenceInstructions } from "../reference/instructions.js"
 import { SkillInstructions } from "../skill/instructions.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import { Tool } from "../tool.js"
 import { AgentNotFoundError } from "./error.js"
 import { SessionHistory } from "./history.js"
@@ -81,6 +83,7 @@ const layer = Layer.effect(
     const db = (yield* Database.Service).db
     const discovery = yield* InstructionDiscovery.Service
     const entries = yield* InstructionEntry.Service
+    const hooks = yield* PluginHooks.Service
     const location = yield* Location.Service
     const mcpInstructions = yield* McpInstructions.Service
     const mcpTools = yield* McpTool.Service
@@ -140,12 +143,34 @@ const layer = Layer.effect(
         },
         { concurrency: "unbounded" },
       )
+      if (loaded.tools.codeModeCatalog === undefined)
+        return {
+          session,
+          agent: { ...agent, info: agent.info },
+          instructions: Instructions.combine([
+            loaded.builtins,
+            CodeModeInstructions.make(loaded.tools.codeModeCatalog),
+            loaded.discovery,
+            loaded.skills,
+            loaded.references,
+            loaded.mcp,
+            loaded.entries,
+          ]),
+          tools: loaded.tools,
+        }
+      const tools = CodeModeCatalog.flattenToRecord(loaded.tools.codeModeCatalog)
+      const event = yield* hooks.trigger("session", "catalog", {
+        sessionID,
+        agent: agent.info.id,
+        tools,
+      })
+      const catalog = CodeModeCatalog.applyOverrides(loaded.tools.codeModeCatalog, event.tools)
       return {
         session,
         agent: { ...agent, info: agent.info },
         instructions: Instructions.combine([
           loaded.builtins,
-          CodeModeInstructions.make(loaded.tools.codeModeCatalog),
+          CodeModeInstructions.make(catalog),
           loaded.discovery,
           loaded.skills,
           loaded.references,
@@ -194,6 +219,7 @@ export const node = makeLocationNode({
     Location.node,
     McpInstructions.node,
     McpTool.node,
+    PluginHooks.node,
     ReferenceInstructions.node,
     SessionRunnerModel.node,
     SessionModelRequest.node,

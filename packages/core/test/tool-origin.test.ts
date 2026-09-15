@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Bus } from "@opencode/core/bus"
+import { CodeModeCatalog } from "@opencode/core/codemode/catalog"
 import { Image } from "@opencode/core/image"
 import { Mcp } from "@opencode/core/mcp/index"
 import { Permission } from "@opencode/core/permission"
@@ -56,6 +57,60 @@ describe("Tool origin", () => {
         expect(editor.get("my_server_search")?.origin).toEqual({ type: "mcp", name: "my.server" })
         expect(editor.get("echo")?.origin).toBeUndefined()
       })
+    }),
+  )
+
+  it.effect("denying one tool id drops only that tool", () =>
+    Effect.gen(function* () {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) => {
+        editor.add({
+          ...builtin(),
+          name: "open",
+          description: "Open",
+          options: { namespace: "browser", permission: "browser" },
+        })
+        editor.add({
+          ...builtin(),
+          name: "close",
+          description: "Close",
+          options: { namespace: "browser", permission: "browser" },
+        })
+      })
+      yield* (yield* McpTool.Service).flush
+      const snapshot = yield* registry.snapshot([{ action: "browser_open", resource: "*", effect: "deny" }])
+      const paths = snapshot.codeModeCatalog
+        ? Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog))
+        : []
+      expect(paths.filter((path) => path.startsWith("browser."))).toEqual(["browser.close"])
+      expect(paths).not.toContain("browser.open")
+    }),
+  )
+
+  it.effect("denying the browser group drops every browser tool", () =>
+    Effect.gen(function* () {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) => {
+        editor.add({
+          ...builtin(),
+          name: "open",
+          description: "Open",
+          options: { namespace: "browser", permission: "browser" },
+        })
+        editor.add({
+          ...builtin(),
+          name: "close",
+          description: "Close",
+          options: { namespace: "browser", permission: "browser" },
+        })
+      })
+      yield* (yield* McpTool.Service).flush
+      const snapshot = yield* registry.snapshot([{ action: "browser", resource: "*", effect: "deny" }])
+      const paths = snapshot.codeModeCatalog
+        ? Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog))
+        : []
+      expect(paths.filter((path) => path.startsWith("browser."))).toEqual([])
+      expect(paths).toContain("my_server.search")
     }),
   )
 })
