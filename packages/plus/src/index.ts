@@ -1337,6 +1337,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),
     ...(record.state === undefined ? {} : { state: record.state }),
+    ...(record.pin === undefined ? {} : { pin: record.pin }),
     basedOn: record.basedOn,
     ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
     ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
@@ -2011,6 +2012,9 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
       ...(item.order === undefined ? {} : { order: item.order }),
       ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
       ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+      ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
+      ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
+      ...(item.execute === undefined ? {} : { execute: item.execute }),
     })),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
       if (record.type === "split")
@@ -2037,6 +2041,7 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
           section: record.section,
           ...(record.text === undefined ? {} : { text: record.text }),
           ...(record.state === undefined ? {} : { state: record.state }),
+          ...(record.pin === undefined ? {} : { pin: record.pin }),
           basedOn: record.basedOn,
           ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
           ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),

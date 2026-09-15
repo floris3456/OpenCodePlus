@@ -343,6 +343,29 @@ test("Snapshot with populated optional fields round-trips correctly", () => {
         agents: ["reviewer"],
         order: 5,
       },
+      {
+        id: "tool:bash",
+        kind: "tool",
+        group: "native",
+        title: "Bash",
+        text: "Run commands",
+        enabled: true,
+        fingerprint: "fp-bash-789",
+        codemode: true,
+        namespace: "ns",
+        pinned: true,
+      },
+      {
+        id: "tool:execute",
+        kind: "tool",
+        group: "native",
+        title: "execute",
+        text: "Host-owned Code Mode entry point",
+        enabled: true,
+        fingerprint: "fp-execute-000",
+        codemode: false,
+        execute: true,
+      },
     ],
     records: [
       {
@@ -353,6 +376,7 @@ test("Snapshot with populated optional fields round-trips correctly", () => {
         section: "details",
         text: "Custom lint text",
         state: "on",
+        pin: true,
         basedOn: "fp-lint-456",
         basedOnText: "Base lint text",
         acknowledged: "fp-lint-456",
@@ -371,6 +395,15 @@ test("Snapshot with populated optional fields round-trips correctly", () => {
   const encoded = Schema.encodeSync(Plus.Snapshot)(fullSnapshot)
   expectRpcBody(encoded)
   assertNoUndefinedValues(encoded)
+
+  // The Code Mode keys ride the snapshot that carries them without undefined
+  // values, alongside the populated optional fields above.
+  const encodedTool = encoded.items.find((entry) => entry.id === "tool:bash")
+  expect(encodedTool?.namespace).toBe("ns")
+  expect(encodedTool?.pinned).toBe(true)
+  const encodedExecute = encoded.items.find((entry) => entry.id === "tool:execute")
+  expect(encodedExecute?.execute).toBe(true)
+  expect(encoded.records[0]).toMatchObject({ pin: true })
 
   const decoded = Schema.decodeUnknownSync(Plus.Snapshot)(encoded)
   expect(decoded).toEqual(fullSnapshot)

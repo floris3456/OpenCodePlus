@@ -16,6 +16,9 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.order === undefined ? {} : { order: item.order }),
     ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
     ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+    ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
+    ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
+    ...(item.execute === undefined ? {} : { execute: item.execute }),
   }
 }
 
@@ -53,6 +56,7 @@ function customizationOf(record: Plus.SnapshotCustomizationRecord): Customizatio
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),
     ...(record.state === undefined ? {} : { state: record.state }),
+    ...(record.pin === undefined ? {} : { pin: record.pin }),
     basedOn: record.basedOn,
     ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
     ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
