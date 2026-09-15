@@ -34,6 +34,7 @@ test("every method and event is declared", () => {
     "instruction.delete",
     "mcp.add",
     "mcp.remove",
+    "team.create",
     "team.setEnabled",
   ]
 
@@ -83,8 +84,10 @@ test("every declared error is reachable through the definition", () => {
     "mcp.exists",
     "mcp.missing",
     "mcp.invalid",
+    "team.exists",
     "team.unknown",
     "team.invalid",
+    "team.create",
   ]
 
   const reachableErrors = new Set<string>()
@@ -120,6 +123,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "instruction.delete",
     "mcp.add",
     "mcp.remove",
+    "team.create",
     "team.setEnabled",
   ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
 
@@ -166,6 +170,10 @@ test("error schemas are correctly bound to their corresponding methods", () => {
 
   expect("mcp.missing" in errorsOf("mcp.remove")).toBe(true)
   expect("mcp.invalid" in errorsOf("mcp.remove")).toBe(true)
+
+  expect("team.exists" in errorsOf("team.create")).toBe(true)
+  expect("team.invalid" in errorsOf("team.create")).toBe(true)
+  expect("team.create" in errorsOf("team.create")).toBe(true)
 
   expect("team.unknown" in errorsOf("team.setEnabled")).toBe(true)
   expect("team.invalid" in errorsOf("team.setEnabled")).toBe(true)
