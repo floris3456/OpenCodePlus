@@ -195,6 +195,7 @@ export function resolveResolution(
   const fingerprintOf = fingerprint(upstream)
   if (resolution === "keep") {
     if (existing === undefined) return records
+    if (existing.acknowledged === fingerprintOf) return records
     records[index] = { ...withoutUndefined(existing), acknowledged: fingerprintOf, updated: now() }
     return records
   }
@@ -209,6 +210,14 @@ export function resolveResolution(
     return records
   }
   if (edited === undefined) return records
+  if (
+    existing !== undefined &&
+    existing.text === edited &&
+    existing.acknowledged === fingerprintOf &&
+    existing.basedOn === fingerprintOf &&
+    existing.basedOnText === upstream
+  )
+    return records
   const record: CustomizationRecord = {
     ...withoutUndefined(
       existing ?? {

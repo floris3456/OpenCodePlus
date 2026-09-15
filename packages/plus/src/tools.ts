@@ -6,8 +6,10 @@ import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import {
   addSection,
+  editRefusalForLabel,
   removalPlan,
   reset,
+  resolveRefusalForLabel,
   resolveReview,
   saveSplit,
   saveText,
@@ -534,8 +536,8 @@ function setTeam(
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
-    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be edited` }))
-    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be resolved` }))
+    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     const desired = input.state === undefined ? undefined : input.state === "on"
     const plan = teamPlan(memo, id, desired)
     if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
