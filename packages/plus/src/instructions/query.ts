@@ -192,7 +192,10 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
   return out
 }
 
-const propagatingKeys = new Set(["level", "agent", "item", "group", "server", "codemode"])
+const propagatingKeys = new Set(["level", "agent", "item", "group", "server", "codemode", "namespace", "execute"])
+// pinned is resolved state like state:/modified: (per-row resolve through the
+// shared memo), so it must not propagate: a section inherits its whole row's
+// pin for display, but enumeration cannot skip sections from the item test.
 
 function failsPropagating(parsed: Parsed, lazy: Lazy): boolean {
   const probe: Candidate = { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
@@ -311,15 +314,30 @@ function upstreamTextOf(state: QueryState, candidate: Candidate): string {
 function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
   if (candidate.lazy !== undefined) return candidate.lazy.actions
   const address = candidate.address
-  if (address === undefined || candidate.orphan) return { toggle: false, edit: false, reset: false, remove: false, split: false }
+  if (address === undefined || candidate.orphan)
+    return { toggle: false, edit: false, reset: false, remove: false, split: false, pin: false }
   const item = lookupItem(state, address.item, address.agent)
-  const gated = item !== undefined && item.kind === "tool" && item.codemode === true
+  // Pin is true only for a whole Code Mode tool row, never a section and
+  // never the host-owned execute row: mirrors lazyItem in tree.ts.
+  const executable = item?.execute === true
+  if (address.section !== null)
+    return {
+      toggle: true,
+      edit: true,
+      reset: canReset(state.memo.ctx.customizations, address),
+      remove: false,
+      split: false,
+      pin: false,
+    }
+  if (executable) return { toggle: true, edit: false, reset: false, remove: false, split: false, pin: false }
+  const pinnable = item !== undefined && item.kind === "tool" && item.codemode === true
   return {
-    toggle: !gated,
-    edit: !gated,
+    toggle: true,
+    edit: true,
     reset: canReset(state.memo.ctx.customizations, address),
     remove: false,
     split: false,
+    pin: pinnable,
   }
 }
 
@@ -401,7 +419,6 @@ function deadOf(state: QueryState, candidate: Candidate): boolean {
   if (own === undefined) return false
   const item = lookupItem(state, address.item, address.agent)
   if (item === undefined) return false
-  if (item.kind === "tool" && item.codemode === true) return true
   if (item.kind === "mcp" && own.text !== undefined) return true
   if (address.section === null && own.text === undefined && own.state === "off" && (item.id === "system:role" || item.kind === "base"))
     return true
@@ -426,9 +443,23 @@ function overridersOf(state: QueryState, candidate: Candidate): number {
   ).size
 }
 
+// Keep in sync with packages/core/src/codemode/catalog.ts: the model never
+// sees a Code Mode row's whole text, only the catalog line's first
+// description line truncated at DESCRIPTION_LIMIT. The host-generated
+// signature part of that line is not counted here, only the description.
+const DESCRIPTION_LIMIT = 120
+const CHARACTERS_PER_TOKEN = 4
+
 function tokensOf(state: QueryState, candidate: Candidate): number {
   if (candidate.address === undefined) return 0
-  return Math.ceil(resolvedTextOf(state, candidate).length / 4)
+  const text = resolvedTextOf(state, candidate)
+  const item = lookupItem(state, candidate.address.item, candidate.address.agent)
+  if (item?.kind === "tool" && item.codemode === true) {
+    const first = (text.split("\n", 1)[0] ?? "").trim()
+    const truncated = first.length > DESCRIPTION_LIMIT ? first.slice(0, DESCRIPTION_LIMIT) : first
+    return Math.ceil(truncated.length / CHARACTERS_PER_TOKEN)
+  }
+  return Math.ceil(text.length / CHARACTERS_PER_TOKEN)
 }
 
 function deltaOf(state: QueryState, candidate: Candidate): number {
@@ -495,7 +526,18 @@ function wantsTrue(alts: readonly string[], negate: boolean): boolean {
 }
 
 function rankFor(key: string, term: string): number {
-  if (key === "state" || key === "modified" || key === "review" || key === "source" || key === "excluded" || key === "active" || key === "inactive" || key === "unsupported") return 1
+  if (
+    key === "state" ||
+    key === "modified" ||
+    key === "review" ||
+    key === "source" ||
+    key === "excluded" ||
+    key === "active" ||
+    key === "inactive" ||
+    key === "unsupported" ||
+    key === "pinned"
+  )
+    return 1
   const textKeys = ["identical", "tokens", "delta", "text", "upstream"]
   const index = textKeys.indexOf(key)
   if (index !== -1) return 2 + index
@@ -508,6 +550,9 @@ const structuralKeys = new Set([
   "item",
   "group",
   "server",
+  "namespace",
+  "pinned",
+  "execute",
   "level",
   "agent",
   "state",
@@ -798,7 +843,8 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
     }
     case "active":
     case "inactive":
-    case "unsupported": {
+    case "unsupported":
+    case "pinned": {
       const allowed = booleanOf(alts, term)
       return (candidate) => allowed.some((alt) => (nodeOf(state, candidate)?.badges[key] === true) === alt)
     }
@@ -810,8 +856,25 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
         return allowed.some((alt) => value === alt)
       }
     }
+    case "namespace": {
+      return (candidate) => {
+        const address = candidate.address
+        if (address === undefined) return false
+        const namespace = lookupItem(state, address.item, address.agent)?.namespace
+        if (namespace === undefined) return false
+        return alts.some((alt) => lower(namespace) === lower(alt))
+      }
+    }
+    case "execute": {
+      const allowed = booleanOf(alts, term)
+      return (candidate) => {
+        const address = candidate.address
+        const value = address !== undefined && lookupItem(state, address.item, address.agent)?.execute === true
+        return allowed.some((alt) => value === alt)
+      }
+    }
     case "can": {
-      const allowed = oneOf(key, alts, ["toggle", "edit", "reset", "remove", "split"], term)
+      const allowed = oneOf(key, alts, ["toggle", "edit", "reset", "remove", "split", "pin"], term)
       return (candidate) => {
         const actions = actionsOf(state, candidate)
         return allowed.some((alt) => actions[lower(alt) as keyof TreeNodeActions] === true)
@@ -941,6 +1004,7 @@ function badgesString(node: TreeNode): string {
   if (node.badges.modified === true) labels.push("modified")
   if (node.badges.active === true) labels.push("active")
   if (node.badges.inactive === true) labels.push("inactive")
+  if (node.badges.pinned === true) labels.push("pinned")
   if (node.badges.unsupported === true) labels.push("unsupported")
   const count = node.badges.reviewCount ?? 0
   if (count > 0) labels.push(`${count} to review`)
