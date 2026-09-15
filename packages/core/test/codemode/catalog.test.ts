@@ -306,17 +306,18 @@ describe("CodeModeCatalog.applyOverrides", () => {
     expect(JSON.stringify(rewritten)).not.toContain("Added")
   })
 
-  test("preserves optional-key discipline without pinned undefined", () => {
+  test("assigns description and pinned straight from the override", () => {
     const inventory: CodeModeCatalog.Inventory = {
       tools: [{ type: "tool", name: "solo", description: "Solo", signature: "tools.solo(): Promise<string>" }],
     }
     const rewritten = CodeModeCatalog.applyOverrides(inventory, {
-      solo: { description: "Updated" },
+      solo: { description: "Updated", pinned: true },
     })
     const tool = rewritten.tools[0]
-    expect(tool?.type === "tool" && tool.description).toBe("Updated")
-    expect(tool?.type === "tool" && "pinned" in tool).toBe(false)
-    expect(tool?.type === "tool" && (tool as { pinned?: boolean }).pinned).toBeUndefined()
+    if (tool?.type !== "tool") throw new Error("expected tool")
+    expect(tool.description).toBe("Updated")
+    expect(tool.pinned).toBe(true)
+    expect(JSON.stringify(rewritten)).toContain('"pinned":true')
   })
 
   test("leaves namespace descriptions untouched", () => {
