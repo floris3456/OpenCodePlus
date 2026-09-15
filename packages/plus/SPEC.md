@@ -676,7 +676,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   never become active; `unsupported` is whole `system:role` and whole base
   rows; `codemode` reads the item flag; `namespace` is the exact Code Mode
   namespace; `pinned` reads the resolved pin; `execute` reads the
-  synthetic-row flag; `can` is `toggle|edit|reset|remove|split`; `has` is
+  synthetic-row flag; `can` is `toggle|edit|reset|remove|split|pin`; `has` is
   `record|split|sections|text`; `id` is a case-insensitive prefix match;
   `label` is a substring; `updated` compares the row's own override (or
   split) timestamp against an ISO date or a `<n><s|m|h|d|w>` age, where
@@ -690,7 +690,9 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   missing item, agent, or section (`orphan:true` also pulls those rows into
   the candidates); `tokens` is `ceil(length/4)` of the resolved text — on a
   Code Mode row this is the catalog-line approximation (first description
-  line truncated at 120 characters plus the host-generated signature),
+  line truncated at 120 characters, not counting the host-generated
+  signature part of the catalog line — that is why the number is an
+  approximation of the real cost),
   not the whole stored text;
   `delta` is changed lines vs upstream (0 with no stored text);
   `overriders` counts distinct agents overriding a Defaults shared row (0
