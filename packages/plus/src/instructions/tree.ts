@@ -19,8 +19,8 @@ export type { Memo }
 export { buildMemo } from "./resolve-memo.js"
 
 // Teams at all three tiers, including built-in defaults teams with no
-// filesystem path. `resolve-memo.ts` still types its own input narrowly; the
-// tree widens here so Defaults rows render, casting back at the boundary.
+// filesystem path. This widens the shared memo input with the same `Level`
+// the tree uses so Defaults rows render.
 export interface TeamInput {
   readonly level: Level
   readonly team: string

@@ -77,11 +77,12 @@ const V2Split = Schema.Struct({
   updated: Schema.String,
 })
 
-// Teams are never defaults-level: only project|global decodes, so any other
-// level fails validation and the line is skipped like any malformed record.
+// Teams persist at all three tiers, including defaults-level enablement
+// records for built-in teams; anything else fails validation and the line is
+// skipped like any malformed record.
 const V2Team = Schema.Struct({
   type: Schema.Literal("team"),
-  level: Schema.Union([Schema.Literal("global"), Schema.Literal("project")]),
+  level: LevelSchema,
   team: Schema.String,
   enabled: Schema.Boolean,
   updated: Schema.String,
@@ -235,8 +236,8 @@ function parseFile(text: string | undefined): ParsedFile {
 }
 
 // Teams route by level like any other record: project teams to the project
-// file, global teams to the global file. Teams can never be defaults-level
-// (V2Team rejects it on decode), so no team ever lands in a defaults bucket.
+// file, global and defaults teams to the global file. No team ever lands in
+// a defaults bucket: there is no defaults store file.
 function route(records: readonly StoredRecord[]): { project: StoredRecord[]; global: StoredRecord[] } {
   const project = records.filter((record) => record.level === "project")
   const global = records.filter((record) => record.level !== "project")
