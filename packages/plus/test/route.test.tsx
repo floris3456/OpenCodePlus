@@ -1528,6 +1528,74 @@ test("team row toggles through the real team.setEnabled and the rebuilt tree sho
   }
 })
 
+test("a on the Teams group creates through the real team.create and the rebuilt tree shows the disabled row", async () => {
+  // End to end through the production path: no team on disk, the always-
+  // present Teams group still offers `a`, the real team.create handler makes
+  // the directory DISABLED, and the refreshed snapshot rebuilds the tree with
+  // the new off row. Mirrors the add-agent picker test (name then scope) and
+  // the team-toggle rebuild test (real RPC plus live snapshots).
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-create-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  const teamCreates: { level: string; team: string }[] = []
+  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string }) => {
+    teamCreates.push({ ...input })
+    return Effect.runPromise(handlers["team.create"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams ?? []).toEqual([])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["fresh"], selects: ["project"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.create": wrappedTeamCreate,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    // The empty Teams group is always present beside Agents: `a` on it
+    // prompts for a name then a project/global scope.
+    await moveTo(fixture, "Teams")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamCreates.length === 1)
+    expect(teamCreates).toEqual([{ level: "project", team: "fresh" }])
+    // The create republishes: refresh pulls a fresh snapshot whose teams
+    // entry reads disabled, and the rebuilt tree shows the new off row.
+    await fixture.waitForFrame(() => (liveSnapshots[liveSnapshots.length - 1].teams ?? []).length === 1)
+    expect(liveSnapshots[liveSnapshots.length - 1].teams).toEqual([
+      { level: "project", team: "fresh", enabled: false, agents: [] },
+    ])
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "fresh")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("fresh") && selectedRow(frame).includes("[off]"))
+    const selected = selectedRow(fixture.captureCharFrame())
+    expect(selected).toContain("fresh")
+    expect(selected).toContain("[off]")
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("reviewer persona shows its own prompt and saves only its record", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer"), projectAgent("Reviewer")],

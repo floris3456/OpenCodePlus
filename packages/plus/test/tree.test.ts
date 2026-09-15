@@ -150,11 +150,11 @@ test("Defaults holds Agents plus the five shared inventories in order", () => {
   expect(shared?.address).toEqual({ level: "defaults", agent: null, item: "mcp:sample", section: null })
 })
 
-test("Project and Global hold Agents group", () => {
+test("Project and Global hold Agents and Teams groups", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
-  expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents"])
+  expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents", "group:project:teams"])
   expect(childrenOf(nodes, "group:project:agents").map((node) => node.id)).toEqual(["agent:project:Implementer"])
-  expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents"])
+  expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents", "group:global:teams"])
   expect(childrenOf(nodes, "group:global:agents").map((node) => node.id)).toEqual(["agent:global:Helper"])
 })
 
@@ -232,10 +232,9 @@ test("member rows are informational: no address, no actions, depth 3", () => {
   }
 })
 
-test("a level with no teams renders no Teams group", () => {
-  // No teams key at all (older snapshots) and an empty list both hide the
-  // group: with no add affordance and no rows, an empty group would be a
-  // dead row that looks broken.
+test("a level with no teams renders an empty Teams group with the add affordance", () => {
+  // Empty levels still show the group so the feature stays discoverable and
+  // creatable: the group carries add:"team" with no team rows underneath.
   for (const input of [
     { items: items(), records: [], agents: agents() },
     { items: items(), records: [], agents: agents(), teams: [] },
@@ -247,8 +246,13 @@ test("a level with no teams renders no Teams group", () => {
     },
   ]) {
     const nodes = expandAll(input)
-    expect(nodes.some((node) => node.id === "group:project:teams")).toBe(false)
-    expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents"])
+    const projectGroup = nodes.find((node) => node.id === "group:project:teams")
+    expect(projectGroup?.kind).toBe("group")
+    expect(projectGroup?.label).toBe("Teams")
+    expect(projectGroup?.depth).toBe(1)
+    expect(projectGroup?.add).toBe("team")
+    expect(childrenOf(nodes, "group:project:teams")).toEqual([])
+    expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents", "group:project:teams"])
   }
   const nodes = expandAll({
     items: items(),
@@ -257,6 +261,28 @@ test("a level with no teams renders no Teams group", () => {
     teams: [{ level: "global", team: "crew", enabled: true, agents: ["gamma"] }],
   })
   expect(nodes.some((node) => node.id === "group:global:teams")).toBe(true)
+  expect(nodes.find((node) => node.id === "group:global:teams")?.add).toBe("team")
+  expect(childrenOf(nodes, "group:global:teams").map((node) => node.id)).toEqual(["team:global:crew"])
+})
+
+test("Defaults never renders a Teams group even when empty groups are shown", () => {
+  for (const input of [
+    { items: items(), records: [], agents: agents() },
+    { items: items(), records: [], agents: agents(), teams: [] },
+    {
+      items: items(),
+      records: [],
+      agents: agents(),
+      teams: [
+        { level: "project" as const, team: "crew", enabled: true, agents: ["alpha"] },
+        { level: "global" as const, team: "side", enabled: false, agents: [] },
+      ],
+    },
+  ]) {
+    const nodes = expandAll(input)
+    expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(false)
+    expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).not.toContain("group:defaults:teams")
+  }
 })
 
 test("MCP tools group by item.server, never the tool name", () => {
@@ -392,6 +418,9 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:project:agents")).toBe("agent")
   expect(adds.get("group:global:agents")).toBe("agent")
   expect(adds.get("group:defaults:agents")).toBe("agent")
+  expect(adds.get("group:project:teams")).toBe("team")
+  expect(adds.get("group:global:teams")).toBe("team")
+  expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(false)
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
   expect(adds.get("group:project:Implementer:skills:project")).toBe("skill")
@@ -411,12 +440,19 @@ test("expansion emits only expanded children", () => {
     "root:defaults",
   ])
   const roots = tree({ ...input, expanded: new Set(["root:project"]) })
-  expect(roots.map((node) => node.id)).toEqual(["root:project", "group:project:agents", "root:global", "root:defaults"])
+  expect(roots.map((node) => node.id)).toEqual([
+    "root:project",
+    "group:project:agents",
+    "group:project:teams",
+    "root:global",
+    "root:defaults",
+  ])
   const agentsGroup = tree({ ...input, expanded: new Set(["root:project", "group:project:agents"]) })
   expect(agentsGroup.map((node) => node.id)).toEqual([
     "root:project",
     "group:project:agents",
     "agent:project:Implementer",
+    "group:project:teams",
     "root:global",
     "root:defaults",
   ])
@@ -432,6 +468,7 @@ test("expansion emits only expanded children", () => {
     "group:project:Implementer:base",
     "group:project:Implementer:skills",
     "group:project:Implementer:system",
+    "group:project:teams",
     "root:global",
     "root:defaults",
   ])

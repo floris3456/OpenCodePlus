@@ -456,9 +456,11 @@ RPC surface (`rpc.ts`, `index.ts`):
   before raising `team.unknown`.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project` and
-`Global` roots (`tree.ts`), and TUI wiring (`state.ts` `space` → real
-`team.setEnabled` + snapshot refresh; `tree-pane.tsx` on/off badge). Store
-persistence and the RPC surface are implemented.
+`Global` roots (`tree.ts`), always present even when empty with
+`[a: add team]` (never under `Defaults`), and TUI wiring (`state.ts`
+`space` → real `team.setEnabled` + snapshot refresh, `a` → real
+`team.create` + snapshot refresh; `tree-pane.tsx` on/off badge). A created
+team starts disabled. Store persistence and the RPC surface are implemented.
 
 ## §11 Tools, log, and query
 
