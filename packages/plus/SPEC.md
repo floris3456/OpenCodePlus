@@ -10,11 +10,12 @@ migration (`src/instructions/store.ts`, `src/instructions/paths.ts`).
 Three top-level roots in this order: `Project`, `Global`, `Defaults`.
 `Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose
 children are that level's agents with the identical subtree, plus a `Teams`
-group (`[a: add team]`) holding that level's teams. `Defaults` holds
+group (`[a: add team]`) holding that level's on-disk teams. `Defaults` holds
 `Agents` (template agents, each with the full subtree, `[a: add agent template]`),
-`Teams` (always empty, `[a: add team]` as a creation entry point),
-and then the shared inventories: `Tools`, `Base` `[a]`, `Skills`, `System`
-`[a]`, `MCP` `[a: add MCP server]`.
+`Teams` (built-in shipped teams with working toggles and informational
+member rows, `[a: add team]` still creates at project or global, never
+defaults), and then the shared inventories: `Tools`, `Base` `[a]`, `Skills`,
+`System` `[a]`, `MCP` `[a: add MCP server]`.
 
 Every agent in all three roots has the identical subtree:
 
@@ -38,9 +39,10 @@ Every agent in all three roots has the identical subtree:
 ```
 
 `Defaults` holds `Agents` (template agents, each with the full subtree,
-`[a: add agent template]`), `Teams` (always empty, `[a: add team]` as a
-creation entry point), and then the shared inventories: `Tools`, `Base`
-`[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
+`[a: add agent template]`), `Teams` (built-in shipped teams, each with
+working toggles and informational member rows, `[a: add team]` still creates
+at project or global, never defaults), and then the shared inventories:
+`Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
 
 Agent sources and scopes (`model.ts`)
 
@@ -336,16 +338,20 @@ export interface Assembled {
 - `team.exists`: `{ level: FileScope, team: string }`
 - `team.create`: `{ level: FileScope, team: string, reason: string }`
 
-## Teams (`teams.ts`, `paths.ts`, `store.ts`, `rpc.ts`)
+## Teams (`teams.ts`, `builtin-teams.ts`, `paths.ts`, `store.ts`, `rpc.ts`)
 
-A team is a named set of agent files toggled as a unit. When a team is
-enabled its agents become visible to core as real agents. A team's storage
-level remains `"project" | "global"` only; the TUI additionally surfaces an
-always-empty `Teams` group under `Defaults` as a creation entry point.
-Created teams are always stored at project or global level.
+A team is a named set of agents toggled as a unit. When a team is enabled
+its agents become visible to core as real agents. Teams have three tiers:
+`"project" | "global" | "defaults"`. Project and global teams are
+user-authored directories on disk; defaults teams are shipped source data
+from `builtin-teams.ts` with no filesystem path, never written, never
+created or deleted. They can be enabled and disabled like any other team;
+their records carry level `defaults` and route to the global store, and
+precedence is project over global over defaults. Created teams are always
+stored at project or global level, never defaults.
 
 ```ts
-export type TeamLevel = "project" | "global"
+export type TeamLevel = "project" | "global" | "defaults"
 export interface TeamRecord {
   readonly type: "team"
   readonly level: TeamLevel
@@ -353,15 +359,20 @@ export interface TeamRecord {
   readonly enabled: boolean
   readonly updated: string
 }
-export interface TeamAgent { readonly id: string; readonly path: string }
+export interface TeamAgent { readonly id: string; readonly path?: string; readonly body?: string }
 export interface DiscoveredTeam {
   readonly level: TeamLevel
   readonly team: string
-  readonly path: string
+  readonly path?: string
   readonly agents: readonly TeamAgent[]
 }
 export function validateTeamName(raw: string): { ok: true; team: string } | { ok: false; reason: string }
-export function discoverTeams(level: TeamLevel, projectDirectory: string): Promise<DiscoveredTeam[]>
+export function discoverTeams(
+  level: TeamLevel,
+  projectDirectory: string,
+  registry?: readonly BuiltinTeam[],
+): Promise<DiscoveredTeam[]>
+export function discoverBuiltinTeams(registry?: readonly BuiltinTeam[]): DiscoveredTeam[]
 export function isTeamEnabled(records: readonly TeamRecord[], level: TeamLevel, team: string): boolean
 export function resolveTeams(
   discovered: readonly DiscoveredTeam[],
@@ -369,18 +380,18 @@ export function resolveTeams(
   regular: readonly AgentSource[],
 ): { teams: readonly TeamContribution[]; agents: readonly AgentSource[] }
 export interface TeamEntry {
-  readonly level: FileScope
+  readonly level: TeamLevel
   readonly team: string
   readonly enabled: boolean
   readonly agents: readonly string[]
 }
 export interface SetTeamEnabledInput {
-  readonly level: FileScope
+  readonly level: TeamLevel
   readonly team: string
   readonly enabled: boolean
 }
 export interface TeamRef {
-  readonly level: FileScope
+  readonly level: TeamLevel
   readonly team: string
   readonly enabled: boolean
 }
@@ -389,51 +400,61 @@ export interface TeamRef {
 On-disk layout (mirrors how `projectRecordsPath`/`globalRecordsPath`
 resolve): `paths.ts` exports `projectTeamsPath(directory)` →
 `<projectDir>/.opencodeplus/teams` and `globalTeamsPath(configDir =
-globalConfigDir())` → `<globalConfigDir()>/opencodeplus/teams`. A team is one
-directory `<root>/<team>/`; agent files are `<team>/<agentId>.md` in the same
-frontmatter+body format `agents/files.ts` `formatMarkdown` writes, including
-nested ids (`sub/agent.md` → `sub/agent`).
+globalConfigDir())` → `<globalConfigDir()>/opencodeplus/teams`. A project or
+global team is one directory `<root>/<team>/`; agent files are
+`<team>/<agentId>.md` in the same frontmatter+body format `agents/files.ts`
+`formatMarkdown` writes, including nested ids (`sub/agent.md` →
+`sub/agent`). Defaults teams are shipped source data
+(`builtin-teams.ts` exports the registry: name plus member agents with id
+and markdown body, kept separate from the logic so what is shipped is
+obvious); they have no filesystem path and are never written.
 
 Validation (`validateTeamName`, same confinement style as
 `validateAgentId`/`resolveInstructionPath`): rejects empty names, NUL,
 absolute paths, any `/` or `\`, `.`, and anything containing `..`. Validated
 names can never escape the teams directory; unvalidated input fails closed.
 
-Discovery: one entry per immediate subdirectory, sorted by name; a team
-directory with no agent files is still a team; a missing teams directory
-means no teams, not an error. Only `*.md` files are members (other files are
-ignored), listed as `{ id, path }` sorted by id.
+Discovery: project and global tiers list one entry per immediate
+subdirectory, sorted by name; a team directory with no agent files is still
+a team; a missing teams directory means no teams, not an error. Only `*.md`
+files are members (other files are ignored), listed as `{ id, path }`
+sorted by id. The defaults tier never touches the filesystem: it comes only
+from the built-in registry, listed as `{ id, body }` with no `path`, sorted
+by team name and member id. The registry is injectable so behaviour tests
+supply fixtures instead of coupling to the shipped roster.
 
 Membership: `isTeamEnabled` returns the matching record's `enabled`, and a
 team with no record at all is DISABLED. `resolveTeams` reports each team's
-enabled flag with its on-disk members plus the winning team copy per agent
-id as `AgentSource` entries (`scope` = team level, `path` = team file,
-`team` = team name; `model.ts` `AgentSource.team` is optional and additive).
+enabled flag with its members plus the winning team copy per agent id as
+`AgentSource` entries (`scope` = team level, `path` = team file for on-disk
+members and absent for built-ins, `team` = team name; `model.ts`
+`AgentSource.team` is optional and additive).
 
 Collision rule extends the `model.ts` chain (project over global over
 defaults): level rank decides first, applied both between team copies and
 between a team copy and a same-id regular agent. Ties go to the established
 non-team identity: a regular project agent beats a project team copy, a
 regular global agent beats a global team copy, and only a team copy outranks
-a defaults template. Among enabled team copies at the same level with the
-same agent id, the lexicographically smallest team name wins.
+a defaults template. A project or global team, or an authored agent, beats a
+built-in member with the same id. Among enabled team copies at the same
+level with the same agent id, the lexicographically smallest team name wins.
 
 Store persistence (`store.ts`): team records persist through the `V2Team`
-schema (`type: "team"`, `level: "global" | "project"`, `team`, `enabled`,
-`updated`) as part of `V2Record` / `StoredRecord`. Team records route by level:
-`project` to the project file and `global` to the global file; teams are never
-defaults-level (rejected on decode), so they never route into defaults.
-Canonical ordering keys team records by `["team", record.team, record.level,
-String(record.enabled), record.updated]`, stably serialized so an unchanged
-save is a no-op (neither file touched, neither revision moves).
+schema (`type: "team"`, `level: "project" | "global" | "defaults"`, `team`,
+`enabled`, `updated`) as part of `V2Record` / `StoredRecord`. Team records
+route by level: `project` to the project file and `global`/`defaults` to the
+global file. Canonical ordering keys team records by `["team", record.team,
+record.level, String(record.enabled), record.updated]`, stably serialized so
+an unchanged save is a no-op (neither file touched, neither revision moves).
 
 RPC surface (`rpc.ts`, `index.ts`):
 - `Snapshot.teams` (`readonly TeamEntry[]`, optional key in schema for older
   clients/fixtures, always emitted by server): populated by `snapshotTeams()`,
-  where membership comes from disk discovery (`discoverTeams`) and enablement
-  from stored team records (`isTeamEnabled`). A discovered team with no record
-  reads as disabled; a record with no matching directory on disk never
-  surfaces in `snapshot.teams`.
+  where membership comes from disk discovery (`discoverTeams`) for
+  project/global plus the built-in registry for defaults, and enablement from
+  stored team records (`isTeamEnabled`). A discovered team with no record
+  reads as disabled; a record with no matching team never surfaces in
+  `snapshot.teams`.
 - Team-record exclusion invariant: team records are deliberately EXCLUDED from
   `Snapshot.records` in `toSnapshot`. Clients inspect teams through
   `Snapshot.teams` and toggle them via `team.setEnabled`.
@@ -444,17 +465,19 @@ RPC surface (`rpc.ts`, `index.ts`):
   unchanged, keeping an otherwise unchanged save a no-op without moving revisions.
 - `team.create` (`CreateTeamInput` → `TeamRef`): creates the team directory
   under the matching teams root (`projectTeamsPath` for `"project"`,
-  `globalTeamsPath` for `"global"`). Creation does NOT enable: the new team
-  has no record, so the next snapshot lists it as DISABLED until
+  `globalTeamsPath` for `"global"`); `level: "defaults"` is refused with
+  `team.invalid` (shipped teams cannot be created). Creation does NOT enable:
+  the new team has no record, so the next snapshot lists it as DISABLED until
   `team.setEnabled` toggles it. Gated by project mode (`project.disabled`).
   Fails with `team.invalid` on invalid name, `team.exists` when the directory
   already exists, or `team.create` when the write itself fails. Logs `team.create`
   to the owning store with the caller's actor on success only; the file write
   never moves a revision.
 - `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
-  `FileScope` (`"project" | "global"`). Gated by project mode
-  (`project.disabled`). Fails with `team.invalid` on invalid name, or
-  `team.unknown` when the directory is not found on disk at that level.
+  any of the three tiers. Gated by project mode (`project.disabled`). Fails
+  with `team.invalid` on invalid name, or `team.unknown` when the team is not
+  found (no directory on disk at that level for project/global, no built-in
+  with that name for defaults). A defaults record routes to the global store.
   `saveTeamRecord` replaces only the matching `(level, team)` record and leaves
   customization and split records undisturbed; toggling to an unchanged state
   stays a no-op without moving revisions. Retries once on concurrent conflict
@@ -462,12 +485,13 @@ RPC surface (`rpc.ts`, `index.ts`):
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
-with `[a: add team]` (the `Defaults` group is always empty and exists as a
-creation entry point; created teams are always stored at project or global
-level), and TUI wiring (`state.ts`
+with `[a: add team]` (the Defaults group lists real built-in rows with
+working toggles and informational member rows; `add` there still creates at
+project or global scope, never defaults), and TUI wiring (`state.ts`
 `space` → real `team.setEnabled` + snapshot refresh, `a` → real
 `team.create` + snapshot refresh; `tree-pane.tsx` on/off badge). A created
-team starts disabled. Store persistence and the RPC surface are implemented.
+team starts disabled. Built-in teams cannot be created or deleted. Store
+persistence and the RPC surface are implemented.
 
 ## §11 Tools, log, and query
 

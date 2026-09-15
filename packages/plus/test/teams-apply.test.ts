@@ -100,6 +100,33 @@ test("a team member colliding with an authored agent keeps the authored text", a
   expect(await hostSystem(ctx, "alpha")).toBe("authored body")
 })
 
+function fixtureBuiltins() {
+  return [{ name: "ship", members: [{ id: "shared", body: "ship body" }] }]
+}
+
+test("a built-in member loses to a project team with the same id", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "shared", "crew body")
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe("crew body")
+})
+
+test("a built-in member loses to an authored agent with the same id", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const authored = path.join(project, ".opencode", "agent", "shared.md")
+  await fs.mkdir(path.dirname(authored), { recursive: true })
+  await Bun.write(authored, "authored body\n")
+  const ctx = fullContext({ directory: project, agents: [agentInfo("shared", "authored body")] })
+  const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe("authored body")
+})
+
 test("a failure mid-install unwinds the agents installed earlier in the pass", async () => {
   const { project } = await tempRoot()
   await enable(project)

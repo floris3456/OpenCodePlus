@@ -291,35 +291,60 @@ test("a level with no teams renders an empty Teams group with the add affordance
   expect(childrenOf(nodes, "group:global:teams").map((node) => node.id)).toEqual(["team:global:crew"])
 })
 
-test("Defaults renders an empty Teams group as a creation entry point", () => {
-  for (const input of [
-    { items: items(), records: [], agents: agents() },
-    { items: items(), records: [], agents: agents(), teams: [] },
-    {
-      items: items(),
-      records: [],
-      agents: agents(),
-      teams: [
-        { level: "project" as const, team: "crew", enabled: true, agents: ["alpha"] },
-        { level: "global" as const, team: "side", enabled: false, agents: [] },
-      ],
-    },
-  ]) {
-    const nodes = expandAll(input)
-    const group = nodes.find((node) => node.id === "group:defaults:teams")
-    expect(group?.kind).toBe("group")
-    expect(group?.label).toBe("Teams")
-    expect(group?.depth).toBe(1)
-    expect(group?.add).toBe("team")
-    expect(childrenOf(nodes, "group:defaults:teams")).toEqual([])
-    expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toContain("group:defaults:teams")
+test("Defaults lists built-in team rows with toggles and member rows", () => {
+  const empty = expandAll({ items: items(), records: [], agents: agents(), teams: [] })
+  const emptyGroup = empty.find((node) => node.id === "group:defaults:teams")
+  expect(emptyGroup?.kind).toBe("group")
+  expect(emptyGroup?.label).toBe("Teams")
+  expect(emptyGroup?.depth).toBe(1)
+  expect(emptyGroup?.add).toBe("team")
+  expect(childrenOf(empty, "group:defaults:teams")).toEqual([])
+  expect(childrenOf(empty, "root:defaults").map((node) => node.id)).toContain("group:defaults:teams")
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [
+      { level: "project", team: "crew", enabled: true, agents: ["alpha"] },
+      { level: "global", team: "side", enabled: false, agents: [] },
+      { level: "defaults", team: "ship", enabled: true, agents: ["mate", "nested/solo"] },
+      { level: "defaults", team: "other", enabled: false, agents: [] },
+    ],
+  })
+  const group = nodes.find((node) => node.id === "group:defaults:teams")
+  expect(group?.kind).toBe("group")
+  expect(group?.label).toBe("Teams")
+  expect(group?.depth).toBe(1)
+  expect(group?.add).toBe("team")
+  expect(childrenOf(nodes, "group:defaults:teams").map((node) => node.id)).toEqual([
+    "team:defaults:other",
+    "team:defaults:ship",
+  ])
+  const enabled = nodes.find((node) => node.id === "team:defaults:ship")
+  expect(enabled?.kind).toBe("team")
+  expect(enabled?.depth).toBe(2)
+  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false })
+  expect(enabled?.badges.state).toBe("on")
+  const disabled = nodes.find((node) => node.id === "team:defaults:other")
+  expect(disabled?.badges.state).toBe("off")
+  expect(childrenOf(nodes, "team:defaults:ship").map((node) => node.id)).toEqual([
+    "team:defaults:ship:mate",
+    "team:defaults:ship:nested/solo",
+  ])
+  for (const id of ["team:defaults:ship:mate", "team:defaults:ship:nested/solo"]) {
+    const member = nodes.find((node) => node.id === id)
+    expect(member?.kind).toBe("team")
+    expect(member?.depth).toBe(3)
+    expect(member?.address).toBeUndefined()
+    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false })
   }
 })
 
 test("a team created from the Defaults Teams group is stored at project or global, never defaults", async () => {
   // The Defaults Teams group is a creation entry point: `a` there opens the
   // existing addTeam flow, which prompts for a project/global scope, so the
-  // new team lands under one of the two real teams roots.
+  // new team lands under one of the two real teams roots. The registry is
+  // empty here so the test never couples to the shipped roster.
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-tree-defaults-team-create-"))
   teamRoots.push(root)
@@ -327,7 +352,7 @@ test("a team created from the Defaults Teams group is stored at project or globa
   const project = path.join(root, "project")
   await enable(project)
   const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = {
     error: (type: string, message: string, data?: unknown): never => {
       throw { type, message, data }
