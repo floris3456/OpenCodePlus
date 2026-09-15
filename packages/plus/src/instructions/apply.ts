@@ -351,7 +351,12 @@ function toolCandidates(input: ApplyInput): ToolCandidate[] {
       if (item.kind !== "tool") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (isNoop(item, resolved)) return []
+      // isNoop compares only text and enablement (it is shared with base and
+      // instruction plans, which have no pin), so a pin-only change on a Code
+      // Mode tool would be discarded here before catalogPlans ever sees it.
+      // Let the candidate survive when the resolved pin differs from the
+      // registry default.
+      if (isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false)) return []
       return [{
         agent: agent.id,
         item,
