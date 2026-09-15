@@ -612,3 +612,44 @@ test("a permission-group deny excludes the Code Mode tool sharing that group", a
   const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
   expect(forBeta.tools.map((entry) => entry.id)).toContain("coder")
 })
+
+test("a pin-only record reaches assembled as pinned for that agent", async () => {
+  const { handlers, state } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  const pin: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: item.id,
+    section: null,
+    pin: true,
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [pin] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // The pin-only record installs a catalog plan even though text and
+  // enablement are untouched.
+  expect(state.installedTools).toEqual([
+    { agent: "alpha", tool: "coder", enabled: true, text: "code mode tool", codemode: true, catalogPath: "coder", pinned: true },
+  ])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  const alphaCoder = forAlpha.tools.find((entry) => entry.id === "coder")
+  if (!alphaCoder) throw new Error("expected coder for alpha")
+  expect(alphaCoder.description).toBe("code mode tool")
+  expect(alphaCoder.codemode).toBe(true)
+  expect(alphaCoder.pinned).toBe(true)
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  const betaCoder = forBeta.tools.find((entry) => entry.id === "coder")
+  if (!betaCoder) throw new Error("expected coder for beta")
+  expect(betaCoder.description).toBe("code mode tool")
+  expect(betaCoder.pinned).toBe(false)
+})

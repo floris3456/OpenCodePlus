@@ -1549,3 +1549,75 @@ test("a catalog failure unwinds the denial installed earlier in the pass", async
   expect(agents.state.get("alpha")?.permissions).toHaveLength(before)
   expect(agents.transforms).toBe(agents.disposes)
 })
+
+test("a pin-only change installs a catalog plan that sets pinned without touching description", async () => {
+  const catalogCallbacks: ((event: SessionHooks["catalog"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "catalog") catalogCallbacks.push(callback as (event: SessionHooks["catalog"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  // No text, no state: only the pin differs from the registry default, so the
+  // candidate must still survive to the catalog hook.
+  const records = [makeRecord({ item: "tool:coder", agent: "alpha", level: "project", pin: true })]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [
+        { id: "alpha", level: "project" },
+        { id: "beta", level: "project" },
+      ],
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(catalogCallbacks).toHaveLength(1)
+  expect(applied.tools).toEqual([
+    { agent: "alpha", tool: "coder", enabled: true, text: "code mode tool", codemode: true, catalogPath: "coder", pinned: true },
+  ])
+  const run = catalogCallbacks[0]
+  if (!run) throw new Error("missing catalog hook")
+  const alphaEvent: SessionHooks["catalog"] = {
+    sessionID: Session.ID.make("ses_catalog_pin_only"),
+    agent: Agent.ID.make("alpha"),
+    tools: { coder: { description: "code mode tool", pinned: false } },
+  }
+  await Effect.runPromise(run(alphaEvent))
+  expect(alphaEvent.tools.coder?.description).toBe("code mode tool")
+  expect(alphaEvent.tools.coder?.pinned).toBe(true)
+  const betaEvent: SessionHooks["catalog"] = {
+    sessionID: Session.ID.make("ses_catalog_pin_only_beta"),
+    agent: Agent.ID.make("beta"),
+    tools: { coder: { description: "code mode tool", pinned: false } },
+  }
+  await Effect.runPromise(run(betaEvent))
+  expect(betaEvent.tools.coder?.description).toBe("code mode tool")
+  expect(betaEvent.tools.coder?.pinned).toBe(false)
+})
+
+test("a pin matching the registry default installs no catalog plan", async () => {
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+    session: {
+      hook: () => Effect.die("catalog hook must not install"),
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  // The registry default pin is false and the record pins false: text and
+  // enabled are untouched, so there is nothing to install.
+  const records = [makeRecord({ item: "tool:coder", agent: "alpha", level: "project", pin: false })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
+  expect(applied.registrations).toEqual([])
+  expect(applied.tools).toEqual([])
+})
