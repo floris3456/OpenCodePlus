@@ -246,6 +246,8 @@ export interface AssembledTool extends Schema.Schema.Type<typeof AssembledTool> 
 export const AssembledTool = Schema.Struct({
   id: Schema.String,
   description: Schema.String,
+  codemode: Schema.optionalKey(Schema.Boolean),
+  pinned: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.AssembledTool" })
 
 export interface AssembledSkill extends Schema.Schema.Type<typeof AssembledSkill> {}

@@ -4,13 +4,12 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration, Transform } from "@opencode/plugin/effect/registration"
 import type { SessionContext, SessionHooks } from "@opencode/plugin/effect/session"
 import type { SkillEditor } from "@opencode/plugin/effect/skill"
-import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Skill } from "@opencode/schema/skill"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
-import { Deferred, Effect, Exit, Scope } from "effect"
+import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
-import { applies, isCodeModeToolEntry, isCodeModeToolId, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+import { applies, catalogPath, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
 export interface ApplyAgent {
@@ -35,6 +34,9 @@ export interface ToolPlan {
   readonly tool: string
   readonly enabled: boolean
   readonly text: string
+  readonly codemode?: boolean
+  readonly catalogPath?: string
+  readonly pinned?: boolean
 }
 
 export interface Applied {
@@ -51,10 +53,10 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     if (role !== undefined) installed.push(role)
     const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
     const session = await applySession(ctx, input)
-    if (session.registration !== undefined) installed.push(session.registration)
+    for (const registration of session.registrations) installed.push(registration)
     const mcp = await applyMcp(ctx, input)
     if (mcp !== undefined) installed.push(mcp)
-    if (role !== undefined || skills.agentChanged) await runVoid(ctx.agent.reload())
+    if (role !== undefined || skills.agentChanged || session.agentChanged) await runVoid(ctx.agent.reload())
     if (skills.skillChanged) await runVoid(ctx.skill.reload())
     if (mcp !== undefined) await runVoid(ctx.mcp.reload())
     return { registrations: [...installed], tools: session.tools }
@@ -90,7 +92,7 @@ export async function runRegistration<Editor>(
   )
 }
 
-async function runHook<Name extends "context">(
+async function runHook<Name extends "context" | "catalog">(
   hook: (name: Name, callback: (input: SessionHooks[Name]) => Effect.Effect<void>) => Effect.Effect<Registration, never, Scope.Scope>,
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
@@ -226,24 +228,24 @@ async function applySkills(
   const namespaceDenies =
     addedCopies.length === 0
       ? []
-      : input.agents.map((agent) => ({ agent: agent.id, resource: copyPattern(), effect: "deny" as const }))
+      : input.agents.map((agent) => ({ agent: agent.id, action: "skill" as const, resource: copyPattern(), effect: "deny" as const }))
   const rules = [
-    ...denials.map((denial) => ({ agent: denial.agent, resource: denial.skill, effect: "deny" as const })),
+    ...denials.map((denial) => ({ agent: denial.agent, action: "skill" as const, resource: denial.skill, effect: "deny" as const })),
     ...namespaceDenies,
     ...addedCopies.flatMap((copy) => [
-      { agent: copy.agent, resource: copy.skill, effect: "deny" as const },
-      { agent: copy.agent, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
+      { agent: copy.agent, action: "skill" as const, resource: copy.skill, effect: "deny" as const },
+      { agent: copy.agent, action: "skill" as const, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
     ]),
   ]
   if (rules.length === 0) return { agentChanged: false, skillChanged: added !== undefined }
   const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-    for (const rule of rules) pushSkillRule(editor, rule)
+    for (const rule of rules) pushRule(editor, rule)
   })
   onInstall(agentRegistration)
   return { agentChanged: true, skillChanged: added !== undefined }
 }
 
-function pushSkillRule(editor: AgentEditor, rule: { agent: string; resource: string; effect: "deny" | "allow" }) {
+function pushRule(editor: AgentEditor, rule: { agent: string; action: string; resource: string; effect: "deny" | "allow" }) {
   const current = editor.get(rule.agent)
   if (!current) return
   // Core evaluates permissions last-match-wins, so appending is always
@@ -251,7 +253,7 @@ function pushSkillRule(editor: AgentEditor, rule: { agent: string; resource: str
   // requires reimplementing core's wildcard semantics and still cannot
   // reason about concrete resources covered by a wildcard.
   editor.update(rule.agent, (agent) => {
-    agent.permissions.push({ action: "skill", resource: rule.resource, effect: rule.effect })
+    agent.permissions.push({ action: rule.action, resource: rule.resource, effect: rule.effect })
   })
 }
 
@@ -334,14 +336,30 @@ function basePlans(input: ApplyInput): BasePlan[] {
   )
 }
 
-function toolCandidates(input: ApplyInput): ToolPlan[] {
+interface ToolCandidate {
+  readonly agent: string
+  readonly item: Item
+  readonly tool: string
+  readonly enabled: boolean
+  readonly text: string
+  readonly pinned: boolean
+}
+
+function toolCandidates(input: ApplyInput): ToolCandidate[] {
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
       if (isNoop(item, resolved)) return []
-      return [{ agent: agent.id, tool: parseId(item.id, "tool:"), enabled: resolved.enabled, text: resolved.assembled }]
+      return [{
+        agent: agent.id,
+        item,
+        tool: parseId(item.id, "tool:"),
+        enabled: resolved.enabled,
+        text: resolved.assembled,
+        pinned: resolved.pinned,
+      }]
     }),
   )
 }
@@ -371,33 +389,80 @@ function instructionPlanPath(id: string): string {
 async function applySession(
   ctx: Context,
   input: ApplyInput,
-): Promise<{ registration?: Registration; tools: readonly ToolPlan[] }> {
+): Promise<{ registrations: Registration[]; tools: readonly ToolPlan[]; agentChanged: boolean }> {
   const base = basePlans(input)
   const candidates = toolCandidates(input)
   const instructions = instructionPlans(input)
-  if (base.length === 0 && candidates.length === 0 && instructions.length === 0) return { tools: [] }
-  let tools: ToolPlan[] = []
-  if (candidates.length > 0) {
-    const inventory = await readTools(ctx)
-    tools = candidates.filter((plan) => !isCodeModeToolId(inventory, plan.tool))
-  }
-  if (base.length === 0 && tools.length === 0 && instructions.length === 0) return { tools: [] }
-  const pins = new Map<string, string>()
-  for (const agent of input.agents) {
-    if (agent.base !== undefined) pins.set(agent.id, agent.base)
-  }
-  const catalog = await Effect.runPromise(
-    ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+  const native: ToolPlan[] = candidates
+    .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
+    .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+  const denials = candidates.filter(
+    (candidate) => (candidate.item.codemode === true || candidate.item.execute === true) && !candidate.enabled,
   )
-  const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
-  const customByAgent = await readCustomSystem(ctx, input.agents)
-  const registration = await runHook(ctx.session.hook, "context", (event) => {
-    applyBasePlan(event, base, classifier, customByAgent)
-    applyToolPlan(event, tools.filter((plan) => plan.agent === String(event.agent)))
-    applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
-    return Effect.void
-  })
-  return { registration, tools }
+  const catalogPlans: ToolPlan[] = candidates
+    .filter((candidate) => {
+      if (candidate.item.codemode !== true) return false
+      if (candidate.item.execute === true) return false
+      if (normalizeLossless(candidate.text) !== normalizeLossless(candidate.item.text)) return true
+      return candidate.pinned !== (candidate.item.pinned ?? false)
+    })
+    .map((candidate) => ({
+      agent: candidate.agent,
+      tool: candidate.tool,
+      enabled: candidate.enabled,
+      text: candidate.text,
+      codemode: true as const,
+      catalogPath: catalogPath(candidate.item),
+      pinned: candidate.pinned,
+    }))
+  if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0)
+    return { registrations: [], tools: [], agentChanged: false }
+  const installed: Registration[] = []
+  try {
+    if (denials.length > 0) {
+      const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+        for (const denial of denials) pushRule(editor, { agent: denial.agent, action: denial.tool, resource: "*", effect: "deny" })
+      })
+      installed.push(agentRegistration)
+    }
+    if (base.length > 0 || native.length > 0 || instructions.length > 0) {
+      const pins = new Map<string, string>()
+      for (const agent of input.agents) {
+        if (agent.base !== undefined) pins.set(agent.id, agent.base)
+      }
+      const catalog = await Effect.runPromise(
+        ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+      )
+      const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
+      const customByAgent = await readCustomSystem(ctx, input.agents)
+      const registration = await runHook(ctx.session.hook, "context", (event) => {
+        applyBasePlan(event, base, classifier, customByAgent)
+        applyToolPlan(event, native.filter((plan) => plan.agent === String(event.agent)))
+        applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
+        return Effect.void
+      })
+      installed.push(registration)
+    }
+    if (catalogPlans.length > 0) {
+      const catalogRegistration = await runHook(ctx.session.hook, "catalog", (event) => {
+        for (const plan of catalogPlans) {
+          if (plan.agent !== String(event.agent)) continue
+          const path = plan.catalogPath
+          if (path === undefined) continue
+          const entry = event.tools[path]
+          if (entry === undefined) continue
+          entry.description = plan.text
+          if (plan.pinned !== undefined) entry.pinned = plan.pinned
+        }
+        return Effect.void
+      })
+      installed.push(catalogRegistration)
+    }
+    return { registrations: installed, tools: [...native, ...catalogPlans], agentChanged: denials.length > 0 }
+  } catch (error) {
+    await disposeRegistrations(installed)
+    throw error
+  }
 }
 
 // The one host-sourced classification: mirror the core optimize plugin
@@ -572,30 +637,6 @@ function spliceToolGuidance(stored: string, upstream: string, live: string | und
   const guidanceEnd = after === "" ? live.length : live.indexOf(after, guidanceStart)
   if (guidanceEnd === -1) return undefined
   return stored.replaceAll(toolGuidanceMarker, live.slice(guidanceStart, guidanceEnd))
-}
-
-type ToolInventory = ReadonlyMap<string, boolean>
-
-async function readTools(ctx: Context): Promise<ToolInventory> {
-  return readTransform(ctx.tool.transform, (editor: ToolEditor) => {
-    const inventory = new Map<string, boolean>()
-    for (const tool of editor.list()) inventory.set(tool.id, !isCodeModeToolEntry(tool))
-    return inventory
-  })
-}
-
-function readTransform<Editor, Value>(transform: Transform<Editor>, read: (editor: Editor) => Value): Promise<Value> {
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const deferred = yield* Deferred.make<Value, never>()
-        yield* transform((editor) => {
-          Deferred.doneUnsafe(deferred, Effect.succeed(read(editor)))
-        })
-        return yield* Deferred.await(deferred)
-      }),
-    ),
-  )
 }
 
 function applyToolPlan(event: SessionContext, plans: readonly ToolPlan[]) {

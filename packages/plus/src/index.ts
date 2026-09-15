@@ -1337,6 +1337,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),
     ...(record.state === undefined ? {} : { state: record.state }),
+    ...(record.pin === undefined ? {} : { pin: record.pin }),
     basedOn: record.basedOn,
     ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
     ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),

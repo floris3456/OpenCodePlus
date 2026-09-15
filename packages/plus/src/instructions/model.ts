@@ -28,7 +28,7 @@ export interface Item {
   readonly order?: number
   /** True for user-created base templates (deletable, never the host active answer). */
   readonly userBase?: boolean
-  /** True for Code Mode tools: stored customizations are never applied. */
+  /** True for Code Mode tools: applied through deny rules and the catalog hook. */
   readonly codemode?: boolean
   /** The Code Mode namespace the tool is grouped under (`tool.options.namespace`). */
   readonly namespace?: string
@@ -302,15 +302,22 @@ export function canReset(records: readonly CustomizationRecord[], address: Addre
 // The one host-sourced Code Mode classification: tools default into
 // Code Mode (`packages/core/src/tool/AGENTS.md`) — only `codemode: false`
 // keeps a tool on the provider's native tool list where the session context
-// hook can address it. Everything else is reachable only through the
-// aggregated `execute` inventory, so Plus's tool edits have nothing to write
-// to. Discovery marks the item and apply filters against the same rule.
+// hook can address it. Discovery marks the item; apply routes Code Mode
+// tools through deny rules and the catalog hook against the same rule.
 export function isCodeModeToolEntry(tool: Pick<Tool.Info, "options">): boolean {
   return tool.options?.codemode !== false
 }
 
-export function isCodeModeToolId(inventory: ReadonlyMap<string, boolean>, id: string): boolean {
-  return inventory.get(id) !== true
+// Core builds the registry id as `namespace.replaceAll(".", "_") + "_" + normalizedName`
+// but the catalog path as `namespace + "." + normalizedName`, where
+// `normalizedName = tool.name.replace(/[^a-zA-Z0-9_-]/g, "_")`
+// (`packages/core/src/tool/runtime.ts`, `packages/core/src/codemode/tool.ts qualifiedName`).
+// The registry id is therefore not reversible: derive the catalog path from the
+// Item's namespace plus the normalized title (discovery fills title from the raw tool name).
+export function catalogPath(item: Pick<Item, "namespace" | "title">): string {
+  const normalized = item.title.replace(/[^a-zA-Z0-9_-]/g, "_")
+  if (item.namespace === undefined) return normalized
+  return `${item.namespace}.${normalized}`
 }
 
 // Roll-up for ancestor rows: count reviewable descendants under a prefix.

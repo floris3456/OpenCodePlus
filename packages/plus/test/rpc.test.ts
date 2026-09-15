@@ -447,6 +447,77 @@ test("an unchanged republish does not reinstall", async () => {
   expect(agents.disposes).toBe(disposes)
 })
 
+test("two publishes after a Code Mode text edit keep an identical fingerprint and do not reinstall", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([{ id: "coder", description: "code mode tool" }])
+  const hooks = { current: 0 }
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    session: {
+      hook: () =>
+        Effect.sync(() => {
+          hooks.current++
+          return { dispose: Effect.sync(() => { hooks.current-- }) }
+        }),
+    },
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  const records: Plus.SnapshotCustomizationRecord[] = [{
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "tool:coder",
+    section: null,
+    text: "custom coder",
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+  }]
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records,
+    }, throwingContext({})),
+  )
+  expect(first.ok).toBe(true)
+  if (!first.ok) throw new Error("expected mutate to succeed")
+  // The catalog hook rewrites the per-agent catalog text without touching the
+  // shared tool registry: the registry still holds upstream, so the next
+  // discovery unmasks nothing and the publish fingerprint stays stable.
+  expect(tools.tools.get("coder")?.description).toBe("code mode tool")
+  expect(hooks.current).toBe(1)
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  const fingerprintAfterMutate = state.fingerprint
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(hooks.current).toBe(1)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(hooks.current).toBe(1)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+})
+
 test("instructions.assembled reports the registry tool description for a per-agent override", async () => {
   const { project } = await tempRoot()
   await enable(project)
