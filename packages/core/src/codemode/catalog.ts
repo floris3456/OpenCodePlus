@@ -164,7 +164,7 @@ function flatten(entries: ReadonlyArray<Tool | Namespace>, path: ReadonlyArray<s
 
 export type ToolOverride = {
   readonly description: string
-  readonly pinned?: boolean
+  readonly pinned: boolean
 }
 
 export function flattenToRecord(inventory: Inventory): Record<string, { description: string; pinned: boolean }> {
@@ -201,11 +201,7 @@ export function applyOverrides(
           name: entry.name,
           description: override.description,
           signature: entry.signature,
-          ...(override.pinned === undefined
-            ? entry.pinned === undefined
-              ? {}
-              : { pinned: entry.pinned }
-            : { pinned: override.pinned }),
+          pinned: override.pinned,
         }
       }
       return {

@@ -131,9 +131,10 @@ const layer = Layer.effect(
       yield* mcpTools.flush
       const agent = yield* agents.select(session.agent)
       if (!agent.info) return yield* new AgentNotFoundError({ sessionID: session.id, agent: session.agent ?? agent.id })
+      const info = agent.info
       const loaded = yield* Effect.all(
         {
-          tools: registry.snapshot(Permission.merge(agent.info.permissions, session.permissions ?? [])),
+          tools: registry.snapshot(Permission.merge(info.permissions, session.permissions ?? [])),
           builtins: builtins.load(sessionID),
           discovery: discovery.load(),
           skills: skillInstructions.load(agent),
@@ -143,34 +144,22 @@ const layer = Layer.effect(
         },
         { concurrency: "unbounded" },
       )
-      if (loaded.tools.codeModeCatalog === undefined)
-        return {
-          session,
-          agent: { ...agent, info: agent.info },
-          instructions: Instructions.combine([
-            loaded.builtins,
-            CodeModeInstructions.make(loaded.tools.codeModeCatalog),
-            loaded.discovery,
-            loaded.skills,
-            loaded.references,
-            loaded.mcp,
-            loaded.entries,
-          ]),
-          tools: loaded.tools,
-        }
-      const tools = CodeModeCatalog.flattenToRecord(loaded.tools.codeModeCatalog)
-      const event = yield* hooks.trigger("session", "catalog", {
-        sessionID,
-        agent: agent.info.id,
-        tools,
+      const codeModeCatalog = yield* Effect.gen(function* () {
+        if (loaded.tools.codeModeCatalog === undefined) return undefined
+        const tools = CodeModeCatalog.flattenToRecord(loaded.tools.codeModeCatalog)
+        const event = yield* hooks.trigger("session", "catalog", {
+          sessionID,
+          agent: info.id,
+          tools,
+        })
+        return CodeModeCatalog.applyOverrides(loaded.tools.codeModeCatalog, event.tools)
       })
-      const catalog = CodeModeCatalog.applyOverrides(loaded.tools.codeModeCatalog, event.tools)
       return {
         session,
-        agent: { ...agent, info: agent.info },
+        agent: { ...agent, info },
         instructions: Instructions.combine([
           loaded.builtins,
-          CodeModeInstructions.make(catalog),
+          CodeModeInstructions.make(codeModeCatalog),
           loaded.discovery,
           loaded.skills,
           loaded.references,
