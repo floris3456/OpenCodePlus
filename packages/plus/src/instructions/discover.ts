@@ -229,7 +229,7 @@ function toolItems(
   tools: readonly (Tool.Info & { readonly id: string })[],
   baselines: ReadonlyMap<string, PromptBaseline>,
 ): Item[] {
-  return tools.map((tool): Item => {
+  const rows = tools.map((tool): Item => {
     const id = `tool:${tool.id}`
     const grouped = toolGroup(toolOrigin(tool))
     const text = unmaskText(tool.description, baselines.get(id))
@@ -242,9 +242,30 @@ function toolItems(
       text,
       enabled: upstreamEnabled(),
       fingerprint: fingerprint(text),
+      ...(tool.options?.namespace === undefined ? {} : { namespace: tool.options.namespace }),
+      ...(tool.options?.pinned === undefined ? {} : { pinned: tool.options.pinned }),
       ...(isCodeModeToolEntry(tool) ? { codemode: true as const } : {}),
     }
   })
+  return [...rows, executeItem()]
+}
+
+// The host-owned Code Mode entry point is synthesized by core's
+// `Tool.snapshot`, never present in the tool registry, so discovery emits it
+// as a synthetic row alongside the discovered tools.
+function executeItem(): Item {
+  const text = "Host-owned Code Mode entry point: runs JavaScript that calls the tools in the Code Mode catalog."
+  return {
+    id: "tool:execute",
+    kind: "tool",
+    group: "native",
+    title: "execute",
+    text,
+    enabled: upstreamEnabled(),
+    fingerprint: fingerprint(text),
+    codemode: false as const,
+    execute: true as const,
+  }
 }
 
 function baseItems(templates: readonly BaseTemplate[]): Item[] {

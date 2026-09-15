@@ -449,3 +449,68 @@ test("aboveSectionText honors an ancestor section edit", () => {
   const seen = upstreamForEdit(input({ upstream, records, address: sectionAddress("two") }))
   expect(seen).toBe(edited)
 })
+
+test("pin resolves down the chain with Defaults, global, then project order", () => {
+  const upstream = makeItem()
+  expect(resolve(input({ upstream })).pinned).toBe(false)
+  expect(resolve(input({ upstream: makeItem({ pinned: true }) })).pinned).toBe(true)
+  const records = [
+    makeRecord({ level: "defaults", agent: null, pin: true }),
+    makeRecord({ level: "defaults", agent: "alpha", pin: false }),
+    makeRecord({ level: "global", agent: "alpha", pin: true }),
+  ]
+  expect(resolve(input({ upstream, records })).pinned).toBe(true)
+  const withoutGlobal = records.filter((record) => record.level !== "global")
+  expect(resolve(input({ upstream, records: withoutGlobal })).pinned).toBe(false)
+  const sharedOnly = records.filter((record) => record.agent === null)
+  expect(resolve(input({ upstream, records: sharedOnly })).pinned).toBe(true)
+  const projectPin = [...records, makeRecord({ pin: false })]
+  expect(resolve(input({ upstream, records: projectPin })).pinned).toBe(false)
+})
+
+test("pin falls back to upstream.pinned when no record defines it", () => {
+  const address: Address = { level: "project", agent: "alpha", item: "tool:bash", section: null }
+  expect(resolve(input({ upstream: makeItem({ pinned: true }), address })).pinned).toBe(true)
+  expect(resolve(input({ upstream: makeItem({ pinned: false }), address })).pinned).toBe(false)
+  expect(resolve(input({ upstream: makeItem(), address })).pinned).toBe(false)
+  const records = [makeRecord({ state: "off" })]
+  expect(resolve(input({ upstream: makeItem({ pinned: true }), records, address })).pinned).toBe(true)
+})
+
+test("a section address reports the whole item's resolved pinned", () => {
+  const text = "# One\n\na\n\n# Two\n\nb\n"
+  const upstream = makeItem({ id: "system:role", kind: "system", group: "none", title: "role", text, pinned: true })
+  const address: Address = { level: "project", agent: "alpha", item: "system:role", section: "one" }
+  expect(resolve(input({ upstream, address })).pinned).toBe(true)
+  const records = [makeRecord({ item: "system:role", pin: false })]
+  expect(resolve(input({ upstream, records, address })).pinned).toBe(false)
+  expect(resolve(input({ upstream, records })).pinned).toBe(false)
+})
+
+test("merge sets a pin and keeps a pin-only record", () => {
+  const upstream = makeItem()
+  const address: Address = { level: "project", agent: "alpha", item: upstream.id, section: null }
+  const set = merge([], address, { pin: true }, upstream)
+  expect(set).toHaveLength(1)
+  expect(set[0]?.pin).toBe(true)
+  expect(set[0]?.text).toBeUndefined()
+  expect(set[0]?.state).toBeUndefined()
+  const kept = merge([], address, { pin: false }, upstream)
+  expect(kept).toHaveLength(1)
+  expect(kept[0]?.pin).toBe(false)
+})
+
+test("merge clears a pin with null and never emits pin undefined", () => {
+  const upstream = makeItem()
+  const address: Address = { level: "project", agent: "alpha", item: upstream.id, section: null }
+  const set = merge([], address, { pin: true }, upstream)
+  expect(merge(set, address, { pin: null }, upstream)).toHaveLength(0)
+  const both = merge([], address, { text: "mine", pin: true }, upstream)
+  const cleared = merge(both, address, { pin: null }, upstream)
+  expect(cleared).toHaveLength(1)
+  expect(cleared[0]?.text).toBe("mine")
+  expect("pin" in (cleared[0] ?? {})).toBe(false)
+  const textOnly = merge([], address, { text: "mine" }, upstream)
+  expect("pin" in (textOnly[0] ?? {})).toBe(false)
+  expect(resolve(input({ upstream, records: set })).pinned).toBe(true)
+})

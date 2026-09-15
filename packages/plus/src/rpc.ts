@@ -56,6 +56,9 @@ export const SnapshotItem = Schema.Struct({
   order: Schema.optionalKey(Schema.Number),
   userBase: Schema.optionalKey(Schema.Boolean),
   codemode: Schema.optionalKey(Schema.Boolean),
+  namespace: Schema.optionalKey(Schema.String),
+  pinned: Schema.optionalKey(Schema.Boolean),
+  execute: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.SnapshotItem" })
 
 export interface Boundary extends Schema.Schema.Type<typeof Boundary> {}
@@ -79,6 +82,7 @@ export const SnapshotCustomizationRecord = Schema.Struct({
   section: Schema.NullOr(Schema.String),
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(RecordState),
+  pin: Schema.optionalKey(Schema.Boolean),
   basedOn: Schema.String,
   basedOnText: Schema.optionalKey(Schema.String),
   acknowledged: Schema.optionalKey(Schema.String),

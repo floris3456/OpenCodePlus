@@ -30,6 +30,12 @@ export interface Item {
   readonly userBase?: boolean
   /** True for Code Mode tools: stored customizations are never applied. */
   readonly codemode?: boolean
+  /** The Code Mode namespace the tool is grouped under (`tool.options.namespace`). */
+  readonly namespace?: string
+  /** The tool registry's own default pin (`tool.options.pinned`), i.e. the upstream value a user pin overrides. */
+  readonly pinned?: boolean
+  /** Marks the single synthetic host-owned `execute` row. Only discovery ever sets it, always `true`. */
+  readonly execute?: boolean
 }
 
 // Id forms (documented, not enforced):
@@ -72,6 +78,7 @@ export interface CustomizationRecord {
   readonly section: string | null
   readonly text?: string
   readonly state?: "on" | "off"
+  readonly pin?: boolean
   readonly basedOn: string
   readonly basedOnText?: string
   readonly acknowledged?: string
@@ -91,6 +98,7 @@ export interface Resolved {
   readonly text: string
   readonly assembled: string
   readonly enabled: boolean
+  readonly pinned: boolean
   readonly source: Level | "upstream"
   readonly overriddenHere: boolean
   readonly modified: boolean
@@ -108,6 +116,7 @@ export type Resolution = "keep" | "take" | "edit"
 export interface MergeFields {
   readonly text?: string | null
   readonly state?: "on" | "off" | null
+  readonly pin?: boolean | null
   readonly acknowledged?: string | null
 }
 
@@ -202,7 +211,7 @@ export function resolveResolution(
   if (resolution === "take") {
     if (existing === undefined) return records
     const dropped = withoutUndefined({ ...existing, text: undefined, basedOnText: undefined, acknowledged: undefined })
-    if (dropped.text === undefined && dropped.state === undefined) {
+    if (dropped.text === undefined && dropped.state === undefined && dropped.pin === undefined) {
       records.splice(index, 1)
       return records
     }
@@ -256,8 +265,9 @@ export function merge(
   const existing = records.find((record) => sameNode(record, address))
   const text = fields.text === undefined ? existing?.text : (fields.text ?? undefined)
   const state = fields.state === undefined ? existing?.state : (fields.state ?? undefined)
+  const pin = fields.pin === undefined ? existing?.pin : (fields.pin ?? undefined)
   const acknowledged = fields.acknowledged === undefined ? existing?.acknowledged : (fields.acknowledged ?? undefined)
-  if (text === undefined && state === undefined) return [...rest]
+  if (text === undefined && state === undefined && pin === undefined) return [...rest]
   const baseline = baselineForMerge(records, address, upstream, scopes, splits)
   const next: CustomizationRecord = {
     type: "customization",
@@ -267,6 +277,7 @@ export function merge(
     section: address.section,
     ...(text === undefined ? {} : { text }),
     ...(state === undefined ? {} : { state }),
+    ...(pin === undefined ? {} : { pin }),
     basedOn: existing?.basedOn ?? baseline.fingerprint,
     ...(existing?.basedOnText === undefined && text === undefined ? {} : { basedOnText: existing?.basedOnText ?? baseline.text }),
     ...(acknowledged === undefined ? {} : { acknowledged }),
@@ -323,8 +334,10 @@ function resolveWhole(input: ChainInput): Resolved {
   const chain = resolutionChain(input.address, input.scopes)
   const textWinner = chain.find((node) => at(whole, node)?.text !== undefined)
   const stateWinner = chain.find((node) => at(whole, node)?.state !== undefined)
+  const pinWinner = chain.find((node) => at(whole, node)?.pin !== undefined)
   const text = textWinner === undefined ? input.upstream.text : (at(whole, textWinner)?.text ?? "")
   const enabled = stateWinner === undefined ? input.upstream.enabled : at(whole, stateWinner)?.state === "on"
+  const pinned = pinWinner === undefined ? (input.upstream.pinned ?? false) : (at(whole, pinWinner)?.pin ?? false)
   const own = at(whole, input.address)
   const split = resolveSplit({
     text,
@@ -338,13 +351,16 @@ function resolveWhole(input: ChainInput): Resolved {
   )
   const overridden = sectionOverrides(input, chain)
   const modified = own?.text !== undefined
-  const source = chain.find((node) => at(whole, node)?.text !== undefined || at(whole, node)?.state !== undefined)
+  const source = chain.find(
+    (node) => at(whole, node)?.text !== undefined || at(whole, node)?.state !== undefined || at(whole, node)?.pin !== undefined,
+  )
   return {
     text,
     assembled: assembleWithOverrides(text, split, excluded, overridden),
     enabled,
+    pinned,
     source: source?.level ?? "upstream",
-    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined),
+    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined),
     modified,
     review: isReview(own, aboveWholeFingerprint(input, whole, chain)),
   }
@@ -375,6 +391,7 @@ function resolveSection(input: ChainInput): Resolved {
     text,
     assembled: text,
     enabled: stateWinner === undefined ? whole.enabled : at(sectioned, stateWinner)?.state === "on",
+    pinned: whole.pinned,
     source: winner?.level ?? stateWinner?.level ?? "upstream",
     overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined),
     modified,

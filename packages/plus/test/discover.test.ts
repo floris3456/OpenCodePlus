@@ -895,3 +895,48 @@ test("no teaching row appears without the seeded file", async () => {
   })
   expect(discovered.items.some((item) => item.id === teachingItemId)).toBe(false)
 })
+
+test("tool rows carry namespace and pinned from tool options only when defined", async () => {
+  const directory = await tempDir("plus-discover-")
+  const namespaced: ToolEntry = {
+    ...tool("alpha", "alpha tool"),
+    options: { namespace: "ns", pinned: true },
+  }
+  const plain = tool("beta", "beta tool")
+  const discovered = await discover({
+    ctx: fullContext({ directory, tools: [namespaced, plain] }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const byId = new Map(discovered.items.map((item) => [item.id, item]))
+  expect(byId.get("tool:alpha")).toMatchObject({ namespace: "ns", pinned: true })
+  expect("namespace" in (byId.get("tool:beta") ?? {})).toBe(false)
+  expect("pinned" in (byId.get("tool:beta") ?? {})).toBe(false)
+})
+
+test("discovery emits exactly one synthetic execute row with the exact shape", async () => {
+  const directory = await tempDir("plus-discover-")
+  const text = "Host-owned Code Mode entry point: runs JavaScript that calls the tools in the Code Mode catalog."
+  for (const tools of [[tool("a", "a tool")], []] as ToolEntry[][]) {
+    const discovered = await discover({
+      ctx: fullContext({ directory, tools }),
+      records: [],
+      baseTemplates: noTemplates,
+      activeBase: noBase,
+    })
+    const executeRows = discovered.items.filter((item) => item.id === "tool:execute")
+    expect(executeRows).toHaveLength(1)
+    expect(executeRows[0]).toEqual({
+      id: "tool:execute",
+      kind: "tool",
+      group: "native",
+      title: "execute",
+      text,
+      enabled: true,
+      fingerprint: fingerprint(text),
+      codemode: false,
+      execute: true,
+    })
+  }
+})

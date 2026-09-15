@@ -552,3 +552,69 @@ test("MCP and Skill input/output schemas round-trip correctly", () => {
   const encodedSkillRef = Schema.encodeSync(Plus.SkillRef)(skillRef)
   expect(Schema.decodeUnknownSync(Plus.SkillRef)(encodedSkillRef)).toEqual(skillRef)
 })
+
+test("new Code Mode keys decode and never encode as undefined", () => {
+  const item: Plus.SnapshotItem = {
+    id: "tool:bash",
+    kind: "tool",
+    group: "native",
+    title: "Bash",
+    text: "Run commands",
+    enabled: true,
+    fingerprint: "fp-123",
+    namespace: "ns",
+    pinned: true,
+    execute: true,
+  }
+  const encoded = Schema.encodeSync(Plus.SnapshotItem)(item)
+  expectRpcBody(encoded)
+  assertNoUndefinedValues(encoded)
+  expect(encoded.namespace).toBe("ns")
+  expect(encoded.pinned).toBe(true)
+  expect(encoded.execute).toBe(true)
+  expect(Schema.decodeUnknownSync(Plus.SnapshotItem)(encoded)).toEqual(item)
+
+  const bare: Plus.SnapshotItem = {
+    id: "tool:bash",
+    kind: "tool",
+    group: "native",
+    title: "Bash",
+    text: "Run commands",
+    enabled: true,
+    fingerprint: "fp-123",
+  }
+  const encodedBare = Schema.encodeSync(Plus.SnapshotItem)(bare)
+  expect("namespace" in encodedBare).toBe(false)
+  expect("pinned" in encodedBare).toBe(false)
+  expect("execute" in encodedBare).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.SnapshotItem)(encodedBare)).toEqual(bare)
+
+  const record: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "build",
+    item: "tool:bash",
+    section: null,
+    pin: true,
+    basedOn: "fp-123",
+    updated: "2026-09-14T00:00:00.000Z",
+  }
+  const encodedRecord = Schema.encodeSync(Plus.SnapshotCustomizationRecord)(record)
+  expectRpcBody(encodedRecord)
+  assertNoUndefinedValues(encodedRecord)
+  expect(encodedRecord.pin).toBe(true)
+  expect(Schema.decodeUnknownSync(Plus.SnapshotCustomizationRecord)(encodedRecord)).toEqual(record)
+
+  const bareRecord: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "build",
+    item: "tool:bash",
+    section: null,
+    basedOn: "fp-123",
+    updated: "2026-09-14T00:00:00.000Z",
+  }
+  const encodedBareRecord = Schema.encodeSync(Plus.SnapshotCustomizationRecord)(bareRecord)
+  expect("pin" in encodedBareRecord).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.SnapshotCustomizationRecord)(encodedBareRecord)).toEqual(bareRecord)
+})
