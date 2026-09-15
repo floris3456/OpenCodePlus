@@ -584,6 +584,39 @@ test("unknown row refuses for every op", () => {
   expect(refusalFor(input, unknown)).toBe(expected)
 })
 
+test("execute section writes refuse as unknown row and persist nothing", () => {
+  const input = baseInput({
+    items: [
+      ...baseInput().items,
+      {
+        id: "tool:execute",
+        kind: "tool",
+        group: "native",
+        title: "execute",
+        text: "Host-owned Code Mode entry point",
+        enabled: true,
+        fingerprint: "fp-execute",
+        codemode: false,
+        execute: true,
+      },
+    ],
+  })
+  const nodes = expandedTree(input)
+  const execute = nodes.find((candidate) => candidate.address?.item === "tool:execute")
+  if (!execute) throw new Error("missing execute row")
+  const sectionId = "section:project:alpha:tool:execute:whole"
+  expect(nodes.some((candidate) => candidate.id === sectionId)).toBe(false)
+  const expected = unknownRowRefusal(sectionId)
+  const saved = saveText(input, sectionId, "x")
+  if (!("refusal" in saved)) throw new Error("expected saveText refusal")
+  expect(saved.refusal).toBe(expected)
+  expect("records" in saved).toBe(false)
+  const toggled = setEnabled(input, sectionId, false)
+  if (!("refusal" in toggled)) throw new Error("expected setEnabled refusal")
+  expect(toggled.refusal).toBe(expected)
+  expect("records" in toggled).toBe(false)
+})
+
 test("row ids round-trip items with colons, sections, agents, and colon teams", () => {
   const input = baseInput()
   const nodes = expandedTree(input)

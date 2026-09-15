@@ -762,7 +762,8 @@ test("empty Code Mode and namespace groups are absent", () => {
 
 test("actions matrix: Code Mode row vs native tool row vs execute row vs Code Mode section", () => {
   const records = [makeRecord({ item: "tool:read" })]
-  const nodes = expandAll({ items: codemodeAll(), records, agents: agents() })
+  const input = { items: codemodeAll(), records, agents: agents() }
+  const nodes = expandAll(input)
   expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.actions).toEqual({
     toggle: true,
     edit: true,
@@ -787,6 +788,21 @@ test("actions matrix: Code Mode row vs native tool row vs execute row vs Code Mo
   const section = nodes.find((node) => node.id === "section:project:Implementer:tool:write:a")
   expect(section?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: false, pin: false })
   expect(section?.badges.unsupported).toBeUndefined()
+  // The host-owned execute row is toggle-only with no descendants: every
+  // execute item row stays childless while ordinary rows keep sections.
+  const executeRows = nodes.filter((node) => node.kind === "item" && node.address?.item === "tool:execute")
+  expect(executeRows.length).toBeGreaterThan(0)
+  for (const row of executeRows) {
+    expect(childrenOf(nodes, row.id)).toEqual([])
+  }
+  expect(nodes.some((node) => node.kind === "section" && node.address?.item === "tool:execute")).toBe(false)
+  const flat = expandedTree(input)
+  expect(flat.filter((node) => node.kind === "item" && node.address?.item === "tool:execute").length).toBe(
+    executeRows.length,
+  )
+  expect(flat.some((node) => node.kind === "section" && node.address?.item === "tool:execute")).toBe(false)
+  // Ordinary rows keep their sections alongside the childless execute row.
+  expect(childrenOf(nodes, "item:project:Implementer:tool:bash").length).toBeGreaterThan(0)
 })
 
 test("badges: pinned follows the resolution, unsupported leaves Code Mode rows", () => {

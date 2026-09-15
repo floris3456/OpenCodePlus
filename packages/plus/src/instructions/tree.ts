@@ -140,6 +140,7 @@ export function materialize(lazy: Lazy): TreeNode {
 // sections roll up into ancestor counts like any other row so saved content
 // needing attention stays discoverable from collapsed ancestors.
 function itemRollup(memo: Memo, level: Level, owner: string | null, item: Item): number {
+  if (item.execute === true) return 0
   const entry = textEntryOf(memo, level, owner, item.id)
   if (entry === undefined) return 0
   if (entry.sections.size === 0) return 0
@@ -711,12 +712,14 @@ function lazyItem(
   const wholeNoToggle = item.id === "system:role" || item.kind === "base"
   const splittable =
     !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
-  const kids = (): readonly Lazy[] =>
-    cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
+  const kids = (): readonly Lazy[] => {
+    if (executable) return []
+    return cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
       splitOf(memo, level, owner, item).sections.map((section) =>
         lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth),
       ),
     )
+  }
   return {
     id: `item:${level}:${owner ?? ""}:${item.id}`,
     kind: "item",
