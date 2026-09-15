@@ -22,9 +22,19 @@ Every agent in all three roots has the identical subtree:
 ```
 <Agent>
   Tools
-    Native / OpenCodePlus / MCP > <server>
+    Native / OpenCodePlus
       <tool>
         <section>
+      Code Mode                (only when that origin has Code Mode rows)
+        <namespace>
+          <tool>
+            <section>
+    MCP > <server>
+      <tool>
+        <section>
+      Code Mode                (rows directly, no namespace level)
+        <tool>
+          <section>
   Base                     [a: add base prompt]
     <Template>.txt         (the one matching the agent's model is marked "active")
       <section>
@@ -43,6 +53,20 @@ Every agent in all three roots has the identical subtree:
 working toggles and informational member rows, `[a: add team]` still creates
 at project or global, never defaults), and then the shared inventories:
 `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
+
+Code Mode grouping (`tree.ts`): inside each origin group, Code Mode tools
+sit under a `Code Mode` subgroup; below Native and OpenCodePlus it holds one
+group per tool namespace (sorted like the server groups) with
+namespace-less tools hanging directly off it, while below an MCP server the
+rows hang directly off it and the namespace level is skipped (every tool of
+one server already shares one namespace). The origin subgroup id appends
+`:codemode` to its origin group (`…:tools:<origin>:codemode`), namespace
+groups append `:<namespace>` (`…:codemode:<namespace>`), and MCP servers
+hold rows directly under `…:mcp:<server>:codemode`. Empty subgroups are
+never emitted: the caller skips the group when there are no rows, and every
+namespace group comes from a row so it is non-empty by construction. The
+synthetic `execute` row (`tool:execute`) is a plain Native row, toggle-only:
+its text is host-owned and not editable, and it carries no other affordance.
 
 Agent sources and scopes (`model.ts`)
 
@@ -126,6 +150,14 @@ export interface Item {
   readonly fingerprint: string
   readonly agents?: readonly string[]
   readonly order?: number
+  /** True for Code Mode tools: applied through deny rules and the catalog hook. */
+  readonly codemode?: boolean
+  /** The Code Mode namespace the tool is grouped under (`tool.options.namespace`). */
+  readonly namespace?: string
+  /** The tool registry's own default pin (`tool.options.pinned`), i.e. the upstream value a user pin overrides. */
+  readonly pinned?: boolean
+  /** Marks the single synthetic host-owned `execute` row. Only discovery ever sets it, always `true`. */
+  readonly execute?: boolean
 }
 ```
 
@@ -134,7 +166,7 @@ Item id forms (documented, not enforced): `tool:<toolId>`,
 `system:role` (the agent's own prompt body = Role/persona),
 `system:<relativePath>`, `mcp:<server>`.
 
-Resolution chain, most specific first, resolving `text` and `state`
+Resolution chain, most specific first, resolving `text`, `state`, and `pin`
 independently — first level supplying that field wins:
 
 | node | chain |
@@ -153,6 +185,7 @@ export interface Resolved {
   readonly text: string
   readonly assembled: string // text with excluded sections dropped (whole items only)
   readonly enabled: boolean
+  readonly pinned: boolean // nearest record carrying `pin` down the chain, else the upstream registry default
   readonly source: Level | "upstream"
   readonly overriddenHere: boolean
   readonly modified: boolean
@@ -211,6 +244,7 @@ export interface CustomizationRecord {
   readonly section: string | null
   readonly text?: string
   readonly state?: RecordState
+  readonly pin?: boolean
   readonly basedOn: string
   readonly basedOnText?: string
   readonly acknowledged?: string
@@ -243,7 +277,8 @@ and `globalRecordsPath`.
 
 Format: first line `{"version":2,"revision":<n>}`, then one JSON record per
 line, canonically ordered and stably keyed so an unchanged save is a no-op.
-Each store carries its own revision read from its own file header; a save
+In `stable()`'s canonical key order `pin` sits after `state` and before
+`basedOn`. Each store carries its own revision read from its own file header; a save
 supplies `expectedProjectRevision` and `expectedGlobalRevision`. Writes serialize
 under a process-wide async gate keyed on the resolved global records path AND
 the per-project gate, acquired in a fixed order (global then project) across
@@ -294,6 +329,13 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 
 Events: `project.changed`, `instructions.changed`.
 
+New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
+`pinned`, `execute`; `SnapshotCustomizationRecord` carries `pin`;
+`AssembledTool` carries `codemode`, `pinned`. Optional keys are omitted
+when unset: never send an optional key whose value is `undefined` across
+the RPC boundary, because results are validated as JSON and the whole call
+fails with HTTP 400.
+
 ### `Assembled` Shape
 
 `system` is the agent's installed system text read back from the host after
@@ -309,8 +351,14 @@ the override applies correctly inside that agent's sessions.
 export interface Assembled {
   readonly agent: string
   readonly system: readonly string[]
-  readonly tools: readonly { readonly id: string; readonly description: string }[]
+  readonly tools: readonly AssembledTool[]
   readonly skills: readonly { readonly id: string; readonly content: string }[]
+}
+export interface AssembledTool {
+  readonly id: string
+  readonly description: string
+  readonly codemode?: boolean
+  readonly pinned?: boolean
 }
 ```
 
@@ -507,7 +555,7 @@ export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" 
 export type ToolResolve = "keep" | "take" | "edit"
 export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
 export interface ShowInput { readonly id: string; readonly view?: ToolView }
-export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve }
+export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean }
 export interface ResetInput { readonly id: string }
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
@@ -524,8 +572,11 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   source, tokens`; `limit` defaults to 40). `show` defaults to view
   `resolved`. `assembled` renders the full effective prompt and accepts agent
   row ids only (`agent:<level>:<id>`); any other id fails with
-  `view.unsupported`. `diff` returns two unified diffs (original→mine and
-  original→upstream) plus a one-line summary. `set` with `resolve: "keep"`
+  `view.unsupported`. `record` returns the raw override including `pin`
+  when set. `diff` returns two unified diffs (original→mine and
+  original→upstream) plus a one-line summary. `set` with `pin` keeps the
+  tool's full listing inline in the catalog even when the inline budget is
+  tight. `set` with `resolve: "keep"`
   acks upstream keeping text, `"take"` drops stored text and follows upstream,
   `"edit"` stores `text` against current upstream. `reset` deletes the
   override at that row. `split` boundaries are `{ id, name, start }` with
@@ -542,6 +593,18 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
 - Guards: writes for agents listed in `protectedAgents` fail with
   `agent.protected`; unknown ids fail with `row.unknown`. A no-op or a
   refusal writes nothing and logs nothing.
+
+### Applying Code Mode rows (`apply.ts`, `model.ts`)
+
+A resolved `off` on a Code Mode tool or on `execute` installs an agent
+permission rule `{ action: <tool id>, resource: "*", effect: "deny" }`;
+denying `execute` removes Code Mode (and its catalog instruction) for that
+agent. Resolved text and pin install through the `session.catalog` hook
+keyed by the qualified catalog path (`<namespace>.<normalized name>`),
+derived from the Item's namespace plus the normalized title
+(`title.replace(/[^a-zA-Z0-9_-]/g, "_")`) rather than reversible from the
+registry id. The hook only mutates entries that already exist: an unknown
+path is skipped.
 
 ### Log (`log.ts`, `rpc.ts`, `index.ts`)
 
@@ -610,9 +673,10 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   `review` includes rolled-up descendant review; `source` is
   `project|global|defaults|upstream`; `active` is the base template active
   for the row's agent model; `inactive` is a user base template that can
-  never become active; `unsupported` is Code Mode tool rows (and their
-  sections), whole `system:role`, and whole base rows; `codemode` reads the
-  item flag; `can` is `toggle|edit|reset|remove|split`; `has` is
+  never become active; `unsupported` is whole `system:role` and whole base
+  rows; `codemode` reads the item flag; `namespace` is the exact Code Mode
+  namespace; `pinned` reads the resolved pin; `execute` reads the
+  synthetic-row flag; `can` is `toggle|edit|reset|remove|split`; `has` is
   `record|split|sections|text`; `id` is a case-insensitive prefix match;
   `label` is a substring; `updated` compares the row's own override (or
   split) timestamp against an ISO date or a `<n><s|m|h|d|w>` age, where
@@ -620,11 +684,14 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   (case-insensitive) team name on agent/team rows; `acked` reads
   `acknowledged`; `excluded` is an addressed row whose effective state is
   off; `identical` is stored text equal to upstream text; `dead` is a record
-  that can never apply (Code Mode tool rows, MCP text overrides, off-state
+  that can never apply (MCP text overrides, off-state
   on whole `system:role`/base rows); `shadowed` is a row whose text a more
   specific level overrides for the same scope; `orphan` is a record naming a
   missing item, agent, or section (`orphan:true` also pulls those rows into
-  the candidates); `tokens` is `ceil(length/4)` of the resolved text;
+  the candidates); `tokens` is `ceil(length/4)` of the resolved text — on a
+  Code Mode row this is the catalog-line approximation (first description
+  line truncated at 120 characters plus the host-generated signature),
+  not the whole stored text;
   `delta` is changed lines vs upstream (0 with no stored text);
   `overriders` counts distinct agents overriding a Defaults shared row (0
   elsewhere); `text`/`upstream` are substrings over the resolved/upstream
@@ -632,7 +699,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   bare); boolean keys take `true|false`.
 - Evaluation order: filters run sorted by rank — structural keys first
   (`kind item group server level agent overridden active inactive
-  unsupported codemode can has id label updated team acked), then `state modified review source excluded`, then the
+  unsupported codemode namespace pinned execute can has id label updated team acked), then `state modified review source excluded`, then the
   text-dependent keys in order `identical dead shadowed orphan tokens delta
   overriders text upstream`. Structural filters never resolve row text.
 - Memo: one `Memo` per snapshot input (`buildMemo`), caching whole/section
@@ -642,9 +709,9 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   and upstream text are computed lazily per candidate and cached on it. A
   caller-supplied `memo` reuses those caches.
 - The TUI filter (`state.ts`) runs the same engine (`query` with
-  `fields: ["id"]`) and reveals each match with its ancestor chain; gated
-  Code Mode sections never surface as rows; a `where` the grammar rejects
-  falls back to a label/id substring match.
+  `fields: ["id"]`) and reveals each match with its ancestor chain; Code
+  Mode sections surface as rows like any other section; a `where` the
+  grammar rejects falls back to a label/id substring match.
 
 ### Errors
 

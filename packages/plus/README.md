@@ -20,7 +20,7 @@ Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the th
 
 ```
 <Agent>
-  Tools                      Native / OpenCodePlus / MCP > <server>
+  Tools                      Native / OpenCodePlus / MCP > <server>, each with a `Code Mode` subgroup when it has Code Mode rows (namespaced below Native/OpenCodePlus, flat below an MCP server)
     <tool>
       <section>
   Base                       [a: add base prompt]
@@ -37,9 +37,11 @@ Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the th
 
 `Defaults` holds `Agents` followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on an Agents group adds an agent at that level. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
 
+Code Mode tool rows support toggle, edit, split, reset and a new **pin** (`p` toggles it, the `pinned` badge reads the resolved pin); pinning keeps a tool's full listing inline in the catalog even when the inline budget is tight. The synthetic `execute` row is a native toggle-only row.
+
 ## Inheritance
 
-Resolution runs Defaults → Global → Project, most specific first: `project/A → global/A → defaults/A → shared → upstream` (the global and template steps apply only when that agent exists at that level). Text and state resolve independently: the first level supplying each field wins. `r` removes the override at the current level only. A state-only override never marks a node modified and never raises review, so a disabled-but-unmodified copy keeps taking upstream text silently. Unmodified nodes store nothing, so they re-resolve on every read and upstream edits propagate live with no user action.
+Resolution runs Defaults → Global → Project, most specific first: `project/A → global/A → defaults/A → shared → upstream` (the global and template steps apply only when that agent exists at that level). Text and state resolve independently: the first level supplying each field wins. Pin resolves down the same chain as `enabled`: the nearest record carrying `pin` wins, else the registry default. `r` removes the override at the current level only. A state-only override never marks a node modified and never raises review, so a disabled-but-unmodified copy keeps taking upstream text silently. Unmodified nodes store nothing, so they re-resolve on every read and upstream edits propagate live with no user action.
 
 ## Review and diff
 
@@ -51,7 +53,7 @@ Derived from markdown headings, else XML-style blocks, else the whole text. `s` 
 
 ## Keys
 
-Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude, `a` add, `d` delete, `r` reset override, `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
+Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude, `p` pin (Code Mode tool rows), `a` add, `d` delete, `r` reset override, `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
 
 ## Storage
 
@@ -67,7 +69,7 @@ Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` 
 | --- | --- |
 | `list` | `{ where?, fields?, sort?, limit?, offset? }` (`limit` defaults to 40) |
 | `show` | `{ id, view? }` (`view` defaults to `resolved`) |
-| `set` | `{ id, text?, state?, resolve? }` (`state` is `on`\|`off`; `resolve` is `keep`\|`take`\|`edit`) |
+| `set` | `{ id, text?, state?, resolve?, pin? }` (`state` is `on`\|`off`; `resolve` is `keep`\|`take`\|`edit`; `pin` keeps the tool's full listing inline in the catalog) |
 | `reset` | `{ id }` (deletes the override at that row) |
 | `split` | `{ id, boundaries?, add? }` (`boundaries` is `[{ id, name, start }]` with character offsets; `add: { name, text }` appends a trailing section) |
 | `create` | `{ kind, ...fields }`, one row per call: agent needs `id` + `prompt`; skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction needs `name` + `text`; mcp needs `name` + `config`; team needs `team` + `level` |
@@ -101,13 +103,16 @@ Every place core changed for this feature, and why the plugin API could not do i
 - `packages/cli/src/util/process.ts` + `packages/cli/src/services/standalone.ts` — a real bug fix, not a feature seam: a background server inherited the caller's working directory, breaking `opencodeplus` and `bun run dev <dir>`; `serviceDirectory()` returns the package root holding `tsconfig.json`. (`packages/cli/test/self-command.test.ts`, `packages/client/test/service-contender.test.ts`)
 - `packages/client/src/effect/service.ts` + `packages/client/src/promise/service.ts` — `ensure()` records a non-zero contender exit as a pending failure and stops spawning replacements until live contenders drain, so a real startup error (for example a port conflict) surfaces instead of being outrun by its own replacement. A zero exit, the legitimately elected loser, keeps the previous backoff. Both implementations were changed identically without touching Protocol, HttpApi, or generated client surfaces. (`packages/client/test/service.test.ts`, `packages/client/test/promise-service.test.ts`)
 - `packages/cli/src/server-process.ts` — `recognizeIncumbent` probes `/api/health` once before its retry loop and fails fast when the port answers 200 with a body that provably fails to decode as the health shape, so a foreign occupant no longer costs 15 seconds of silence. (`packages/cli/test/service.test.ts`)
+- `packages/core/src/tool.ts`: `Tool.snapshot` now drops a tool when its own id is wholly denied, not only its permission group, so a single Code Mode tool can be excluded for one agent. (`packages/core/test/tool-origin.test.ts`)
+- `packages/plugin/src/effect/session.ts` + `packages/core/src/session/context.ts`: a `session.catalog` hook fired inside `SessionContext.select`, letting a plugin rewrite each agent's Code Mode catalog descriptions and pins. The registry editor is global, so `editor.update` would change one description for every agent and, because discovery reads the host back, would flip the publish fingerprint into a dispose/reinstall loop. (`packages/core/test/session-catalog.test.ts`)
 - Loading wiring only: `PlusPlugin` appended last in `post` (`packages/core/src/plugin/internal.ts`), `Plus` in the TUI `builtins`, workspace deps in `core`/`tui` `package.json`.
 
 ## Boundaries and known limits
 
 Only what is provably impossible, with what was tried:
 
-- **Code Mode tools are unsupported.** Core partitions the snapshot (`packages/core/src/tool.ts`): `codemode === false` is a native tool; everything else is reachable only through the aggregated `execute` inventory. In the tree, Code Mode tools are marked unsupported and their rows offer no toggle, edit, split, or add affordance (`packages/plus/src/instructions/tree.ts`). At session start, `apply` discards any customizations for them (`isCodeModeToolId` in `packages/plus/src/instructions/apply.ts`), because there is nothing addressable in the session context hook to write to.
+- **The `execute` row is host-owned.** Core synthesizes the tool, so there is no upstream description to edit and the row is toggle-only; turning it off installs a deny for `execute`, which removes Code Mode (and its catalog instruction) for that agent.
+- **Token counts on Code Mode rows are approximate.** Only the first line of a description, truncated at 120 characters, reaches the catalog listing, and the signature part is host-generated, so the reported cost is the catalog-line approximation rather than the whole stored text.
 - **User-created base templates can never become active.** `ctx.prompt.active` only ever answers with host template ids (`packages/core/src/prompt-template.ts`). Because `applyBasePlan` matches candidates strictly against `activeByAgent` (`packages/plus/src/instructions/apply.ts`), custom user base templates never reach `system[0]`; in the tree, user base templates are marked `inactive` (`packages/plus/src/instructions/tree.ts`).
 - **Discovery unmasks Plus's own output.** Discovery reads the host after Plus's transforms are installed, so reporting that text as upstream flips the publish fingerprint every pass into a dispose/reinstall loop. Plus retains per-item applied/upstream baselines (`src/instructions/inventory.ts`, captured in `src/index.ts`) and rereads file-backed agent bodies instead.
 - **Every client-facing RPC error must be declared** in the `Definition`, because core's `encodeError` dies on undeclared ones (`packages/core/src/rpc.ts`).
