@@ -899,6 +899,7 @@ test("a Code Mode text edit persists and show reports it", async () => {
     directory: project,
     agents: [agentInfo("alpha", "upstream")],
     tools: [{ id: "coder", description: "code mode tool" }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
@@ -925,6 +926,7 @@ test("pin through set matches ops.setPin records and status", async () => {
     directory: project,
     agents: [agentInfo("alpha", "upstream")],
     tools: [{ id: "coder", description: "code mode tool" }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
