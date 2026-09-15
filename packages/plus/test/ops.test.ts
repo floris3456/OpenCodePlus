@@ -456,27 +456,34 @@ test("resolveReview edit requires edit eligibility and edited text", () => {
 })
 
 test("re-submitting identical text, state, and boundaries keeps the existing record", () => {
+  const OLD = "2020-01-01T00:00:00.000Z"
   const input = baseInput()
   const rowId = findId(input, "mcp:sample")
   const first = saveText(input, rowId, "same text")
   if ("refusal" in first) throw new Error(`expected save: ${first.refusal}`)
-  const withFirst: MemoInput = { ...input, records: [...first.records, ...first.splits] }
+  const agedText = first.records.map((record) => ({ ...record, updated: OLD }))
+  const withFirst: MemoInput = { ...input, records: [...agedText, ...first.splits] }
   const second = saveText(withFirst, rowId, "same text")
   if ("refusal" in second) throw new Error(`expected second save: ${second.refusal}`)
-  expect(second.records).toEqual(withFirst.records.filter((record) => record.type === "customization"))
+  expect(second.records).toEqual(agedText)
+  expect(second.records[0]?.updated).toBe(OLD)
   const disabled = setEnabled(withFirst, rowId, false)
   if ("refusal" in disabled) throw new Error(`expected disable: ${disabled.refusal}`)
-  const withDisabled: MemoInput = { ...withFirst, records: [...disabled.records, ...disabled.splits] }
+  const agedDisabled = disabled.records.map((record) => ({ ...record, updated: OLD }))
+  const withDisabled: MemoInput = { ...withFirst, records: [...agedDisabled, ...disabled.splits] }
   const again = setEnabled(withDisabled, rowId, false)
   if ("refusal" in again) throw new Error(`expected second disable: ${again.refusal}`)
-  expect(again.records).toEqual(withDisabled.records.filter((record) => record.type === "customization"))
+  expect(again.records).toEqual(agedDisabled)
+  expect(again.records[0]?.updated).toBe(OLD)
   const splitRow = findId(input, "tool:bash")
   const splitFirst = saveSplit(input, splitRow, [{ id: "a", name: "A", start: 0 }])
   if ("refusal" in splitFirst) throw new Error(`expected split: ${splitFirst.refusal}`)
-  const withSplit: MemoInput = { ...input, records: [...splitFirst.records, ...splitFirst.splits] }
+  const agedSplits = splitFirst.splits.map((split) => ({ ...split, updated: OLD }))
+  const withSplit: MemoInput = { ...input, records: [...splitFirst.records, ...agedSplits] }
   const splitAgain = saveSplit(withSplit, splitRow, [{ id: "a", name: "A", start: 0 }])
   if ("refusal" in splitAgain) throw new Error(`expected second split: ${splitAgain.refusal}`)
-  expect(splitAgain.splits).toEqual(withSplit.records.filter((record) => record.type === "split"))
+  expect(splitAgain.splits).toEqual(agedSplits)
+  expect(splitAgain.splits[0]?.updated).toBe(OLD)
 })
 
 test("teamPlan honours an explicit desired state and inverts only for bare ids", () => {

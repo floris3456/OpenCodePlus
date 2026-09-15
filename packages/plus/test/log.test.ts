@@ -7,7 +7,7 @@ import { formatMarkdown } from "../src/agents/files.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
-import { saveText } from "../src/instructions/ops.js"
+import { resolveReview, saveText } from "../src/instructions/ops.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput } from "../src/instructions/tree.js"
 import { append, read } from "../src/instructions/log.js"
@@ -301,6 +301,164 @@ test("an unchanged op-level save writes nothing and logs nothing", async () => {
   const loggedAfterSecond = await api.log({})
   if (!loggedAfterSecond.ok) throw new Error("log failed")
   expect(loggedAfterSecond.value.total).toBe(1)
+})
+
+test("a repeated identical resolve keep and edit writes no second line and moves no revision", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "reader", description: "read things", options: { codemode: false } }],
+    skills: [skillInfo("notes", "skill body")],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const toMemo = (value: Plus.Snapshot): MemoInput => ({
+    items: value.items.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      group: item.group,
+      ...(item.server === undefined ? {} : { server: item.server }),
+      title: item.title,
+      text: item.text,
+      enabled: item.enabled,
+      fingerprint: item.fingerprint,
+      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
+      ...(item.order === undefined ? {} : { order: item.order }),
+      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+    })),
+    records: value.records.map((entry) =>
+      entry.type === "split"
+        ? {
+            type: "split" as const,
+            level: entry.level,
+            agent: entry.agent,
+            item: entry.item,
+            boundaries: entry.boundaries.map((boundary) => ({ ...boundary })),
+            updated: entry.updated,
+          }
+        : {
+            type: "customization" as const,
+            level: entry.level,
+            agent: entry.agent,
+            item: entry.item,
+            section: entry.section,
+            ...(entry.text === undefined ? {} : { text: entry.text }),
+            ...(entry.state === undefined ? {} : { state: entry.state }),
+            basedOn: entry.basedOn,
+            ...(entry.basedOnText === undefined ? {} : { basedOnText: entry.basedOnText }),
+            ...(entry.acknowledged === undefined ? {} : { acknowledged: entry.acknowledged }),
+            updated: entry.updated,
+          },
+    ),
+    agents: value.agents.map((agent) => ({
+      id: agent.id,
+      scope: agent.scope,
+      ...(agent.path === undefined ? {} : { path: agent.path }),
+      ...(agent.base === undefined ? {} : { base: agent.base }),
+    })),
+    teams: (value.teams ?? []).map((team) => ({
+      level: team.level,
+      team: team.team,
+      enabled: team.enabled,
+      agents: [...team.agents],
+    })),
+  })
+  const rowOf = (snapshot: Plus.Snapshot): string => {
+    const node = expandedTree(toMemo(snapshot)).find((candidate) => candidate.address?.item === "tool:reader")
+    if (node === undefined) throw new Error("missing reader row")
+    return node.id
+  }
+  const waitForNextTick = async (after: string): Promise<void> => {
+    const start = Date.now()
+    while (new Date().toISOString() <= after) {
+      if (Date.now() - start > 2000) throw new Error("clock did not advance past prior updated")
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+  }
+  const snapshot0 = await api.snapshot()
+  if (!snapshot0.ok) throw new Error(`snapshot failed: ${snapshot0.error.message}`)
+  const rowId = rowOf(snapshot0.value)
+  const seedOp = saveText(toMemo(snapshot0.value), rowId, "mine text")
+  if ("refusal" in seedOp) throw new Error(`expected seed save: ${seedOp.refusal}`)
+  const seeded = await api.mutate({
+    expectedRevision: snapshot0.value.revision,
+    expectedGlobalRevision: snapshot0.value.globalRevision,
+    records: [...seedOp.records, ...seedOp.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!seeded.ok || !seeded.value.ok) throw new Error("expected seed mutate to succeed")
+  const freshKeep1 = await api.snapshot()
+  if (!freshKeep1.ok) throw new Error("fresh snapshot failed")
+  const keep1 = resolveReview(toMemo(freshKeep1.value), rowOf(freshKeep1.value), "keep")
+  if ("refusal" in keep1) throw new Error(`expected first keep: ${keep1.refusal}`)
+  const kept1 = await api.mutate({
+    expectedRevision: freshKeep1.value.revision,
+    expectedGlobalRevision: freshKeep1.value.globalRevision,
+    records: [...keep1.records, ...keep1.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!kept1.ok || !kept1.value.ok) throw new Error("expected first keep mutate to succeed")
+  const loggedAfterKeep1 = await api.log({})
+  if (!loggedAfterKeep1.ok) throw new Error("log failed")
+  const keepUpdated = kept1.value.snapshot.records.find(
+    (entry) => entry.type === "customization" && entry.item === "tool:reader",
+  )?.updated
+  if (keepUpdated === undefined) throw new Error("expected kept record")
+  await waitForNextTick(keepUpdated)
+  const freshKeep2 = await api.snapshot()
+  if (!freshKeep2.ok) throw new Error("fresh snapshot failed")
+  const keep2 = resolveReview(toMemo(freshKeep2.value), rowOf(freshKeep2.value), "keep")
+  if ("refusal" in keep2) throw new Error(`expected second keep: ${keep2.refusal}`)
+  const kept2 = await api.mutate({
+    expectedRevision: freshKeep2.value.revision,
+    expectedGlobalRevision: freshKeep2.value.globalRevision,
+    records: [...keep2.records, ...keep2.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!kept2.ok || !kept2.value.ok) throw new Error("expected second keep mutate to succeed")
+  expect(kept2.value.revision).toBe(kept1.value.revision)
+  expect(kept2.value.globalRevision).toBe(kept1.value.globalRevision)
+  const loggedAfterKeep2 = await api.log({})
+  if (!loggedAfterKeep2.ok) throw new Error("log failed")
+  expect(loggedAfterKeep2.value.total).toBe(loggedAfterKeep1.value.total)
+  const freshEdit1 = await api.snapshot()
+  if (!freshEdit1.ok) throw new Error("fresh snapshot failed")
+  const edit1 = resolveReview(toMemo(freshEdit1.value), rowOf(freshEdit1.value), "edit", "merged text")
+  if ("refusal" in edit1) throw new Error(`expected first edit: ${edit1.refusal}`)
+  const edited1 = await api.mutate({
+    expectedRevision: freshEdit1.value.revision,
+    expectedGlobalRevision: freshEdit1.value.globalRevision,
+    records: [...edit1.records, ...edit1.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!edited1.ok || !edited1.value.ok) throw new Error("expected first edit mutate to succeed")
+  const loggedAfterEdit1 = await api.log({})
+  if (!loggedAfterEdit1.ok) throw new Error("log failed")
+  expect(loggedAfterEdit1.value.total).toBe(loggedAfterKeep2.value.total + 1)
+  const editUpdated = edited1.value.snapshot.records.find(
+    (entry) => entry.type === "customization" && entry.item === "tool:reader",
+  )?.updated
+  if (editUpdated === undefined) throw new Error("expected edited record")
+  await waitForNextTick(editUpdated)
+  const freshEdit2 = await api.snapshot()
+  if (!freshEdit2.ok) throw new Error("fresh snapshot failed")
+  const edit2 = resolveReview(toMemo(freshEdit2.value), rowOf(freshEdit2.value), "edit", "merged text")
+  if ("refusal" in edit2) throw new Error(`expected second edit: ${edit2.refusal}`)
+  const edited2 = await api.mutate({
+    expectedRevision: freshEdit2.value.revision,
+    expectedGlobalRevision: freshEdit2.value.globalRevision,
+    records: [...edit2.records, ...edit2.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!edited2.ok || !edited2.value.ok) throw new Error("expected second edit mutate to succeed")
+  expect(edited2.value.revision).toBe(edited1.value.revision)
+  expect(edited2.value.globalRevision).toBe(edited1.value.globalRevision)
+  const loggedAfterEdit2 = await api.log({})
+  if (!loggedAfterEdit2.ok) throw new Error("log failed")
+  expect(loggedAfterEdit2.value.total).toBe(loggedAfterEdit1.value.total)
 })
 
 test("logging moves neither revisions nor the publish fingerprint", async () => {

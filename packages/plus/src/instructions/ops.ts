@@ -73,6 +73,14 @@ export function unknownRowRefusal(rowId: string): string {
   return `Unknown row "${rowId}"`
 }
 
+export function editRefusalForLabel(label: string): string {
+  return `"${label}" cannot be edited`
+}
+
+export function resolveRefusalForLabel(label: string): string {
+  return `"${label}" cannot be resolved`
+}
+
 function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode } | undefined {
   const memo = buildMemo(input)
   const nodes = collectSkeleton(skeletonOf(memo)).map(materialize)
@@ -130,10 +138,10 @@ function toggleRefusal(node: TreeNode): string | undefined {
 }
 
 function editRefusal(node: TreeNode): string | undefined {
-  if (node.address === undefined) return `"${node.label}" cannot be edited`
+  if (node.address === undefined) return editRefusalForLabel(node.label)
   if (node.actions?.edit !== true) {
     if (node.badges.unsupported === true) return `"${node.label}" is unsupported in Code Mode and cannot be edited`
-    return `"${node.label}" cannot be edited`
+    return editRefusalForLabel(node.label)
   }
   return undefined
 }
@@ -386,7 +394,7 @@ export function resolveReview(
     if (edited === undefined) return { refusal: `"${node.label}" cannot be edited: edit requires text` }
   }
   const chain = chainFor(memo, node)
-  if (!chain || !node.address) return { refusal: `"${node.label}" cannot be resolved` }
+  if (!chain || !node.address) return { refusal: resolveRefusalForLabel(node.label) }
   const next = resolveResolution(
     {
       upstream: chain.upstream,
