@@ -176,7 +176,7 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
   const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
-      const enumerated = (!needIds || failsPropagating(parsed, lazy) ? [] : sectionsFor(state, lazy))
+      const enumerated = (!needIds || failsPropagating(parsed, lazy) ? [] : sectionsFor(lazy))
       push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
       if (!skipRows) {
         for (const section of enumerated)
@@ -209,17 +209,15 @@ interface SectionRow {
   readonly address: Address
 }
 
-function sectionsFor(state: QueryState, lazy: Lazy): SectionRow[] {
-  const address = lazy.address
-  if (address === undefined) return []
-  const item = lookupItem(state, address.item, address.agent)
-  if (item === undefined) return []
-  return splitOf(state.memo, address.level, address.agent, item).sections.map((section) => ({
-    id: `section:${address.level}:${address.agent ?? ""}:${address.item}:${section.id}`,
-    label: section.name,
-    depth: lazy.depth + 1 + section.depth,
-    address: { ...address, section: section.id },
-  }))
+function sectionsFor(lazy: Lazy): SectionRow[] {
+  // Single source of truth for "this row has no sections": read the tree's
+  // lazy children, which already return [] for the host-owned execute row.
+  const rows: SectionRow[] = []
+  for (const child of lazy.children()) {
+    if (child.kind !== "section" || child.address === undefined) continue
+    rows.push({ id: child.id, label: child.label, depth: child.depth, address: child.address })
+  }
+  return rows
 }
 
 // Orphan means stale by the record alone: the item id names no snapshot
@@ -1067,7 +1065,7 @@ function project(state: QueryState, candidate: Candidate, fields: readonly Field
       // the returned rows instead of trusting the enumeration cache.
       if (candidate.kind === "item" && candidate.address !== undefined && !candidate.orphan) {
         const lazy = candidate.lazy
-        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(state, lazy).map((section) => section.id)
+        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(lazy).map((section) => section.id)
       }
     }
   }

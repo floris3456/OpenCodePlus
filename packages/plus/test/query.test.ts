@@ -617,3 +617,38 @@ test("structural misses resolve nothing", () => {
   expect(noAgentsMemo.whole.size).toBe(0)
   expect(noAgentsMemo.section.size).toBe(0)
 })
+
+function executeSectionsSnap() {
+  return input({
+    items: [
+      makeItem({ id: "tool:execute", kind: "tool", group: "native", title: "execute", text: "host entry", codemode: false, execute: true }),
+      makeItem({ id: "tool:bash", kind: "tool", group: "native", title: "bash", text: "run" }),
+      makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", text: "# Alpha\n\na\n\n# Beta\n\nb\n", codemode: true }),
+    ],
+    records: [],
+  })
+}
+
+test("execute rows expose no sections in query", () => {
+  const snap = executeSectionsSnap()
+  expect(query(snap, { where: "execute:true kind:section", fields: ["id"] }).rows).toHaveLength(0)
+  const [row] = query(snap, { where: "id:item:project:Implementer:tool:execute", fields: ["id", "sections"] }).rows
+  expect(row?.id).toBe("item:project:Implementer:tool:execute")
+  expect(row?.sections).toEqual([])
+})
+
+test("ordinary tool sections still enumerate with real counts", () => {
+  const snap = executeSectionsSnap()
+  const bashSections = query(snap, { where: "id:section:project:Implementer:tool:bash:", fields: ["id"] }).rows.map((row) => row.id).sort()
+  expect(bashSections).toEqual(["section:project:Implementer:tool:bash:whole"])
+  const coderSections = query(snap, { where: "id:section:project:Implementer:tool:coder:", fields: ["id"] }).rows.map((row) => row.id).sort()
+  expect(coderSections).toEqual(["section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
+  const editable = query(snap, { where: "can:edit", fields: ["id"] }).rows.map((row) => row.id)
+  expect(editable).toContain("section:project:Implementer:tool:bash:whole")
+  expect(editable).toContain("section:project:Implementer:tool:coder:alpha")
+  expect(editable).toContain("section:project:Implementer:tool:coder:beta")
+  const [bashRow] = query(snap, { where: "id:item:project:Implementer:tool:bash", fields: ["id", "sections"] }).rows
+  expect(bashRow?.sections).toEqual(["section:project:Implementer:tool:bash:whole"])
+  const [coderRow] = query(snap, { where: "id:item:project:Implementer:tool:coder", fields: ["id", "sections"] }).rows
+  expect(coderRow?.sections?.slice().sort()).toEqual(["section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
+})
