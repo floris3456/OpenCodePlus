@@ -116,20 +116,69 @@ function resolvedTextOf(memo: Memo, chain: { address: Address; upstream: Item; c
   }).text
 }
 
+function toggleRefusal(node: TreeNode): string | undefined {
+  if (node.kind === "team") return `"${node.label}" cannot be toggled`
+  if (node.address === undefined) return `"${node.label}" cannot be toggled`
+  if (node.actions?.toggle !== true) {
+    if (node.badges.unsupported === true) {
+      if (node.badges.unexcludable === true) return `"${node.label}" cannot be excluded and remains in effect`
+      return `"${node.label}" is unsupported in Code Mode and cannot be toggled`
+    }
+    return `"${node.label}" cannot be toggled`
+  }
+  return undefined
+}
+
+function editRefusal(node: TreeNode): string | undefined {
+  if (node.address === undefined) return `"${node.label}" cannot be edited`
+  if (node.actions?.edit !== true) {
+    if (node.badges.unsupported === true) return `"${node.label}" is unsupported in Code Mode and cannot be edited`
+    return `"${node.label}" cannot be edited`
+  }
+  return undefined
+}
+
+function sameAddress(
+  record: { level: Address["level"]; agent: string | null; item: string; section: string | null },
+  address: Address,
+): boolean {
+  return (
+    record.level === address.level && record.agent === address.agent && record.item === address.item && record.section === address.section
+  )
+}
+
+function customizationsEqualWithoutUpdated(left: CustomizationRecord, right: CustomizationRecord): boolean {
+  return (
+    left.level === right.level &&
+    left.agent === right.agent &&
+    left.item === right.item &&
+    left.section === right.section &&
+    left.text === right.text &&
+    left.state === right.state &&
+    left.basedOn === right.basedOn &&
+    left.basedOnText === right.basedOnText &&
+    left.acknowledged === right.acknowledged
+  )
+}
+
+function boundariesEqual(
+  left: readonly { id: string; name: string; start: number }[],
+  right: readonly { id: string; name: string; start: number }[],
+): boolean {
+  if (left.length !== right.length) return false
+  return left.every((entry, index) => {
+    const other = right[index]
+    return other !== undefined && entry.id === other.id && entry.name === other.name && entry.start === other.start
+  })
+}
+
 export function toggle(input: MemoInput, rowId: string): OpResult {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
-  if (node.kind === "team") return { refusal: `"${node.label}" cannot be toggled` }
-  if (node.address === undefined) return { refusal: `"${node.label}" cannot be toggled` }
-  if (node.actions?.toggle !== true) {
-    if (node.badges.unsupported === true) {
-      if (node.badges.unexcludable === true) return { refusal: `"${node.label}" cannot be excluded and remains in effect` }
-      return { refusal: `"${node.label}" is unsupported in Code Mode and cannot be toggled` }
-    }
-    return { refusal: `"${node.label}" cannot be toggled` }
-  }
+  const refusal = toggleRefusal(node)
+  if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
   const resolved = resolve({
@@ -153,11 +202,20 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpR
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
-  if (node.address === undefined) return { refusal: `"${node.label}" cannot be toggled` }
-  if (node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
+  const refusal = toggleRefusal(node)
+  if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
   const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream)
+  const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
+  const created = next.find((record) => sameAddress(record, chain.address))
+  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
+    return {
+      records: chain.customizations,
+      splits: chain.splits,
+      status: value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
+      retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
+    }
   return {
     records: next,
     splits: chain.splits,
@@ -171,14 +229,20 @@ export function saveText(input: MemoInput, rowId: string, text: string): OpResul
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
-  if (node.address === undefined) return { refusal: `"${node.label}" cannot be edited` }
-  if (node.actions?.edit !== true) {
-    if (node.badges.unsupported === true) return { refusal: `"${node.label}" is unsupported in Code Mode and cannot be edited` }
-    return { refusal: `"${node.label}" cannot be edited` }
-  }
+  const refusal = editRefusal(node)
+  if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
   const next = merge(chain.customizations, chain.address, { text }, chain.upstream)
+  const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
+  const created = next.find((record) => sameAddress(record, chain.address))
+  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
+    return {
+      records: chain.customizations,
+      splits: chain.splits,
+      status: `Saved "${node.label}"`,
+      retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
+    }
   return {
     records: next,
     splits: chain.splits,
@@ -226,6 +290,16 @@ export function saveSplit(
   if (node.actions?.split !== true) return { refusal: `"${node.label}" cannot be split` }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
+  const existing = chain.splits.find(
+    (record) => record.level === address.level && record.agent === address.agent && record.item === address.item,
+  )
+  if (existing !== undefined && boundariesEqual(existing.boundaries, boundaries))
+    return {
+      records: chain.customizations,
+      splits: chain.splits,
+      status: `Split "${node.label}"`,
+      retryHint: `split "${node.label}" against a stale revision; retry to apply`,
+    }
   const rest = chain.splits.filter(
     (record) => !(record.level === address.level && record.agent === address.agent && record.item === address.item),
   )
@@ -306,6 +380,11 @@ export function resolveReview(
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
+  if (resolution === "edit") {
+    const refusal = editRefusal(node)
+    if (refusal !== undefined) return { refusal }
+    if (edited === undefined) return { refusal: `"${node.label}" cannot be edited: edit requires text` }
+  }
   const chain = chainFor(memo, node)
   if (!chain || !node.address) return { refusal: `"${node.label}" cannot be resolved` }
   const next = resolveResolution(
@@ -428,7 +507,7 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
   return { refusal: `"${node.label}" cannot be deleted` }
 }
 
-export function teamPlan(input: MemoInput, rowId: string): TeamPlan {
+export function teamPlan(input: MemoInput, rowId: string, desired?: boolean): TeamPlan {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
@@ -442,7 +521,7 @@ export function teamPlan(input: MemoInput, rowId: string): TeamPlan {
   if (team === undefined) return { refusal: `"${node.label}" cannot be toggled` }
   const entry = memo.ctx.teams.find((candidate) => candidate.level === level && candidate.team === team)
   if (!entry) return { refusal: `"${node.label}" cannot be toggled` }
-  const next = !entry.enabled
+  const next = desired ?? !entry.enabled
   return {
     kind: "team.setEnabled",
     level,

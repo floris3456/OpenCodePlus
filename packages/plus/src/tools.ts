@@ -224,13 +224,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (node.kind === "team") return yield* setTeam(api, memo, input.id, actor)
+          if (node.kind === "team") return yield* setTeam(api, memo, input.id, actor, input)
           const op = computeSet(memo, input)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
             computeSet(memoFromSnapshot(fresh), input),
           )
-          return { output: { id: input.id, status: op.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
         }),
     })
     editor.add({
@@ -252,7 +252,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const op = reset(memo, input.id)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => reset(memoFromSnapshot(fresh), input.id))
-          return { output: { id: input.id, status: op.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
         }),
     })
     editor.add({
@@ -279,7 +279,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             if (typeof retry === "string") return { refusal: retry }
             return retry
           })
-          return { output: { id: input.id, status: op.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
         }),
     })
     editor.add({
@@ -490,10 +490,10 @@ function computeSplit(
 function mutateWithRetry(
   api: PlusApi,
   snapshot: Plus.Snapshot,
-  op: { records: CustomizationRecord[]; splits: SplitRecord[] },
+  op: { records: CustomizationRecord[]; splits: SplitRecord[]; status: string },
   actor: Plus.Actor,
-  recompute: (fresh: Plus.Snapshot) => { records: CustomizationRecord[]; splits: SplitRecord[] } | { refusal: string },
-): Effect.Effect<{ revision: number; globalRevision: number }, Tool.Error> {
+  recompute: (fresh: Plus.Snapshot) => { records: CustomizationRecord[]; splits: SplitRecord[]; status: string } | { refusal: string },
+): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   return Effect.gen(function* () {
     const first = yield* Effect.promise(() =>
       api.mutate({
@@ -504,7 +504,7 @@ function mutateWithRetry(
       }),
     )
     if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${first.error.message}` }))
-    if (first.value.ok) return { revision: first.value.revision, globalRevision: first.value.globalRevision }
+    if (first.value.ok) return { revision: first.value.revision, globalRevision: first.value.globalRevision, status: op.status }
     const fresh = yield* Effect.promise(() => api.snapshot())
     if (!fresh.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${fresh.error.message}` }))
     const retry = recompute(fresh.value)
@@ -518,14 +518,26 @@ function mutateWithRetry(
       }),
     )
     if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${second.error.message}` }))
-    if (second.value.ok) return { revision: second.value.revision, globalRevision: second.value.globalRevision }
+    if (second.value.ok)
+      return { revision: second.value.revision, globalRevision: second.value.globalRevision, status: retry.status }
     return yield* Effect.fail(new Tool.Error({ message: "stale: write conflicted twice; re-read and retry" }))
   })
 }
 
-function setTeam(api: PlusApi, memo: MemoInput, id: string, actor: Plus.Actor): Effect.Effect<{ output: unknown }, Tool.Error> {
+function setTeam(
+  api: PlusApi,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+  input: { state?: "on" | "off"; text?: string; resolve?: "keep" | "take" | "edit" },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const plan = teamPlan(memo, id)
+    const node = findRow(memo, id)
+    const label = node?.label ?? id
+    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be edited` }))
+    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be resolved` }))
+    const desired = input.state === undefined ? undefined : input.state === "on"
+    const plan = teamPlan(memo, id, desired)
     if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
     const result = yield* Effect.promise(() => api.setTeamEnabled({ level: plan.level, team: plan.team, enabled: plan.enabled, actor }))
     if (!result.ok)
@@ -625,6 +637,10 @@ function createRow(
     if (input.kind === "agent") {
       if (input.id === undefined || input.prompt === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create agent requires id and prompt" }))
+      const snapshot = yield* snapshotOrFail(api)
+      const candidate = input.id.trim()
+      if (candidate !== "" && snapshot.protectedAgents.includes(candidate))
+        return yield* Effect.fail(protectedError(candidate))
       const created = yield* Effect.promise(() =>
         api.createAgent({
           scope: input.scope ?? "project",

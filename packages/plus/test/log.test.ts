@@ -5,14 +5,17 @@ import os from "node:os"
 import path from "node:path"
 import { formatMarkdown } from "../src/agents/files.js"
 import { userBaseFile } from "../src/agents/base.js"
-import { createHandlers, createState } from "../src/index.js"
+import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
+import { saveText } from "../src/instructions/ops.js"
+import { expandedTree } from "../src/instructions/tree.js"
+import type { MemoInput } from "../src/instructions/tree.js"
 import { append, read } from "../src/instructions/log.js"
 import { globalLogPath, projectLogPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { fullContext } from "./harness.js"
+import { agentInfo, fullContext, skillInfo } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -200,6 +203,104 @@ test("an unchanged save appends nothing and an empty log reads as empty", async 
   expect(replay.globalRevision).toBe(first.globalRevision)
   expect(await projectLines(project)).toHaveLength(1)
   expect(await Bun.file(globalLogPath()).exists()).toBe(false)
+})
+
+test("an unchanged op-level save writes nothing and logs nothing", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "reader", description: "read things", options: { codemode: false } }],
+    skills: [skillInfo("notes", "skill body")],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const snapshot = await api.snapshot()
+  if (!snapshot.ok) throw new Error(`snapshot failed: ${snapshot.error.message}`)
+  const toMemo = (value: Plus.Snapshot): MemoInput => ({
+    items: value.items.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      group: item.group,
+      ...(item.server === undefined ? {} : { server: item.server }),
+      title: item.title,
+      text: item.text,
+      enabled: item.enabled,
+      fingerprint: item.fingerprint,
+      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
+      ...(item.order === undefined ? {} : { order: item.order }),
+      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+    })),
+    records: value.records.map((entry) =>
+      entry.type === "split"
+        ? {
+            type: "split" as const,
+            level: entry.level,
+            agent: entry.agent,
+            item: entry.item,
+            boundaries: entry.boundaries.map((boundary) => ({ ...boundary })),
+            updated: entry.updated,
+          }
+        : {
+            type: "customization" as const,
+            level: entry.level,
+            agent: entry.agent,
+            item: entry.item,
+            section: entry.section,
+            ...(entry.text === undefined ? {} : { text: entry.text }),
+            ...(entry.state === undefined ? {} : { state: entry.state }),
+            basedOn: entry.basedOn,
+            ...(entry.basedOnText === undefined ? {} : { basedOnText: entry.basedOnText }),
+            ...(entry.acknowledged === undefined ? {} : { acknowledged: entry.acknowledged }),
+            updated: entry.updated,
+          },
+    ),
+    agents: value.agents.map((agent) => ({
+      id: agent.id,
+      scope: agent.scope,
+      ...(agent.path === undefined ? {} : { path: agent.path }),
+      ...(agent.base === undefined ? {} : { base: agent.base }),
+    })),
+    teams: (value.teams ?? []).map((team) => ({
+      level: team.level,
+      team: team.team,
+      enabled: team.enabled,
+      agents: [...team.agents],
+    })),
+  })
+  const row = expandedTree(toMemo(snapshot.value)).find((candidate) => candidate.address?.item === "tool:reader")
+  if (row === undefined) throw new Error("missing reader row")
+  const firstOp = saveText(toMemo(snapshot.value), row.id, "same text")
+  if ("refusal" in firstOp) throw new Error(`expected save: ${firstOp.refusal}`)
+  const first = await api.mutate({
+    expectedRevision: snapshot.value.revision,
+    expectedGlobalRevision: snapshot.value.globalRevision,
+    records: [...firstOp.records, ...firstOp.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!first.ok || !first.value.ok) throw new Error("expected first mutate to succeed")
+  const loggedAfterFirst = await api.log({})
+  if (!loggedAfterFirst.ok) throw new Error("log failed")
+  expect(loggedAfterFirst.value.total).toBe(1)
+  const fresh = await api.snapshot()
+  if (!fresh.ok) throw new Error("fresh snapshot failed")
+  const secondOp = saveText(toMemo(fresh.value), row.id, "same text")
+  if ("refusal" in secondOp) throw new Error(`expected second save: ${secondOp.refusal}`)
+  expect(secondOp.records).toEqual(fresh.value.records.filter((entry) => entry.type === "customization"))
+  const second = await api.mutate({
+    expectedRevision: fresh.value.revision,
+    expectedGlobalRevision: fresh.value.globalRevision,
+    records: [...secondOp.records, ...secondOp.splits] as unknown as Plus.SnapshotRecord[],
+    actor: { type: "tui" },
+  })
+  if (!second.ok || !second.value.ok) throw new Error("expected second mutate to succeed")
+  expect(second.value.revision).toBe(first.value.revision)
+  expect(second.value.globalRevision).toBe(first.value.globalRevision)
+  const loggedAfterSecond = await api.log({})
+  if (!loggedAfterSecond.ok) throw new Error("log failed")
+  expect(loggedAfterSecond.value.total).toBe(1)
 })
 
 test("logging moves neither revisions nor the publish fingerprint", async () => {

@@ -12,6 +12,7 @@ import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
 import { enable } from "../src/project.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
+import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import {
   addSection,
@@ -236,7 +237,7 @@ test("reset through the tool clears the override like ops reset", async () => {
   expect(after.records).toEqual([])
 })
 
-test("split and add section match ops", async () => {
+test("split and add section match ops and persist boundaries and section records", async () => {
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
   const before = await snapshotOf(api)
@@ -246,6 +247,10 @@ test("split and add section match ops", async () => {
     status: string
   }
   expect(output.status).toBe(expected.status)
+  const afterSplit = await snapshotOf(api)
+  const splitRecord = afterSplit.records.find((record) => record.type === "split")
+  if (splitRecord === undefined || splitRecord.type !== "split") throw new Error("expected persisted split record")
+  expect(splitRecord.boundaries).toEqual([{ id: "a", name: "A", start: 0 }])
   const { api: api2, tools: tools2 } = await freshFixture()
   const id2 = await readerRowId(api2)
   const before2 = await snapshotOf(api2)
@@ -255,9 +260,19 @@ test("split and add section match ops", async () => {
     status: string
   }
   expect(added.status).toBe(expectedAdd.status)
+  const afterAdd = await snapshotOf(api2)
+  const addedSplit = afterAdd.records.find((record) => record.type === "split")
+  if (addedSplit === undefined || addedSplit.type !== "split") throw new Error("expected persisted split for added section")
+  expect(addedSplit.boundaries.some((boundary) => boundary.name === "Flags")).toBe(true)
+  const sectionRecord = afterAdd.records.find(
+    (record) => record.type === "customization" && record.section !== null && record.text === "extra flags",
+  )
+  if (sectionRecord === undefined) throw new Error("expected persisted section customization")
+  if (sectionRecord.type !== "customization" || sectionRecord.section === null) throw new Error("expected section record")
+  expect(addedSplit.boundaries.some((boundary) => boundary.id === sectionRecord.section)).toBe(true)
 })
 
-test("keep/take/edit resolve match ops", async () => {
+test("keep/take/edit resolve match ops and persist the resulting records", async () => {
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
   await runOk(need(tools, "instructions_set"), { id, text: "mine text" })
@@ -269,6 +284,10 @@ test("keep/take/edit resolve match ops", async () => {
   }
   const kept = (await runOk(need(tools, "instructions_set"), { id, resolve: "keep" })) as { status: string }
   expect(kept.status).toBe(`Kept "reader"`)
+  const afterKeep = await snapshotOf(api)
+  const keptRecord = afterKeep.records.find((record) => record.type === "customization" && record.text === "mine text")
+  if (keptRecord === undefined || keptRecord.type !== "customization") throw new Error("expected kept text to persist")
+  expect(keptRecord.acknowledged).toBeDefined()
   const edited = (await runOk(need(tools, "instructions_set"), { id, resolve: "edit", text: "merged text" })) as {
     status: string
   }
@@ -277,6 +296,11 @@ test("keep/take/edit resolve match ops", async () => {
   expect(after.records.some((record) => record.type === "customization" && record.text === "merged text")).toBe(true)
   const taken = (await runOk(need(tools, "instructions_set"), { id, resolve: "take" })) as { status: string }
   expect(taken.status).toBe(`Took upstream for "reader"`)
+  const afterTake = await snapshotOf(api)
+  expect(afterTake.records.some((record) => record.type === "customization" && record.text === "merged text")).toBe(false)
+  expect(
+    afterTake.records.some((record) => record.type === "customization" && record.text === "mine text"),
+  ).toBe(false)
 })
 
 test("a refused toggle produces the same refusal string the TUI shows", async () => {
@@ -306,18 +330,36 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
     path: string
   }
   expect(await Bun.file(agent.path).text()).toContain("Be helpful.")
+  const apiAgent = await api.createAgent({ scope: "project", id: "helper-api", prompt: "Be helpful." })
+  if (!apiAgent.ok) throw new Error(`api createAgent failed: ${apiAgent.error.message}`)
+  expect(await Bun.file(apiAgent.value.path).text()).toContain("Be helpful.")
+  expect(apiAgent.value.id).toBe("helper-api")
   const skill = (await runOk(need(tools, "instructions_create"), { kind: "skill", name: "notes2", body: "Take notes." })) as {
     path: string
   }
   expect(await Bun.file(skill.path).text()).toContain("Take notes.")
+  const apiSkill = await api.createSkill({ name: "notes-api", body: "Take notes." })
+  if (!apiSkill.ok) throw new Error(`api createSkill failed: ${apiSkill.error.message}`)
+  expect(await Bun.file(apiSkill.value.path).text()).toContain("Take notes.")
   const base = (await runOk(need(tools, "instructions_create"), { kind: "base", id: "custom", title: "Custom.txt", text: "custom base" })) as {
     id: string
   }
   expect(base.id).toBe("custom")
+  const apiBase = await api.createBase({ id: "custom-api", title: "CustomApi.txt", text: "custom base" })
+  if (!apiBase.ok) throw new Error(`api createBase failed: ${apiBase.error.message}`)
+  expect(apiBase.value.id).toBe("custom-api")
   const instruction = (await runOk(need(tools, "instructions_create"), { kind: "instruction", name: "AGENTS.md", text: "Follow the guide." })) as {
     path: string
   }
   expect(instruction.path).toBe(path.join(project, "AGENTS.md"))
+  expect(await Bun.file(instruction.path).text()).toContain("Follow the guide.")
+  const { project: project2 } = await tempProject()
+  const ctx2 = fixtureContext(project2)
+  const api2 = createPlusApi(ctx2, createState())
+  const apiInstruction = await api2.createInstruction({ name: "AGENTS.md", text: "Follow the guide." })
+  if (!apiInstruction.ok) throw new Error(`api createInstruction failed: ${apiInstruction.error.message}`)
+  expect(apiInstruction.value.path).toBe(path.join(project2, "AGENTS.md"))
+  expect(await Bun.file(apiInstruction.value.path).text()).toContain("Follow the guide.")
   const mcp = (await runOk(need(tools, "instructions_create"), {
     kind: "mcp",
     name: "search",
@@ -325,7 +367,9 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   })) as { name: string }
   expect(mcp.name).toBe("search")
   expect(await Bun.file(path.join(project, ".opencode", "opencode.json")).text()).toContain("https://example.test")
-  void api
+  const apiMcp = await api.addMcp({ name: "search-api", config: { type: "remote", url: "https://example.test" } })
+  if (!apiMcp.ok) throw new Error(`api addMcp failed: ${apiMcp.error.message}`)
+  expect(await Bun.file(path.join(project, ".opencode", "opencode.json")).text()).toContain("search-api")
 })
 
 test("delete agent removes a file-backed agent and reports the plan status", async () => {
@@ -373,9 +417,11 @@ test("delete skill removes a project skill and reports the plan status", async (
   expect(await Bun.file(skillPath).exists()).toBe(false)
 })
 
-test("delete base removes a user template", async () => {
+test("delete base removes a user template and its file is gone", async () => {
   const { api, tools } = await freshFixture()
   await runOk(need(tools, "instructions_create"), { kind: "base", id: "dropbase", title: "Drop.txt", text: "drop" })
+  const createdPath = userBaseFile("dropbase")
+  expect(await Bun.file(createdPath).exists()).toBe(true)
   const afterBase = await snapshotOf(api)
   const baseRow = expandedTree(memoFromSnapshot(afterBase)).find((node) => node.address?.item === "base:dropbase")
   if (baseRow === undefined) throw new Error("missing base row")
@@ -383,6 +429,7 @@ test("delete base removes a user template", async () => {
   if ("refusal" in basePlan) throw new Error(`expected base plan: ${basePlan.refusal}`)
   const deleted = (await runOk(need(tools, "instructions_delete"), { id: baseRow.id, confirm: true })) as { status: string }
   expect(deleted.status).toBe(basePlan.successStatus)
+  expect(await Bun.file(createdPath).exists()).toBe(false)
 })
 
 test("delete instruction removes the project file", async () => {
@@ -659,6 +706,156 @@ test("show with each view returns the right shape, diff returns two diffs plus s
   const unknown = await runFail(show, { id: "item:project:alpha:does:not:exist", view: "resolved" })
   expect(unknown.message).toContain("row.unknown")
   expect(unknown.message).toContain(unknownRowRefusal("item:project:alpha:does:not:exist"))
+})
+
+test("registered list and log tools return persisted rows and history", async () => {
+  const { api, tools } = await freshFixture()
+  const id = await readerRowId(api)
+  await runOk(need(tools, "instructions_set"), { id, text: "listed text" })
+  const list = (await runOk(need(tools, "instructions_list"), {})) as { rows: readonly { id: string }[]; total: number }
+  expect(list.total).toBeGreaterThan(0)
+  expect(list.rows.some((row) => row.id === id)).toBe(true)
+  const logged = (await runOk(need(tools, "instructions_log"), {})) as {
+    entries: readonly { op: string }[]
+    total: number
+  }
+  expect(logged.total).toBeGreaterThan(0)
+  expect(logged.entries.some((entry) => entry.op === "mutate")).toBe(true)
+})
+
+test("protected agent creation refuses before writing a file or log line", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["build"] }))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const error = await runFail(need(tools, "instructions_create"), { kind: "agent", id: "build", prompt: "override" })
+  expect(error.message).toContain("agent.protected")
+  expect(await Bun.file(path.join(project, ".opencode", "agent", "build.md")).exists()).toBe(false)
+  expect(await Bun.file(path.join(project, ".opencode", "agents", "build.md")).exists()).toBe(false)
+  const logged = await api.log({})
+  if (!logged.ok) throw new Error("log failed")
+  expect(logged.value.total).toBe(0)
+})
+
+test("team set honours explicit state and refuses text and resolve without writing", async () => {
+  const { project } = await tempProject()
+  await fs.mkdir(path.join(projectTeamsPath(project), "crew"), { recursive: true })
+  await Bun.write(path.join(projectTeamsPath(project), "crew", "alpha.md"), formatMarkdown({ description: "alpha" }, "role"))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.id === "team:project:crew")
+  if (row === undefined) throw new Error("missing team row")
+  const beforeLines = await api.log({})
+  if (!beforeLines.ok) throw new Error("log failed")
+  const beforeTotal = beforeLines.value.total
+  const enabled = (await runOk(need(tools, "instructions_set"), { id: row.id, state: "on" })) as { status: string }
+  expect(enabled.status).toBe(`Enabled team "crew"`)
+  const afterOn = await snapshotOf(api)
+  expect(afterOn.teams?.find((team) => team.team === "crew")?.enabled).toBe(true)
+  const disabled = (await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }
+  expect(disabled.status).toBe(`Disabled team "crew"`)
+  const afterOff = await snapshotOf(api)
+  expect(afterOff.teams?.find((team) => team.team === "crew")?.enabled).toBe(false)
+  const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
+  expect(textError.message).toContain("cannot be edited")
+  const resolveError = await runFail(need(tools, "instructions_set"), { id: row.id, resolve: "keep" })
+  expect(resolveError.message).toContain("cannot be resolved")
+  const afterRefusals = await snapshotOf(api)
+  expect(afterRefusals.teams?.find((team) => team.team === "crew")?.enabled).toBe(false)
+  const logged = await api.log({})
+  if (!logged.ok) throw new Error("log failed")
+  const teamLines = logged.value.entries.filter((entry) => entry.op === "team.setEnabled")
+  expect(teamLines).toHaveLength(2)
+  expect(logged.value.total).toBe(beforeTotal + 2)
+})
+
+test("resolve edit on a Code Mode row refuses like a text edit", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream")],
+    tools: [{ id: "coder", description: "code mode tool" }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === "tool:coder")
+  if (node === undefined) throw new Error("missing coder row")
+  const textError = await runFail(need(tools, "instructions_set"), { id: node.id, text: "blocked" })
+  const editError = await runFail(need(tools, "instructions_set"), { id: node.id, resolve: "edit", text: "blocked" })
+  expect(editError.message).toBe(textError.message)
+  const missingError = await runFail(need(tools, "instructions_set"), { id: node.id, resolve: "edit" })
+  expect(missingError.message).toContain("cannot be edited")
+  const after = await snapshotOf(api)
+  expect(after.records).toEqual([])
+})
+
+test("explicit state refusal matches the toggle wording through the tool", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream")],
+    tools: [{ id: "coder", description: "code mode tool" }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === "tool:coder")
+  if (node === undefined) throw new Error("missing coder row")
+  const toggleError = await runFail(need(tools, "instructions_set"), { id: node.id })
+  const stateError = await runFail(need(tools, "instructions_set"), { id: node.id, state: "off" })
+  expect(stateError.message).toBe(toggleError.message)
+})
+
+test("a stale bare-id toggle reports the status that actually committed", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project)
+  const state = createState()
+  const real = createPlusApi(ctx, state)
+  const before = await snapshotOf(real)
+  const memo = memoFromSnapshot(before)
+  const target = expandedTree(memo).find((candidate) => candidate.address?.item === "tool:reader")
+  if (target === undefined) throw new Error("missing reader row")
+  let calls = 0
+  const wrapped: PlusApi = {
+    ...real,
+    mutate: async (input) => {
+      calls += 1
+      if (calls === 1) {
+        const concurrentOp = toggle(memo, target.id)
+        if ("refusal" in concurrentOp) throw new Error(`concurrent toggle refused: ${concurrentOp.refusal}`)
+        const concurrent = await real.mutate({
+          expectedRevision: before.revision,
+          expectedGlobalRevision: before.globalRevision,
+          records: [...concurrentOp.records, ...concurrentOp.splits] as unknown as Plus.MutateInput["records"],
+          actor: { type: "tui" },
+        })
+        if (!concurrent.ok) throw new Error("concurrent write failed")
+        const fresh = await real.snapshot()
+        if (!fresh.ok) throw new Error("fresh snapshot failed")
+        return {
+          ok: true as const,
+          value: { ok: false as const, reason: "stale" as const, store: "project" as const, snapshot: fresh.value },
+        }
+      }
+      return real.mutate(input)
+    },
+  }
+  await registerInstructionTools(ctx, wrapped)
+  const tools = await readTools(ctx)
+  const output = (await runOk(need(tools, "instructions_set"), { id: target.id })) as { status: string }
+  expect(output.status).toBe(`Enabled "reader"`)
+  const after = await snapshotOf(real)
+  const enabled = after.records.find((record) => record.type === "customization" && record.item === "tool:reader")
+  if (enabled === undefined || enabled.type !== "customization") throw new Error("expected committed record")
+  expect(enabled.state).toBe("on")
 })
 
 test("toolHarness exposes agent, skill, and hook state for parity checks", async () => {

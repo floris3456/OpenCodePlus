@@ -368,6 +368,15 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           ok: false as const,
           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
         }
+      if (config.protectedAgents.includes(validated.id))
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.invalid" as const,
+            message: `agent.protected: row belongs to protected agent "${validated.id}"`,
+            data: { id: input.id, reason: `agent.protected: row belongs to protected agent "${validated.id}"` },
+          },
+        }
       const seed = input.template === undefined ? undefined : await readTemplate(ctx, directory, input.template as string)
       if (input.template !== undefined && seed === undefined)
         return {
