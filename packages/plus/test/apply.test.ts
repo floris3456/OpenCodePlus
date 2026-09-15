@@ -19,7 +19,7 @@ import type { ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
 import { seedSystemInstruction } from "../src/instructions/teaching.js"
-import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
+import { catalogPath, fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import type { CustomizationRecord, Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -1294,4 +1294,258 @@ test("toggling the teaching row off removes that part", async () => {
     if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
     else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
   }
+})
+
+function codemodeTool(id: string, description: string): Tool.Info & { readonly id: string } {
+  return {
+    id,
+    name: id,
+    description,
+    input: Schema.Void,
+    execute: () => Effect.die("unused tool.execute"),
+  }
+}
+
+test("catalogPath derives the qualified dotted path, not the registry id", async () => {
+  // Core builds the registry id with underscores but the catalog path with
+  // dots: namespace "my.server" + raw name "read:file" becomes registry
+  // "my_server_read_file" but catalog "my.server.read_file". The registry id
+  // is not reversible, so apply must derive the path from namespace + title.
+  expect(catalogPath({ namespace: "my.server", title: "read:file" })).toBe("my.server.read_file")
+  expect(catalogPath({ title: "plain" })).toBe("plain")
+})
+
+test("a Code Mode tool switched off for one agent installs a deny rule on that agent only", async () => {
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+  })
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "tool:coder", agent: "alpha", level: "project", state: "off" })]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [
+        { id: "alpha", level: "project" },
+        { id: "beta", level: "project" },
+      ],
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(applied.tools).toEqual([])
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  expect(agents.state.get("beta")?.permissions.some((rule) => rule.action === "coder" && rule.effect === "deny")).toBe(false)
+  expect(agents.reloads).toBe(1)
+})
+
+test("a Defaults-level off cascades to the agents that inherit it", async () => {
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+  })
+  const discovered = await discoverFor(ctx)
+  const records: CustomizationRecord[] = [{
+    type: "customization",
+    level: "defaults",
+    agent: null,
+    item: "tool:coder",
+    section: null,
+    state: "off",
+    basedOn: fingerprint("upstream"),
+    updated: UPDATED,
+  }]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [
+        { id: "alpha", level: "project" },
+        { id: "beta", level: "project" },
+      ],
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  expect(agents.state.get("beta")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  expect(agents.reloads).toBe(1)
+})
+
+test("the execute row switched off installs a deny for execute", async () => {
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+  })
+  const discovered = await discoverFor(ctx)
+  expect(discovered.items.some((item) => item.id === "tool:execute")).toBe(true)
+  const records = [makeRecord({ item: "tool:execute", agent: "alpha", level: "project", state: "off" })]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [
+        { id: "alpha", level: "project" },
+        { id: "beta", level: "project" },
+      ],
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "execute", resource: "*", effect: "deny" }])
+  expect(agents.state.get("beta")?.permissions.some((rule) => rule.action === "execute" && rule.effect === "deny")).toBe(false)
+  expect(agents.reloads).toBe(1)
+})
+
+test("the catalog hook rewrites description and pinned for the right agent only", async () => {
+  const catalogCallbacks: ((event: SessionHooks["catalog"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "catalog") catalogCallbacks.push(callback as (event: SessionHooks["catalog"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  const coder = discovered.items.find((item) => item.id === "tool:coder")
+  if (!coder) throw new Error("expected tool:coder")
+  const records = [makeRecord({ item: "tool:coder", agent: "alpha", level: "project", text: "custom description", pin: true })]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [
+        { id: "alpha", level: "project" },
+        { id: "beta", level: "project" },
+      ],
+      scopes: scopesOf(discovered.agents),
+      records,
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(catalogCallbacks).toHaveLength(1)
+  expect(applied.tools).toEqual([
+    { agent: "alpha", tool: "coder", enabled: true, text: "custom description", codemode: true, catalogPath: "coder", pinned: true },
+  ])
+  const run = catalogCallbacks[0]
+  if (!run) throw new Error("missing catalog hook")
+  const alphaEvent: SessionHooks["catalog"] = {
+    sessionID: Session.ID.make("ses_catalog_alpha"),
+    agent: Agent.ID.make("alpha"),
+    tools: {
+      coder: { description: "code mode tool", pinned: false },
+      other: { description: "untouched", pinned: false },
+    },
+  }
+  await Effect.runPromise(run(alphaEvent))
+  expect(alphaEvent.tools.coder?.description).toBe("custom description")
+  expect(alphaEvent.tools.coder?.pinned).toBe(true)
+  expect(alphaEvent.tools.other?.description).toBe("untouched")
+  expect(Object.keys(alphaEvent.tools).toSorted()).toEqual(["coder", "other"])
+  const betaEvent: SessionHooks["catalog"] = {
+    sessionID: Session.ID.make("ses_catalog_beta"),
+    agent: Agent.ID.make("beta"),
+    tools: { coder: { description: "code mode tool", pinned: false } },
+  }
+  await Effect.runPromise(run(betaEvent))
+  expect(betaEvent.tools.coder?.description).toBe("code mode tool")
+  expect(betaEvent.tools.coder?.pinned).toBe(false)
+  // A plan for a path the event does not carry never creates a key.
+  const missingEvent: SessionHooks["catalog"] = {
+    sessionID: Session.ID.make("ses_catalog_missing"),
+    agent: Agent.ID.make("alpha"),
+    tools: { other: { description: "untouched", pinned: false } },
+  }
+  await Effect.runPromise(run(missingEvent))
+  expect(Object.keys(missingEvent.tools)).toEqual(["other"])
+})
+
+test("a namespaced tool joins the catalog by dotted path, not registry id", async () => {
+  const catalogCallbacks: ((event: SessionHooks["catalog"]) => Effect.Effect<void>)[] = []
+  const namespaced: Tool.Info & { readonly id: string } = {
+    id: "my_server_read_file",
+    name: "read:file",
+    description: "namespaced tool",
+    input: Schema.Void,
+    options: { namespace: "my.server" },
+    execute: () => Effect.die("unused tool.execute"),
+  }
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([namespaced]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "catalog") catalogCallbacks.push(callback as (event: SessionHooks["catalog"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  const item = discovered.items.find((entry) => entry.id === "tool:my_server_read_file")
+  if (!item) throw new Error("expected namespaced tool item")
+  expect(item.namespace).toBe("my.server")
+  expect(item.title).toBe("read:file")
+  expect(catalogPath(item)).toBe("my.server.read_file")
+  const records = [makeRecord({ item: "tool:my_server_read_file", agent: "alpha", level: "project", text: "custom namespaced" })]
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
+  expect(applied.tools).toEqual([
+    {
+      agent: "alpha",
+      tool: "my_server_read_file",
+      enabled: true,
+      text: "custom namespaced",
+      codemode: true,
+      catalogPath: "my.server.read_file",
+      pinned: false,
+    },
+  ])
+  const run = catalogCallbacks[0]
+  if (!run) throw new Error("missing catalog hook")
+  const event: SessionHooks["catalog"] = {
+    sessionID: Session.ID.make("ses_catalog_namespaced"),
+    agent: Agent.ID.make("alpha"),
+    tools: { "my.server.read_file": { description: "namespaced tool", pinned: false } },
+  }
+  await Effect.runPromise(run(event))
+  expect(event.tools["my.server.read_file"]?.description).toBe("custom namespaced")
+  expect("my_server_read_file" in event.tools).toBe(false)
+})
+
+test("a catalog failure unwinds the denial installed earlier in the pass", async () => {
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+    session: {
+      hook: (name) => {
+        if (name === "catalog") return Effect.die(new Error("catalog hook failed"))
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  const records = [
+    makeRecord({ item: "tool:coder", agent: "alpha", level: "project", state: "off", text: "custom", pin: true }),
+  ]
+  // The off installs a denial and the text+pin installs a catalog plan in the
+  // same pass. The catalog hook then fails, so the denial must unwind rather
+  // than leaving the agent denied.
+  const before = agents.state.get("alpha")?.permissions.length ?? 0
+  await expect(apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))).rejects.toThrow(
+    "catalog hook failed",
+  )
+  expect(agents.state.get("alpha")?.permissions).toHaveLength(before)
+  expect(agents.transforms).toBe(agents.disposes)
 })

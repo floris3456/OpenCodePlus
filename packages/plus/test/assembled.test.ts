@@ -170,7 +170,7 @@ function offRecord(item: Plus.SnapshotItem): Plus.SnapshotCustomizationRecord {
   }
 }
 
-test("reports a code mode tool as present when a stored off was never applied", async () => {
+test("reports a code mode tool as absent once its deny is installed", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
@@ -206,11 +206,11 @@ test("reports a code mode tool as present when a stored off was never applied", 
   )
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  // Apply filters Code Mode tool plans out entirely, so the host still holds
-  // the tool. Assembled must report host-effective membership (present), not
-  // the stored off.
+  // Apply installs a per-id deny rule for the Code Mode tool, so the host no
+  // longer serves it to this agent. Assembled reports host-effective
+  // membership (absent), not registry presence.
   const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
-  expect(forAlpha.tools.map((entry) => entry.id)).toContain("coder")
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
 })
 
 test("reports a natively denied tool as absent once the denial is installed", async () => {
@@ -403,4 +403,212 @@ test("reports a stored skill off with an installed denial as absent", async () =
   ])
   const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
   expect(forAlpha.skills.map((entry) => entry.id)).not.toContain("notes")
+})
+
+async function setupTools(options: {
+  agents: string[]
+  tools: Parameters<typeof toolHarness>[0]
+}) {
+  const { project } = await tempRoot()
+  await enable(project)
+  for (const id of options.agents) {
+    const agentPath = path.join(project, ".opencode", "agent", `${id}.md`)
+    await fs.mkdir(path.dirname(agentPath), { recursive: true })
+    await Bun.write(agentPath, "upstream role")
+  }
+  const agents = agentHarness(options.agents.map((id) => agentInfo(id, "upstream role")))
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  const tools = toolHarness(options.tools)
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    session: {
+      hook: () => Effect.succeed({ dispose: Effect.void }),
+    },
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  return { project, handlers, agents, state }
+}
+
+function toolOff(item: Plus.SnapshotItem, overrides?: Partial<Plus.SnapshotCustomizationRecord>): Plus.SnapshotCustomizationRecord {
+  return {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: item.id,
+    section: null,
+    state: "off",
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+test("a Code Mode off installs a deny for one agent while the other keeps the tool", async () => {
+  const { handlers, agents } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [toolOff(item)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  expect(agents.state.get("beta")?.permissions.some((rule) => rule.action === "coder")).toBe(false)
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).toContain("coder")
+  expect(forBeta.tools.find((entry) => entry.id === "coder")?.codemode).toBe(true)
+})
+
+test("a Defaults-level Code Mode off cascades to inheriting agents", async () => {
+  const { handlers, agents } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  const shared: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "defaults",
+    agent: null,
+    item: item.id,
+    section: null,
+    state: "off",
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [shared] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  expect(agents.state.get("beta")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).not.toContain("coder")
+})
+
+test("the execute entry is present unless denied", async () => {
+  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const execute = snapshot.items.find((entry) => entry.id === "tool:execute")
+  if (!execute) throw new Error("expected tool:execute")
+  const before = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(before.tools.map((entry) => entry.id)).toContain("execute")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [toolOff(execute)] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("execute")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).toContain("execute")
+})
+
+test("a Code Mode text and pin reports the installed catalog plan for the owning agent only", async () => {
+  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:coder")
+  if (!item) throw new Error("expected tool:coder")
+  const edit: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: item.id,
+    section: null,
+    text: "custom coder",
+    pin: true,
+    basedOn: item.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [edit] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  const alphaCoder = forAlpha.tools.find((entry) => entry.id === "coder")
+  if (!alphaCoder) throw new Error("expected coder for alpha")
+  expect(alphaCoder.description).toBe("custom coder")
+  expect(alphaCoder.codemode).toBe(true)
+  expect(alphaCoder.pinned).toBe(true)
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  const betaCoder = forBeta.tools.find((entry) => entry.id === "coder")
+  if (!betaCoder) throw new Error("expected coder for beta")
+  expect(betaCoder.description).toBe("code mode tool")
+  expect(betaCoder.codemode).toBe(true)
+  expect(betaCoder.pinned).toBe(false)
+  // Optional keys are never undefined: native rows omit them entirely.
+  const native = forAlpha.tools.find((entry) => entry.id === "execute")
+  if (native !== undefined) {
+    expect("codemode" in native).toBe(false)
+    expect("pinned" in native).toBe(false)
+  }
+})
+
+test("a stored-but-unpublished Code Mode off stays present", async () => {
+  const { project, handlers } = await setupTools({ agents: ["alpha"], tools: [{ id: "coder", description: "code mode tool" }] })
+  await save(project, {
+    expectedProjectRevision: 0,
+    expectedGlobalRevision: 0,
+    records: [
+      {
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "tool:coder",
+        section: null,
+        state: "off",
+        basedOn: "any",
+        updated: UPDATED,
+      },
+    ],
+  })
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).toContain("coder")
+})
+
+test("a permission-group deny excludes the Code Mode tool sharing that group", async () => {
+  const { handlers, agents } = await setupTools({
+    agents: ["alpha", "beta"],
+    tools: [{ id: "coder", description: "code mode tool", options: { permission: "shared-group" } }],
+  })
+  await Effect.runPromise(
+    Effect.scoped(
+      agents.domain.transform((editor) => {
+        editor.update("alpha", (agent) => {
+          agent.permissions.push({ action: "shared-group", resource: "*", effect: "deny" })
+        })
+      }),
+    ),
+  )
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).toContain("coder")
 })

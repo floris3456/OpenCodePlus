@@ -4,7 +4,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
 import { copyName, isSkillCopy, type ToolPlan } from "./apply.js"
-import { isCodeModeToolEntry, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+import { catalogPath, isCodeModeToolEntry, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
 import type { Plus } from "../rpc.js"
 
 interface AssembledInput {
@@ -21,22 +21,24 @@ interface AssembledInput {
 // Assembled view for one agent: the agent's installed system text read back
 // from the host (agent transforms are registry-level, so agent.list reflects
 // application), plus the skill and tool domains filtered to what this agent
-// can use. Tool descriptions are a registry-level read: per-agent tool text
-// installs through a session context hook, which is session-scoped for a
+// can use. Tool descriptions are a registry-level read: per-agent native tool
+// text installs through a session context hook, which is session-scoped for a
 // specific agent, so assembled reports the registry (upstream) description
 // even when the override applies correctly inside that agent's sessions.
-// Membership is host-effective wherever the host proves it; a stored `off` is
-// desired state, never proof that anything was excluded. Code Mode tool plans
-// are filtered out of apply entirely, so a stored off for a Code Mode tool
-// can never exclude it: registry presence alone decides. Skill denials
-// install as agent permission rules, so an installed deny decides — except a
-// deny left behind without its private copy alongside an enabled desire is a
-// torn install, and the missing copy means the customization is not live, so
-// the registry original is reported (the same principle as the content
-// readback below). Native tool denials install through the session context
-// hook, which no registry seam can observe per agent; assembled consults
-// the installed tool plan set published by apply/index.ts so a stored-but-
-// unpublished off does not hide a tool the host still serves.
+// Code Mode tool text installs through the session catalog hook instead, and
+// assembled reports the installed catalog plan's text for that agent when one
+// exists. Membership is host-effective wherever the host proves it; a stored
+// `off` is desired state, never proof that anything was excluded. Code Mode
+// denials (including the execute row) install as agent permission rules, so an
+// installed deny decides — the same principle as the skill path below. Skill
+// denials install as agent permission rules, so an installed deny decides —
+// except a deny left behind without its private copy alongside an enabled
+// desire is a torn install, and the missing copy means the customization is
+// not live, so the registry original is reported (the same principle as the
+// content readback below). Native tool denials install through the session
+// context hook, which no registry seam can observe per agent; assembled
+// consults the installed tool plan set published by apply/index.ts so a
+// stored-but-unpublished off does not hide a tool the host still serves.
 export async function assembled(input: AssembledInput): Promise<Plus.Assembled | { ok: false; agent: string }> {
   const owner = input.agents.find((entry) => entry.id === input.agent)
   if (owner === undefined) return { ok: false, agent: input.agent }
@@ -53,18 +55,34 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])
-      .filter((plan) => plan.agent === input.agent && !plan.enabled)
+      .filter((plan) => plan.agent === input.agent && !plan.enabled && plan.codemode !== true)
       .map((plan) => plan.tool),
   )
-  const visibleTools = input.items
+  const liveRules = systemEntry?.permissions
+  const visibleTools: Plus.AssembledTool[] = input.items
     .filter((item) => item.kind === "tool")
-    .flatMap((item) => {
+    .flatMap((item): Plus.AssembledTool[] => {
+      if (item.execute === true) {
+        if (liveRules !== undefined && toolDenied("execute", "execute", liveRules)) return []
+        return [{ id: "execute", description: item.text }]
+      }
       const live = tools.get(item.id.slice("tool:".length))
       if (live === undefined) return []
-      // Code Mode tools never receive a denial (apply drops their plans), so
-      // their host-effective membership is registry presence alone: ignore
-      // the stored record and report the tool whenever the host holds it.
-      if (live.codemode) return [{ id: live.id, description: live.description }]
+      // Code Mode entries install denials as agent permission rules (host-
+      // effective proof, like skills) and text/pin through the session catalog
+      // hook. An installed deny excludes the tool; otherwise report the
+      // installed catalog plan's text for this agent when one exists, falling
+      // back to the registry description, with the resolved pin.
+      if (live.codemode) {
+        if (liveRules !== undefined && toolDenied(live.id, live.group, liveRules)) return []
+        const state = resolved.get(item.id)
+        const pinned = state?.pinned ?? (item.pinned ?? false)
+        const installed = (input.installedTools ?? []).find(
+          (plan) => plan.agent === input.agent && plan.codemode === true && plan.catalogPath === catalogPath(item),
+        )
+        const description = installed?.text ?? live.description
+        return [{ id: live.id, description, codemode: true as const, pinned }]
+      }
       // Native tool denials install through the session context hook, which no
       // registry seam can observe per agent. The installed plan set published
       // by apply records what was actually installed for this agent: an
@@ -126,10 +144,16 @@ async function readAgentEntry(ctx: Context, agent: string): Promise<Agent.Info |
   return output.data.find((entry) => String(entry.id) === agent) as Agent.Info | undefined
 }
 
-async function listTools(ctx: Context): Promise<Map<string, { id: string; description: string; codemode: boolean }>> {
+async function listTools(ctx: Context): Promise<Map<string, { id: string; description: string; codemode: boolean; group: string }>> {
   return readTransform(ctx.tool.transform, (editor: ToolEditor) => {
-    const live = new Map<string, { id: string; description: string; codemode: boolean }>()
-    for (const tool of editor.list()) live.set(tool.id, { id: tool.id, description: tool.description, codemode: isCodeModeToolEntry(tool) })
+    const live = new Map<string, { id: string; description: string; codemode: boolean; group: string }>()
+    for (const tool of editor.list())
+      live.set(tool.id, {
+        id: tool.id,
+        description: tool.description,
+        codemode: isCodeModeToolEntry(tool),
+        group: tool.options?.permission ?? tool.id,
+      })
     return live
   })
 }
@@ -137,6 +161,19 @@ async function listTools(ctx: Context): Promise<Map<string, { id: string; descri
 async function listSkills(ctx: Context): Promise<Map<string, string>> {
   const output = await Effect.runPromise(ctx.skill.list())
   return new Map(output.data.map((skill) => [String(skill.id), skill.content]))
+}
+
+// Tool denials install as agent permission rules (apply pushes
+// `{ action: <tool id>, resource: "*", effect: "deny" }` onto the owning
+// agent), mirroring core's `whollyDisabled` (core/src/tool.ts) plus the new
+// per-id rule: the last rule matching either the tool's own id or its
+// permission group with `resource === "*"` and `effect === "deny"` means
+// denied. Core filters by last-match-wins, so the host-effective tool set is
+// the registry filtered by THIS agent's live rules.
+function toolDenied(action: string, group: string, rules: readonly Agent.Info["permissions"][number][]): boolean {
+  const match = rules.findLast((rule) => wildcardMatch(action, rule.action) || wildcardMatch(group, rule.action))
+  if (match === undefined) return false
+  return match.resource === "*" && match.effect === "deny"
 }
 
 // Skill denials install as agent permission rules (applySkills pushes
