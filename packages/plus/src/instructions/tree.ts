@@ -19,7 +19,7 @@ export type { Memo, MemoInput, TeamInput }
 export { buildMemo } from "./resolve-memo.js"
 
 export type TreeNodeKind = "root" | "group" | "agent" | "team" | "item" | "section"
-export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section"
+export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section" | "team"
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
@@ -245,24 +245,24 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 }
 
 // Teams mirror the Agents group shape: a depth-1 "Teams" group per
-// project/global root holding one toggleable row per on-disk team. Levels
-// with no teams emit nothing — an empty group would be a dead row with no
-// add affordance and no rows to show. Defaults never gets a Teams group:
-// teams are project/global only. Member agent ids hang under each team row
-// as informational rows: they carry no address and no actions, so space,
+// project/global root holding one toggleable row per on-disk team. The group
+// is always present (like Agents) with an `add: "team"` affordance, so an
+// empty level still advertises team creation. Defaults never gets a Teams
+// group: teams are project/global only. Member agent ids hang under each team
+// row as informational rows: they carry no address and no actions, so space,
 // enter, delete, and reset all ignore them.
 function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
   if (level === "defaults") return []
   const teams = ctx.teams
     .filter((team) => team.level === level)
     .toSorted((left, right) => (left.team < right.team ? -1 : left.team > right.team ? 1 : 0))
-  if (teams.length === 0) return []
   return [
     branch(memo, {
       kind: "group",
       id: `group:${level}:teams`,
       label: "Teams",
       depth: 1,
+      add: "team",
       actions: noActions(),
       children: () => teams.map((team) => lazyTeam(memo, level, team)),
     }),

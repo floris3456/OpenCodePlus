@@ -20,6 +20,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
           { title: "Skill", value: "skill" },
           { title: "Instruction", value: "instruction" },
           { title: "MCP server", value: "mcp" },
+          { title: "Team", value: "team" },
         ],
       })
       if (disposed) return
@@ -35,6 +36,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (kind === "base") return addBase()
     if (kind === "skill") return addSkill()
     if (kind === "instruction") return addInstruction()
+    if (kind === "team") return addTeam()
     if (kind === "section") return addSection(node)
     return addMcp()
   }
@@ -246,11 +248,45 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
+  async function addTeam(): Promise<void> {
+    if (disposed) return
+    const raw = await context.ui.dialog.prompt({
+      title: "Team name",
+      description: "Team name; no slashes or ..",
+      placeholder: "my-team",
+    })
+    if (disposed) return
+    if (raw === undefined) return
+    const team = raw.trim()
+    if (team.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Team name cannot be empty" })
+      return
+    }
+    const scope = await context.ui.dialog.select<"project" | "global">({
+      title: "Team scope",
+      options: [
+        { title: "Project", value: "project", description: "Stored with this project" },
+        { title: "Global", value: "global", description: "Stored in your global config" },
+      ],
+    })
+    if (disposed) return
+    if (scope === undefined) return
+    try {
+      const ref = await plus["team.create"]({ level: scope, team }, { location: context.location })
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Created team ${ref.team}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
   function dispose(): void {
     disposed = true
   }
 
-  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, dispose }
+  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

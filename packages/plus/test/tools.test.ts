@@ -730,6 +730,39 @@ test("a tool team toggle appends a log line with actor tool", async () => {
   expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
 })
 
+test("instructions_create with kind team creates the directory disabled and logs actor tool", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  // Regression: the old implementation merely enabled via setTeamEnabled and
+  // failed with team.unknown for a name with no directory. Creating must
+  // succeed on a missing directory and leave the team disabled, not enabled.
+  const output = (await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project" })) as {
+    level: string
+    team: string
+    enabled: boolean
+  }
+  expect(output).toEqual({ level: "project", team: "crew", enabled: false })
+  const stat = await fs.stat(path.join(projectTeamsPath(project), "crew"))
+  expect(stat.isDirectory()).toBe(true)
+  const snapshot = await snapshotOf(api)
+  expect(snapshot.teams?.find((team) => team.team === "crew")).toEqual({
+    level: "project",
+    team: "crew",
+    enabled: false,
+    agents: [],
+  })
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "team.create")
+  if (entry === undefined) throw new Error("missing team.create log entry")
+  expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
+  const missing = await runFail(need(tools, "instructions_create"), { kind: "team", team: "ghost" })
+  expect(missing.message).toContain("create team requires team and level")
+})
+
 test("the same file and team writes through the RPC handlers still log tui", async () => {
   const { project } = await tempProject()
   await fs.mkdir(path.join(projectTeamsPath(project), "crew"), { recursive: true })
@@ -744,11 +777,12 @@ test("the same file and team writes through the RPC handlers still log tui", asy
   }
   await Effect.runPromise(handlers["skill.create"]({ name: "rpcskill", body: "RPC body." }, stub))
   await Effect.runPromise(handlers["skill.delete"]({ id: "rpcskill" }, stub))
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "rpc-crew" }, stub))
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, stub))
   const api = createPlusApi(ctx, state)
   const logged = await api.log({})
   if (!logged.ok) throw new Error("log failed")
-  for (const op of ["skill.create", "skill.delete", "team.setEnabled"] as const) {
+  for (const op of ["skill.create", "skill.delete", "team.create", "team.setEnabled"] as const) {
     const entry = logged.value.entries.find((candidate) => candidate.op === op)
     if (entry === undefined) throw new Error(`missing ${op} log entry`)
     expect(entry.actor).toEqual({ type: "tui" })

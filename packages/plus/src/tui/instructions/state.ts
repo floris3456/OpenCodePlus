@@ -503,6 +503,34 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
+  // a on the Teams group: create the team directory through team.create, then
+  // refresh from the host exactly like toggleTeamRow/remove do — the fresh
+  // snapshot rebuilds the tree with the new disabled row. Declared errors
+  // surface as status text like every other action path.
+  async function createTeam(level: "project" | "global", team: string): Promise<boolean> {
+    const current = snapshot()
+    if (!current) {
+      setStatus("No snapshot loaded")
+      return false
+    }
+    const requestGen = ++generation
+    setLoading(true)
+    try {
+      const ref = await plus["team.create"]({ level, team }, { location: context.location })
+      if (disposed || disabled || requestGen !== generation) return false
+      await refresh()
+      if (disposed || disabled) return false
+      setStatus(`Created team "${ref.team}"`)
+      return true
+    } catch (error: unknown) {
+      if (disposed || disabled || requestGen !== generation) return false
+      setStatus(errorMessage(error))
+      return false
+    } finally {
+      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+    }
+  }
+
   async function setEnabledRow(node: TreeNode, value: boolean): Promise<boolean> {
     const result = setEnabled(memoInput(), node.id, value)
     if ("refusal" in result) {
@@ -693,6 +721,7 @@ export function createInstructionsState(context: Plugin.Context) {
     reset: resetNode,
     saveSplit: saveSplitRow,
     addSection: addSectionRow,
+    createTeam,
     splitPreview,
     resolvedText,
     threeWay: threeWayFor,
