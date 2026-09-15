@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
-import { load, save, type StoredRecord } from "../src/instructions/store.js"
+import { load, save, stable, type StoredRecord } from "../src/instructions/store.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const roots: string[] = []
@@ -421,4 +421,38 @@ test("canonical order sorts mixed customization, split, and team records through
     records: loaded.records,
   })
   expect(reSave).toEqual({ ok: true, projectRevision: 1, globalRevision: 0, changed: { project: false, global: false } })
+})
+
+test("pin survives a save/load round trip and stable() keys it next to state", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    customization({ agent: "alpha", pin: true }),
+    customization({ level: "global", agent: "beta", item: "tool:other", pin: false }),
+  ]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const loaded = await load(project)
+  expect(loaded.records).toContainEqual(customization({ agent: "alpha", pin: true }))
+  expect(loaded.records).toContainEqual(customization({ level: "global", agent: "beta", item: "tool:other", pin: false }))
+  const ordered = Object.keys(stable(customization({ text: "x", state: "off", pin: true })))
+  expect(ordered).toEqual(["type", "level", "agent", "item", "section", "text", "state", "pin", "basedOn", "updated"])
+  const withoutPin = Object.keys(stable(customization({ text: "x" })))
+  expect(withoutPin).not.toContain("pin")
+})
+
+test("unchanged save with a pin is a no-op and a changed pin writes", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [customization({ pin: true })]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const beforeProject = await Bun.file(projectRecordsPath(project)).text()
+  expect(await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: [...records].reverse() })).toEqual({
+    ok: true,
+    projectRevision: 1,
+    globalRevision: 0,
+    changed: { project: false, global: false },
+  })
+  expect(await Bun.file(projectRecordsPath(project)).text()).toBe(beforeProject)
+  const flipped: StoredRecord[] = [customization({ pin: false })]
+  const changed = await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: flipped })
+  expect(changed).toEqual({ ok: true, projectRevision: 2, globalRevision: 0, changed: { project: true, global: false } })
+  expect((await load(project)).records).toContainEqual(customization({ pin: false }))
 })
