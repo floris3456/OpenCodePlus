@@ -12,7 +12,7 @@ import type {
 import type { Split } from "./sections.js"
 
 export interface TeamInput {
-  readonly level: "project" | "global"
+  readonly level: Level
   readonly team: string
   readonly enabled: boolean
   readonly agents: readonly string[]

@@ -2,18 +2,18 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { idFromPath } from "../agents/files.js"
 import type { AgentSource } from "./model.js"
+import { builtinTeams, type BuiltinTeam } from "./builtin-teams.js"
 import { globalTeamsPath, projectTeamsPath } from "./paths.js"
 
-// Teams are named sets of agent files toggled as a unit. Project teams live
-// under <projectDir>/.opencodeplus/teams/<team>/, global teams under
-// <globalConfigDir()>/opencodeplus/teams/<team>/; agent files are
+// Teams are named sets of agents toggled as a unit. Project teams live under
+// <projectDir>/.opencodeplus/teams/<team>/, global teams under
+// <globalConfigDir()>/opencodeplus/teams/<team/>; agent files are
 // <team>/<agentId>.md in the same frontmatter+body format files.ts writes.
-// A team's storage level remains project|global only; the TUI additionally
-// surfaces an always-empty Teams group under Defaults as a creation entry
-// point. This file is the record shape the store follow-up will persist
-// (with a V2Team schema mirroring V2Customization), plus validation,
-// discovery, and membership resolution.
-export type TeamLevel = "project" | "global"
+// Defaults teams are shipped source data from `builtin-teams.ts`: no
+// filesystem path, never written, never created or deleted. Their enablement
+// is a `TeamRecord` at level `defaults` routed to the global store, and their
+// members resolve below project and global in the precedence chain.
+export type TeamLevel = "project" | "global" | "defaults"
 
 // The `type` discriminator is not in the brief's shorthand; the store's v2
 // union style (V2Customization/V2Split) needs it, so it is part of the shape.
@@ -27,13 +27,20 @@ export interface TeamRecord {
 
 export interface TeamAgent {
   readonly id: string
-  readonly path: string
+  // On-disk member file; absent for built-ins, which carry `body` instead.
+  // Never invent a path that does not exist.
+  readonly path?: string
+  // Built-in member markdown body; absent for on-disk members, which read it
+  // from `path`.
+  readonly body?: string
 }
 
 export interface DiscoveredTeam {
   readonly level: TeamLevel
   readonly team: string
-  readonly path: string
+  // On-disk team directory; absent for built-ins, which have no filesystem
+  // path and are never written.
+  readonly path?: string
   readonly agents: readonly TeamAgent[]
 }
 
@@ -41,8 +48,9 @@ export interface TeamContribution {
   readonly team: string
   readonly level: TeamLevel
   readonly enabled: boolean
-  // On-disk members, listed whether or not the team is enabled. Only an
-  // enabled team contributes them to the core-visible set.
+  // Members, listed whether or not the team is enabled. Only an enabled team
+  // contributes them to the core-visible set. Built-in members carry `body`
+  // with no `path`; on-disk members carry `path` with no `body`.
   readonly agents: readonly TeamAgent[]
 }
 
@@ -69,13 +77,57 @@ export function validateTeamName(raw: string): { ok: true; team: string } | { ok
 }
 
 // Every immediate subdirectory is a team, including one with no agent files.
-// A missing teams directory means no teams, not an error.
-export async function discoverTeams(level: TeamLevel, projectDirectory: string): Promise<DiscoveredTeam[]> {
+// A missing teams directory means no teams, not an error. The `defaults`
+// tier never touches the filesystem: it comes only from the built-in
+// registry. The registry is injectable so behaviour tests supply fixtures
+// instead of coupling to the shipped roster.
+export async function discoverTeams(
+  level: TeamLevel,
+  projectDirectory: string,
+  registry: readonly BuiltinTeam[] = builtinTeams,
+): Promise<DiscoveredTeam[]> {
+  if (level === "defaults") return discoverBuiltinTeams(registry)
   const root = level === "project" ? projectTeamsPath(projectDirectory) : globalTeamsPath()
   const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => undefined)
   if (entries === undefined) return []
   const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
   return Promise.all(names.toSorted().map((team) => readTeam(level, root, team)))
+}
+
+// Built-ins as defaults-tier teams, sorted by name with members sorted by
+// id. No filesystem access; members carry `body` with no `path`.
+export function discoverBuiltinTeams(registry: readonly BuiltinTeam[] = builtinTeams): DiscoveredTeam[] {
+  return registry
+    .map(
+      (team): DiscoveredTeam => ({
+        level: "defaults",
+        team: team.name,
+        agents: team.members
+          .map((member): TeamAgent => ({ id: member.id, body: member.body }))
+          .toSorted(compareAgentIds),
+      }),
+    )
+    .toSorted((left, right) => (left.team < right.team ? -1 : left.team > right.team ? 1 : 0))
+}
+
+// All three tiers merged: on-disk project and global plus built-in defaults.
+export async function discoverAllTeams(
+  projectDirectory: string,
+  registry: readonly BuiltinTeam[] = builtinTeams,
+): Promise<DiscoveredTeam[]> {
+  const disk = await Promise.all([discoverTeams("project", projectDirectory), discoverTeams("global", projectDirectory)])
+  return [...disk[0], ...disk[1], ...discoverBuiltinTeams(registry)]
+}
+
+// Look up one built-in member body by team and id. Built-in winners carry no
+// path, so the installer reads the body back through this instead of the
+// filesystem.
+export function builtinBody(
+  registry: readonly BuiltinTeam[],
+  team: string,
+  id: string,
+): string | undefined {
+  return registry.find((entry) => entry.name === team)?.members.find((member) => member.id === id)?.body
 }
 
 // No record at all means DISABLED. First matching (level, team) wins,
@@ -152,8 +204,9 @@ async function readDirectory(directory: string): Promise<DirectoryEntry[]> {
 // defaults) to team copies: level rank decides first, so a project team copy
 // outranks a global regular but never a project or same-level regular (ties
 // go to the established non-team identity, and defaults templates always
-// lose). Among team copies the project level wins, with same-level ties going
-// to the lexicographically smallest team name for determinism.
+// lose). A project or global team, or an authored agent, beats a built-in
+// member with the same id. Among team copies the project level wins, with
+// same-level ties going to the lexicographically smallest team name.
 function visibleAgents(teams: readonly TeamContribution[], regular: readonly AgentSource[]): AgentSource[] {
   const regularRank = new Map<string, number>()
   regular.forEach((agent) => {
@@ -169,7 +222,12 @@ function visibleAgents(teams: readonly TeamContribution[], regular: readonly Age
     if (winners.has(agent.id)) return
     const shadow = regularRank.get(agent.id)
     if (shadow !== undefined && shadow <= rankOf(team.level)) return
-    winners.set(agent.id, { id: agent.id, scope: team.level, path: agent.path, team: team.team })
+    winners.set(agent.id, {
+      id: agent.id,
+      scope: team.level,
+      ...(agent.path === undefined ? {} : { path: agent.path }),
+      team: team.team,
+    })
   })
   return [...winners.values()].toSorted(compareAgentIds)
 }

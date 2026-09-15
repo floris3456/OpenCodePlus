@@ -6,12 +6,14 @@ import { formatMarkdown } from "../src/agents/files.js"
 import type { AgentSource } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
 import {
+  discoverBuiltinTeams,
   discoverTeams,
   isTeamEnabled,
   resolveTeams,
   validateTeamName,
   type TeamRecord,
 } from "../src/instructions/teams.js"
+import type { BuiltinTeam } from "../src/instructions/builtin-teams.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const roots: string[] = []
@@ -67,7 +69,7 @@ test("a team with several agents lists ids and file paths", async () => {
   expect(teams.length).toBe(1)
   expect(teams[0]?.team).toBe("crew")
   expect(teams[0]?.agents.map((agent) => agent.id)).toEqual(["alpha", "nested/beta"])
-  expect(teams[0]?.agents.every((agent) => agent.path.endsWith(".md"))).toBe(true)
+  expect(teams[0]?.agents.every((agent) => agent.path?.endsWith(".md") ?? false)).toBe(true)
 })
 
 test("a team with no agent files is still a team", async () => {
@@ -143,6 +145,55 @@ test("team copy vs regular agent follows project-over-global-over-defaults", asy
   expect(beatsDefaults.agents.find((agent) => agent.id === "alpha")).toMatchObject({ team: "crew" })
 })
 
+function fixtureBuiltins(): readonly BuiltinTeam[] {
+  return [
+    { name: "ship", members: [{ id: "shared", body: "ship body" }] },
+    { name: "other", members: [{ id: "solo", body: "solo body" }] },
+  ]
+}
+
+test("defaults tier comes only from the built-in registry with no filesystem path", async () => {
+  const { project } = await tempRoot()
+  const discovered = await discoverTeams("defaults", project, fixtureBuiltins())
+  expect(discovered.map((team) => team.team)).toEqual(["other", "ship"])
+  for (const team of discovered) {
+    expect(team.level).toBe("defaults")
+    expect(team.path).toBeUndefined()
+    for (const member of team.agents) {
+      expect(member.path).toBeUndefined()
+      expect(member.body?.trim().length).toBeGreaterThan(0)
+    }
+  }
+  expect(discoverBuiltinTeams(fixtureBuiltins()).map((team) => team.team)).toEqual(["other", "ship"])
+  expect(discoverBuiltinTeams([])).toEqual([])
+})
+
+test("a built-in member loses to a project team with the same id", async () => {
+  const { project } = await tempRoot()
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "shared")
+  const projectTeams = await discoverTeams("project", project)
+  const builtin = discoverBuiltinTeams(fixtureBuiltins())
+  const discovered = [...projectTeams, ...builtin]
+  const resolved = resolveTeams(discovered, [record("crew", true), record("ship", true, "defaults")], [])
+  const shared = resolved.agents.filter((agent) => agent.id === "shared")
+  expect(shared.length).toBe(1)
+  expect(shared[0]).toMatchObject({ scope: "project", team: "crew" })
+  expect(shared[0]?.path).toBeDefined()
+})
+
+test("a built-in member loses to an authored agent with the same id", async () => {
+  const builtin = discoverBuiltinTeams(fixtureBuiltins())
+  const resolved = resolveTeams(builtin, [record("ship", true, "defaults")], [regular("shared", "project")])
+  expect(resolved.agents.some((agent) => agent.id === "shared")).toBe(false)
+  const globalBeats = resolveTeams(builtin, [record("ship", true, "defaults")], [regular("shared", "global")])
+  expect(globalBeats.agents.some((agent) => agent.id === "shared")).toBe(false)
+  // Same-level ties go to the established non-team identity, so a defaults
+  // template also beats a defaults team copy; only a higher-tier team copy
+  // outranks it.
+  const tieLoses = resolveTeams(builtin, [record("ship", true, "defaults")], [regular("shared", "defaults")])
+  expect(tieLoses.agents.some((agent) => agent.id === "shared")).toBe(false)
+})
+
 test("validateTeamName accepts plain names and rejects escapes", () => {
   expect(validateTeamName("crew")).toEqual({ ok: true, team: "crew" })
   expect(validateTeamName("  crew  ")).toEqual({ ok: true, team: "crew" })
@@ -152,4 +203,27 @@ test("validateTeamName accepts plain names and rejects escapes", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason.length).toBeGreaterThan(0)
   }
+})
+
+test("removalPlan built-in team refusal", async () => {
+  const { expandedTree } = await import("../src/instructions/tree.js")
+  const { removalPlan } = await import("../src/instructions/ops.js")
+  const builtin = discoverBuiltinTeams(fixtureBuiltins())
+  const input = {
+    items: [],
+    records: [],
+    agents: [],
+    teams: builtin.map((team) => ({
+      level: team.level,
+      team: team.team,
+      enabled: false,
+      agents: team.agents.map((agent) => agent.id),
+    })),
+  }
+  const nodes = expandedTree(input)
+  const row = nodes.find((candidate) => candidate.id === "team:defaults:ship")
+  if (row === undefined) throw new Error("missing built-in team row")
+  const plan = removalPlan(input, row.id)
+  if (!("refusal" in plan)) throw new Error("expected refusal")
+  expect(plan.refusal).toBe(`"ship" cannot be deleted: team "ship" is built in`)
 })

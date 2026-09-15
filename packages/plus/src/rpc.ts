@@ -127,14 +127,24 @@ export const FileScope = Schema.Union([Schema.Literal("project"), Schema.Literal
   identifier: "Plus.FileScope",
 })
 
-// Teams surface: membership comes from disk discovery, enablement from team
+export type TeamLevel = typeof TeamLevel.Type
+export const TeamLevel = Schema.Union([
+  Schema.Literal("project"),
+  Schema.Literal("global"),
+  Schema.Literal("defaults"),
+]).annotate({
+  identifier: "Plus.TeamLevel",
+})
+
+// Teams surface: membership comes from disk discovery for project/global and
+// from the built-in source registry for defaults, enablement from team
 // records. Snapshot.teams keeps those two sources distinct exactly as
-// resolveTeams does — agents lists on-disk member ids whether or not the
-// team is enabled. This stays a SEPARATE field: team records are deliberately
+// resolveTeams does — agents lists member ids whether or not the team is
+// enabled. This stays a SEPARATE field: team records are deliberately
 // excluded from SnapshotRecord so instructions.mutate cannot delete them.
 export interface TeamEntry extends Schema.Schema.Type<typeof TeamEntry> {}
 export const TeamEntry = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
   enabled: Schema.Boolean,
   agents: Schema.Array(Schema.String),
@@ -371,31 +381,32 @@ export const McpRef = Schema.Struct({
   name: Schema.String,
 }).annotate({ identifier: "Plus.McpRef" })
 
-// Toggle one team as a unit. Level scopes the record store (project vs
-// global file); team names the on-disk team directory; enabled is the desired
-// state. Unknown-but-valid names write a real record — a team with no record
-// at all reads as DISABLED, so toggling a name with no directory yet still
-// records intent. Invalid names fail before touching the store.
+// Toggle one team as a unit. Level scopes the record store (project writes
+// the project file, global and defaults write the global file); team names
+// the team (an on-disk directory for project/global, a built-in name for
+// defaults); enabled is the desired state. A discovered team with no record
+// reads as DISABLED. Invalid names fail before touching the store.
 export interface SetTeamEnabledInput extends Schema.Schema.Type<typeof SetTeamEnabledInput> {}
 export const SetTeamEnabledInput = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
   enabled: Schema.Boolean,
 }).annotate({ identifier: "Plus.SetTeamEnabledInput" })
 
 export interface TeamRef extends Schema.Schema.Type<typeof TeamRef> {}
 export const TeamRef = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
   enabled: Schema.Boolean,
 }).annotate({ identifier: "Plus.TeamRef" })
 
 // Creating a team makes the on-disk team directory without enabling it: a
 // newly created team has no record at all, so it reads as DISABLED until
-// toggled with team.setEnabled.
+// toggled with team.setEnabled. Creation at defaults is refused: shipped
+// teams cannot be created.
 export interface CreateTeamInput extends Schema.Schema.Type<typeof CreateTeamInput> {}
 export const CreateTeamInput = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
 }).annotate({ identifier: "Plus.CreateTeamInput" })
 
@@ -497,19 +508,19 @@ export const TeamInvalid = Schema.Struct({
 
 export interface TeamUnknown extends Schema.Schema.Type<typeof TeamUnknown> {}
 export const TeamUnknown = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
 }).annotate({ identifier: "Plus.TeamUnknown" })
 
 export interface TeamExists extends Schema.Schema.Type<typeof TeamExists> {}
 export const TeamExists = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
 }).annotate({ identifier: "Plus.TeamExists" })
 
 export interface TeamCreate extends Schema.Schema.Type<typeof TeamCreate> {}
 export const TeamCreate = Schema.Struct({
-  level: FileScope,
+  level: TeamLevel,
   team: Schema.String,
   reason: Schema.String,
 }).annotate({ identifier: "Plus.TeamCreate" })

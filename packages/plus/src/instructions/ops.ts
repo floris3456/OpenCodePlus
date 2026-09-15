@@ -63,7 +63,7 @@ export type TeamPlan =
   | OpFailure
   | {
       readonly kind: "team.setEnabled"
-      readonly level: "project" | "global"
+      readonly level: "project" | "global" | "defaults"
       readonly team: string
       readonly enabled: boolean
       readonly successStatus: string
@@ -82,7 +82,7 @@ export function resolveRefusalForLabel(label: string): string {
 }
 
 function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode } | undefined {
-  const memo = buildMemo(input)
+  const memo = buildMemo(input as unknown as Parameters<typeof buildMemo>[0])
   const nodes = collectSkeleton(skeletonOf(memo)).map(materialize)
   const node = nodes.find((candidate) => candidate.id === rowId)
   if (node === undefined) return undefined
@@ -452,6 +452,22 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
       successStatus: `Deleted agent ${agentId}`,
     }
   }
+  if (node.kind === "team") {
+    const entry = memo.ctx.teams.find((candidate) => node.id === `team:${candidate.level}:${candidate.team}`)
+    if (entry !== undefined) {
+      if ((entry.level as string) === "defaults")
+        return { refusal: `"${node.label}" cannot be deleted: team "${entry.team}" is built in` }
+      return { refusal: `"${node.label}" cannot be deleted` }
+    }
+    const parent = memo.ctx.teams.find(
+      (candidate) =>
+        node.id === `team:${candidate.level}:${candidate.team}:${node.label}` ||
+        node.id.startsWith(`team:${candidate.level}:${candidate.team}:`),
+    )
+    if (parent !== undefined && (parent.level as string) === "defaults")
+      return { refusal: `"${node.label}" cannot be deleted: team "${parent.team}" is built in` }
+    return { refusal: `"${node.label}" cannot be deleted` }
+  }
   const address = node.address
   if (node.kind === "item" && node.actions?.remove !== true) {
     const refusal = refusalFor(input, rowId)
@@ -522,10 +538,11 @@ export function teamPlan(input: MemoInput, rowId: string, desired?: boolean): Te
   const memo = found.memo
   if (node.kind !== "team") return { refusal: `"${node.label}" cannot be toggled` }
   if (node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
-  const match = node.id.match(/^team:(project|global):(.+)$/)
+  const match = node.id.match(/^team:(project|global|defaults):(.+)$/)
   const level = match?.[1]
   const team = match === null || match === undefined ? undefined : match[2]
-  if (level !== "project" && level !== "global") return { refusal: `"${node.label}" cannot be toggled` }
+  if (level !== "project" && level !== "global" && level !== "defaults")
+    return { refusal: `"${node.label}" cannot be toggled` }
   if (team === undefined) return { refusal: `"${node.label}" cannot be toggled` }
   const entry = memo.ctx.teams.find((candidate) => candidate.level === level && candidate.team === team)
   if (!entry) return { refusal: `"${node.label}" cannot be toggled` }

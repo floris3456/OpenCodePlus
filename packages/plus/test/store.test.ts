@@ -318,6 +318,7 @@ test("team records round-trip through save then load", async () => {
   const records: StoredRecord[] = [
     team({ level: "project", team: "crew", enabled: true }),
     team({ level: "global", team: "ops", enabled: false }),
+    team({ level: "defaults", team: "shipped", enabled: true }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1, changed: { project: true, global: true } })
@@ -331,6 +332,7 @@ test("team records land in the project vs global files", async () => {
   const records: StoredRecord[] = [
     team({ level: "project", team: "crew", enabled: true }),
     team({ level: "global", team: "ops", enabled: false }),
+    team({ level: "defaults", team: "shipped", enabled: true }),
   ]
   await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   const projectText = await Bun.file(projectRecordsPath(project)).text()
@@ -338,8 +340,10 @@ test("team records land in the project vs global files", async () => {
   expect(projectText).toContain(`"type":"team"`)
   expect(projectText).toContain(`"team":"crew"`)
   expect(projectText).not.toContain(`"team":"ops"`)
+  expect(projectText).not.toContain(`"team":"shipped"`)
   expect(globalText).toContain(`"type":"team"`)
   expect(globalText).toContain(`"team":"ops"`)
+  expect(globalText).toContain(`"team":"shipped"`)
   expect(globalText).not.toContain(`"team":"crew"`)
 })
 
@@ -373,16 +377,17 @@ test("unchanged save containing teams is a no-op", async () => {
   expect(await Bun.file(globalRecordsPath()).text()).toBe(beforeGlobal)
 })
 
-test("load skips malformed or ineligible team lines", async () => {
+test("load skips malformed team lines but keeps defaults teams", async () => {
   const { project } = await isolated()
   await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [team({ team: "kept" })] })
   const target = projectRecordsPath(project)
   const malformed = JSON.stringify({ type: "team", level: "project", enabled: true, updated: UPDATED })
-  const ineligible = JSON.stringify({ type: "team", level: "defaults", team: "nope", enabled: true, updated: UPDATED })
-  await Bun.write(target, `${await Bun.file(target).text()}${malformed}\n${ineligible}\n`)
+  const defaults = JSON.stringify({ type: "team", level: "defaults", team: "shipped", enabled: true, updated: UPDATED })
+  await Bun.write(target, `${await Bun.file(target).text()}${malformed}\n${defaults}\n`)
   const loaded = await load(project)
-  expect(loaded.records).toHaveLength(1)
-  expect(loaded.records[0]).toEqual(team({ team: "kept" }))
+  expect(loaded.records).toHaveLength(2)
+  expect(loaded.records).toContainEqual(team({ team: "kept" }))
+  expect(loaded.records).toContainEqual(team({ level: "defaults", team: "shipped", enabled: true }))
 })
 
 test("canonical order sorts mixed customization, split, and team records through save and load", async () => {

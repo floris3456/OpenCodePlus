@@ -77,7 +77,7 @@ test("snapshot lists a disk team as disabled with member ids when no record exis
   await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "nested/beta")
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: ["alpha", "nested/beta"] }])
   expect(snapshot.records).toEqual([])
@@ -87,7 +87,7 @@ test("snapshot lists a disk team as disabled with member ids when no record exis
 test("team.create at project scope creates the directory and the next snapshot lists it disabled", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   expect(created).toEqual({ level: "project", team: "crew", enabled: false })
   expectRpcBody(created)
@@ -101,7 +101,7 @@ test("team.create at project scope creates the directory and the next snapshot l
 test("team.create at global scope creates the directory under the global teams root as disabled", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(handlers["team.create"]({ level: "global", team: "ops" }, throwingContext({})))
   expect(created).toEqual({ level: "global", team: "ops", enabled: false })
   expectRpcBody(created)
@@ -116,7 +116,7 @@ test("a created team can then be enabled and its member agents apply", async () 
   const { project } = await tempRoot()
   await enable(project)
   const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
   const toggled = await Effect.runPromise(
@@ -132,7 +132,7 @@ test("a created team can then be enabled and its member agents apply", async () 
 test("team.create raises every declared error through a real call", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const invalid: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["team.create"]({ level: "project", team: "../evil" }, throwingContext(invalid)),
@@ -155,7 +155,7 @@ test("team.create raises every declared error through a real call", async () => 
   )
   expect((await load(project)).records).toEqual([])
   const gated = await tempRoot()
-  const gatedHandlers = createHandlers(fullContext({ directory: gated.project }), createState())
+  const gatedHandlers = createHandlers(fullContext({ directory: gated.project }), createState(), { builtins: [] })
   const disabled: { current?: CapturedError } = {}
   await expectDeclaredError(
     gatedHandlers["team.create"]({ level: "project", team: "crew" }, throwingContext(disabled)),
@@ -168,7 +168,7 @@ test("team.create does not disturb existing records and moves no revision", asyn
   const { project } = await tempRoot()
   await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "vets"), "alpha")
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const customization: Plus.SnapshotCustomizationRecord = {
     type: "customization",
@@ -233,7 +233,7 @@ test("team.create does not disturb existing records and moves no revision", asyn
 test("team.create through the RPC handler logs with actor tui", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   const logged = await Effect.runPromise(handlers["instructions.log"]({}, throwingContext({})))
   const entry = logged.entries.find((candidate) => candidate.op === "team.create")
@@ -247,7 +247,7 @@ test("toggling a team on writes a real TeamRecord and the next snapshot reports 
   await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
   const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
@@ -273,7 +273,7 @@ test("toggling a team on writes a real TeamRecord and the next snapshot reports 
 test("toggling an unknown team name raises team.unknown and an invalid name raises team.invalid", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const unknown: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["team.setEnabled"]({ level: "project", team: "ghost", enabled: true }, throwingContext(unknown)),
@@ -292,7 +292,7 @@ test("toggling an unknown team name raises team.unknown and an invalid name rais
 
 test("team.setEnabled is gated on project mode with project.disabled", async () => {
   const { project } = await tempRoot()
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const captured: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext(captured)),
@@ -305,7 +305,7 @@ test("a toggle does not disturb existing customization or split records", async 
   const { project } = await tempRoot()
   await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const customization: Plus.SnapshotCustomizationRecord = {
     type: "customization",
@@ -357,7 +357,7 @@ test("an unchanged toggle stays a no-op without moving revisions", async () => {
   const { project } = await tempRoot()
   await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   const stored = await load(project)
   const toggled = await Effect.runPromise(
@@ -374,7 +374,7 @@ test("a normal instructions.mutate round-trip does not delete team records", asy
   const { project } = await tempRoot()
   await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.records.some((record) => (record as { type: string }).type === "team")).toBe(false)
@@ -393,4 +393,72 @@ test("a normal instructions.mutate round-trip does not delete team records", asy
   expect(stored.records.find((record) => record.type === "team")).toMatchObject({ team: "crew", enabled: true })
   const resnapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(resnapshot.teams?.find((team) => team.team === "crew")?.enabled).toBe(true)
+})
+
+function fixtureBuiltins() {
+  return [
+    { name: "ship", members: [{ id: "mate", body: "ship mate body" }] },
+    { name: "other", members: [{ id: "solo", body: "solo body" }] },
+  ]
+}
+
+test("built-ins appear as defaults-tier teams in a real snapshot", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: fixtureBuiltins() })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams).toEqual([
+    { level: "defaults", team: "other", enabled: false, agents: ["solo"] },
+    { level: "defaults", team: "ship", enabled: false, agents: ["mate"] },
+  ])
+  expectRpcBody(snapshot)
+})
+
+test("enabling a built-in installs its members and disabling removes them", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
+  const toggled = await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})),
+  )
+  expect(toggled).toEqual({ level: "defaults", team: "ship", enabled: true })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "ship")).toEqual({
+    level: "defaults",
+    team: "ship",
+    enabled: true,
+    agents: ["mate"],
+  })
+  const listed = await Effect.runPromise(ctx.agent.list())
+  expect(listed.data.find((entry) => String(entry.id) === "mate")?.system).toBe("ship mate body")
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: false }, throwingContext({})))
+  const reloaded = await Effect.runPromise(ctx.agent.list())
+  expect(reloaded.data.some((entry) => String(entry.id) === "mate")).toBe(false)
+})
+
+test("a built-in enablement record lands in the global store", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: fixtureBuiltins() })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  const stored = await load(project)
+  expect(stored.records).toHaveLength(1)
+  expect(stored.records[0]).toMatchObject({ type: "team", level: "defaults", team: "ship", enabled: true })
+})
+
+test("team.create refuses defaults with team.invalid", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: fixtureBuiltins() })
+  const refused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.create"](
+      { level: "defaults", team: "ship" } as unknown as { level: "project"; team: string },
+      throwingContext(refused),
+    ),
+    refused,
+    "team.invalid",
+  )
+  expect((await load(project)).records).toEqual([])
 })

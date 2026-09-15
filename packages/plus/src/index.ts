@@ -1,4 +1,5 @@
 import { Plugin } from "@opencode/plugin/effect"
+import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
@@ -6,8 +7,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
 import { Skill } from "@opencode/schema/skill"
-import { Effect, Semaphore, Stream } from "effect"
-import type { Scope } from "effect"
+import { Effect, Exit, Scope, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -19,13 +19,14 @@ import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
-import { dedupeAgents, installTeamAgents, resolveTeamAgents } from "./instructions/teams-apply.js"
+import { dedupeAgents, installTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
+import { resolve, scopesOf, type AgentSource, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
-import { discoverTeams, isTeamEnabled, validateTeamName, type TeamRecord } from "./instructions/teams.js"
+import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamRecord } from "./instructions/teams.js"
+import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
@@ -252,7 +253,12 @@ export interface PlusApi {
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
 }
 
-export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
+export interface PlusApiOptions {
+  readonly builtins?: readonly BuiltinTeam[]
+}
+
+export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiOptions): PlusApi {
+  const builtins = options?.builtins ?? builtinTeams
   return {
     snapshot: async () => {
       const directory = ctx.location.directory
@@ -262,7 +268,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state.baselines)
-      const teams = await snapshotTeams(directory, loaded.records)
+      const teams = await snapshotTeams(directory, loaded.records, builtins)
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
     },
     refresh: async () => {
@@ -272,8 +278,8 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded))
-      const teams = await snapshotTeams(directory, loaded.records)
+      const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
+      const teams = await snapshotTeams(directory, loaded.records, builtins)
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
     },
     mutate: async (input) => {
@@ -291,7 +297,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
             : undefined
       if (staleStore !== undefined) {
         const discovered = await discoverAll(ctx, loaded, state.baselines)
-        const staleTeams = await snapshotTeams(directory, loaded.records)
+        const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
         return {
           ok: true as const,
           value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) },
@@ -309,7 +315,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       if (!saved.ok) {
         const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
         const discovered = await discoverAll(ctx, refreshed, state.baselines)
-        const staleTeams = await snapshotTeams(directory, refreshed.records)
+        const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
         return {
           ok: true as const,
           value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) },
@@ -327,8 +333,8 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       })
       const reloaded = await load(directory)
       const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
-      const discovered = await Effect.runPromise(publishFresh(ctx, state, next))
-      const teams = await snapshotTeams(directory, next.records)
+      const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+      const teams = await snapshotTeams(directory, next.records, builtins)
       const snapshot = toSnapshot(discovered, next, teams)
       return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
     },
@@ -723,6 +729,13 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           ok: false as const,
           error: { code: "team.invalid" as const, message: validated.reason, data: { team: input.team, reason: validated.reason } },
         }
+      if (input.level === "defaults") {
+        const reason = `Team "${validated.team}" is built in and cannot be created`
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: reason, data: { team: input.team, reason } },
+        }
+      }
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
       const ensured = await fs.mkdir(root, { recursive: true }).then(
         () => ({ ok: true as const }),
@@ -752,7 +765,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
         }
       }
-      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -776,7 +789,7 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           ok: false as const,
           error: { code: "team.invalid" as const, message: validated.reason, data: { team: input.team, reason: validated.reason } },
         }
-      const known = await discoverTeams(input.level, directory)
+      const known = await discoverTeams(input.level, directory, builtins)
       if (!known.some((team) => team.team === validated.team))
         return {
           ok: false as const,
@@ -801,14 +814,14 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
           summary: `team.setEnabled ${validated.team} ${input.enabled ? "enabled" : "disabled"} (${input.level})`,
           revision: saved.revision,
         })
-      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
     },
   }
 }
 
-export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<typeof Definition> {
-  const api = createPlusApi(ctx, state)
+export function createHandlers(ctx: Context, state: PlusState, options?: PlusApiOptions): RpcHandlers<typeof Definition> {
+  const api = createPlusApi(ctx, state, options)
   return {
     "project.status": () =>
       Effect.gen(function* () {
@@ -1677,16 +1690,26 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
   )
 }
 
-function refreshAfterFileChange(ctx: Context, state: PlusState, directory: string): Effect.Effect<void> {
+function refreshAfterFileChange(
+  ctx: Context,
+  state: PlusState,
+  directory: string,
+  builtins: readonly BuiltinTeam[] = builtinTeams,
+): Effect.Effect<void> {
   return Effect.gen(function* () {
     const stored = yield* Effect.promise(() => loadCurrent(directory))
-    yield* publishFresh(ctx, state, stored)
+    yield* publishFresh(ctx, state, stored, builtins)
   })
 }
 
 // Only publishFresh and deactivate acquire the semaphore, and neither calls the
 // other, so a caller never blocks on a permit it already holds.
-function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Effect.Effect<Discovered> {
+function publishFresh(
+  ctx: Context,
+  state: PlusState,
+  stored: LoadedStores,
+  builtins: readonly BuiltinTeam[] = builtinTeams,
+): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
       const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines))
@@ -1696,7 +1719,9 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
       if (state.globalRevision !== undefined && stored.globalRevision < state.globalRevision) return discovered
       const customizations = customizationsOf(stored.records)
       const splits = splitsOf(stored.records)
-      const fingerprint = yield* Effect.promise(() => fingerprintPublish(discovered, stored.records, ctx.location.directory))
+      const fingerprint = yield* Effect.promise(() =>
+        fingerprintPublish(discovered, stored.records, ctx.location.directory, builtins),
+      )
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
         return discovered
       }
@@ -1728,17 +1753,22 @@ function publishFresh(ctx: Context, state: PlusState, stored: LoadedStores): Eff
         }),
       )
       // Enabled teams become real core-visible agents: resolve the enabled
-      // teams against the discovered regular sources (resolveTeams already
-      // favours an established same-level regular, so losing team copies never
-      // reach the installer) and register each winner's markdown body with the
-      // host. Team registrations install after apply's own and dispose with
+      // teams (on-disk project/global plus built-in defaults) against the
+      // discovered regular sources (resolveTeams already favours an
+      // established same-level regular, so losing team copies never reach the
+      // installer) and register each winner's markdown body with the host.
+      // Built-in members install from the source registry with no filesystem
+      // path. Team registrations install after apply's own and dispose with
       // the same superseded set when the next publish replaces them.
       const teamAgents = yield* Effect.promise(() =>
-        resolveTeamAgents(ctx.location.directory, stored.records.filter(isTeamRecord), discovered.agents),
+        resolveAllTeamAgents(ctx.location.directory, stored.records.filter(isTeamRecord), discovered.agents, builtins),
       )
-      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, teamAgents))
+      const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
+      const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
+      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents))
+      const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins))
       const previous = state.applied
-      state.applied = [...applied.registrations, ...teamApplied.registrations]
+      state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations]
       state.installedTools = applied.tools
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
@@ -1823,20 +1853,26 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
 // already unmasks Plus's own output back to upstream, so a self-triggered
 // refresh keeps an identical fingerprint and stays a no-op instead of a
 // dispose/reinstall loop. An enable/disable toggle changes nothing in apply's
-// own inputs, so only the resolved team winners (with their markdown bodies)
-// make the toggle change the fingerprint.
+// own inputs, so only the resolved team winners (with their markdown bodies,
+// file-backed or built-in) make the toggle change the fingerprint.
 async function fingerprintPublish(
   discovered: Discovered,
   records: readonly StoredRecord[],
   directory: string,
+  builtins: readonly BuiltinTeam[] = builtinTeams,
 ): Promise<string> {
   const scopes = scopesOf(discovered.agents)
-  const teamAgents = await resolveTeamAgents(directory, records.filter(isTeamRecord), discovered.agents)
+  const teamAgents = await resolveAllTeamAgents(directory, records.filter(isTeamRecord), discovered.agents, builtins)
   const teamBodies = await Promise.all(
     teamAgents.map(async (agent) => ({
       id: agent.id,
       scope: agent.scope,
-      body: agent.path === undefined ? undefined : await readTeamBody(agent.path),
+      body:
+        agent.path !== undefined
+          ? await readTeamBody(agent.path)
+          : agent.team === undefined
+            ? undefined
+            : builtinBody(builtins, agent.team, agent.id),
     })),
   )
   return JSON.stringify({
@@ -1851,6 +1887,65 @@ async function fingerprintPublish(
 
 async function readTeamBody(file: string): Promise<string | undefined> {
   return fs.readFile(file, "utf8").catch(() => undefined)
+}
+
+// All three tiers merged for publishing: on-disk project/global plus
+// built-in defaults, resolved with the project-over-global-over-defaults
+// rule. Injectable so behaviour tests supply fixture built-ins.
+async function resolveAllTeamAgents(
+  directory: string,
+  records: readonly TeamRecord[],
+  regular: readonly AgentSource[],
+  builtins: readonly BuiltinTeam[] = builtinTeams,
+): Promise<readonly AgentSource[]> {
+  const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
+  const builtin = discoverBuiltinTeams(builtins)
+  return resolveTeams([...disk[0], ...disk[1], ...builtin], records, regular).agents
+}
+
+// Built-in winners carry no path, so they install from the source registry
+// instead of the filesystem. One registration per member so a later failure
+// unwinds the earlier members, mirroring installTeamAgents.
+async function installBuiltinTeamAgents(
+  ctx: Context,
+  agents: readonly AgentSource[],
+  builtins: readonly BuiltinTeam[],
+): Promise<{ registrations: Registration[] }> {
+  const installed: Registration[] = []
+  try {
+    for (const agent of agents) {
+      if (agent.team === undefined) continue
+      const body = builtinBody(builtins, agent.team, agent.id)
+      if (body === undefined) continue
+      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body)))
+    }
+    if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
+    return { registrations: [...installed] }
+  } catch (error) {
+    const reversed = installed.slice().reverse()
+    for (const registration of reversed) {
+      await Effect.runPromise(registration.dispose).catch(() => {})
+    }
+    throw error
+  }
+}
+
+async function runBuiltinRegistration(ctx: Context, id: string, body: string): Promise<Registration> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      return yield* Effect.suspend(() =>
+        ctx.agent.transform((editor: AgentEditor) => {
+          editor.update(id, (agent) => {
+            agent.system = body
+          })
+        }),
+      ).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
+      )
+    }),
+  )
 }
 
 // The canonical event names, not string guesses: agent and skill reloads
@@ -1956,14 +2051,19 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
 }
 
 // Snapshot.teams keeps membership and enablement on their separate sources:
-// disk discovery lists the members, stored team records decide enabled. A
-// discovered team with no record reads DISABLED; a record with no matching
-// directory never surfaces — the toggle requires a known directory first.
-async function snapshotTeams(directory: string, records: readonly StoredRecord[]): Promise<Plus.TeamEntry[]> {
+// disk discovery lists project/global members, the built-in registry lists
+// defaults members with no filesystem path, stored team records decide
+// enabled. A discovered team with no record reads DISABLED; a record with no
+// matching team never surfaces.
+async function snapshotTeams(
+  directory: string,
+  records: readonly StoredRecord[],
+  builtins: readonly BuiltinTeam[] = builtinTeams,
+): Promise<Plus.TeamEntry[]> {
   const teamRecords = records.filter((record): record is TeamRecord => record.type === "team")
-  const discovered = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
-  return discovered
-    .flat()
+  const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
+  const builtin = discoverBuiltinTeams(builtins)
+  return [...disk[0], ...disk[1], ...builtin]
     .map((team): Plus.TeamEntry => ({
       level: team.level,
       team: team.team,

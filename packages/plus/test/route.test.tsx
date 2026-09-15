@@ -1460,7 +1460,9 @@ test("team row toggles through the real team.setEnabled and the rebuilt tree sho
     formatMarkdown({ description: "crew/nested/beta" }, "beta role"),
   )
   const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
+  // Empty built-in registry: this test pins the disk-only team universe, not
+  // the shipped roster (covered by the dedicated well-formedness test).
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
   const teamToggles: { level: string; team: string; enabled: boolean }[] = []
   const wrappedTeamSetEnabled = async (input: { level: "project" | "global"; team: string; enabled: boolean }) => {
@@ -1541,7 +1543,9 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
   const project = path.join(root, "project")
   await enable(project)
   const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
+  // Empty built-in registry: this test pins the disk-only team universe, not
+  // the shipped roster (covered by the dedicated well-formedness test).
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
   const teamCreates: { level: string; team: string }[] = []
   const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string }) => {

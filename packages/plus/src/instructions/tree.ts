@@ -12,11 +12,25 @@ import {
   type BuildContext,
   type Memo,
 } from "./resolve-memo.js"
-import type { MemoInput, TeamInput } from "./resolve-memo.js"
+import type { MemoInput as BaseMemoInput } from "./resolve-memo.js"
 import type { Section, Split } from "./sections.js"
 
-export type { Memo, MemoInput, TeamInput }
+export type { Memo }
 export { buildMemo } from "./resolve-memo.js"
+
+// Teams at all three tiers, including built-in defaults teams with no
+// filesystem path. This widens the shared memo input with the same `Level`
+// the tree uses so Defaults rows render.
+export interface TeamInput {
+  readonly level: Level
+  readonly team: string
+  readonly enabled: boolean
+  readonly agents: readonly string[]
+}
+
+export interface MemoInput extends Omit<BaseMemoInput, "teams"> {
+  readonly teams?: readonly TeamInput[]
+}
 
 export type TreeNodeKind = "root" | "group" | "agent" | "team" | "item" | "section"
 export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section" | "team"
@@ -55,12 +69,17 @@ export interface TreeNode {
   readonly actions?: TreeNodeActions
 }
 
-export interface TreeInput extends MemoInput {
+export interface TreeInput extends Omit<BaseMemoInput, "teams"> {
+  readonly teams?: readonly TeamInput[]
   readonly expanded?: ReadonlySet<string>
 }
 
+function asBaseInput(input: TreeInput): BaseMemoInput {
+  return input as unknown as BaseMemoInput
+}
+
 export function tree(input: TreeInput): TreeNode[] {
-  const ctx = contextOf(input)
+  const ctx = contextOf(asBaseInput(input))
   const expanded = input.expanded ?? new Set<string>()
   const memo = memoOf(ctx)
   const roots = [lazyRoot(ctx, memo, "project"), lazyRoot(ctx, memo, "global"), lazyRoot(ctx, memo, "defaults")]
@@ -72,7 +91,7 @@ export function tree(input: TreeInput): TreeNode[] {
 // converging by repeated expanded builds. Output matches tree() with every id
 // expanded.
 export function expandedTree(input: Omit<TreeInput, "expanded">): TreeNode[] {
-  const memo = memoOf(contextOf(input))
+  const memo = memoOf(contextOf(asBaseInput(input)))
   return collectSkeleton(skeletonOf(memo)).map(materialize)
 }
 
@@ -245,11 +264,12 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 }
 
 // Teams mirror the Agents group shape: a depth-1 "Teams" group per
-// project/global/defaults root holding one toggleable row per on-disk team.
-// The group is always present (like Agents) with an `add: "team"` affordance,
-// so an empty level still advertises team creation. A team's storage level
-// remains project|global only, so the Defaults group is always empty and
-// exists as a creation entry point: pressing `a` there opens the existing
+// project/global/defaults root holding one toggleable row per team.
+// Project and global rows come from on-disk team directories; Defaults rows
+// come from the built-in source registry with no filesystem path. The group
+// is always present (like Agents) with an `add: "team"` affordance, so an
+// empty level still advertises team creation. `add` there still creates at
+// project or global scope, never defaults: pressing `a` opens the existing
 // addTeam flow, which prompts for a project/global scope. Member agent ids
 // hang under each team row as informational rows: they carry no address and
 // no actions, so space, enter, delete, and reset all ignore them.

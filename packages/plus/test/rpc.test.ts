@@ -184,7 +184,11 @@ test("gated methods fail with project.disabled when project mode is off", async 
 test("snapshot shape carries both revisions, agents, items, records, servers, and protectedAgents", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] }), createState())
+  // Empty built-in registry: this test pins the disk-only snapshot shape, not
+  // the shipped roster (covered by the dedicated well-formedness test).
+  const handlers = createHandlers(fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] }), createState(), {
+    builtins: [],
+  })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.revision).toBe(0)
   expect(snapshot.globalRevision).toBe(0)
