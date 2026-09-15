@@ -324,52 +324,131 @@ test("a refused toggle produces the same refusal string the TUI shows", async ()
 })
 
 test("create agent/skill/base/instruction/mcp write the same files as the api path", async () => {
-  const { api, tools, project } = await freshFixture()
-  const agent = (await runOk(need(tools, "instructions_create"), { kind: "agent", id: "helper", prompt: "Be helpful." })) as {
-    id: string
-    path: string
-  }
-  expect(await Bun.file(agent.path).text()).toContain("Be helpful.")
-  const apiAgent = await api.createAgent({ scope: "project", id: "helper-api", prompt: "Be helpful." })
+  const toolIsolation = await tempProject()
+  const toolConfig = process.env.OPENCODE_CONFIG_DIR ?? ""
+  if (toolConfig.length === 0) throw new Error("missing tool config dir")
+  const toolProject = toolIsolation.project
+  const apiIsolation = await tempProject()
+  const apiConfig = process.env.OPENCODE_CONFIG_DIR ?? ""
+  if (apiConfig.length === 0) throw new Error("missing api config dir")
+  const apiProject = apiIsolation.project
+  process.env.OPENCODE_CONFIG_DIR = toolConfig
+  const toolCtx = fixtureContext(toolProject)
+  const toolApi = createPlusApi(toolCtx, createState())
+  await registerInstructionTools(toolCtx, toolApi)
+  const toolTools = await readTools(toolCtx)
+  const toolCreate = need(toolTools, "instructions_create")
+  process.env.OPENCODE_CONFIG_DIR = apiConfig
+  const apiCtx = fixtureContext(apiProject)
+  const apiApi = createPlusApi(apiCtx, createState())
+  const agentPrompt = "Be helpful."
+  const agentFields = { description: "Helper agent", mode: "subagent" as const }
+  const skillBody = "Take notes."
+  const baseTitle = "Custom.txt"
+  const baseText = "custom base"
+  const instructionText = "Follow the guide."
+  const mcpConfig = { type: "remote", url: "https://example.test" }
+  process.env.OPENCODE_CONFIG_DIR = toolConfig
+  await runOk(toolCreate, { kind: "agent", id: "helper", prompt: agentPrompt, fields: agentFields })
+  await runOk(toolCreate, { kind: "skill", name: "notes2", body: skillBody })
+  await runOk(toolCreate, { kind: "base", id: "custom", title: baseTitle, text: baseText })
+  await runOk(toolCreate, { kind: "instruction", name: "AGENTS.md", text: instructionText })
+  await runOk(toolCreate, { kind: "mcp", name: "search", config: mcpConfig })
+  process.env.OPENCODE_CONFIG_DIR = apiConfig
+  const apiAgent = await apiApi.createAgent({ scope: "project", id: "helper", prompt: agentPrompt, fields: agentFields })
   if (!apiAgent.ok) throw new Error(`api createAgent failed: ${apiAgent.error.message}`)
-  expect(await Bun.file(apiAgent.value.path).text()).toContain("Be helpful.")
-  expect(apiAgent.value.id).toBe("helper-api")
-  const skill = (await runOk(need(tools, "instructions_create"), { kind: "skill", name: "notes2", body: "Take notes." })) as {
-    path: string
-  }
-  expect(await Bun.file(skill.path).text()).toContain("Take notes.")
-  const apiSkill = await api.createSkill({ name: "notes-api", body: "Take notes." })
+  const apiSkill = await apiApi.createSkill({ name: "notes2", body: skillBody })
   if (!apiSkill.ok) throw new Error(`api createSkill failed: ${apiSkill.error.message}`)
-  expect(await Bun.file(apiSkill.value.path).text()).toContain("Take notes.")
-  const base = (await runOk(need(tools, "instructions_create"), { kind: "base", id: "custom", title: "Custom.txt", text: "custom base" })) as {
-    id: string
-  }
-  expect(base.id).toBe("custom")
-  const apiBase = await api.createBase({ id: "custom-api", title: "CustomApi.txt", text: "custom base" })
+  const apiBase = await apiApi.createBase({ id: "custom", title: baseTitle, text: baseText })
   if (!apiBase.ok) throw new Error(`api createBase failed: ${apiBase.error.message}`)
-  expect(apiBase.value.id).toBe("custom-api")
-  const instruction = (await runOk(need(tools, "instructions_create"), { kind: "instruction", name: "AGENTS.md", text: "Follow the guide." })) as {
-    path: string
-  }
-  expect(instruction.path).toBe(path.join(project, "AGENTS.md"))
-  expect(await Bun.file(instruction.path).text()).toContain("Follow the guide.")
-  const { project: project2 } = await tempProject()
-  const ctx2 = fixtureContext(project2)
-  const api2 = createPlusApi(ctx2, createState())
-  const apiInstruction = await api2.createInstruction({ name: "AGENTS.md", text: "Follow the guide." })
+  const apiInstruction = await apiApi.createInstruction({ name: "AGENTS.md", text: instructionText })
   if (!apiInstruction.ok) throw new Error(`api createInstruction failed: ${apiInstruction.error.message}`)
-  expect(apiInstruction.value.path).toBe(path.join(project2, "AGENTS.md"))
-  expect(await Bun.file(apiInstruction.value.path).text()).toContain("Follow the guide.")
-  const mcp = (await runOk(need(tools, "instructions_create"), {
-    kind: "mcp",
-    name: "search",
-    config: { type: "remote", url: "https://example.test" },
-  })) as { name: string }
-  expect(mcp.name).toBe("search")
-  expect(await Bun.file(path.join(project, ".opencode", "opencode.json")).text()).toContain("https://example.test")
-  const apiMcp = await api.addMcp({ name: "search-api", config: { type: "remote", url: "https://example.test" } })
+  const apiMcp = await apiApi.addMcp({ name: "search", config: { ...mcpConfig } })
   if (!apiMcp.ok) throw new Error(`api addMcp failed: ${apiMcp.error.message}`)
-  expect(await Bun.file(path.join(project, ".opencode", "opencode.json")).text()).toContain("search-api")
+  async function collectProjectFiles(project: string): Promise<Map<string, string>> {
+    const files = new Map<string, string>()
+    async function walk(dir: string): Promise<void> {
+      const names = await fs.readdir(dir)
+      await Promise.all(
+        names.map(async (name) => {
+          const full = path.join(dir, name)
+          if (full === path.join(project, ".opencodeplus")) return
+          const stat = await fs.stat(full)
+          if (stat.isDirectory()) {
+            await walk(full)
+            return
+          }
+          files.set(path.relative(project, full), await Bun.file(full).text())
+        }),
+      )
+    }
+    await walk(project)
+    return files
+  }
+  async function collectBaseFiles(configDir: string): Promise<Map<string, string>> {
+    const baseDir = path.join(configDir, "opencodeplus", "instructions", "base")
+    const files = new Map<string, string>()
+    async function walk(dir: string): Promise<void> {
+      const names = await fs.readdir(dir).catch(() => [] as string[])
+      await Promise.all(
+        names.map(async (name) => {
+          const full = path.join(dir, name)
+          const stat = await fs.stat(full)
+          if (stat.isDirectory()) {
+            await walk(full)
+            return
+          }
+          files.set(path.relative(baseDir, full), await Bun.file(full).text())
+        }),
+      )
+    }
+    await walk(baseDir)
+    return files
+  }
+  // Normalize only legitimately non-deterministic absolute root paths.
+  // Text, titles, and frontmatter pass through untouched so dropped or
+  // altered content still fails the comparison below.
+  function normalizeRoots(text: string): string {
+    const pairs: readonly (readonly [string, string])[] = [
+      [toolProject, "<project>"],
+      [apiProject, "<project>"],
+      [toolConfig, "<config>"],
+      [apiConfig, "<config>"],
+    ]
+    return pairs.reduce((current, pair) => {
+      if (pair[0].length === 0) return current
+      return current.split(pair[0]).join(pair[1])
+    }, text)
+  }
+  function expectParity(toolFiles: Map<string, string>, apiFiles: Map<string, string>): void {
+    expect([...toolFiles.keys()].sort()).toEqual([...apiFiles.keys()].sort())
+    for (const key of [...toolFiles.keys()].sort()) {
+      expect(normalizeRoots(toolFiles.get(key) ?? "")).toBe(normalizeRoots(apiFiles.get(key) ?? ""))
+    }
+  }
+  const toolProjectFiles = await collectProjectFiles(toolProject)
+  const apiProjectFiles = await collectProjectFiles(apiProject)
+  expectParity(toolProjectFiles, apiProjectFiles)
+  const toolBaseFiles = await collectBaseFiles(toolConfig)
+  const apiBaseFiles = await collectBaseFiles(apiConfig)
+  expectParity(toolBaseFiles, apiBaseFiles)
+  // Vacuity: the compared trees actually contain every artifact with full
+  // text, title, and frontmatter, so an empty-vs-empty equality cannot pass.
+  const agentKey = [...toolProjectFiles.keys()].find((key) => key.endsWith("helper.md"))
+  if (agentKey === undefined) throw new Error("missing helper agent file")
+  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toContain(agentPrompt)
+  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toContain("Helper agent")
+  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toContain("subagent")
+  const skillKey = [...toolProjectFiles.keys()].find((key) => key.endsWith(path.join("notes2", "SKILL.md")))
+  if (skillKey === undefined) throw new Error("missing notes2 skill file")
+  expect(toolProjectFiles.get(skillKey) ?? "").toContain(skillBody)
+  expect(toolProjectFiles.get(skillKey) ?? "").toContain("name: notes2")
+  expect(toolBaseFiles.get("custom.txt") ?? "").toBe(baseText)
+  expect(toolBaseFiles.get("index.json") ?? "").toContain(baseTitle)
+  expect(toolProjectFiles.get("AGENTS.md") ?? "").toContain(instructionText)
+  const mcpKey = [...toolProjectFiles.keys()].find((key) => key.endsWith("opencode.json"))
+  if (mcpKey === undefined) throw new Error("missing mcp config file")
+  expect(toolProjectFiles.get(mcpKey) ?? "").toContain("https://example.test")
 })
 
 test("delete agent removes a file-backed agent and reports the plan status", async () => {

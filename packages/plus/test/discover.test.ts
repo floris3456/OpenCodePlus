@@ -23,7 +23,6 @@ import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness, type PromptClassificationTable } from "./harness.js"
-import type { Model as ModelNamespace } from "@opencode/schema/model"
 
 const roots: string[] = []
 const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -55,7 +54,7 @@ function location(directory: string, projectDirectory: string = directory): Loca
   })
 }
 
-function agent(id: string, system: string, model?: ModelNamespace.Ref): Agent.Info {
+function agent(id: string, system: string, model?: Model.Ref): Agent.Info {
   return {
     id: Agent.ID.make(id),
     name: Agent.Name.make(id),
@@ -121,7 +120,7 @@ function fullContext(options: {
   tools?: ToolEntry[]
   servers?: [string, Types.DeepMutable<Mcp.ServerConfig>][]
   templates?: { id: string; title: string; text: string }[]
-  models?: ModelNamespace.Info[]
+  models?: Model.Info[]
   classifications?: PromptClassificationTable
 }): Context {
   const loc = location(options.directory, options.projectDirectory ?? options.directory)
@@ -169,7 +168,7 @@ const noBase = () => undefined
 const noTemplates: BaseTemplate[] = []
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
-function agentInfo(id: string, system: string, model?: ModelNamespace.Ref): Agent.Info {
+function agentInfo(id: string, system: string, model?: Model.Ref): Agent.Info {
   return { ...Agent.Info.default(Agent.ID.make(id)), system, ...(model === undefined ? {} : { model }) }
 }
 
