@@ -7,9 +7,9 @@ import { formatMarkdown } from "../src/agents/files.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
+import { memoInputOf } from "../src/instructions/snapshot.js"
 import { resolveReview, saveText } from "../src/instructions/ops.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import type { MemoInput } from "../src/instructions/tree.js"
 import { append, read } from "../src/instructions/log.js"
 import { globalLogPath, projectLogPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
@@ -218,61 +218,9 @@ test("an unchanged op-level save writes nothing and logs nothing", async () => {
   const api = createPlusApi(ctx, createState())
   const snapshot = await api.snapshot()
   if (!snapshot.ok) throw new Error(`snapshot failed: ${snapshot.error.message}`)
-  const toMemo = (value: Plus.Snapshot): MemoInput => ({
-    items: value.items.map((item) => ({
-      id: item.id,
-      kind: item.kind,
-      group: item.group,
-      ...(item.server === undefined ? {} : { server: item.server }),
-      title: item.title,
-      text: item.text,
-      enabled: item.enabled,
-      fingerprint: item.fingerprint,
-      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
-      ...(item.order === undefined ? {} : { order: item.order }),
-      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
-      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
-    })),
-    records: value.records.map((entry) =>
-      entry.type === "split"
-        ? {
-            type: "split" as const,
-            level: entry.level,
-            agent: entry.agent,
-            item: entry.item,
-            boundaries: entry.boundaries.map((boundary) => ({ ...boundary })),
-            updated: entry.updated,
-          }
-        : {
-            type: "customization" as const,
-            level: entry.level,
-            agent: entry.agent,
-            item: entry.item,
-            section: entry.section,
-            ...(entry.text === undefined ? {} : { text: entry.text }),
-            ...(entry.state === undefined ? {} : { state: entry.state }),
-            basedOn: entry.basedOn,
-            ...(entry.basedOnText === undefined ? {} : { basedOnText: entry.basedOnText }),
-            ...(entry.acknowledged === undefined ? {} : { acknowledged: entry.acknowledged }),
-            updated: entry.updated,
-          },
-    ),
-    agents: value.agents.map((agent) => ({
-      id: agent.id,
-      scope: agent.scope,
-      ...(agent.path === undefined ? {} : { path: agent.path }),
-      ...(agent.base === undefined ? {} : { base: agent.base }),
-    })),
-    teams: (value.teams ?? []).map((team) => ({
-      level: team.level,
-      team: team.team,
-      enabled: team.enabled,
-      agents: [...team.agents],
-    })),
-  })
-  const row = expandedTree(toMemo(snapshot.value)).find((candidate) => candidate.address?.item === "tool:reader")
+  const row = expandedTree(memoInputOf(snapshot.value)).find((candidate) => candidate.address?.item === "tool:reader")
   if (row === undefined) throw new Error("missing reader row")
-  const firstOp = saveText(toMemo(snapshot.value), row.id, "same text")
+  const firstOp = saveText(memoInputOf(snapshot.value), row.id, "same text")
   if ("refusal" in firstOp) throw new Error(`expected save: ${firstOp.refusal}`)
   const first = await api.mutate({
     expectedRevision: snapshot.value.revision,
@@ -286,7 +234,7 @@ test("an unchanged op-level save writes nothing and logs nothing", async () => {
   expect(loggedAfterFirst.value.total).toBe(1)
   const fresh = await api.snapshot()
   if (!fresh.ok) throw new Error("fresh snapshot failed")
-  const secondOp = saveText(toMemo(fresh.value), row.id, "same text")
+  const secondOp = saveText(memoInputOf(fresh.value), row.id, "same text")
   if ("refusal" in secondOp) throw new Error(`expected second save: ${secondOp.refusal}`)
   expect(secondOp.records).toEqual(fresh.value.records.filter((entry) => entry.type === "customization"))
   const second = await api.mutate({
@@ -314,60 +262,8 @@ test("a repeated identical resolve keep and edit writes no second line and moves
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const api = createPlusApi(ctx, createState())
-  const toMemo = (value: Plus.Snapshot): MemoInput => ({
-    items: value.items.map((item) => ({
-      id: item.id,
-      kind: item.kind,
-      group: item.group,
-      ...(item.server === undefined ? {} : { server: item.server }),
-      title: item.title,
-      text: item.text,
-      enabled: item.enabled,
-      fingerprint: item.fingerprint,
-      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
-      ...(item.order === undefined ? {} : { order: item.order }),
-      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
-      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
-    })),
-    records: value.records.map((entry) =>
-      entry.type === "split"
-        ? {
-            type: "split" as const,
-            level: entry.level,
-            agent: entry.agent,
-            item: entry.item,
-            boundaries: entry.boundaries.map((boundary) => ({ ...boundary })),
-            updated: entry.updated,
-          }
-        : {
-            type: "customization" as const,
-            level: entry.level,
-            agent: entry.agent,
-            item: entry.item,
-            section: entry.section,
-            ...(entry.text === undefined ? {} : { text: entry.text }),
-            ...(entry.state === undefined ? {} : { state: entry.state }),
-            basedOn: entry.basedOn,
-            ...(entry.basedOnText === undefined ? {} : { basedOnText: entry.basedOnText }),
-            ...(entry.acknowledged === undefined ? {} : { acknowledged: entry.acknowledged }),
-            updated: entry.updated,
-          },
-    ),
-    agents: value.agents.map((agent) => ({
-      id: agent.id,
-      scope: agent.scope,
-      ...(agent.path === undefined ? {} : { path: agent.path }),
-      ...(agent.base === undefined ? {} : { base: agent.base }),
-    })),
-    teams: (value.teams ?? []).map((team) => ({
-      level: team.level,
-      team: team.team,
-      enabled: team.enabled,
-      agents: [...team.agents],
-    })),
-  })
   const rowOf = (snapshot: Plus.Snapshot): string => {
-    const node = expandedTree(toMemo(snapshot)).find((candidate) => candidate.address?.item === "tool:reader")
+    const node = expandedTree(memoInputOf(snapshot)).find((candidate) => candidate.address?.item === "tool:reader")
     if (node === undefined) throw new Error("missing reader row")
     return node.id
   }
@@ -381,7 +277,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   const snapshot0 = await api.snapshot()
   if (!snapshot0.ok) throw new Error(`snapshot failed: ${snapshot0.error.message}`)
   const rowId = rowOf(snapshot0.value)
-  const seedOp = saveText(toMemo(snapshot0.value), rowId, "mine text")
+  const seedOp = saveText(memoInputOf(snapshot0.value), rowId, "mine text")
   if ("refusal" in seedOp) throw new Error(`expected seed save: ${seedOp.refusal}`)
   const seeded = await api.mutate({
     expectedRevision: snapshot0.value.revision,
@@ -392,7 +288,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   if (!seeded.ok || !seeded.value.ok) throw new Error("expected seed mutate to succeed")
   const freshKeep1 = await api.snapshot()
   if (!freshKeep1.ok) throw new Error("fresh snapshot failed")
-  const keep1 = resolveReview(toMemo(freshKeep1.value), rowOf(freshKeep1.value), "keep")
+  const keep1 = resolveReview(memoInputOf(freshKeep1.value), rowOf(freshKeep1.value), "keep")
   if ("refusal" in keep1) throw new Error(`expected first keep: ${keep1.refusal}`)
   const kept1 = await api.mutate({
     expectedRevision: freshKeep1.value.revision,
@@ -410,7 +306,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   await waitForNextTick(keepUpdated)
   const freshKeep2 = await api.snapshot()
   if (!freshKeep2.ok) throw new Error("fresh snapshot failed")
-  const keep2 = resolveReview(toMemo(freshKeep2.value), rowOf(freshKeep2.value), "keep")
+  const keep2 = resolveReview(memoInputOf(freshKeep2.value), rowOf(freshKeep2.value), "keep")
   if ("refusal" in keep2) throw new Error(`expected second keep: ${keep2.refusal}`)
   const kept2 = await api.mutate({
     expectedRevision: freshKeep2.value.revision,
@@ -426,7 +322,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   expect(loggedAfterKeep2.value.total).toBe(loggedAfterKeep1.value.total)
   const freshEdit1 = await api.snapshot()
   if (!freshEdit1.ok) throw new Error("fresh snapshot failed")
-  const edit1 = resolveReview(toMemo(freshEdit1.value), rowOf(freshEdit1.value), "edit", "merged text")
+  const edit1 = resolveReview(memoInputOf(freshEdit1.value), rowOf(freshEdit1.value), "edit", "merged text")
   if ("refusal" in edit1) throw new Error(`expected first edit: ${edit1.refusal}`)
   const edited1 = await api.mutate({
     expectedRevision: freshEdit1.value.revision,
@@ -445,7 +341,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   await waitForNextTick(editUpdated)
   const freshEdit2 = await api.snapshot()
   if (!freshEdit2.ok) throw new Error("fresh snapshot failed")
-  const edit2 = resolveReview(toMemo(freshEdit2.value), rowOf(freshEdit2.value), "edit", "merged text")
+  const edit2 = resolveReview(memoInputOf(freshEdit2.value), rowOf(freshEdit2.value), "edit", "merged text")
   if ("refusal" in edit2) throw new Error(`expected second edit: ${edit2.refusal}`)
   const edited2 = await api.mutate({
     expectedRevision: freshEdit2.value.revision,

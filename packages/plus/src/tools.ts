@@ -22,6 +22,7 @@ import { query } from "./instructions/query.js"
 import { applies, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
 import type { CustomizationRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput } from "./instructions/tree.js"
+import { memoInputOf } from "./instructions/snapshot.js"
 import { expandedTree } from "./instructions/tree.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
@@ -368,58 +369,7 @@ function protectedError(agent: string): Tool.Error {
 }
 
 function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
-  return {
-    items: snapshot.items.map((item) => ({
-      id: item.id,
-      kind: item.kind,
-      group: item.group,
-      ...(item.server === undefined ? {} : { server: item.server }),
-      title: item.title,
-      text: item.text,
-      enabled: item.enabled,
-      fingerprint: item.fingerprint,
-      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
-      ...(item.order === undefined ? {} : { order: item.order }),
-      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
-      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
-    })),
-    records: snapshot.records.map((record) => {
-      if (record.type === "split")
-        return {
-          type: "split",
-          level: record.level,
-          agent: record.agent,
-          item: record.item,
-          boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
-          updated: record.updated,
-        } as SplitRecord
-      return {
-        type: "customization",
-        level: record.level,
-        agent: record.agent,
-        item: record.item,
-        section: record.section,
-        ...(record.text === undefined ? {} : { text: record.text }),
-        ...(record.state === undefined ? {} : { state: record.state }),
-        basedOn: record.basedOn,
-        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-        updated: record.updated,
-      } as CustomizationRecord
-    }),
-    agents: snapshot.agents.map((agent) => ({
-      id: agent.id,
-      scope: agent.scope,
-      ...(agent.path === undefined ? {} : { path: agent.path }),
-      ...(agent.base === undefined ? {} : { base: agent.base }),
-    })),
-    teams: (snapshot.teams ?? []).map((team) => ({
-      level: team.level,
-      team: team.team,
-      enabled: team.enabled,
-      agents: [...team.agents],
-    })),
-  }
+  return memoInputOf(snapshot)
 }
 
 function toSnapshotRecords(records: readonly CustomizationRecord[], splits: readonly SplitRecord[]): Plus.SnapshotRecord[] {
