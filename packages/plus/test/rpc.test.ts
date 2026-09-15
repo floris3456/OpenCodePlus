@@ -6,6 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState, type PlusState } from "../src/index.js"
+import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
@@ -220,6 +221,50 @@ test("snapshot carries userBase and codemode flags on the right items", async ()
   expect(builtin).toBeDefined()
   expect(builtin?.userBase).toBeUndefined()
   expectRpcBody(snapshot)
+})
+
+test("snapshot carries code mode namespace, pinned, execute, and pin across the boundary", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "coder", description: "code mode tool", options: { namespace: "ns", pinned: true } }],
+  })
+  const handlers = createHandlers(ctx, createState())
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  // Discovery → toSnapshot keeps the Code Mode tool fields.
+  const coder = snapshot.items.find((item) => item.namespace === "ns")
+  if (!coder) throw new Error("expected namespaced coder tool")
+  expect(coder.pinned).toBe(true)
+  expect(coder.codemode).toBe(true)
+  expectRpcBody(snapshot)
+  // The client-side model conversion keeps them too (no silent drop).
+  const converted = itemOf(coder)
+  expect(converted.namespace).toBe("ns")
+  expect(converted.pinned).toBe(true)
+  expect(converted.codemode).toBe(true)
+  // The synthetic host-owned execute row survives the same path.
+  const execute = snapshot.items.find((item) => item.id === "tool:execute")
+  if (!execute) throw new Error("expected tool:execute")
+  expect(execute.execute).toBe(true)
+  expect(itemOf(execute).execute).toBe(true)
+  // A stored pin record survives mutate → snapshot → recordOf.
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [record(coder.id, { pin: true, basedOn: coder.fingerprint })],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expectRpcBody(mutated)
+  const stored = mutated.snapshot.records.find((entry) => entry.type === "customization" && entry.item === coder.id)
+  if (stored?.type !== "customization") throw new Error("expected customization record")
+  expect(stored.pin).toBe(true)
+  const back = recordOf(stored)
+  if (back.type !== "customization") throw new Error("expected customization record")
+  expect(back.pin).toBe(true)
 })
 
 test("mutate routes project records to the project store and global/defaults records to the global store", async () => {
