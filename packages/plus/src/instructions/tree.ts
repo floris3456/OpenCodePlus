@@ -203,7 +203,7 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
       label: "Defaults",
       depth: 0,
       actions: noActions(),
-      children: () => [lazyAgentsGroup(ctx, memo, "defaults"), ...lazySharedGroups(ctx, memo)],
+      children: () => [lazyAgentsGroup(ctx, memo, "defaults"), ...lazyTeamsGroup(ctx, memo, "defaults"), ...lazySharedGroups(ctx, memo)],
     })
   return branch(memo, {
     kind: "root",
@@ -245,14 +245,15 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 }
 
 // Teams mirror the Agents group shape: a depth-1 "Teams" group per
-// project/global root holding one toggleable row per on-disk team. The group
-// is always present (like Agents) with an `add: "team"` affordance, so an
-// empty level still advertises team creation. Defaults never gets a Teams
-// group: teams are project/global only. Member agent ids hang under each team
-// row as informational rows: they carry no address and no actions, so space,
-// enter, delete, and reset all ignore them.
+// project/global/defaults root holding one toggleable row per on-disk team.
+// The group is always present (like Agents) with an `add: "team"` affordance,
+// so an empty level still advertises team creation. A team's storage level
+// remains project|global only, so the Defaults group is always empty and
+// exists as a creation entry point: pressing `a` there opens the existing
+// addTeam flow, which prompts for a project/global scope. Member agent ids
+// hang under each team row as informational rows: they carry no address and
+// no actions, so space, enter, delete, and reset all ignore them.
 function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
-  if (level === "defaults") return []
   const teams = ctx.teams
     .filter((team) => team.level === level)
     .toSorted((left, right) => (left.team < right.team ? -1 : left.team > right.team ? 1 : 0))
@@ -269,7 +270,7 @@ function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
   ]
 }
 
-function lazyTeam(memo: Memo, level: "project" | "global", team: TeamInput): Lazy {
+function lazyTeam(memo: Memo, level: Level, team: TeamInput): Lazy {
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `team:${level}:${team.team}`, () =>
       team.agents.map((member) => ({

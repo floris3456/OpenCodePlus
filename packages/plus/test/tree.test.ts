@@ -1,6 +1,23 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { Effect } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
+import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
+import { createHandlers, createState } from "../src/index.js"
+import { enable } from "../src/project.js"
+import { fullContext } from "./harness.js"
+
+const teamRoots: string[] = []
+const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+
+afterEach(async () => {
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  await Promise.all(teamRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
+})
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -135,10 +152,11 @@ test("identical subtree under each of the three roots", () => {
   }
 })
 
-test("Defaults holds Agents plus the five shared inventories in order", () => {
+test("Defaults holds Agents, Teams, plus the five shared inventories in order", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toEqual([
     "group:defaults:agents",
+    "group:defaults:teams",
     "group:defaults::tools",
     "group:defaults::base",
     "group:defaults::skills",
@@ -158,7 +176,7 @@ test("Project and Global hold Agents and Teams groups", () => {
   expect(childrenOf(nodes, "group:global:agents").map((node) => node.id)).toEqual(["agent:global:Helper"])
 })
 
-test("Teams group sits beside Agents under Project and Global, never Defaults", () => {
+test("Teams group sits beside Agents at all three levels", () => {
   const nodes = expandAll({
     items: items(),
     records: [],
@@ -177,10 +195,18 @@ test("Teams group sits beside Agents under Project and Global, never Defaults", 
   expect(globalGroup?.kind).toBe("group")
   expect(globalGroup?.label).toBe("Teams")
   expect(globalGroup?.depth).toBe(1)
+  const defaultsGroup = nodes.find((node) => node.id === "group:defaults:teams")
+  expect(defaultsGroup?.kind).toBe("group")
+  expect(defaultsGroup?.label).toBe("Teams")
+  expect(defaultsGroup?.depth).toBe(1)
+  expect(defaultsGroup?.add).toBe("team")
   expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents", "group:project:teams"])
   expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents", "group:global:teams"])
-  expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(false)
-  expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).not.toContain("group:defaults:teams")
+  expect(childrenOf(nodes, "root:defaults").slice(0, 2).map((node) => node.id)).toEqual([
+    "group:defaults:agents",
+    "group:defaults:teams",
+  ])
+  expect(childrenOf(nodes, "group:defaults:teams")).toEqual([])
   // Teams sort by name inside their group.
   expect(childrenOf(nodes, "group:project:teams").map((node) => node.id)).toEqual(["team:project:crew", "team:project:side"])
 })
@@ -265,7 +291,7 @@ test("a level with no teams renders an empty Teams group with the add affordance
   expect(childrenOf(nodes, "group:global:teams").map((node) => node.id)).toEqual(["team:global:crew"])
 })
 
-test("Defaults never renders a Teams group even when empty groups are shown", () => {
+test("Defaults renders an empty Teams group as a creation entry point", () => {
   for (const input of [
     { items: items(), records: [], agents: agents() },
     { items: items(), records: [], agents: agents(), teams: [] },
@@ -280,9 +306,61 @@ test("Defaults never renders a Teams group even when empty groups are shown", ()
     },
   ]) {
     const nodes = expandAll(input)
-    expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(false)
-    expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).not.toContain("group:defaults:teams")
+    const group = nodes.find((node) => node.id === "group:defaults:teams")
+    expect(group?.kind).toBe("group")
+    expect(group?.label).toBe("Teams")
+    expect(group?.depth).toBe(1)
+    expect(group?.add).toBe("team")
+    expect(childrenOf(nodes, "group:defaults:teams")).toEqual([])
+    expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toContain("group:defaults:teams")
   }
+})
+
+test("a team created from the Defaults Teams group is stored at project or global, never defaults", async () => {
+  // The Defaults Teams group is a creation entry point: `a` there opens the
+  // existing addTeam flow, which prompts for a project/global scope, so the
+  // new team lands under one of the two real teams roots.
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-tree-defaults-team-create-"))
+  teamRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = {
+    error: (type: string, message: string, data?: unknown): never => {
+      throw { type, message, data }
+    },
+  }
+  const before = expandAll({ items: items(), records: [], agents: agents(), teams: [] })
+  const defaultsGroup = before.find((node) => node.id === "group:defaults:teams")
+  expect(defaultsGroup?.add).toBe("team")
+  expect(childrenOf(before, "group:defaults:teams")).toEqual([])
+  const created = await Effect.runPromise(handlers["team.create"]({ level: "project", team: "fresh" }, throwing))
+  expect(created).toEqual({ level: "project", team: "fresh", enabled: false })
+  expect(created.level).not.toBe("defaults")
+  const stat = await fs.stat(path.join(projectTeamsPath(project), "fresh"))
+  expect(stat.isDirectory()).toBe(true)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+  expect(snapshot.teams).toEqual([{ level: "project", team: "fresh", enabled: false, agents: [] }])
+  // No defaults teams directory is created on disk: the global teams root
+  // gains nothing, and the new team never surfaces under Defaults.
+  const globalEntries = await fs.readdir(globalTeamsPath()).catch(() => [])
+  expect(globalEntries).not.toContain("fresh")
+  const after = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: (snapshot.teams ?? []).map((team) => ({
+      level: team.level,
+      team: team.team,
+      enabled: team.enabled,
+      agents: team.agents,
+    })),
+  })
+  expect(childrenOf(after, "group:defaults:teams")).toEqual([])
+  expect(childrenOf(after, "group:project:teams").map((node) => node.id)).toEqual(["team:project:fresh"])
 })
 
 test("MCP tools group by item.server, never the tool name", () => {
@@ -420,7 +498,8 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:defaults:agents")).toBe("agent")
   expect(adds.get("group:project:teams")).toBe("team")
   expect(adds.get("group:global:teams")).toBe("team")
-  expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(false)
+  expect(adds.get("group:defaults:teams")).toBe("team")
+  expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(true)
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
   expect(adds.get("group:project:Implementer:skills:project")).toBe("skill")
@@ -471,6 +550,19 @@ test("expansion emits only expanded children", () => {
     "group:project:teams",
     "root:global",
     "root:defaults",
+  ])
+  const defaults = tree({ ...input, expanded: new Set(["root:defaults"]) })
+  expect(defaults.map((node) => node.id)).toEqual([
+    "root:project",
+    "root:global",
+    "root:defaults",
+    "group:defaults:agents",
+    "group:defaults:teams",
+    "group:defaults::tools",
+    "group:defaults::base",
+    "group:defaults::skills",
+    "group:defaults::system",
+    "group:defaults::mcp",
   ])
 })
 
