@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
-import { tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
+import { expandedTree, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
 import { enable } from "../src/project.js"
 import { fullContext } from "./harness.js"
@@ -225,7 +225,7 @@ test("team rows carry toggle actions and read enabled state as on/off", () => {
   expect(enabled?.kind).toBe("team")
   expect(enabled?.label).toBe("crew")
   expect(enabled?.depth).toBe(2)
-  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false })
+  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
   expect(enabled?.address).toBeUndefined()
   expect(enabled?.badges.state).toBe("on")
   const disabled = nodes.find((node) => node.id === "team:global:crew")
@@ -253,7 +253,7 @@ test("member rows are informational: no address, no actions, depth 3", () => {
     expect(member?.kind).toBe("team")
     expect(member?.depth).toBe(3)
     expect(member?.address).toBeUndefined()
-    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false })
+    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
     expect(member?.badges.state).toBeUndefined()
   }
 })
@@ -323,7 +323,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
   const enabled = nodes.find((node) => node.id === "team:defaults:ship")
   expect(enabled?.kind).toBe("team")
   expect(enabled?.depth).toBe(2)
-  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false })
+  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
   expect(enabled?.badges.state).toBe("on")
   const disabled = nodes.find((node) => node.id === "team:defaults:other")
   expect(disabled?.badges.state).toBe("off")
@@ -336,7 +336,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     expect(member?.kind).toBe("team")
     expect(member?.depth).toBe(3)
     expect(member?.address).toBeUndefined()
-    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false })
+    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
   }
 })
 
@@ -451,10 +451,10 @@ test("whole Role/persona and whole base rows refuse toggle but read unsupported"
   expect(sections.every((node) => node.badges.unsupported === undefined)).toBe(true)
 })
 
-test("expanding a Code Mode tool yields gated children, a normal tool stays editable", () => {
+test("expanding a Code Mode tool yields editable children like a normal tool", () => {
   const all = [
     ...items(),
-    makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", text: "# A\n\na\n", codemode: true }),
+    makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", text: "# A\n\na\n", codemode: true, namespace: "fs" }),
   ]
   const input = { items: all, records: [], agents: agents() }
   const expanded = new Set<string>()
@@ -469,9 +469,9 @@ test("expanding a Code Mode tool yields gated children, a normal tool stays edit
   expect(children.length).toBeGreaterThan(0)
   for (const child of children) {
     expect(child.kind).toBe("section")
-    expect(child.actions?.toggle).toBe(false)
-    expect(child.actions?.edit).toBe(false)
-    expect(child.badges.unsupported).toBe(true)
+    expect(child.actions?.toggle).toBe(true)
+    expect(child.actions?.edit).toBe(true)
+    expect(child.badges.unsupported).toBeUndefined()
   }
   const normal = childrenOf(nodes, "item:project:Implementer:tool:bash")
   expect(normal.length).toBeGreaterThan(0)
@@ -605,7 +605,7 @@ test("actions: toggle/edit/split on items, reset only with an override, remove o
   ]
   const nodes = expandAll({ items: items(), records, agents: agents() })
   const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")
-  expect(bash?.actions).toEqual({ toggle: true, edit: true, reset: true, remove: false, split: true })
+  expect(bash?.actions).toEqual({ toggle: true, edit: true, reset: true, remove: false, split: true, pin: false })
   const plus = nodes.find((node) => node.id === "item:project:Implementer:tool:plus-one")
   expect(plus?.actions?.reset).toBe(false)
   expect(nodes.find((node) => node.id === "item:defaults::mcp:sample")?.actions?.remove).toBe(true)
@@ -617,6 +617,7 @@ test("actions: toggle/edit/split on items, reset only with an override, remove o
     reset: false,
     remove: false,
     split: false,
+    pin: false,
   })
 })
 
@@ -666,20 +667,178 @@ test("builtin-id user base shadows stay deletable and never read inactive", () =
   expect(shadow?.badges.inactive).toBeUndefined()
 })
 
-test("Code Mode tool rows offer no toggle/edit/split/add and read unsupported", () => {
+test("Code Mode tool rows offer toggle/edit/split/pin/add and read live, never unsupported", () => {
   const all = [
     ...items(),
-    makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", codemode: true }),
+    makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", codemode: true, namespace: "fs" }),
   ]
   const nodes = expandAll({ items: all, records: [], agents: agents() })
   const coder = nodes.find((node) => node.id === "item:project:Implementer:tool:coder")
-  expect(coder?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false })
-  expect(coder?.add).toBeUndefined()
-  expect(coder?.badges.unsupported).toBe(true)
+  expect(coder?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: true, pin: true })
+  expect(coder?.add).toBe("section")
+  expect(coder?.badges.unsupported).toBeUndefined()
   const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")
-  expect(bash?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: true })
+  expect(bash?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: true, pin: false })
   expect(bash?.add).toBe("section")
   expect(bash?.badges.unsupported).toBeUndefined()
+})
+
+function codemodeAll(): Item[] {
+  return [
+    ...items(),
+    makeItem({ id: "tool:execute", kind: "tool", group: "native", title: "execute", codemode: false, execute: true }),
+    makeItem({ id: "tool:write", kind: "tool", group: "native", title: "write", text: "# A\n\na\n", codemode: true, namespace: "fs" }),
+    makeItem({ id: "tool:read", kind: "tool", group: "native", title: "read", codemode: true, namespace: "fs", pinned: true }),
+    makeItem({ id: "tool:lonely", kind: "tool", group: "native", title: "lonely", codemode: true }),
+    makeItem({ id: "tool:plus-code", kind: "tool", group: "plus", title: "plus-code", codemode: true, namespace: "plusns" }),
+    makeItem({ id: "tool:mcp-code", kind: "tool", group: "mcp", server: "sample", title: "mcp-code", codemode: true }),
+  ]
+}
+
+test("Code Mode groups nest origin › Code Mode › namespace with exact ids", () => {
+  const nodes = expandAll({ items: codemodeAll(), records: [], agents: agents() })
+  const native = "group:project:Implementer:tools:native"
+  expect(childrenOf(nodes, native).map((node) => node.label)).toEqual(["aaa", "bash", "execute", "Code Mode"])
+  const code = `${native}:codemode`
+  expect(nodes.find((node) => node.id === code)?.label).toBe("Code Mode")
+  expect(nodes.find((node) => node.id === code)?.depth).toBe(5)
+  // Namespace-less tools hang directly off the Code Mode group, ahead of the
+  // sorted namespace groups.
+  expect(childrenOf(nodes, code).map((node) => node.label)).toEqual(["lonely", "fs"])
+  expect(childrenOf(nodes, `${code}:fs`).map((node) => node.label)).toEqual(["read", "write"])
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.depth).toBe(7)
+  const plus = "group:project:Implementer:tools:plus"
+  expect(childrenOf(nodes, plus).map((node) => node.label)).toEqual(["plus-one", "Code Mode"])
+  expect(childrenOf(nodes, `${plus}:codemode`).map((node) => node.label)).toEqual(["plusns"])
+  expect(childrenOf(nodes, `${plus}:codemode:plusns`).map((node) => node.label)).toEqual(["plus-code"])
+  // MCP servers skip the namespace level: the server's Code Mode group holds
+  // the tool rows directly.
+  const server = "group:project:Implementer:tools:mcp:sample"
+  expect(childrenOf(nodes, server).map((node) => node.label)).toEqual(["odd-name", "Code Mode"])
+  expect(childrenOf(nodes, `${server}:codemode`).map((node) => node.label)).toEqual(["mcp-code"])
+  expect(nodes.filter((node) => node.id.startsWith(`${server}:codemode:`))).toEqual([])
+})
+
+test("Code Mode groups repeat under the global and defaults roots", () => {
+  const nodes = expandAll({ items: codemodeAll(), records: [], agents: agents() })
+  expect(childrenOf(nodes, "group:global:Helper:tools:mcp:sample:codemode").map((node) => node.label)).toEqual([
+    "mcp-code",
+  ])
+  expect(childrenOf(nodes, "group:defaults::tools:native:codemode").map((node) => node.label)).toEqual(["lonely", "fs"])
+  expect(childrenOf(nodes, "group:defaults::tools:native:codemode:fs").map((node) => node.label)).toEqual([
+    "read",
+    "write",
+  ])
+  expect(nodes.find((node) => node.id === "group:defaults::tools:native:codemode:fs:read")).toBeUndefined()
+  expect(nodes.find((node) => node.id === "item:defaults::tool:read")?.depth).toBe(5)
+  // expandedTree agrees with the expanded walk on every Code Mode group id.
+  const flat = expandedTree({ items: codemodeAll(), records: [], agents: agents() })
+  for (const id of [
+    "group:project:Implementer:tools:native:codemode",
+    "group:project:Implementer:tools:native:codemode:fs",
+    "group:project:Implementer:tools:plus:codemode",
+    "group:project:Implementer:tools:plus:codemode:plusns",
+    "group:project:Implementer:tools:mcp:sample:codemode",
+    "group:global:Helper:tools:mcp:sample:codemode",
+    "group:defaults::tools:native:codemode",
+    "group:defaults::tools:native:codemode:fs",
+  ]) {
+    expect(flat.some((node) => node.id === id)).toBe(true)
+  }
+})
+
+test("empty Code Mode and namespace groups are absent", () => {
+  const plain = expandAll({ items: items(), records: [], agents: agents() })
+  expect(plain.some((node) => node.id.includes(":codemode"))).toBe(false)
+  const nativeOnly = [
+    ...items(),
+    makeItem({ id: "tool:write", kind: "tool", group: "native", title: "write", codemode: true, namespace: "fs" }),
+  ]
+  const nodes = expandAll({ items: nativeOnly, records: [], agents: agents() })
+  expect(nodes.some((node) => node.id === "group:project:Implementer:tools:native:codemode")).toBe(true)
+  expect(nodes.some((node) => node.id === "group:project:Implementer:tools:plus:codemode")).toBe(false)
+  expect(nodes.some((node) => node.id === "group:project:Implementer:tools:mcp:sample:codemode")).toBe(false)
+})
+
+test("actions matrix: Code Mode row vs native tool row vs execute row vs Code Mode section", () => {
+  const records = [makeRecord({ item: "tool:read" })]
+  const nodes = expandAll({ items: codemodeAll(), records, agents: agents() })
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.actions).toEqual({
+    toggle: true,
+    edit: true,
+    reset: true,
+    remove: false,
+    split: true,
+    pin: true,
+  })
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.add).toBe("section")
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:bash")?.actions).toEqual({
+    toggle: true,
+    edit: true,
+    reset: false,
+    remove: false,
+    split: true,
+    pin: false,
+  })
+  const execute = nodes.find((node) => node.id === "item:project:Implementer:tool:execute")
+  expect(execute?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(execute?.add).toBeUndefined()
+  expect(execute?.badges.unsupported).toBeUndefined()
+  const section = nodes.find((node) => node.id === "section:project:Implementer:tool:write:a")
+  expect(section?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: false, pin: false })
+  expect(section?.badges.unsupported).toBeUndefined()
+})
+
+test("badges: pinned follows the resolution, unsupported leaves Code Mode rows", () => {
+  const records = [makeRecord({ item: "tool:write", pin: true })]
+  const nodes = expandAll({ items: codemodeAll(), records, agents: agents() })
+  // Registry-default pin and user pin override both read on the row.
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.badges.pinned).toBe(true)
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:write")?.badges.pinned).toBe(true)
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:lonely")?.badges.pinned).toBeUndefined()
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:bash")?.badges.pinned).toBeUndefined()
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:execute")?.badges.pinned).toBeUndefined()
+  for (const id of [
+    "item:project:Implementer:tool:read",
+    "item:project:Implementer:tool:write",
+    "item:project:Implementer:tool:lonely",
+    "item:project:Implementer:tool:plus-code",
+    "item:project:Implementer:tool:mcp-code",
+    "item:project:Implementer:tool:execute",
+  ]) {
+    expect(nodes.find((node) => node.id === id)?.badges.unsupported).toBeUndefined()
+  }
+  // Whole Role/persona and whole base rows keep their treatment.
+  expect(nodes.find((node) => node.id === "item:project:Implementer:system:role")?.badges.unsupported).toBe(true)
+  expect(nodes.find((node) => node.id === "item:project:Implementer:system:role")?.badges.unexcludable).toBe(true)
+  expect(nodes.find((node) => node.id === "item:project:Implementer:base:gpt")?.badges.unsupported).toBe(true)
+  expect(nodes.find((node) => node.id === "item:project:Implementer:base:gpt")?.badges.unexcludable).toBe(true)
+})
+
+test("review rolls up through Code Mode groups like any other row", () => {
+  const upstream = makeItem({
+    id: "tool:write",
+    kind: "tool",
+    group: "native",
+    title: "write",
+    text: "v2",
+    codemode: true,
+    namespace: "fs",
+  })
+  const rest = codemodeAll().filter((item) => item.id !== "tool:write" && item.id !== "tool:read" && item.id !== "tool:lonely")
+  const records = [makeRecord({ item: "tool:write", text: "mine", basedOn: fingerprint("v1"), basedOnText: "v1" })]
+  const input = { items: [upstream, ...rest], records, agents: agents() }
+  const collapsed = tree({ ...input, expanded: new Set() })
+  expect(collapsed.find((node) => node.id === "root:project")?.badges.review).toBe(true)
+  const full = expandAll(input)
+  for (const id of [
+    "group:project:Implementer:tools",
+    "group:project:Implementer:tools:native",
+    "group:project:Implementer:tools:native:codemode",
+    "group:project:Implementer:tools:native:codemode:fs",
+  ]) {
+    expect(full.find((node) => node.id === id)?.badges.review).toBe(true)
+  }
 })
 
 test("badges carry state, modified, and source from resolution", () => {

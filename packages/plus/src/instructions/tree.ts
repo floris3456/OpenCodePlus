@@ -44,7 +44,9 @@ export interface TreeNodeBadges {
   readonly source?: Level | "upstream"
   /** User base template that can never be the host active answer. */
   readonly inactive?: boolean
-  /** Code Mode tool whose customizations are never applied. */
+  /** Registry or user pin state for Code Mode tool rows. */
+  readonly pinned?: boolean
+  /** Whole Role/persona or whole base row: apply keeps the original text live, so the row cannot be toggled off. */
   readonly unsupported?: boolean
   /** Whole Role/persona or whole base row: apply keeps the original text live, so the row cannot be toggled off. */
   readonly unexcludable?: boolean
@@ -56,6 +58,7 @@ export interface TreeNodeActions {
   readonly reset: boolean
   readonly remove: boolean
   readonly split: boolean
+  readonly pin: boolean
 }
 
 export interface TreeNode {
@@ -133,16 +136,13 @@ export function materialize(lazy: Lazy): TreeNode {
 
 // Section ids come from the split, so an item with no section customizations
 // contributes zero without resolving anything; only items that actually have
-// section overrides pay for one whole resolve plus one split. Gated (Code
-// Mode) section overrides stay stored but never apply, so their review flags
-// must not roll up into ancestor counts: the content needs attention, and
-// the `unsupported` badge on the section says so, without implying an
-// upstream change.
+// section overrides pay for one whole resolve plus one split. Flagged
+// sections roll up into ancestor counts like any other row so saved content
+// needing attention stays discoverable from collapsed ancestors.
 function itemRollup(memo: Memo, level: Level, owner: string | null, item: Item): number {
   const entry = textEntryOf(memo, level, owner, item.id)
   if (entry === undefined) return 0
   if (entry.sections.size === 0) return 0
-  if (item.kind === "tool" && item.codemode === true) return 0
   return splitOf(memo, level, owner, item).sections.filter(
     (section) => entry.sections.has(section.id) && flagOf(memo, level, owner, item, section.id),
   ).length
@@ -358,9 +358,9 @@ function lazyTools(
     children: () => {
       const tools = sortedKind(ctx, "tool", owner)
       return [
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native")),
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus")),
-        mcpGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp")),
+        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native")),
+        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus")),
+        mcpToolsGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp")),
         ...strayTools(ctx, memo, level, owner, agent, tools, depth + 1),
       ]
     },
@@ -540,6 +540,154 @@ function mcpGroup(
   })
 }
 
+// Native/OpenCodePlus tool origin group: plain tools hang directly off the
+// group exactly as before, while Code Mode tools move under a `Code Mode`
+// child group (absent when there are no Code Mode rows) because a plugin can
+// rewrite the catalog per agent and deny a single tool by id.
+function toolOriginGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  label: string,
+  depth: number,
+  items: readonly Item[],
+): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id,
+    label,
+    depth,
+    actions: noActions(),
+    children: () => {
+      const code = items.filter((item) => item.codemode === true)
+      const rows = items
+        .filter((item) => item.codemode !== true)
+        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+      if (code.length === 0) return rows
+      return [...rows, codemodeGroup(ctx, memo, level, owner, agent, `${id}:codemode`, depth + 1, code, true)]
+    },
+  })
+}
+
+// MCP tool inventory: one group per server like mcpGroup, but each server
+// splits its Code Mode tools under its own `Code Mode` child. The namespace
+// level is skipped because every tool of one server already shares one
+// namespace.
+function mcpToolsGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  depth: number,
+  items: readonly Item[],
+): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id,
+    label: "MCP",
+    depth,
+    actions: noActions(),
+    children: () => {
+      const servers = [...new Set(items.map((item) => item.server ?? "unknown"))].sort()
+      return servers.map((server) =>
+        toolServerGroup(
+          ctx,
+          memo,
+          level,
+          owner,
+          agent,
+          `${id}:${server}`,
+          server,
+          depth + 1,
+          items.filter((item) => (item.server ?? "unknown") === server),
+        ),
+      )
+    },
+  })
+}
+
+function toolServerGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  label: string,
+  depth: number,
+  items: readonly Item[],
+): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id,
+    label,
+    depth,
+    actions: noActions(),
+    children: () => {
+      const code = items.filter((item) => item.codemode === true)
+      const rows = items
+        .filter((item) => item.codemode !== true)
+        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+      if (code.length === 0) return rows
+      return [...rows, codemodeGroup(ctx, memo, level, owner, agent, `${id}:codemode`, depth + 1, code, false)]
+    },
+  })
+}
+
+// Code Mode tools group labelled `Code Mode`. Under the Native and
+// OpenCodePlus origins it holds one group per tool namespace (sorted like the
+// server groups), with namespace-less tools hanging directly off it; for MCP
+// servers the rows hang directly off it. Empty groups are never emitted: the
+// caller skips the group when there are no rows, and every namespace here
+// comes from a row so it is non-empty by construction.
+function codemodeGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  depth: number,
+  items: readonly Item[],
+  namespaced: boolean,
+): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id,
+    label: "Code Mode",
+    depth,
+    actions: noActions(),
+    children: () => {
+      if (!namespaced) return items.map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+      const direct = items
+        .filter((item) => item.namespace === undefined)
+        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+      const namespaces = [...new Set(items.map((item) => item.namespace))].filter((ns): ns is string => ns !== undefined).sort()
+      return [
+        ...direct,
+        ...namespaces.map((namespace) =>
+          branch(memo, {
+            kind: "group",
+            id: `${id}:${namespace}`,
+            label: namespace,
+            depth: depth + 1,
+            actions: noActions(),
+            children: () =>
+              items
+                .filter((item) => item.namespace === namespace)
+                .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 2)),
+          }),
+        ),
+      ]
+    },
+  })
+}
+
 function lazyItem(
   ctx: BuildContext,
   memo: Memo,
@@ -550,17 +698,19 @@ function lazyItem(
   depth: number,
 ): Lazy {
   const address: Address = { level, agent: owner, item: item.id, section: null }
-  // Code Mode tool rows stay discoverable but offer nothing apply would drop:
-  // no toggle/edit/split and no `a: add section` affordance. Their sections
-  // stay reachable so stale pre-fix overrides remain visible and resettable.
+  // Code Mode tool rows are first-class: a plugin can rewrite the catalog per
+  // agent and deny a single tool by id, so their toggle/edit/split/pin apply
+  // like any other tool. The synthetic `execute` row is host-owned: it
+  // toggles, but its text is not editable and it carries no other affordance.
   // Whole Role/persona and whole base rows cannot be excluded either: apply
   // keeps the original text live, so toggling would report "Disabled" for a
   // no-op. Their text edits and section toggles still apply, so only the
-  // whole-row toggle is gated. Blocked rows share the Code Mode vocabulary
-  // ("cannot be toggled" plus `unsupported`), so they read the same.
+  // whole-row toggle is gated.
   const codemode = item.kind === "tool" && item.codemode === true
+  const executable = item.execute === true
   const wholeNoToggle = item.id === "system:role" || item.kind === "base"
-  const splittable = !codemode && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
+  const splittable =
+    !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
       splitOf(memo, level, owner, item).sections.map((section) =>
@@ -575,11 +725,12 @@ function lazyItem(
     address,
     ...(splittable ? { add: "section" as const } : {}),
     actions: {
-      toggle: !codemode && !wholeNoToggle,
-      edit: !codemode,
-      reset: canReset(ctx.customizations, address),
+      toggle: executable || codemode || !wholeNoToggle,
+      edit: !executable,
+      reset: !executable && canReset(ctx.customizations, address),
       remove: removable(level, owner, item),
       split: splittable,
+      pin: codemode && !executable,
     },
     selfReview: () => flagOf(memo, level, owner, item, null),
     partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle),
@@ -604,6 +755,7 @@ function itemBadges(
   // reports as active — read inactive. Creation refuses builtin ids outright;
   // shadows reaching here predate that refusal and stay deletable cleanup.
   const shadowedBuiltin = item.kind === "base" && item.userBase === true && builtinBaseIds().has(baseIdOf(item.id))
+  const codemodeTool = item.kind === "tool" && item.codemode === true
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
@@ -614,17 +766,14 @@ function itemBadges(
     // existing active/state badge slot the tree already uses for base
     // liveness: it is the negation of active, not a new visual language.
     ...(item.kind === "base" && item.userBase === true && !shadowedBuiltin ? { inactive: true } : {}),
-    // Stored Code Mode customizations are filtered out of apply and never
-    // reach the session, so the row must not read as live state. `unsupported`
-    // reuses the existing review-family slot for content that will not take
-    // effect: like review it flags saved content needing user attention,
-    // rather than inventing a new badge language.
-    ...(item.kind === "tool" && item.codemode === true ? { unsupported: true } : {}),
+    // Code Mode tools apply like any other tool, so the row reads live
+    // state. `pinned` mirrors the resolved pin (registry default or user
+    // override) so the pin reads on the row that carries the pin action.
+    ...(codemodeTool && resolved.pinned ? { pinned: true } : {}),
     // Whole Role/persona and whole base rows cannot be excluded: apply keeps
     // the original text live, so toggling would report "Disabled" for a
-    // no-op. Same `unsupported` badge vocabulary as Code Mode rows so every
-    // no-op toggle refusal reads the same; `unexcludable` names the reason
-    // for status/detail text.
+    // no-op. `unsupported` marks the refused toggle; `unexcludable` names the
+    // reason for status/detail text.
     ...(wholeNoToggle ? { unsupported: true, unexcludable: true } : {}),
   }
 }
@@ -639,12 +788,9 @@ function lazySection(
   depth: number,
 ): Lazy {
   const address: Address = { level, agent: owner, item: item.id, section: section.id }
-  // Same gate as the parent row: apply drops the whole tool plan, so
-  // section toggle/edit would report success for a no-op. Reset stays
-  // available (like the parent) so stale pre-fix overrides can be cleared;
-  // modified/review stay visible alongside `unsupported` so the dead content
-  // is discoverable rather than hidden.
-  const gated = item.kind === "tool" && item.codemode === true
+  // Code Mode sections apply like any other section now that per-agent
+  // catalog rewrites reach them, so they carry the normal toggle/edit/reset
+  // treatment with no gate.
   return {
     id: `section:${level}:${owner ?? ""}:${item.id}:${section.id}`,
     kind: "section",
@@ -652,14 +798,15 @@ function lazySection(
     depth,
     address,
     actions: {
-      toggle: !gated,
-      edit: !gated,
+      toggle: true,
+      edit: true,
       reset: canReset(ctx.customizations, address),
       remove: false,
       split: false,
+      pin: false,
     },
     selfReview: () => flagOf(memo, level, owner, item, section.id),
-    partial: () => sectionBadges(memo, level, owner, item, section, gated),
+    partial: () => sectionBadges(memo, level, owner, item, section),
     reviewCount: () => 0,
     children: () => [],
   }
@@ -671,7 +818,6 @@ function sectionBadges(
   owner: string | null,
   item: Item,
   section: Section,
-  gated = false,
 ): TreeNodeBadges {
   const resolved = sectionResolveOf(memo, level, owner, item, section.id)
   return {
@@ -679,7 +825,6 @@ function sectionBadges(
     modified: resolved.modified,
     review: resolved.review,
     source: resolved.source,
-    ...(gated ? { unsupported: true } : {}),
   }
 }
 
@@ -719,5 +864,5 @@ function byOrderTitle(left: Item, right: Item): number {
 }
 
 function noActions(): TreeNodeActions {
-  return { toggle: false, edit: false, reset: false, remove: false, split: false }
+  return { toggle: false, edit: false, reset: false, remove: false, split: false, pin: false }
 }
