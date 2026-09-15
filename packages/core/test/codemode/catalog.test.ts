@@ -250,3 +250,91 @@ describe("CodeModeInstructions.update", () => {
     expect(text).not.toContain("## Available tools")
   })
 })
+
+describe("CodeModeCatalog.flattenToRecord", () => {
+  test("flattens nested paths with pinned defaulting to false", () => {
+    const record = CodeModeCatalog.flattenToRecord({
+      tools: [
+        {
+          type: "namespace",
+          name: "browser",
+          description: "Browser tools",
+          tools: [
+            {
+              type: "tool",
+              name: "open",
+              description: "Open a page",
+              signature: "tools.browser.open(): Promise<string>",
+              pinned: true,
+            },
+            { type: "tool", name: "close", description: "Close a page", signature: "tools.browser.close(): Promise<string>" },
+          ],
+        },
+      ],
+    })
+    expect(record).toEqual({
+      "browser.open": { description: "Open a page", pinned: true },
+      "browser.close": { description: "Close a page", pinned: false },
+    })
+  })
+})
+
+describe("CodeModeCatalog.applyOverrides", () => {
+  test("rewrites existing paths, ignores added keys, and restores deleted keys", () => {
+    const inventory: CodeModeCatalog.Inventory = {
+      tools: [
+        {
+          type: "namespace",
+          name: "browser",
+          description: "Browser tools",
+          tools: [
+            { type: "tool", name: "open", description: "Open", signature: "tools.browser.open(): Promise<string>" },
+            { type: "tool", name: "close", description: "Close", signature: "tools.browser.close(): Promise<string>" },
+          ],
+        },
+      ],
+    }
+    const rewritten = CodeModeCatalog.applyOverrides(inventory, {
+      "browser.open": { description: "Hooked open", pinned: true },
+      "browser.added": { description: "Added", pinned: false },
+    })
+    expect(CodeModeCatalog.flattenToRecord(rewritten)).toEqual({
+      "browser.open": { description: "Hooked open", pinned: true },
+      "browser.close": { description: "Close", pinned: false },
+    })
+    expect(JSON.stringify(rewritten)).not.toContain("browser.added")
+    expect(JSON.stringify(rewritten)).not.toContain("Added")
+  })
+
+  test("preserves optional-key discipline without pinned undefined", () => {
+    const inventory: CodeModeCatalog.Inventory = {
+      tools: [{ type: "tool", name: "solo", description: "Solo", signature: "tools.solo(): Promise<string>" }],
+    }
+    const rewritten = CodeModeCatalog.applyOverrides(inventory, {
+      solo: { description: "Updated" },
+    })
+    const tool = rewritten.tools[0]
+    expect(tool?.type === "tool" && tool.description).toBe("Updated")
+    expect(tool?.type === "tool" && "pinned" in tool).toBe(false)
+    expect(tool?.type === "tool" && (tool as { pinned?: boolean }).pinned).toBeUndefined()
+  })
+
+  test("leaves namespace descriptions untouched", () => {
+    const inventory: CodeModeCatalog.Inventory = {
+      tools: [
+        {
+          type: "namespace",
+          name: "browser",
+          description: "Original namespace",
+          tools: [{ type: "tool", name: "open", description: "Open", signature: "tools.browser.open(): Promise<string>" }],
+        },
+      ],
+    }
+    const rewritten = CodeModeCatalog.applyOverrides(inventory, {
+      browser: { description: "Hooked namespace", pinned: false },
+      "browser.open": { description: "Hooked open", pinned: false },
+    })
+    const namespace = rewritten.tools[0]
+    expect(namespace?.type === "namespace" && namespace.description).toBe("Original namespace")
+  })
+})

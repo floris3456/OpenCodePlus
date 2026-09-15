@@ -222,7 +222,7 @@ const layer = Layer.effect(
           const active = new Map<string, Tool.Info>()
           const rules = permissions ?? []
           for (const [name, tool] of state.get().tools) {
-            if (whollyDisabled(tool.options?.permission ?? name, rules)) continue
+            if (whollyDisabled(tool.options?.permission ?? name, rules) || whollyDisabled(name, rules)) continue
             active.set(name, tool)
           }
           const direct = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode === false))

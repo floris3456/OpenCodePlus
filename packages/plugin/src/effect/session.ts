@@ -97,12 +97,20 @@ export interface SessionRetry {
   decision: SessionRetryDecision
 }
 
+export interface SessionCatalog {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  /** Code Mode tools keyed by qualified dotted path, e.g. `browser.tabs.open`. */
+  tools: Record<string, { description: string; pinned: boolean }>
+}
+
 export interface SessionHooks {
   readonly prompt: SessionPrompt
   readonly context: SessionContext
   readonly compaction: SessionCompaction
   readonly generate: SessionGenerate
   readonly title: SessionTitle
+  readonly catalog: SessionCatalog
   readonly "model.request": SessionModelRequest
   readonly "http.request": SessionHttpRequest
   readonly "http.response": SessionHttpResponse

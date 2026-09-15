@@ -162,6 +162,63 @@ function flatten(entries: ReadonlyArray<Tool | Namespace>, path: ReadonlyArray<s
   return { tools, namespaces }
 }
 
+export type ToolOverride = {
+  readonly description: string
+  readonly pinned?: boolean
+}
+
+export function flattenToRecord(inventory: Inventory): Record<string, { description: string; pinned: boolean }> {
+  const record: Record<string, { description: string; pinned: boolean }> = {}
+  const visit = (entries: ReadonlyArray<Tool | Namespace>, path: ReadonlyArray<string>) => {
+    for (const entry of entries) {
+      if (entry.type === "tool") {
+        const key = [...path, entry.name].join(".")
+        record[key] = { description: entry.description, pinned: entry.pinned ?? false }
+        continue
+      }
+      visit(entry.tools, [...path, entry.name])
+    }
+  }
+  visit(inventory.tools, [])
+  return record
+}
+
+export function applyOverrides(
+  inventory: Inventory,
+  overrides: Readonly<Record<string, ToolOverride>>,
+): Inventory {
+  const rewrite = (
+    entries: ReadonlyArray<Tool | Namespace>,
+    path: ReadonlyArray<string>,
+  ): ReadonlyArray<Tool | Namespace> => {
+    return entries.map((entry) => {
+      if (entry.type === "tool") {
+        const key = [...path, entry.name].join(".")
+        const override = overrides[key]
+        if (override === undefined) return entry
+        return {
+          type: "tool" as const,
+          name: entry.name,
+          description: override.description,
+          signature: entry.signature,
+          ...(override.pinned === undefined
+            ? entry.pinned === undefined
+              ? {}
+              : { pinned: entry.pinned }
+            : { pinned: override.pinned }),
+        }
+      }
+      return {
+        type: "namespace" as const,
+        name: entry.name,
+        ...(entry.description === undefined ? {} : { description: entry.description }),
+        tools: rewrite(entry.tools, [...path, entry.name]),
+      }
+    })
+  }
+  return { tools: rewrite(inventory.tools, []) }
+}
+
 export function namespaceLine(namespace: typeof NamespaceSummary.Type) {
   const count = namespace.count === 1 ? "1 tool" : `${namespace.count} tools`
   const label =
