@@ -9,8 +9,10 @@ migration (`src/instructions/store.ts`, `src/instructions/paths.ts`).
 
 Three top-level roots in this order: `Project`, `Global`, `Defaults`.
 `Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose
-children are that level's agents with the identical subtree. `Defaults` holds
-`Agents` (template agents, each with the full subtree, `[a: add agent template]`)
+children are that level's agents with the identical subtree, plus a `Teams`
+group (`[a: add team]`) holding that level's teams. `Defaults` holds
+`Agents` (template agents, each with the full subtree, `[a: add agent template]`),
+`Teams` (always empty, `[a: add team]` as a creation entry point),
 and then the shared inventories: `Tools`, `Base` `[a]`, `Skills`, `System`
 `[a]`, `MCP` `[a: add MCP server]`.
 
@@ -36,7 +38,8 @@ Every agent in all three roots has the identical subtree:
 ```
 
 `Defaults` holds `Agents` (template agents, each with the full subtree,
-`[a: add agent template]`) and then the shared inventories: `Tools`, `Base`
+`[a: add agent template]`), `Teams` (always empty, `[a: add team]` as a
+creation entry point), and then the shared inventories: `Tools`, `Base`
 `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
 
 Agent sources and scopes (`model.ts`)
@@ -336,8 +339,10 @@ export interface Assembled {
 ## Teams (`teams.ts`, `paths.ts`, `store.ts`, `rpc.ts`)
 
 A team is a named set of agent files toggled as a unit. When a team is
-enabled its agents become visible to core as real agents. Teams are not a
-Defaults concept: levels are `"project" | "global"` only.
+enabled its agents become visible to core as real agents. A team's storage
+level remains `"project" | "global"` only; the TUI additionally surfaces an
+always-empty `Teams` group under `Defaults` as a creation entry point.
+Created teams are always stored at project or global level.
 
 ```ts
 export type TeamLevel = "project" | "global"
@@ -455,9 +460,11 @@ RPC surface (`rpc.ts`, `index.ts`):
   stays a no-op without moving revisions. Retries once on concurrent conflict
   before raising `team.unknown`.
 
-Implemented: the `Teams` tree group beside `Agents` under the `Project` and
-`Global` roots (`tree.ts`), always present even when empty with
-`[a: add team]` (never under `Defaults`), and TUI wiring (`state.ts`
+Implemented: the `Teams` tree group beside `Agents` under the `Project`,
+`Global`, and `Defaults` roots (`tree.ts`), always present even when empty
+with `[a: add team]` (the `Defaults` group is always empty and exists as a
+creation entry point; created teams are always stored at project or global
+level), and TUI wiring (`state.ts`
 `space` → real `team.setEnabled` + snapshot refresh, `a` → real
 `team.create` + snapshot refresh; `tree-pane.tsx` on/off badge). A created
 team starts disabled. Store persistence and the RPC surface are implemented.

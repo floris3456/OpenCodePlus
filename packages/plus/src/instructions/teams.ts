@@ -8,10 +8,11 @@ import { globalTeamsPath, projectTeamsPath } from "./paths.js"
 // under <projectDir>/.opencodeplus/teams/<team>/, global teams under
 // <globalConfigDir()>/opencodeplus/teams/<team>/; agent files are
 // <team>/<agentId>.md in the same frontmatter+body format files.ts writes.
-// Teams are not a Defaults concept, so the level is project|global only. The
-// tree group and RPC surface do not exist yet: this file is the record shape
-// the store follow-up will persist (with a V2Team schema mirroring
-// V2Customization), plus validation, discovery, and membership resolution.
+// A team's storage level remains project|global only; the TUI additionally
+// surfaces an always-empty Teams group under Defaults as a creation entry
+// point. This file is the record shape the store follow-up will persist
+// (with a V2Team schema mirroring V2Customization), plus validation,
+// discovery, and membership resolution.
 export type TeamLevel = "project" | "global"
 
 // The `type` discriminator is not in the brief's shorthand; the store's v2
