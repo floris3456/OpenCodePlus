@@ -226,10 +226,11 @@ test("inactive marks user base templates only", () => {
   expect(ids("inactive:false")).toContain("item:project:Implementer:base:gpt")
 })
 
-test("unsupported flags code mode and unexcludable rows", () => {
-  expect(ids("unsupported:true")).toContain("item:project:Implementer:tool:coder")
+test("unsupported flags only unexcludable rows, never Code Mode tools", () => {
+  expect(ids("unsupported:true")).not.toContain("item:project:Implementer:tool:coder")
   expect(ids("unsupported:true")).toContain("item:project:Implementer:system:role")
   expect(ids("unsupported:false")).toContain(bash)
+  expect(ids("unsupported:false")).toContain("item:project:Implementer:tool:coder")
 })
 
 test("codemode follows the upstream item", () => {
@@ -237,9 +238,10 @@ test("codemode follows the upstream item", () => {
   expect(ids("codemode:false")).toContain(bash)
 })
 
-test("can reads the row actions", () => {
+test("can reads the row actions including pin", () => {
   expect(ids("can:toggle")).toContain(bash)
   expect(ids("can:toggle")).not.toContain("item:project:Implementer:system:role")
+  expect(ids("can:toggle")).toContain("item:project:Implementer:tool:coder")
   expect(ids("can:reset")).toContain(bash)
   expect(ids("can:reset")).not.toContain("item:project:Implementer:tool:odd-name")
   expect(ids("can:split")).toContain(bash)
@@ -247,7 +249,10 @@ test("can reads the row actions", () => {
   expect(ids("can:remove")).toContain("item:project:Implementer:skill:proj-one")
   expect(ids("can:remove")).not.toContain(bash)
   expect(ids("can:edit")).toContain(bash)
-  expect(ids("can:edit")).not.toContain("item:project:Implementer:tool:coder")
+  expect(ids("can:edit")).toContain("item:project:Implementer:tool:coder")
+  expect(ids("can:pin")).toContain("item:project:Implementer:tool:coder")
+  expect(ids("can:pin")).not.toContain(bash)
+  expect(ids("can:pin")).not.toContain("item:project:Implementer:system:role")
 })
 
 test("has covers records, splits, sections, and text", () => {
@@ -311,8 +316,9 @@ test("identical pins a byte-identical override", () => {
   expect(ids("identical:false")).toContain(bash)
 })
 
-test("dead pins records that can never apply", () => {
-  expect(ids("dead:true")).toContain("item:project:Implementer:tool:coder")
+test("dead pins records that can never apply, never Code Mode text", () => {
+  expect(ids("dead:true")).not.toContain("item:project:Implementer:tool:coder")
+  expect(ids("dead:false")).toContain("item:project:Implementer:tool:coder")
   expect(ids("dead:true")).toContain("item:defaults::mcp:sample")
   expect(ids("dead:true")).toContain("item:project:Implementer:system:role")
   expect(ids("dead:true")).not.toContain(bash)
@@ -351,6 +357,78 @@ test("tokens counts ceil(length/4) of the resolved text", () => {
   expect(ids("tokens:3")).toContain(bash)
   expect(ids("tokens:>100000")).toHaveLength(0)
   expect(ids("tokens:>0")).toContain(bash)
+})
+
+test("namespace filters by the tool namespace", () => {
+  const namespaced = input({
+    items: [
+      makeItem({ id: "tool:ns-one", kind: "tool", group: "native", title: "ns-one", text: "one", namespace: "alpha" }),
+      makeItem({ id: "tool:plain", kind: "tool", group: "native", title: "plain", text: "plain" }),
+    ],
+    records: [],
+  })
+  const found = query(namespaced, { where: "namespace:alpha" }).rows.map((row) => row.id)
+  expect(found.some((id) => id.endsWith("tool:ns-one"))).toBe(true)
+  expect(found.some((id) => id.endsWith("tool:plain"))).toBe(false)
+  expect(query(namespaced, { where: "namespace:missing" }).rows).toHaveLength(0)
+  expect(query(namespaced, { where: "namespace:ALPHA" }).rows.map((row) => row.id).some((id) => id.endsWith("tool:ns-one"))).toBe(
+    true,
+  )
+})
+
+test("pinned follows the resolved pin, never sections", () => {
+  const snap = input({
+    items: [
+      makeItem({ id: "tool:pinned-tool", kind: "tool", group: "native", title: "pinned-tool", text: "desc", codemode: true, pinned: true }),
+      makeItem({ id: "tool:plain-tool", kind: "tool", group: "native", title: "plain-tool", text: "desc", codemode: true }),
+      makeItem({ id: "tool:unpinned-tool", kind: "tool", group: "native", title: "unpinned-tool", text: "desc", codemode: true }),
+    ],
+    records: [makeRecord({ item: "tool:plain-tool", pin: true })],
+  })
+  const pinned = query(snap, { where: "pinned:true" }).rows.map((row) => row.id)
+  expect(pinned.some((id) => id.endsWith("tool:pinned-tool"))).toBe(true)
+  expect(pinned.some((id) => id.endsWith("tool:plain-tool"))).toBe(true)
+  expect(pinned.some((id) => id.endsWith("tool:unpinned-tool"))).toBe(false)
+  expect(pinned.some((id) => id.includes("tool:plain-tool:") && id.startsWith("section:"))).toBe(false)
+  const unpinned = query(snap, { where: "pinned:false" }).rows.map((row) => row.id)
+  expect(unpinned.some((id) => id.endsWith("tool:unpinned-tool"))).toBe(true)
+  expect(unpinned.some((id) => id.endsWith("tool:pinned-tool"))).toBe(false)
+})
+
+test("execute flags the synthetic host-owned row", () => {
+  const snap = input({
+    items: [
+      makeItem({ id: "tool:execute", kind: "tool", group: "native", title: "execute", text: "host entry", codemode: false, execute: true }),
+      makeItem({ id: "tool:bash", kind: "tool", group: "native", title: "bash", text: "run" }),
+    ],
+    records: [],
+  })
+  const flagged = query(snap, { where: "execute:true" }).rows.map((row) => row.id)
+  expect(flagged.some((id) => id.endsWith("tool:execute"))).toBe(true)
+  expect(flagged.some((id) => id.endsWith("tool:bash"))).toBe(false)
+  expect(query(snap, { where: "execute:false" }).rows.map((row) => row.id).some((id) => id.endsWith("tool:bash"))).toBe(true)
+})
+
+test("tokens on Code Mode rows count only the first line truncated at 120", () => {
+  const longFirst = `${"x".repeat(200)}\nsecond line that never reaches the catalog`
+  const snap = input({
+    items: [
+      makeItem({ id: "tool:long", kind: "tool", group: "native", title: "long", text: longFirst, codemode: true }),
+      makeItem({ id: "tool:plain-long", kind: "tool", group: "native", title: "plain-long", text: longFirst }),
+    ],
+    records: [],
+  })
+  const coder = query(snap, { where: "id:item:project:Implementer:tool:long", fields: ["id", "tokens"] }).rows[0]
+  expect(coder?.tokens).toBe(Math.ceil(120 / 4))
+  const plain = query(snap, { where: "id:item:project:Implementer:tool:plain-long", fields: ["id", "tokens"] }).rows[0]
+  expect(plain?.tokens).toBe(Math.ceil(longFirst.length / 4))
+  const twoLine = "first\nsecond line much longer than first"
+  const snap2 = input({
+    items: [makeItem({ id: "tool:two", kind: "tool", group: "native", title: "two", text: twoLine, codemode: true })],
+    records: [],
+  })
+  const two = query(snap2, { where: "id:item:project:Implementer:tool:two", fields: ["id", "tokens"] }).rows[0]
+  expect(two?.tokens).toBe(Math.ceil("first".length / 4))
 })
 
 test("delta counts changed lines, zero without an override", () => {
