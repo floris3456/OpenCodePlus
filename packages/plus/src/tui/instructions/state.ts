@@ -9,56 +9,15 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { agentOf, itemOf, recordOf, teamOf } from "../../instructions/snapshot.js"
 import { addSection, removalPlan, reset, resolveReview, saveSplit, saveText, setEnabled, teamPlan, toggle } from "../../instructions/ops.js"
 import { query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
 
-function agentSourcesOf(snapshot: Snapshot): AgentSource[] {
-  return snapshot.agents.map((entry) => ({
-    id: entry.id,
-    scope: entry.scope,
-    ...(entry.path === undefined ? {} : { path: entry.path }),
-    ...(entry.base === undefined ? {} : { base: entry.base }),
-  }))
-}
-
-function customizationsOf(records: readonly SnapshotRecord[]): CustomizationRecord[] {
-  return records.flatMap((record): CustomizationRecord[] => {
-    if (record.type !== "customization") return []
-    return [
-      {
-        type: "customization",
-        level: record.level,
-        agent: record.agent,
-        item: record.item,
-        section: record.section,
-        ...(record.text === undefined ? {} : { text: record.text }),
-        ...(record.state === undefined ? {} : { state: record.state }),
-        basedOn: record.basedOn,
-        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-        updated: record.updated,
-      },
-    ]
-  })
-}
-
-function splitsOf(records: readonly SnapshotRecord[]): (SplitRecord & { updated: string })[] {
-  return records.flatMap((record): (SplitRecord & { updated: string })[] => {
-    if (record.type !== "split") return []
-    return [
-      {
-        type: "split",
-        level: record.level,
-        agent: record.agent,
-        item: record.item,
-        boundaries: [...record.boundaries],
-        updated: record.updated,
-      },
-    ]
-  })
+function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord)[] {
+  return records.map(recordOf)
 }
 
 function toRpcRecords(
@@ -110,45 +69,25 @@ export function createInstructionsState(context: Plugin.Context) {
   const itemsForTree = createMemo<Item[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return current.items.map(
-      (entry): Item => ({
-        id: entry.id,
-        kind: entry.kind,
-        group: entry.group,
-        ...(entry.server === undefined ? {} : { server: entry.server }),
-        title: entry.title,
-        text: entry.text,
-        enabled: entry.enabled,
-        fingerprint: entry.fingerprint,
-        ...(entry.agents === undefined ? {} : { agents: [...entry.agents] }),
-        ...(entry.order === undefined ? {} : { order: entry.order }),
-        ...(entry.userBase === true ? { userBase: true as const } : {}),
-        ...(entry.codemode === true ? { codemode: true as const } : {}),
-      }),
-    )
+    return current.items.map(itemOf)
   })
 
   const recordsForTree = createMemo<(CustomizationRecord | SplitRecord)[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return [...customizationsOf(current.records), ...splitsOf(current.records)]
+    return recordsOf(current.records)
   })
 
   const agentsForTree = createMemo<AgentSource[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return agentSourcesOf(current)
+    return current.agents.map(agentOf)
   })
 
   const teamsForTree = createMemo<TeamInput[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return (current.teams ?? []).map((entry) => ({
-      level: entry.level,
-      team: entry.team,
-      enabled: entry.enabled,
-      agents: [...entry.agents],
-    }))
+    return (current.teams ?? []).map(teamOf)
   })
 
   const allNodes = createMemo<TreeNode[]>(() => {
@@ -340,39 +279,27 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function chainFor(node: TreeNode):
-    | { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: (SplitRecord & { updated: string })[] }
+    | { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] }
     | undefined {
     const current = snapshot()
     const address = node.address
     if (!current || !address) return undefined
     const found = upstreamFor(current.items, address)
     if (!found) return undefined
-    const upstream: Item = {
-      id: found.id,
-      kind: found.kind,
-      group: found.group,
-      ...(found.server === undefined ? {} : { server: found.server }),
-      title: found.title,
-      text: found.text,
-      enabled: found.enabled,
-      fingerprint: found.fingerprint,
-      ...(found.agents === undefined ? {} : { agents: [...found.agents] }),
-      ...(found.order === undefined ? {} : { order: found.order }),
-      ...(found.userBase === true ? { userBase: true as const } : {}),
-      ...(found.codemode === true ? { codemode: true as const } : {}),
-    }
+    const upstream: Item = itemOf(found)
+    const converted = recordsOf(current.records)
     return {
       address,
       upstream,
-      customizations: customizationsOf(current.records),
-      splits: splitsOf(current.records),
+      customizations: converted.filter((record): record is CustomizationRecord => record.type === "customization"),
+      splits: converted.filter((record): record is SplitRecord => record.type === "split"),
     }
   }
 
   function scopes(): ReturnType<typeof scopesOf> {
     const current = snapshot()
     if (!current) return { global: new Set<string>(), defaults: new Set<string>() }
-    return scopesOf(agentSourcesOf(current))
+    return scopesOf(current.agents.map(agentOf))
   }
 
   function resolvedText(node: TreeNode): string {

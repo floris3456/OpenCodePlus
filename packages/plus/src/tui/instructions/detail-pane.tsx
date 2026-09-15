@@ -3,6 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
 import { applies, resolve, resolveSplit, scopesOf } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, Resolved, SplitRecord } from "../../instructions/model.js"
+import { agentOf, itemOf, recordOf } from "../../instructions/snapshot.js"
 import type { TreeNode } from "../../instructions/tree.js"
 import type { Snapshot } from "../../rpc.js"
 import { badgeColor, badgeLabels } from "./tree-pane.js"
@@ -23,66 +24,21 @@ export interface DetailPaneProps {
 }
 
 function agentsOf(snapshot: Snapshot): AgentSource[] {
-  return snapshot.agents.map((agent) => ({
-    id: agent.id,
-    scope: agent.scope,
-    ...(agent.path === undefined ? {} : { path: agent.path }),
-    ...(agent.base === undefined ? {} : { base: agent.base }),
-  }))
+  return snapshot.agents.map(agentOf)
 }
 
 function itemsOf(snapshot: Snapshot): Item[] {
-  return snapshot.items.map((item) => ({
-    id: item.id,
-    kind: item.kind,
-    group: item.group,
-    ...(item.server === undefined ? {} : { server: item.server }),
-    title: item.title,
-    text: item.text,
-    enabled: item.enabled,
-    fingerprint: item.fingerprint,
-    ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
-    ...(item.order === undefined ? {} : { order: item.order }),
-    ...(item.userBase === true ? { userBase: true as const } : {}),
-    ...(item.codemode === true ? { codemode: true as const } : {}),
-  }))
+  return snapshot.items.map(itemOf)
 }
 
 function customizationsOf(snapshot: Snapshot): CustomizationRecord[] {
-  const out: CustomizationRecord[] = []
-  for (const record of snapshot.records) {
-    if (record.type !== "customization") continue
-    out.push({
-      type: "customization",
-      level: record.level,
-      agent: record.agent,
-      item: record.item,
-      section: record.section,
-      ...(record.text === undefined ? {} : { text: record.text }),
-      ...(record.state === undefined ? {} : { state: record.state }),
-      basedOn: record.basedOn,
-      ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-      ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-      updated: record.updated,
-    })
-  }
-  return out
+  return snapshot.records
+    .map(recordOf)
+    .filter((record): record is CustomizationRecord => record.type === "customization")
 }
 
 function splitsOf(snapshot: Snapshot): SplitRecord[] {
-  const out: SplitRecord[] = []
-  for (const record of snapshot.records) {
-    if (record.type !== "split") continue
-    out.push({
-      type: "split",
-      level: record.level,
-      agent: record.agent,
-      item: record.item,
-      boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
-      updated: record.updated,
-    })
-  }
-  return out
+  return snapshot.records.map(recordOf).filter((record): record is SplitRecord => record.type === "split")
 }
 
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {

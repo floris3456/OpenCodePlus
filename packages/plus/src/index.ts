@@ -2009,8 +2009,8 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
       fingerprint: item.fingerprint,
       ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
       ...(item.order === undefined ? {} : { order: item.order }),
-      ...(item.userBase === true ? { userBase: true as const } : {}),
-      ...(item.codemode === true ? { codemode: true as const } : {}),
+      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
     })),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
       if (record.type === "split")
