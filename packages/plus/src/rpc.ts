@@ -390,6 +390,15 @@ export const TeamRef = Schema.Struct({
   enabled: Schema.Boolean,
 }).annotate({ identifier: "Plus.TeamRef" })
 
+// Creating a team makes the on-disk team directory without enabling it: a
+// newly created team has no record at all, so it reads as DISABLED until
+// toggled with team.setEnabled.
+export interface CreateTeamInput extends Schema.Schema.Type<typeof CreateTeamInput> {}
+export const CreateTeamInput = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+}).annotate({ identifier: "Plus.CreateTeamInput" })
+
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
 export const ProjectDisabled = Schema.Struct({
   directory: Schema.String,
@@ -492,6 +501,19 @@ export const TeamUnknown = Schema.Struct({
   team: Schema.String,
 }).annotate({ identifier: "Plus.TeamUnknown" })
 
+export interface TeamExists extends Schema.Schema.Type<typeof TeamExists> {}
+export const TeamExists = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+}).annotate({ identifier: "Plus.TeamExists" })
+
+export interface TeamCreate extends Schema.Schema.Type<typeof TeamCreate> {}
+export const TeamCreate = Schema.Struct({
+  level: FileScope,
+  team: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.TeamCreate" })
+
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
@@ -552,6 +574,9 @@ const PortableSetTeamEnabledInput = Schema.toStandardSchemaV1(
   SetTeamEnabledInput.annotate({ identifier: "Plus.SetTeamEnabledInput" }),
 )
 const PortableTeamRef = Schema.toStandardSchemaV1(TeamRef.annotate({ identifier: "Plus.TeamRef" }))
+const PortableCreateTeamInput = Schema.toStandardSchemaV1(
+  CreateTeamInput.annotate({ identifier: "Plus.CreateTeamInput" }),
+)
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -582,6 +607,8 @@ const PortableMcpMissing = Schema.toStandardSchemaV1(McpMissing.annotate({ ident
 const PortableMcpInvalid = Schema.toStandardSchemaV1(McpInvalid.annotate({ identifier: "Plus.McpInvalid" }))
 const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ identifier: "Plus.TeamInvalid" }))
 const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
+const PortableTeamExists = Schema.toStandardSchemaV1(TeamExists.annotate({ identifier: "Plus.TeamExists" }))
+const PortableTeamCreate = Schema.toStandardSchemaV1(TeamCreate.annotate({ identifier: "Plus.TeamCreate" }))
 
 export const Definition = Rpc.define({
   id: "opencode.plus",
@@ -741,6 +768,16 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "mcp.missing": PortableMcpMissing,
         "mcp.invalid": PortableMcpInvalid,
+      },
+    },
+    "team.create": {
+      input: PortableCreateTeamInput,
+      output: PortableTeamRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "team.exists": PortableTeamExists,
+        "team.invalid": PortableTeamInvalid,
+        "team.create": PortableTeamCreate,
       },
     },
     "team.setEnabled": {

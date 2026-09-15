@@ -53,9 +53,9 @@ const SplitDescription =
   "Pass boundaries [{id,name,start}] to set manual sections, or add {name,text} to append one."
 
 const CreateDescription =
-  "Create a file-backed row or enable a team (TUI `a`).\n" +
+  "Create a file-backed row or a team directory (TUI `a`).\n" +
   "Kinds: agent (id+prompt, scope defaults to project, template/fields optional), skill (name+body),\n" +
-  "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, enables it)."
+  "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled)."
 
 const DeleteDescription =
   "Delete a project-owned row; refuses without `confirm`.\n" +
@@ -688,11 +688,16 @@ function createRow(
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       return { output: created.value }
     }
-    if (input.team === undefined || input.level === undefined)
-      return yield* Effect.fail(new Tool.Error({ message: "create team requires team and level" }))
-    const enabled = yield* Effect.promise(() => api.setTeamEnabled({ level: input.level as "project" | "global", team: input.team as string, enabled: true, actor }))
-    if (!enabled.ok) return yield* Effect.fail(new Tool.Error({ message: `${enabled.error.code}: ${enabled.error.message}` }))
-    return { output: enabled.value }
+    if (input.kind === "team") {
+      if (input.team === undefined || input.level === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create team requires team and level" }))
+      const created = yield* Effect.promise(() =>
+        api.createTeam({ level: input.level as "project" | "global", team: input.team as string, actor }),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      return { output: created.value }
+    }
+    return yield* Effect.fail(new Tool.Error({ message: `create unknown kind ${input.kind}` }))
   })
 }
 

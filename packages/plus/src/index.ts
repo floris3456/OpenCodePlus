@@ -23,7 +23,7 @@ import { dedupeAgents, installTeamAgents, resolveTeamAgents } from "./instructio
 import { assembled } from "./instructions/assembled.js"
 import { resolve, scopesOf, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
-import { globalConfigDir, globalLogPath, projectLogPath, resolveInstructionPath } from "./instructions/paths.js"
+import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
 import { discoverTeams, isTeamEnabled, validateTeamName, type TeamRecord } from "./instructions/teams.js"
 import type { PromptBaseline } from "./instructions/inventory.js"
@@ -219,6 +219,17 @@ export type SetTeamEnabledResult =
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
     }
 
+export type CreateTeamResult =
+  | { ok: true; value: Plus.TeamRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "team.exists"; message: string; data: Plus.TeamExists }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+        | { code: "team.create"; message: string; data: Plus.TeamCreate }
+    }
+
 export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
@@ -237,6 +248,7 @@ export interface PlusApi {
   readonly deleteInstruction: (input: Plus.DeleteInstructionInput & { readonly actor?: Plus.Actor }) => Promise<DeleteInstructionApiResult>
   readonly addMcp: (input: Plus.AddMcpInput & { readonly actor?: Plus.Actor }) => Promise<AddMcpResult>
   readonly removeMcp: (input: Plus.McpRef & { readonly actor?: Plus.Actor }) => Promise<RemoveMcpResult>
+  readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
 }
 
@@ -700,6 +712,57 @@ export function createPlusApi(ctx: Context, state: PlusState): PlusApi {
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` })
       return { ok: true as const, value: { name: result.name } }
     },
+    createTeam: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateTeamName(input.team)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: validated.reason, data: { team: input.team, reason: validated.reason } },
+        }
+      const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
+      const ensured = await fs.mkdir(root, { recursive: true }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      if (!ensured.ok) {
+        const reason = messageOf(ensured.error)
+        return {
+          ok: false as const,
+          error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+        }
+      }
+      const made = await fs.mkdir(path.join(root, validated.team)).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      if (!made.ok) {
+        const code = typeof made.error === "object" && made.error !== null && "code" in made.error ? made.error.code : undefined
+        if (code === "EEXIST")
+          return {
+            ok: false as const,
+            error: { code: "team.exists" as const, message: `Team ${validated.team} already exists`, data: { level: input.level, team: validated.team } },
+          }
+        const reason = messageOf(made.error)
+        return {
+          ok: false as const,
+          error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+        }
+      }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: input.level,
+        op: "team.create",
+        target: `team:${input.level}:${validated.team}`,
+        summary: `team.create ${validated.team} (${input.level})`,
+      })
+      return { ok: true as const, value: { level: input.level, team: validated.team, enabled: false } }
+    },
     setTeamEnabled: async (input) => {
       const directory = ctx.location.directory
       const config = await read(directory)
@@ -964,6 +1027,20 @@ export function createHandlers(ctx: Context, state: PlusState): RpcHandlers<type
         }
         return result.value
       }),
+    "team.create": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.createTeam(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "team.exists")
+            return yield* Effect.fail(context.error("team.exists", result.error.message, result.error.data))
+          if (result.error.code === "team.invalid")
+            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("team.create", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
     "team.setEnabled": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.setTeamEnabled(input))
@@ -988,6 +1065,11 @@ interface LoadedStores {
 
 function disabledMessage(directory: string): string {
   return `Project mode is not enabled for ${directory}`
+}
+
+function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
 }
 
 // Write one team record through the same save() path instructions.mutate

@@ -284,6 +284,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
 | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
+| `team.create` | `{ level, team }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
 
 Events: `project.changed`, `instructions.changed`.
@@ -329,6 +330,8 @@ export interface Assembled {
 - `mcp.invalid`: `{ name: string, reason: string }`
 - `team.invalid`: `{ team: string, reason: string }`
 - `team.unknown`: `{ level: FileScope, team: string }`
+- `team.exists`: `{ level: FileScope, team: string }`
+- `team.create`: `{ level: FileScope, team: string, reason: string }`
 
 ## Teams (`teams.ts`, `paths.ts`, `store.ts`, `rpc.ts`)
 
@@ -434,6 +437,15 @@ RPC surface (`rpc.ts`, `index.ts`):
   saving. A client that cannot see team records in `snapshot.records` cannot
   delete them on a mutate round-trip. Preserved records pass through `route`/`same`
   unchanged, keeping an otherwise unchanged save a no-op without moving revisions.
+- `team.create` (`CreateTeamInput` → `TeamRef`): creates the team directory
+  under the matching teams root (`projectTeamsPath` for `"project"`,
+  `globalTeamsPath` for `"global"`). Creation does NOT enable: the new team
+  has no record, so the next snapshot lists it as DISABLED until
+  `team.setEnabled` toggles it. Gated by project mode (`project.disabled`).
+  Fails with `team.invalid` on invalid name, `team.exists` when the directory
+  already exists, or `team.create` when the write itself fails. Logs `team.create`
+  to the owning store with the caller's actor on success only; the file write
+  never moves a revision.
 - `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
   `FileScope` (`"project" | "global"`). Gated by project mode
   (`project.disabled`). Fails with `team.invalid` on invalid name, or
@@ -485,7 +497,9 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `"edit"` stores `text` against current upstream. `reset` deletes the
   override at that row. `split` boundaries are `{ id, name, start }` with
   character offsets into the row text; `add: { name, text }` appends a new
-  trailing section. `create` writes one row per call. `delete` without
+  trailing section. `create` writes one row per call; `create` with
+  `kind: "team"` creates the team directory DISABLED (enabling stays a
+  separate `set` on the team row). `delete` without
   `confirm: true` fails with `delete.unconfirmed` and writes nothing.
 - Row ids (same string in the TUI filter, tool calls, the log, and error
   messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
