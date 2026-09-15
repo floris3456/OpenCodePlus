@@ -172,7 +172,8 @@ const setupTools = Effect.gen(function* () {
       options: { namespace: "notes" },
     })
   })
-  yield* (yield* McpTool.Service).flush
+  const registration = yield* McpTool.Service
+  yield* registration.flush
 })
 
 const createSession = (agent: Agent.ID) =>
@@ -236,7 +237,8 @@ describe("SessionContext catalog hook", () => {
       const text = yield* codemodeText(selection)
       expect(text).not.toContain("Invented")
       expect(text).toContain("Echo text")
-      const snapshot = yield* (yield* Tool.Service).snapshot()
+      const registry = yield* Tool.Service
+      const snapshot = yield* registry.snapshot()
       const expected = yield* readInitial(CodeModeInstructions.make(snapshot.codeModeCatalog))
       const actual = yield* readInitial(codemodeSource(selection))
       expect(actual.text).toBe(expected.text)
@@ -346,7 +348,8 @@ describe("SessionContext catalog hook", () => {
       const context = yield* SessionContext.Service
       const session = yield* createSession(buildID)
       const selection = yield* context.select(session.id)
-      const snapshot = yield* (yield* Tool.Service).snapshot()
+      const registry = yield* Tool.Service
+      const snapshot = yield* registry.snapshot()
       const expected = yield* readInitial(CodeModeInstructions.make(snapshot.codeModeCatalog))
       const actual = yield* readInitial(codemodeSource(selection))
       expect(actual.text).toBe(expected.text)
