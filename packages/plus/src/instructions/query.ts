@@ -757,7 +757,11 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
     case "agent": {
       return (candidate) => {
         const agent = agentOf(candidate)
-        return alts.some((alt) => (alt === "_" ? agent === null : agent !== null && lower(agent) === lower(alt)))
+        return alts.some((alt) => {
+          if (alt === "_") return agent === null
+          if (agent === null) return false
+          return lower(agent).includes(lower(alt))
+        })
       }
     }
     case "state": {

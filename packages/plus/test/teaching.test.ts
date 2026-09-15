@@ -102,6 +102,34 @@ test("every filter expression in the skill parses in the real query engine", asy
   }
 })
 
+test("declared structural key values validate against the real query engine", async () => {
+  const line = teachingSkillContent.split("\n").find((entry) => entry.includes("Structural keys:")) ?? ""
+  expect(line).toContain("Structural keys:")
+  const declarations = [...line.matchAll(/`([A-Za-z]+)`\s*\(([^)]+)\)/g)].map((match) => ({ key: match[1] ?? "", raw: match[2] ?? "" }))
+  expect(declarations.some((declaration) => declaration.key === "kind")).toBe(true)
+  expect(declarations.some((declaration) => declaration.key === "item")).toBe(true)
+  const snapshot = { items: [], records: [], agents: [], teams: [] }
+  const validated = declarations.flatMap((declaration) => {
+    if (declaration.key === "agent") {
+      expect(declaration.raw).toContain("_")
+      const agentShared = query(snapshot, { where: "agent:_" })
+      expect(agentShared.total).toBe(agentShared.rows.length)
+      return ["agent:_"]
+    }
+    const values = declaration.raw
+      .split("|")
+      .map((value) => value.trim())
+      .filter((value) => value !== "" && !/[\s,;`]/.test(value))
+    if (values.length < 2) return []
+    values.forEach((value) => {
+      const result = query(snapshot, { where: `${declaration.key}:${value}` })
+      expect(result.total).toBe(result.rows.length)
+    })
+    return values.map((value) => `${declaration.key}:${value}`)
+  })
+  expect(validated.length).toBeGreaterThan(0)
+})
+
 test("installTeaching registers the instruction file and the skill", async () => {
   await configDir()
   const ctx = context()

@@ -557,8 +557,8 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 - Key semantics: `kind` is `root|group|agent|team|item|section`;
   `item` is `tool|base|skill|system|mcp`; `group` is
   `native|plus|mcp|project|none`; `server` is the exact (case-insensitive)
-  MCP server name; `level` is `project|global|defaults`; `agent` is an
-  exact (case-insensitive) match, `_` is the shared (agent-less) row; `state`
+  MCP server name; `level` is `project|global|defaults`; `agent` is a
+  case-insensitive substring match, `_` is the shared (agent-less) row; `state`
   is `on|off`; `modified`/`overridden` read the row's own stored text;
   `review` includes rolled-up descendant review; `source` is
   `project|global|defaults|upstream`; `active` is the base template active
