@@ -39,12 +39,14 @@ test("curated registry covers the planned tool actions", () => {
   expect(rule("shell", "npm-publish").patterns).toEqual(["npm publish *"])
   expect(rule("shell", "kill").patterns).toContain("kill *")
   expect(rule("edit", "env").patterns).toEqual(["*.env*"])
-  expect(rule("write", "lock").patterns).toEqual(["**/*.lock"])
-  expect(rule("read", "ssh").patterns).toEqual(["~/.ssh/**"])
+  expect(rule("write", "lock").patterns).toEqual(["*.lock", "**/*.lock"])
+  expect(rule("read", "ssh").patterns).toEqual(["*/.ssh/*", "*/.ssh"])
+  expect(rule("read", "git").patterns).toEqual([".git/*", "**/.git/**"])
+  expect(rule("read", "package-json").patterns).toEqual(["package.json", "*/package.json"])
   expect(rule("webfetch", "github").patterns).toEqual(["*github.com*"])
   expect(rule("webfetch", "localhost").patterns).toEqual(["*localhost*"])
-  expect(rule("glob", "node-modules").patterns).toEqual(["**/node_modules/**"])
-  expect(rule("grep", "git").patterns).toEqual(["**/.git/**"])
+  expect(rule("glob", "node-modules").patterns).toEqual(["*node_modules*"])
+  expect(rule("grep", "git").patterns).toEqual(["*.git*"])
 })
 
 test("keywordsForPattern keeps head plus subcommands, stopping at wildcards and flags", () => {
@@ -121,4 +123,49 @@ test("idRules builds one exact rule per discovered id", () => {
     { tool: "subagent", id: "reviewer", label: "reviewer", patterns: ["reviewer"], keywords: ["reviewer"] },
   ])
   expect(idRules("skill", [])).toEqual([])
+})
+
+test("glob/grep rows match the real search-pattern resource, not the search path", () => {
+  // Core authorizes `input.pattern`, not the search path
+  // (core/src/tool/plugin/grep.ts:87-89, glob.ts:68-70). A grep for HEAD
+  // inside .git therefore evaluates resource "HEAD": no search-pattern deny
+  // can stop it, and the rows must not promise otherwise.
+  const git = rule("grep", "git")
+  expect(git.label).toMatch(/search pattern/i)
+  expect(match("HEAD", git.patterns[0] as string)).toBe(false)
+  // A search pattern that actually mentions .git IS denied.
+  expect(match(".git", git.patterns[0] as string)).toBe(true)
+  expect(match("**/.git/**", git.patterns[0] as string)).toBe(true)
+  const modules = rule("grep", "node-modules")
+  expect(modules.label).toMatch(/search pattern/i)
+  expect(match("node_modules", modules.patterns[0] as string)).toBe(true)
+  expect(match("HEAD", modules.patterns[0] as string)).toBe(false)
+})
+
+test("curated file patterns match what core FileAccess actually emits, root and nested", () => {
+  // Core FileAccess.resolve emits project-relative resources like
+  // `.git/config` and `bun.lock`; Wildcard turns `**` into `.*` with no
+  // glob-directory semantics, so nested-only patterns miss root files.
+  const git = rule("read", "git")
+  const gitDenied = (resource: string): boolean =>
+    git.patterns.some((pattern) => match(resource, pattern))
+  expect(gitDenied(".git/config")).toBe(true)
+  expect(gitDenied("sub/.git/config")).toBe(true)
+  const lock = rule("read", "lock")
+  const lockDenied = (resource: string): boolean =>
+    lock.patterns.some((pattern) => match(resource, pattern))
+  expect(lockDenied("bun.lock")).toBe(true)
+  expect(lockDenied("sub/bun.lock")).toBe(true)
+  const pkg = rule("read", "package-json")
+  const pkgDenied = (resource: string): boolean =>
+    pkg.patterns.some((pattern) => match(resource, pattern))
+  expect(pkgDenied("package.json")).toBe(true)
+  expect(pkgDenied("sub/package.json")).toBe(true)
+  // SSH resources are expanded absolute paths, never a literal tilde: the old
+  // `~/.ssh/**` pattern never matched what core emits.
+  const ssh = rule("read", "ssh")
+  const sshDenied = (resource: string): boolean =>
+    ssh.patterns.some((pattern) => match(resource, pattern))
+  expect(sshDenied("/home/user/.ssh/id_rsa")).toBe(true)
+  expect(match("/home/user/.ssh/id_rsa", "~/.ssh/**")).toBe(false)
 })

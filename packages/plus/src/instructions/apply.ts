@@ -295,6 +295,9 @@ function pushRule(editor: AgentEditor, rule: { agent: string; action: string; re
 // Tool-specific permission rules: every perm item OFF for an agent installs
 // one core deny per pattern through the existing agent registration. Because
 // Permission.evaluate is last-match-wins, appending is always sufficient.
+// The action prefers the tool's own `options.permission` carried on the perm
+// item by discovery, falling back to the tool id map (edit/write/patch share
+// core's `edit` action).
 function permDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
@@ -305,7 +308,7 @@ function permDenials(input: ApplyInput): { agent: string; action: string; resour
       if (resolved.enabled) return []
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
-      const action = actionForToolId(tool)
+      const action = item.permAction ?? actionForToolId(tool)
       return item.patterns.map((pattern) => ({ agent: agent.id, action, resource: pattern, effect: "deny" as const }))
     }),
   )
@@ -333,26 +336,35 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
 // Scrub the session prompt: drop whole lines containing disabled keywords
 // from every tool description and every system part (base plus instructions).
 // Runs inside the existing session.context hook, after the text plans.
+// Preservation discipline (mirroring spliceToolGuidance): if scrubbing would
+// empty a description or system text entirely, leave the original text rather
+// than installing nothing.
 function applyRuleScrub(event: SessionContext, keywords: readonly string[]): void {
   if (keywords.length === 0) return
   for (const tool of Object.values(event.tools)) {
-    tool.description = scrubLines(tool.description, keywords).text
+    const scrubbed = scrubLines(tool.description, keywords).text
+    if (scrubbed.trim().length === 0) continue
+    tool.description = scrubbed
   }
   for (let index = 0; index < event.system.length; index++) {
     const part = event.system[index]
     if (part === undefined || typeof part.text !== "string") continue
     const scrubbed = scrubLines(part.text, keywords).text
+    if (scrubbed.trim().length === 0) continue
     if (scrubbed !== part.text) event.system[index] = { ...part, text: scrubbed }
   }
 }
 
 // Scrub Code Mode catalog descriptions inside the existing session.catalog
-// hook, after the text/pin plans.
+// hook, after the text/pin plans. Same preservation: never install an emptied
+// description.
 function applyCatalogScrub(event: { agent: unknown; tools: Record<string, { description?: string }> }, keywords: readonly string[]): void {
   if (keywords.length === 0) return
   for (const entry of Object.values(event.tools)) {
     if (typeof entry.description !== "string") continue
-    entry.description = scrubLines(entry.description, keywords).text
+    const scrubbed = scrubLines(entry.description, keywords).text
+    if (scrubbed.trim().length === 0) continue
+    entry.description = scrubbed
   }
 }
 

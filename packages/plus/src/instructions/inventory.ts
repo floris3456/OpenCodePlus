@@ -22,10 +22,13 @@ export interface ModelRefLike {
 // Per-agent model baseline: what Plus installed (`applied`) plus the upstream
 // model it replaced. Keyed by agent id. File-backed agents prefer their
 // frontmatter reread, so they never need a baseline; only host-owned
-// (non-file) agents retain one.
+// (non-file) agents retain one. `upstream` may be absent: an absent upstream
+// is information (the host owned no model), not "nothing to record", and must
+// be preserved so the next discovery unmasks Plus's own output back to absent
+// instead of reporting it as upstream.
 export interface ModelBaseline {
   readonly applied: ModelRefLike
-  readonly upstream: ModelRefLike
+  readonly upstream: ModelRefLike | undefined
 }
 
 export function sameModelRef(left: ModelRefLike | undefined, right: ModelRefLike | undefined): boolean {

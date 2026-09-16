@@ -88,7 +88,8 @@ section rows. The group id is
 `group:<level>:<agent|''>:<tool item id>:perms` (for example
 `group:project:alpha:tool:shell:perms`); it carries `add: "rule"`. It lists
 that tool's perm rule rows (curated ∪ mined via discovery, plus user
-customs), sorted by title. Empty subgroups are never emitted. Only
+customs), sorted by `order` then title (`byOrderTitle`, carrying the miner's
+most-mentioned-first rank). Empty subgroups are never emitted. Only
 native/plus, non-Code-Mode, non-`execute` tools get one: MCP resources are
 always `"*"` and Code Mode denies are whole-tool, so per-resource rules
 there would never match core evaluation.
@@ -792,37 +793,43 @@ path is skipped.
   write, read, webfetch, glob, grep entries, plus one `idRules` row per
   discovered agent/skill id for `subagent`/`skill`), and candidates mined
   from text Plus already holds (tool/base/skill/role/file/teaching rows,
-  with `provenance` naming the mentioning item ids). User `RuleRecord`
-  customs overlay as `custom: true` rows. Mined candidates are view-time
-  only: never persisted, and never part of the publish fingerprint
+  with `provenance` naming the mentioning item ids). The merged rank carries
+  through as `Item.order` so the tree shows most-mentioned first. User
+  `RuleRecord` customs overlay as `custom: true` rows. Mined candidates are
+  view-time only: never persisted, and never part of the publish fingerprint
   (`fingerprintPublish` filters out `kind === "perm"`; only a stored
-  off-state or a `RuleRecord` enters it via `records`). Deliberate
-  deviation from the obvious expectation: the TUI add-rule flow always
-  stores shared (`agent: null`) rules, while per-agent customs go through
-  the tools API; and custom rules are globally unique by `(tool, id)`, not
-  per level/agent (`rule.add`/`rule.remove` match by tool+id only).
+  off-state or a `RuleRecord` enters it via `records`). The TUI add-rule
+  flow prompts for scope (group scope when invoked there, otherwise level
+  then agent); custom rules are globally unique by `(tool, id)`, not per
+  level/agent (`rule.add`/`rule.remove` match by tool+id only, ownership and
+  logging follow the record actually matched).
 - Toggling any rule is a `CustomizationRecord` with state on/off on the
   `perm:<tool>:<rule>` item address, so `resolve()` already yields
   `enabled`. Every perm item OFF for an agent installs one core deny per
   pattern (`{ action, resource: pattern, effect: "deny" }`) through the
   agent registration; because core permission evaluation is last-match-wins,
-  appending is always sufficient. The action derives from the tool id via
+  appending is always sufficient. The action prefers the tool's own
+  `options.permission` carried on the perm item by discovery (edit, write,
+  and patch all register `permission: "edit"`), falling back to
   `actionForToolId`: `edit`/`write`/`patch` share core's `edit` action,
   every other tool uses its own id.
-- Patterns are CORE RESOURCE WILDCARDS over the parsed command text, NOT
-  regex: `*` spans any run, `?` matches one character. For shell the
+- Patterns are CORE RESOURCE WILDCARDS over the tool's permission resource,
+  NOT regex: `*` spans any run, `?` matches one character. For shell the
   resource is the parsed command text, so `git *` also matches a bare `git`
   (the curated head-only rules still carry both `git` and `git *`); for file
-  tools the resource is the file path, for webfetch the URL, for
-  subagent/skill the exact id. User patterns validate through
-  `validateRuleInput` (at least one non-empty pattern; keywords default
-  through `keywordsForPattern` when omitted). `commandHeads` (Plus's own
-  head-depth table: `git: 2`, `docker: 2`, `rm: 1`, …) drives the miner's
-  `git rebase *`-style patterns.
+  tools the resource is the file path (project-relative inside the project,
+  absolute outside it), for webfetch the URL, for glob/grep the user's
+  search pattern (PATH-scoped search restriction is NOT expressible: core
+  authorizes `input.pattern`, so `grep({ pattern: "HEAD", path: ".git" })`
+  evaluates resource `"HEAD"`), for subagent/skill the exact id. User
+  patterns validate through `validateRuleInput` (at least one non-empty
+  pattern; keywords default through `keywordsForPattern` when omitted).
+  `commandHeads` (Plus's own head-depth table: `git: 2`, `docker: 2`,
+  `rm: 1`, …) drives the miner's `git rebase *`-style patterns.
 - Keywords derive only through the single `keywordsForPattern`: head word
   plus subcommand words, stopping at the first wildcard or flag (`git push
   *` → `["git push"]`); a pattern with no literal leading word falls back
-  to its first meaningful segment (`**/.git/**` → `[".git"]`).
+  to its first meaningful segment (`*.git*` → `[".git"]`).
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
   description plus every system part, after the text plans), the

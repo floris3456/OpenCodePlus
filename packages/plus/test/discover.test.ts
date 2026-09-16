@@ -986,9 +986,42 @@ test("discovery mines perm candidates with provenance, merging curated labels fi
   expect(perms.get("perm:shell:git-push")).toMatchObject({ permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"] })
   expect(perms.get("perm:shell:git-push-force")).toMatchObject({ patterns: ["git push --force *"] })
   expect(perms.get("perm:shell:git-push-force")?.provenance?.length ?? 0).toBeGreaterThan(0)
-  expect(perms.get("perm:edit:package-json")).toMatchObject({ patterns: ["package.json"] })
+  expect(perms.get("perm:edit:package-json")).toMatchObject({ patterns: ["package.json", "*/package.json"] })
   expect(perms.get("perm:edit:package-json")?.provenance?.length ?? 0).toBeGreaterThan(0)
   expect(perms.get("perm:webfetch:github")).toMatchObject({ patterns: ["*github.com*"] })
   expect(perms.get("perm:webfetch:github")?.provenance?.length ?? 0).toBeGreaterThan(0)
   expect([...perms.keys()].some((id) => id.startsWith("perm:mcp:"))).toBe(false)
+})
+
+test("effective project file without a model owns the absent upstream (no fallthrough)", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "alpha.md"), "project body\n")
+  await fs.mkdir(path.join(global, "agents"), { recursive: true })
+  await Bun.write(path.join(global, "agents", "alpha.md"), "---\nmodel: acme/nova-1\n---\nglobal body\n")
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("alpha", "alpha upstream")] }),
+    records: [],
+    baseTemplates: [],
+    activeBase: noBase,
+  })
+  expect(discovered.modelUpstream.get("alpha")).toBeUndefined()
+})
+
+test("structured frontmatter models decode like the host ConfigModel.Selection", async () => {
+  const directory = await tempDir("plus-discover-")
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(
+    path.join(directory, ".opencode", "agent", "alpha.md"),
+    "---\nmodel:\n  providerID: acme\n  model: nova-1\n---\nbody\n",
+  )
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("alpha", "alpha upstream")] }),
+    records: [],
+    baseTemplates: [],
+    activeBase: noBase,
+  })
+  expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
 })

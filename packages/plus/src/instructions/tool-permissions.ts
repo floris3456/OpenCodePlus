@@ -135,27 +135,33 @@ const rawRules: readonly RawRule[] = [
     patterns: ["npm run *", "npm test *", "pnpm run *", "yarn run *", "bun run *", "bun test *"],
   },
   { tool: "edit", id: "env", label: ".env files", patterns: ["*.env*"] },
-  { tool: "edit", id: "lock", label: "Lockfiles", patterns: ["**/*.lock"] },
-  { tool: "edit", id: "package-json", label: "package.json", patterns: ["package.json"] },
-  { tool: "edit", id: "git", label: "Git internals", patterns: ["**/.git/**"] },
-  { tool: "edit", id: "ssh", label: "SSH keys", patterns: ["~/.ssh/**"] },
+  { tool: "edit", id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] },
+  { tool: "edit", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
+  { tool: "edit", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
+  { tool: "edit", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] },
   { tool: "write", id: "env", label: ".env files", patterns: ["*.env*"] },
-  { tool: "write", id: "lock", label: "Lockfiles", patterns: ["**/*.lock"] },
-  { tool: "write", id: "package-json", label: "package.json", patterns: ["package.json"] },
-  { tool: "write", id: "git", label: "Git internals", patterns: ["**/.git/**"] },
-  { tool: "write", id: "ssh", label: "SSH keys", patterns: ["~/.ssh/**"] },
+  { tool: "write", id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] },
+  { tool: "write", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
+  { tool: "write", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
+  { tool: "write", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] },
   { tool: "read", id: "env", label: ".env files", patterns: ["*.env*"] },
-  { tool: "read", id: "lock", label: "Lockfiles", patterns: ["**/*.lock"] },
-  { tool: "read", id: "package-json", label: "package.json", patterns: ["package.json"] },
-  { tool: "read", id: "git", label: "Git internals", patterns: ["**/.git/**"] },
-  { tool: "read", id: "ssh", label: "SSH keys", patterns: ["~/.ssh/**"] },
+  { tool: "read", id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] },
+  { tool: "read", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
+  { tool: "read", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
+  { tool: "read", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] },
   { tool: "webfetch", id: "http", label: "Plain HTTP", patterns: ["http://*"] },
   { tool: "webfetch", id: "github", label: "GitHub", patterns: ["*github.com*"] },
   { tool: "webfetch", id: "localhost", label: "Localhost", patterns: ["*localhost*"] },
-  { tool: "glob", id: "node-modules", label: "node_modules", patterns: ["**/node_modules/**"] },
-  { tool: "glob", id: "git", label: "Git internals", patterns: ["**/.git/**"] },
-  { tool: "grep", id: "node-modules", label: "node_modules", patterns: ["**/node_modules/**"] },
-  { tool: "grep", id: "git", label: "Git internals", patterns: ["**/.git/**"] },
+  // Glob/grep permission resources are the user's search pattern, NOT the
+  // search path (core/src/tool/plugin/grep.ts and glob.ts assert
+  // `resources: [input.pattern]`). PATH-scoped restriction is therefore NOT
+  // expressible through core's permission resource for these tools: a deny
+  // can only match search text mentioning a string, never a directory walk.
+  // The rows below are honest search-pattern denys.
+  { tool: "glob", id: "node-modules", label: "Search pattern matching node_modules", patterns: ["*node_modules*"] },
+  { tool: "glob", id: "git", label: "Search pattern matching .git", patterns: ["*.git*"] },
+  { tool: "grep", id: "node-modules", label: "Search pattern matching node_modules", patterns: ["*node_modules*"] },
+  { tool: "grep", id: "git", label: "Search pattern matching .git", patterns: ["*.git*"] },
 ]
 
 export const curatedRules: readonly CuratedRule[] = rawRules.map((rule) => ({
@@ -210,11 +216,13 @@ function patternKey(patterns: readonly string[]): string {
   return [...patterns].toSorted().join("\n")
 }
 
-// Core permission action for a Plus tool id. Edit, write, and patch share
-// core's `edit` action (core/src/tool/plugin/edit.ts, write.ts, patch.ts all
-// assert `action: "edit"`); every other tool asserts its own id. Plus rows
-// are keyed by tool id, so write/patch rules install as `edit` to actually
-// match core's evaluation.
+// Core permission action for a Plus tool id. Discovery carries the tool's own
+// `options.permission` on perm items when the registry provides one (edit,
+// write, and patch all register `permission: "edit"`); this map is the
+// fallback for items that predate that seam and for tools without one. Edit,
+// write, and patch share core's `edit` action (core/src/tool/plugin/edit.ts,
+// write.ts, patch.ts all assert `action: "edit"`); every other tool asserts
+// its own id.
 export function actionForToolId(toolId: string): string {
   if (toolId === "write" || toolId === "patch" || toolId === "edit") return "edit"
   return toolId
@@ -233,8 +241,11 @@ export function scrubLines(text: string, keywords: readonly string[]): { text: s
   const kept: string[] = []
   const dropped: string[] = []
   for (const line of lines) {
-    if (active.some((keyword) => containsWholeWord(line, keyword))) dropped.push(line)
-    else kept.push(line)
+    if (active.some((keyword) => containsWholeWord(line, keyword))) {
+      dropped.push(line)
+      continue
+    }
+    kept.push(line)
   }
   return { text: kept.join("\n"), hidden: dropped.length, preview: dropped.slice(0, 3) }
 }
@@ -384,19 +395,20 @@ function mineFiles(text: string): MinedFile[] {
     for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "env", label: ".env files", patterns: ["*.env*"] })
   }
   if (has(".lock") || has("package-lock") || has("bun.lock") || has("yarn.lock") || has("pnpm-lock")) {
-    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "lock", label: "Lockfiles", patterns: ["**/*.lock"] })
+    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] })
   }
   if (has("package.json")) {
-    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "package-json", label: "package.json", patterns: ["package.json"] })
+    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] })
   }
   if (has(".git")) {
-    for (const tool of ["edit", "write", "read", "glob", "grep"]) out.push({ tool, id: "git", label: "Git internals", patterns: ["**/.git/**"] })
+    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] })
+    for (const tool of ["glob", "grep"]) out.push({ tool, id: "git", label: "Search pattern matching .git", patterns: ["*.git*"] })
   }
   if (has(".ssh") || has("~/.ssh")) {
-    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "ssh", label: "SSH keys", patterns: ["~/.ssh/**"] })
+    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] })
   }
   if (has("node_modules")) {
-    for (const tool of ["glob", "grep"]) out.push({ tool, id: "node-modules", label: "node_modules", patterns: ["**/node_modules/**"] })
+    for (const tool of ["glob", "grep"]) out.push({ tool, id: "node-modules", label: "Search pattern matching node_modules", patterns: ["*node_modules*"] })
   }
   const generic = mineGenericPaths(text)
   for (const pattern of generic) out.push({ tool: "edit", id: slugify(pattern), label: pattern, patterns: [pattern] })

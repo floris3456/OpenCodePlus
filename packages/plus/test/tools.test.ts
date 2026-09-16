@@ -111,6 +111,7 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
       ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
       ...(item.custom === undefined ? {} : { custom: item.custom }),
+      ...(item.permAction === undefined ? {} : { permAction: item.permAction }),
     })),
     records: snapshot.records.map((record) =>
       record.type === "split"
@@ -1144,4 +1145,29 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(deleted).toMatchObject({ tool: "shell" })
   const curatedDelete = await runFail(need(tools, "instructions_delete"), { id: row.id, confirm: true })
   expect(curatedDelete.message).toContain("only user-created rules")
+})
+
+test("deleting a protected agent's custom rule through another agent's row is refused", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
+  if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
+  const snapshot = await snapshotOf(api)
+  const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
+    (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
+  )
+  if (betaRow === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  const error = await runFail(need(tools, "instructions_delete"), { id: betaRow.id, confirm: true })
+  expect(error.message).toContain("agent.protected")
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
 })

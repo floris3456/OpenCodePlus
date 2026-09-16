@@ -900,7 +900,7 @@ export function permsGroup(
   const rows = ctx.items
     .filter((entry) => entry.kind === "perm" && entry.permTool === toolId)
     .filter((entry) => (owner === null ? entry.agents === undefined : applies(entry, owner)))
-    .toSorted((left, right) => (left.title < right.title ? -1 : left.title > right.title ? 1 : 0))
+    .toSorted(byOrderTitle)
   if (rows.length === 0) return undefined
   const id = `group:${level}:${owner ?? ""}:${item.id}:perms`
   return branch(memo, {

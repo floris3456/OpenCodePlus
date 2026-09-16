@@ -975,3 +975,41 @@ test("native tool rows list a Permissions subgroup after sections with toggle-on
   expect(custom?.actions?.edit).toBe(false)
   expect(custom?.actions?.pin).toBe(false)
 })
+
+test("permissions subgroup shows most-mentioned first, not title order", () => {
+  const shellText = "shell tool"
+  const all = [
+    makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
+    makeItem({
+      id: "perm:shell:aaa-generic",
+      kind: "perm",
+      group: "none",
+      title: "Aaa generic",
+      text: "Aaa generic\naaa *",
+      order: 1,
+      permTool: "shell",
+      ruleId: "aaa-generic",
+      patterns: ["aaa *"],
+      keywords: ["aaa"],
+      provenance: [],
+    }),
+    makeItem({
+      id: "perm:shell:zzz-mentioned",
+      kind: "perm",
+      group: "none",
+      title: "Zzz mentioned",
+      text: "Zzz mentioned\nzzz *",
+      order: 0,
+      permTool: "shell",
+      ruleId: "zzz-mentioned",
+      patterns: ["zzz *"],
+      keywords: ["zzz"],
+      provenance: ["tool:shell", "skill:notes", "base:general"],
+    }),
+  ]
+  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  const group = nodes.find((node) => node.id === "group:project:Implementer:tool:shell:perms")
+  if (!group) throw new Error("expected perms group")
+  const rows = childrenOf(nodes, group.id)
+  expect(rows.map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa generic"])
+})

@@ -10,8 +10,16 @@ export interface AgentPermissionRule {
   effect: "allow" | "deny" | "ask"
 }
 
+export interface StructuredModel {
+  readonly providerID: string
+  readonly model?: string
+  readonly modelID?: string
+  readonly id?: string
+  readonly variant?: string
+}
+
 export interface AgentFields {
-  model?: string
+  model?: string | StructuredModel
   variant?: string
   request?: Record<string, unknown>
   description?: string
@@ -236,6 +244,10 @@ export function serializeFrontmatter(fields?: AgentFields): string {
 // Frontmatter parser for model upstream: reads the same fence formatMarkdown
 // writes (opening `---`, closing `---`, then body). Returns the AgentFields
 // subset so callers can prefer file-backed model/variant over Agent.Info.model.
+// `model` accepts the host's native ConfigModel.Selection forms: a short
+// string (`provider/id#variant`) or an explicit object
+// (`{ providerID, model, variant? }`, with `modelID`/`id` accepted as aliases
+// for `model`). A separate `variant` key wins over both.
 export function parseFrontmatter(markdown: string): AgentFields | undefined {
   const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   if (!match) return undefined
@@ -243,8 +255,9 @@ export function parseFrontmatter(markdown: string): AgentFields | undefined {
     const data = Bun.YAML.parse(match[1] ?? "")
     if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
     const fields = data as Record<string, unknown>
+    const model = structuredModel(fields.model)
     const picked: AgentFields = {
-      ...(typeof fields.model === "string" ? { model: fields.model } : {}),
+      ...(model === undefined ? (typeof fields.model === "string" ? { model: fields.model } : {}) : { model }),
       ...(typeof fields.variant === "string" ? { variant: fields.variant } : {}),
       ...(typeof fields.description === "string" ? { description: fields.description } : {}),
       ...(fields.mode === "subagent" || fields.mode === "primary" || fields.mode === "all" ? { mode: fields.mode } : {}),
@@ -256,6 +269,22 @@ export function parseFrontmatter(markdown: string): AgentFields | undefined {
   }
 }
 
+function structuredModel(value: unknown): StructuredModel | undefined {
+  if (!isRecord(value)) return undefined
+  const providerID = value["providerID"]
+  if (typeof providerID !== "string" || providerID.length === 0) return undefined
+  const model = value["model"]
+  const modelID = value["modelID"] ?? value["id"]
+  const candidate = typeof model === "string" ? model : typeof modelID === "string" ? modelID : undefined
+  if (candidate === undefined || candidate.length === 0) return undefined
+  const variant = value["variant"]
+  return {
+    providerID,
+    model: candidate,
+    ...(typeof variant === "string" && variant.length > 0 ? { variant } : {}),
+  }
+}
+
 export interface ParsedModelRef {
   readonly providerID: string
   readonly modelID: string
@@ -263,12 +292,25 @@ export interface ParsedModelRef {
 }
 
 // File frontmatter model forms: `model: "provider/id#variant"`, or
-// `model: "provider/id"` plus a separate `variant: "..."` key. An explicit
-// variant field wins over the `#` suffix. Anything without a `/` is invalid.
+// `model: "provider/id"` plus a separate `variant: "..."` key, or the host's
+// native explicit object (`model: { providerID, model, variant? }`). An
+// explicit variant field wins over the `#` suffix and the object variant.
+// Anything without a `/` (string) or without provider/model parts (object) is invalid.
 export function modelRefFromFields(fields: AgentFields | undefined): ParsedModelRef | undefined {
   if (fields?.model === undefined) {
     if (fields?.variant === undefined) return undefined
     return undefined
+  }
+  if (typeof fields.model !== "string") {
+    const providerID = fields.model.providerID
+    const modelID = fields.model.model ?? fields.model.modelID ?? fields.model.id
+    if (providerID.length === 0 || modelID === undefined || modelID.length === 0) return undefined
+    if (providerID.includes("/") || providerID.includes("#")) return undefined
+    if (modelID.includes("#")) return undefined
+    const variant = fields.variant ?? fields.model.variant
+    if (variant !== undefined && variant.length === 0) return undefined
+    if (variant === undefined) return { providerID, modelID }
+    return { providerID, modelID, variant }
   }
   const raw = fields.model.trim()
   const slash = raw.indexOf("/")
