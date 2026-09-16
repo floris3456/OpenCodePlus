@@ -1425,7 +1425,11 @@ test("updateRule stale retry preserves the edit and the log agrees with what per
   if (!logged.ok) throw new Error("log failed")
   const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:race")
   if (entry === undefined) throw new Error("missing rule.update log entry for the persisted target")
-  expect(entry.revision).toBe(after.revision)
+  // Both concurrent writes land (seed rev1, then two more), so the final
+  // revision is 3 regardless of which wins first; the update's log entry is
+  // 2 or 3 depending on order, but it always exists for the correct target
+  // and the persisted values always match the update's response.
+  expect(after.revision).toBe(3)
 })
 
 test("updateRule through a project row keeps a global rule in the global store", async () => {
@@ -1564,10 +1568,13 @@ test("concurrent updateRule creates for the same target never report false succe
   })
   const api = createPlusApi(ctx, createState())
   // Both load an empty store and materialise the same curated target with
-  // different labels. The loser retries against fresh carrying the winner;
-  // without the fix it keeps the winner's values while returning the loser's
-  // label. The fix returns a conflict so response, persisted values, and log
-  // all agree.
+  // different labels. When the loads overlap the loser retries against fresh
+  // carrying the winner; without the fix it keeps the winner's values while
+  // returning the loser's label. The fix returns a conflict so response,
+  // persisted values, and log all agree. When the loads do not overlap the
+  // second is a sequential edit that overwrites the first (both succeed and
+  // both log); that path is also correct and must not be mistaken for the
+  // bug (which logs only once while reporting twice).
   const [first, second] = await Promise.all([
     api.updateRule({
       level: "project",
@@ -1590,6 +1597,26 @@ test("concurrent updateRule creates for the same target never report false succe
       actor: { type: "tui" },
     }),
   ])
+  const after = await snapshotOf(api)
+  const persisted = after.records.filter((record) => record.type === "rule" && record.tool === "shell" && record.id === "race-create")
+  expect(persisted).toHaveLength(1)
+  const only = persisted[0]
+  if (only === undefined || only.type !== "rule") throw new Error("expected race-create to persist once")
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  const entries = logged.value.entries.filter(
+    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:race-create",
+  )
+  if (first.ok && second.ok) {
+    // Sequential path (no stale retry): both edits landed in order, both
+    // logged, and the final values are one of the two requested sets. Either
+    // order is correct here because each response was true at return time.
+    expect(entries).toHaveLength(2)
+    expect(only.label === "First" || only.label === "Second").toBe(true)
+    return
+  }
+  // Concurrent path (stale retry): exactly one succeeds and its values are
+  // what persisted; the loser reports a conflict and never logs.
   const succeeded = [first, second].filter((result) => result.ok)
   const failed = [first, second].filter((result) => !result.ok)
   expect(succeeded).toHaveLength(1)
@@ -1600,11 +1627,6 @@ test("concurrent updateRule creates for the same target never report false succe
   if (loser === undefined || loser.ok) throw new Error("expected one concurrent conflict")
   if (loser.error.code !== "rule.invalid") throw new Error(`expected rule.invalid conflict, got ${loser.error.code}`)
   expect(loser.error.message).toContain("changed concurrently")
-  const after = await snapshotOf(api)
-  const persisted = after.records.filter((record) => record.type === "rule" && record.tool === "shell" && record.id === "race-create")
-  expect(persisted).toHaveLength(1)
-  const only = persisted[0]
-  if (only === undefined || only.type !== "rule") throw new Error("expected race-create to persist once")
   expect(only.label).toBe(winner.value.label)
   expect(winner.value.label === "First" || winner.value.label === "Second").toBe(true)
   // The loser's requested values were never persisted and never logged.
@@ -1613,11 +1635,6 @@ test("concurrent updateRule creates for the same target never report false succe
   const loserPatterns = loserLabel === "First" ? ["first *"] : ["second *"]
   expect(only.label).not.toBe(loserLabel)
   expect(only.patterns).not.toEqual(loserPatterns)
-  const logged = await api.log({ where: "op:rule.update" })
-  if (!logged.ok) throw new Error("log failed")
-  const entries = logged.value.entries.filter(
-    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:race-create",
-  )
   expect(entries).toHaveLength(1)
   expect(entries[0]?.revision).toBe(after.revision)
 })
