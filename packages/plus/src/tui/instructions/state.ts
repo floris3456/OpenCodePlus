@@ -1,12 +1,13 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
-import { applies, resolve, resolveSplit, scopesOf, threeWay } from "../../instructions/model.js"
+import { applies, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay } from "../../instructions/model.js"
 import type {
   Address,
   AgentSource,
   CustomizationRecord,
   Item,
   ModelRecord,
+  RuleRecord,
   SplitRecord,
 } from "../../instructions/model.js"
 import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
@@ -15,6 +16,7 @@ import {
   activateModelRow,
   addSection,
   isModelRowId,
+  isPermRowId,
   removalPlan,
   removeModelRow,
   reset,
@@ -32,17 +34,20 @@ import { Definition, type Snapshot, type SnapshotItem, type SnapshotRecord } fro
 
 export type { TreeNode }
 
-function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord)[] {
-  // Rule records stay filtered until phase 3; model records are tree rows.
+function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[] {
   return records
     .map(recordOf)
-    .filter((record): record is CustomizationRecord | SplitRecord | ModelRecord => record.type === "customization" || record.type === "split" || record.type === "model")
+    .filter(
+      (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord =>
+        record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule",
+    )
 }
 
 function toRpcRecords(
   customizations: readonly CustomizationRecord[],
   splits: readonly (SplitRecord & { updated?: string })[],
   models?: readonly ModelRecord[],
+  rules?: readonly RuleRecord[],
 ): SnapshotRecord[] {
   return [
     ...customizations.map(
@@ -84,6 +89,19 @@ function toRpcRecords(
         updated: record.updated,
       }),
     ),
+    ...(rules ?? []).map(
+      (record): SnapshotRecord => ({
+        type: "rule",
+        level: record.level,
+        agent: record.agent,
+        tool: record.tool,
+        id: record.id,
+        label: record.label,
+        patterns: [...record.patterns],
+        keywords: [...record.keywords],
+        updated: record.updated,
+      }),
+    ),
   ]
 }
 
@@ -105,7 +123,7 @@ export function createInstructionsState(context: Plugin.Context) {
     return current.items.map(itemOf)
   })
 
-  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord)[]>(() => {
+  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]>(() => {
     const current = snapshot()
     if (!current) return []
     return recordsOf(current.records)
@@ -366,15 +384,18 @@ export function createInstructionsState(context: Plugin.Context) {
     successStatus: string,
     retryHint: string,
     nextModels?: readonly ModelRecord[],
+    nextRules?: readonly RuleRecord[],
   ): Promise<boolean> {
     const current = snapshot()
     if (!current) {
       setStatus("No snapshot loaded")
       return false
     }
+    const converted = recordsOf(current.records)
     const preserved =
-      nextModels ??
-      recordsOf(current.records).filter((record): record is ModelRecord => record.type === "model")
+      nextModels ?? converted.filter((record): record is ModelRecord => record.type === "model")
+    const preservedRules =
+      nextRules ?? converted.filter((record): record is RuleRecord => record.type === "rule")
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -382,7 +403,7 @@ export function createInstructionsState(context: Plugin.Context) {
         {
           expectedRevision: current.revision,
           expectedGlobalRevision: current.globalRevision,
-          records: toRpcRecords(nextCustomizations, nextSplits, preserved),
+          records: toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules),
         },
         { location: context.location },
       )
@@ -661,6 +682,42 @@ export function createInstructionsState(context: Plugin.Context) {
         return false
       }
       return persistModels(result.models, result.status, result.retryHint)
+    }
+    if (isPermRowId(node.id) || node.address?.item.startsWith("perm:")) {
+      const address = node.address
+      const parsed = address === undefined ? undefined : parsePermItemId(address.item)
+      if (address === undefined || parsed === undefined) {
+        setStatus(`"${node.label}" cannot be deleted`)
+        return false
+      }
+      const current = snapshot()
+      const custom = current?.items.find((entry) => entry.id === address.item)?.custom === true
+      if (!custom) {
+        setStatus(`"${node.label}" cannot be deleted: only user-created rules can be deleted`)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Remove "${node.label}"?`,
+        message: `Remove rule "${node.label}"? This cannot be undone.`,
+      })
+      if (confirmed !== true) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      try {
+        await plus["rule.remove"](
+          { level: address.level, agent: address.agent, tool: parsed.tool, id: parsed.ruleId },
+          { location: context.location },
+        )
+        if (disposed) return false
+        await refresh()
+        if (disposed) return false
+        setStatus(`Removed "${node.label}"`)
+        return true
+      } catch (error: unknown) {
+        setStatus(errorMessage(error))
+        return false
+      }
     }
     const plan = removalPlan(memoInput(), node.id)
     if ("refusal" in plan) {

@@ -9,6 +9,7 @@ import {
   addSection,
   editRefusalForLabel,
   isModelRowId,
+  isPermRowId,
   removalPlan,
   reset,
   resetModelRow,
@@ -23,7 +24,8 @@ import {
   unknownRowRefusal,
 } from "./instructions/ops.js"
 import { query } from "./instructions/query.js"
-import { applies, parseModelItemId, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
+import { applies, parseModelItemId, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
+import { scrubLines } from "./instructions/tool-permissions.js"
 import type { CustomizationRecord, ModelRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput } from "./instructions/tree.js"
 import { memoInputOf } from "./instructions/snapshot.js"
@@ -58,10 +60,11 @@ const SplitDescription =
   "Pass boundaries [{id,name,start}] to set manual sections, or add {name,text} to append one."
 
 const CreateDescription =
-  "Create a file-backed row, a team directory, or a model candidate (TUI `a`).\n" +
+  "Create a file-backed row, a team directory, a model candidate, or a permission rule (TUI `a`).\n" +
   "Kinds: agent (id+prompt, scope defaults to project, template/fields optional), skill (name+body),\n" +
   "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled),\n" +
-  "model (providerID+modelID, variant/level/agent optional; level defaults to project)."
+  "model (providerID+modelID, variant/level/agent optional; level defaults to project),\n" +
+  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex)."
 
 const DeleteDescription =
   "Delete a project-owned row; refuses without `confirm`.\n" +
@@ -151,6 +154,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("mcp"),
     Schema.Literal("team"),
     Schema.Literal("model"),
+    Schema.Literal("rule"),
   ]),
   id: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
@@ -168,6 +172,10 @@ const CreateInput = Schema.Struct({
   modelID: Schema.optionalKey(Schema.String),
   variant: Schema.optionalKey(Schema.String),
   agent: Schema.optionalKey(Schema.String),
+  tool: Schema.optionalKey(Schema.String),
+  label: Schema.optionalKey(Schema.String),
+  patterns: Schema.optionalKey(Schema.Array(Schema.String)),
+  keywords: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 
 const DeleteInput = Schema.Struct({
@@ -241,6 +249,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (node.kind === "team") return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
+          if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
           const op = computeSet(memo, input)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
@@ -330,6 +339,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* deleteModelRow(api, snapshot, memo, input.id, actor)
+          if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* deleteRuleRow(api, snapshot, memo, input.id, actor)
           const plan = removalPlan(memo, input.id)
           if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
           return yield* deletePlan(api, plan, actor)
@@ -391,6 +401,7 @@ function toSnapshotRecords(
   records: readonly CustomizationRecord[],
   splits: readonly SplitRecord[],
   models?: readonly ModelRecord[],
+  rules?: readonly import("./instructions/model.js").RuleRecord[],
 ): Plus.SnapshotRecord[] {
   return [
     ...records.map(
@@ -431,11 +442,28 @@ function toSnapshotRecords(
         updated: record.updated,
       }),
     ),
+    ...(rules ?? []).map(
+      (record): Plus.SnapshotRecord => ({
+        type: "rule",
+        level: record.level,
+        agent: record.agent,
+        tool: record.tool,
+        id: record.id,
+        label: record.label,
+        patterns: [...record.patterns],
+        keywords: [...record.keywords],
+        updated: record.updated,
+      }),
+    ),
   ]
 }
 
 function modelsOfMemo(memo: MemoInput): ModelRecord[] {
   return memo.records.filter((record): record is ModelRecord => record.type === "model")
+}
+
+function rulesOfMemo(memo: MemoInput): import("./instructions/model.js").RuleRecord[] {
+  return memo.records.filter((record): record is import("./instructions/model.js").RuleRecord => record.type === "rule")
 }
 
 function findRow(memo: MemoInput, id: string) {
@@ -458,9 +486,10 @@ function computeSet(
   input: { id: string; text?: string; state?: "on" | "off"; pin?: boolean; resolve?: "keep" | "take" | "edit" },
 ) {
   const preserved = modelsOfMemo(memo)
+  const preservedRules = rulesOfMemo(memo)
   const withModels = (records: readonly CustomizationRecord[], splits: readonly SplitRecord[]): MemoInput => ({
     ...memo,
-    records: [...records, ...splits, ...preserved],
+    records: [...records, ...splits, ...preserved, ...preservedRules],
   })
   if (input.resolve !== undefined) {
     if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text)
@@ -527,11 +556,12 @@ function mutateWithRetry(
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   return Effect.gen(function* () {
     const models = op.models ?? modelsOfMemo(memoFromSnapshot(snapshot))
+    const rules = rulesOfMemo(memoFromSnapshot(snapshot))
     const first = yield* Effect.promise(() =>
       api.mutate({
         expectedRevision: snapshot.revision,
         expectedGlobalRevision: snapshot.globalRevision,
-        records: toSnapshotRecords(op.records, op.splits, models),
+        records: toSnapshotRecords(op.records, op.splits, models, rules),
         actor,
       }),
     )
@@ -542,11 +572,12 @@ function mutateWithRetry(
     const retry = recompute(fresh.value)
     if ("refusal" in retry) return yield* Effect.fail(new Tool.Error({ message: retry.refusal }))
     const retryModels = retry.models ?? modelsOfMemo(memoFromSnapshot(fresh.value))
+    const retryRules = rulesOfMemo(memoFromSnapshot(fresh.value))
     const second = yield* Effect.promise(() =>
       api.mutate({
         expectedRevision: fresh.value.revision,
         expectedGlobalRevision: fresh.value.globalRevision,
-        records: toSnapshotRecords(retry.records, retry.splits, retryModels),
+        records: toSnapshotRecords(retry.records, retry.splits, retryModels, retryRules),
         actor,
       }),
     )
@@ -569,11 +600,12 @@ function mutateModelsWithRetry(
   return Effect.gen(function* () {
     const customizations = memo.records.filter((record): record is CustomizationRecord => record.type === "customization")
     const splits = memo.records.filter((record): record is SplitRecord => record.type === "split")
+    const rules = memo.records.filter((record): record is import("./instructions/model.js").RuleRecord => record.type === "rule")
     const first = yield* Effect.promise(() =>
       api.mutate({
         expectedRevision: snapshot.revision,
         expectedGlobalRevision: snapshot.globalRevision,
-        records: toSnapshotRecords(customizations, splits, models),
+        records: toSnapshotRecords(customizations, splits, models, rules),
         actor,
       }),
     )
@@ -586,11 +618,12 @@ function mutateModelsWithRetry(
     const freshMemo = memoFromSnapshot(fresh.value)
     const freshCustom = freshMemo.records.filter((record): record is CustomizationRecord => record.type === "customization")
     const freshSplits = freshMemo.records.filter((record): record is SplitRecord => record.type === "split")
+    const freshRules = freshMemo.records.filter((record): record is import("./instructions/model.js").RuleRecord => record.type === "rule")
     const second = yield* Effect.promise(() =>
       api.mutate({
         expectedRevision: fresh.value.revision,
         expectedGlobalRevision: fresh.value.globalRevision,
-        records: toSnapshotRecords(freshCustom, freshSplits, retry.models),
+        records: toSnapshotRecords(freshCustom, freshSplits, retry.models, freshRules),
         actor,
       }),
     )
@@ -623,6 +656,30 @@ function setModel(
       if ("refusal" in retry) return retry
       return { models: retry.models, status: retry.status }
     })
+    return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+  })
+}
+
+function setPerm(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit" },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const node = findRow(memo, id)
+    const label = node?.label ?? id
+    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
+    if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
+    if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
+    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) })
+    if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+    const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
+      computeSet(memoFromSnapshot(fresh), { id, ...(input.state === undefined ? {} : { state: input.state }) }),
+    )
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -667,6 +724,32 @@ function deleteModelRow(
         ...(parsed.variant === undefined ? {} : { variant: parsed.variant }),
         actor,
       }),
+    )
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    return { output: { ...result.value, status: `Removed "${id}"` } }
+  })
+}
+
+function deleteRuleRow(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const found = findRow(memo, id)
+    const address = found?.address
+    if (address === undefined) return yield* Effect.fail(unknownError(id))
+    const parsed = parsePermItemId(address.item)
+    if (parsed === undefined) return yield* Effect.fail(unknownError(id))
+    const item = memo.items.find((entry) => entry.id === address.item)
+    if (item?.custom !== true) {
+      const label = found?.label ?? id
+      return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deleted: only user-created rules can be deleted` }))
+    }
+    const result = yield* Effect.promise(() =>
+      api.removeRule({ level: address.level, agent: address.agent, tool: parsed.tool, id: parsed.ruleId, actor }),
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: `Removed "${id}"` } }
@@ -730,6 +813,31 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const scopes = scopesOf(memo.agents)
     const upstream = upstreamOf(memo, address)
     if (upstream === undefined) return yield* Effect.fail(new Tool.Error({ message: `Item not found for "${node.label}"` }))
+    if (upstream.kind === "perm") {
+      const chain = { upstream, records: customizations, splits, scopes, address }
+      const resolved = resolve(chain)
+      const patterns = upstream.patterns === undefined ? [] : [...upstream.patterns]
+      const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
+      const provenance = upstream.provenance === undefined ? [] : [...upstream.provenance]
+      const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
+      const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
+      return {
+        output: {
+          id,
+          view,
+          tool: upstream.permTool ?? "",
+          rule: upstream.ruleId ?? "",
+          label: upstream.title,
+          patterns,
+          keywords,
+          provenance,
+          custom: upstream.custom === true,
+          enabled: resolved.enabled,
+          source: resolved.source,
+          scrub: { hidden: scrubbed.hidden, preview: [...scrubbed.preview] },
+        },
+      }
+    }
     const chain = { upstream, records: customizations, splits, scopes, address }
     if (view === "resolved") {
       const resolved = resolve(chain)
@@ -771,7 +879,7 @@ function upstreamOf(memo: MemoInput, address: { item: string; agent: string | nu
 function createRow(
   api: PlusApi,
   input: {
-    kind: "agent" | "skill" | "base" | "instruction" | "mcp" | "team" | "model"
+    kind: "agent" | "skill" | "base" | "instruction" | "mcp" | "team" | "model" | "rule"
     id?: string
     prompt?: string
     scope?: "project" | "global" | "defaults"
@@ -788,6 +896,10 @@ function createRow(
     modelID?: string
     variant?: string
     agent?: string
+    tool?: string
+    label?: string
+    patterns?: readonly string[]
+    keywords?: readonly string[]
   },
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
@@ -876,6 +988,32 @@ function createRow(
           providerID: input.providerID as string,
           modelID: input.modelID as string,
           ...(input.variant === undefined ? {} : { variant: input.variant }),
+          actor,
+        }),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      return { output: created.value }
+    }
+    if (input.kind === "rule") {
+      if (input.tool === undefined || input.id === undefined || input.label === undefined || input.patterns === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create rule requires tool, id, label, and patterns" }))
+      const level = input.level ?? input.scope ?? "project"
+      if (level !== "project" && level !== "global" && level !== "defaults")
+        return yield* Effect.fail(new Tool.Error({ message: "create rule requires level project|global|defaults" }))
+      const rawAgent = input.agent?.trim() ?? ""
+      const agent = rawAgent.length === 0 || rawAgent === "_" ? null : rawAgent
+      const snapshot = yield* snapshotOrFail(api)
+      if (agent !== null && snapshot.protectedAgents.includes(agent))
+        return yield* Effect.fail(protectedError(agent))
+      const created = yield* Effect.promise(() =>
+        api.addRule({
+          level,
+          agent,
+          tool: input.tool as string,
+          id: input.id as string,
+          label: input.label as string,
+          patterns: [...(input.patterns as string[])],
+          ...(input.keywords === undefined ? {} : { keywords: [...input.keywords] }),
           actor,
         }),
       )

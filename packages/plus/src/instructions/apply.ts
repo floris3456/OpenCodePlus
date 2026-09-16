@@ -7,9 +7,11 @@ import type { SkillEditor } from "@opencode/plugin/effect/skill"
 import { Skill } from "@opencode/schema/skill"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
 import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type Scopes, type SplitRecord } from "./model.js"
+import { actionForToolId, scrubLines } from "./tool-permissions.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
 export interface ApplyAgent {
@@ -88,11 +90,12 @@ export async function applyModels(
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
       if (!editor.get(update.agent)) continue
-      const providerID = update.providerID
-      const id = update.modelID
-      const variant = update.variant
       editor.update(update.agent, (agent) => {
-        agent.model = { providerID: providerID as never, id: id as never, ...(variant === undefined ? {} : { variant: variant as never }) }
+        agent.model = Model.Ref.make({
+          providerID: Provider.ID.make(update.providerID),
+          id: Model.ID.make(update.modelID),
+          ...(update.variant === undefined ? {} : { variant: Model.VariantID.make(update.variant) }),
+        })
       })
     }
   })
@@ -289,6 +292,70 @@ function pushRule(editor: AgentEditor, rule: { agent: string; action: string; re
   })
 }
 
+// Tool-specific permission rules: every perm item OFF for an agent installs
+// one core deny per pattern through the existing agent registration. Because
+// Permission.evaluate is last-match-wins, appending is always sufficient.
+function permDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
+  return input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      if (item.kind !== "perm") return []
+      if (item.patterns === undefined || item.patterns.length === 0) return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.enabled) return []
+      const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
+      if (tool.length === 0) return []
+      const action = actionForToolId(tool)
+      return item.patterns.map((pattern) => ({ agent: agent.id, action, resource: pattern, effect: "deny" as const }))
+    }),
+  )
+}
+
+// Disabled-rule scrub keywords per agent: the union of keywords from every
+// OFF perm item for that agent. Empty means no scrub, so unrelated saves
+// install no extra hooks and stay no-ops.
+function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const agent of input.agents) {
+    const keywords = input.items.flatMap((item) => {
+      if (item.kind !== "perm") return []
+      if (item.keywords === undefined || item.keywords.length === 0) return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.enabled) return []
+      return [...item.keywords]
+    })
+    if (keywords.length > 0) out.set(agent.id, [...new Set(keywords)])
+  }
+  return out
+}
+
+// Scrub the session prompt: drop whole lines containing disabled keywords
+// from every tool description and every system part (base plus instructions).
+// Runs inside the existing session.context hook, after the text plans.
+function applyRuleScrub(event: SessionContext, keywords: readonly string[]): void {
+  if (keywords.length === 0) return
+  for (const tool of Object.values(event.tools)) {
+    tool.description = scrubLines(tool.description, keywords).text
+  }
+  for (let index = 0; index < event.system.length; index++) {
+    const part = event.system[index]
+    if (part === undefined || typeof part.text !== "string") continue
+    const scrubbed = scrubLines(part.text, keywords).text
+    if (scrubbed !== part.text) event.system[index] = { ...part, text: scrubbed }
+  }
+}
+
+// Scrub Code Mode catalog descriptions inside the existing session.catalog
+// hook, after the text/pin plans.
+function applyCatalogScrub(event: { agent: unknown; tools: Record<string, { description?: string }> }, keywords: readonly string[]): void {
+  if (keywords.length === 0) return
+  for (const entry of Object.values(event.tools)) {
+    if (typeof entry.description !== "string") continue
+    entry.description = scrubLines(entry.description, keywords).text
+  }
+}
+
 const copyPrefix = "plus/"
 
 export function copyName(agent: string, skill: string): string {
@@ -452,7 +519,10 @@ async function applySession(
       catalogPath: catalogPath(candidate.item),
       pinned: candidate.pinned,
     }))
-  if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0)
+  const permDenies = permDenials(input)
+  const scrubByAgent = scrubKeywordsByAgent(input)
+  const needsScrub = [...scrubByAgent.values()].some((keywords) => keywords.length > 0)
+  if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub)
     return { registrations: [], tools: [], agentChanged: false }
   const installed: Registration[] = []
   try {
@@ -462,7 +532,13 @@ async function applySession(
       })
       installed.push(agentRegistration)
     }
-    if (base.length > 0 || native.length > 0 || instructions.length > 0) {
+    if (permDenies.length > 0) {
+      const permRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+        for (const rule of permDenies) pushRule(editor, rule)
+      })
+      installed.push(permRegistration)
+    }
+    if (base.length > 0 || native.length > 0 || instructions.length > 0 || needsScrub) {
       const pins = new Map<string, string>()
       for (const agent of input.agents) {
         if (agent.base !== undefined) pins.set(agent.id, agent.base)
@@ -476,11 +552,12 @@ async function applySession(
         applyBasePlan(event, base, classifier, customByAgent)
         applyToolPlan(event, native.filter((plan) => plan.agent === String(event.agent)))
         applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
+        applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
         return Effect.void
       })
       installed.push(registration)
     }
-    if (catalogPlans.length > 0) {
+    if (catalogPlans.length > 0 || needsScrub) {
       const catalogRegistration = await runHook(ctx.session.hook, "catalog", (event) => {
         for (const plan of catalogPlans) {
           if (plan.agent !== String(event.agent)) continue
@@ -491,11 +568,12 @@ async function applySession(
           entry.description = plan.text
           if (plan.pinned !== undefined) entry.pinned = plan.pinned
         }
+        applyCatalogScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
         return Effect.void
       })
       installed.push(catalogRegistration)
     }
-    return { registrations: installed, tools: [...native, ...catalogPlans], agentChanged: denials.length > 0 }
+    return { registrations: installed, tools: [...native, ...catalogPlans], agentChanged: denials.length > 0 || permDenies.length > 0 }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error

@@ -1,8 +1,9 @@
 import { TextAttributes } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
-import { applies, modelCandidates, parseModelItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
+import { applies, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
+import { scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, itemOf, recordOf } from "../../instructions/snapshot.js"
 import type { TreeNode } from "../../instructions/tree.js"
 import type { Level, Snapshot } from "../../rpc.js"
@@ -107,6 +108,65 @@ export function resolvedText(node: TreeNode, snapshot: Snapshot): string {
   const resolved = resolveNode(node, snapshot)
   if (!resolved) return "No item details"
   return resolved.text
+}
+
+export function scrubInfo(
+  node: TreeNode,
+  snapshot: Snapshot,
+): { hidden: number; preview: readonly string[]; keywords: readonly string[] } | undefined {
+  const address = node.address
+  if (address === undefined) return undefined
+  if (address.item.startsWith("perm:")) {
+    const upstream = upstreamFor(itemsOf(snapshot), address)
+    if (upstream?.kind !== "perm") return undefined
+    const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
+    if (keywords.length === 0) return { hidden: 0, preview: [], keywords: [] }
+    const parent = itemsOf(snapshot).find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
+    if (parent === undefined) return { hidden: 0, preview: [], keywords }
+    const scrubbed = scrubLines(parent.text, keywords)
+    return { hidden: scrubbed.hidden, preview: scrubbed.preview, keywords }
+  }
+  const items = itemsOf(snapshot)
+  const records = customizationsOf(snapshot)
+  const splits = splitsOf(snapshot)
+  const scopes = scopesOf(agentsOf(snapshot))
+  const keywords = items.flatMap((item) => {
+    if (item.kind !== "perm" || item.keywords === undefined) return []
+    const owner = address.agent
+    if (owner === null) {
+      if (item.agents !== undefined) return []
+    } else if (!applies(item, owner)) return []
+    const state = resolve({ upstream: item, records, splits, scopes, address: { level: address.level, agent: address.agent, item: item.id, section: null } })
+    if (state.enabled) return []
+    return [...item.keywords]
+  })
+  const unique = [...new Set(keywords)]
+  if (unique.length === 0) return undefined
+  const resolved = resolveNode(node, snapshot)
+  if (resolved === undefined) return undefined
+  const scrubbed = scrubLines(resolved.text, unique)
+  if (scrubbed.hidden === 0) return undefined
+  return { hidden: scrubbed.hidden, preview: scrubbed.preview, keywords: unique }
+}
+
+export function permDetail(
+  node: TreeNode,
+  snapshot: Snapshot,
+): { tool: string; rule: string; patterns: readonly string[]; keywords: readonly string[]; provenance: readonly string[]; custom: boolean } | undefined {
+  const address = node.address
+  if (address === undefined) return undefined
+  const upstream = upstreamFor(itemsOf(snapshot), address)
+  if (upstream?.kind !== "perm") return undefined
+  const parsed = parsePermItemId(address.item)
+  if (parsed === undefined) return undefined
+  return {
+    tool: upstream.permTool ?? parsed.tool,
+    rule: upstream.ruleId ?? parsed.ruleId,
+    patterns: upstream.patterns === undefined ? [] : [...upstream.patterns],
+    keywords: upstream.keywords === undefined ? [] : [...upstream.keywords],
+    provenance: upstream.provenance === undefined ? [] : [...upstream.provenance],
+    custom: upstream.custom === true,
+  }
 }
 
 export function isEditable(node: TreeNode | undefined): boolean {
@@ -411,6 +471,31 @@ export function DetailPane(props: DetailPaneProps) {
                           {`source: ${displayLevel(detail().source)}${detail().active ? " · active" : ""}`}
                         </text>
                       </box>
+                    )}
+                  </Show>
+                  <Show when={permDetail(node(), snapshot())}>
+                    {(detail) => (
+                      <box flexDirection="column" flexShrink={0}>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`tool: ${detail().tool} · rule: ${detail().rule}${detail().custom ? " · custom" : ""}`}
+                        </text>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`patterns: ${detail().patterns.join(", ") || "(none)"}`}
+                        </text>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`keywords: ${detail().keywords.join(", ") || "(none)"}`}
+                        </text>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`provenance: ${detail().provenance.join(", ") || "(curated)"}`}
+                        </text>
+                      </box>
+                    )}
+                  </Show>
+                  <Show when={scrubInfo(node(), snapshot())}>
+                    {(info) => (
+                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                        {`${info().hidden} lines hidden by rules: ${info().preview.join(" / ")}`}
+                      </text>
                     )}
                   </Show>
                   <Show when={node().address?.section === null}>

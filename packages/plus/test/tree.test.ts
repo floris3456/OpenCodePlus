@@ -924,3 +924,54 @@ test("model union shows chain candidates with source badges and one active winne
     "item:global:alpha:model:acme/nova-4",
   ])
 })
+
+test("native tool rows list a Permissions subgroup after sections with toggle-only rule rows", () => {
+  const shellText = "shell tool"
+  const all = [
+    makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
+    makeItem({
+      id: "perm:shell:git-push",
+      kind: "perm",
+      group: "none",
+      title: "Git push",
+      text: "Git push\ngit push *",
+      permTool: "shell",
+      ruleId: "git-push",
+      patterns: ["git push *"],
+      keywords: ["git push"],
+      provenance: ["tool:shell"],
+    }),
+    makeItem({
+      id: "perm:shell:custom",
+      kind: "perm",
+      group: "none",
+      title: "Custom",
+      text: "Custom\ncustom *",
+      permTool: "shell",
+      ruleId: "custom",
+      patterns: ["custom *"],
+      keywords: ["custom"],
+      provenance: [],
+      custom: true,
+    }),
+  ]
+  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:shell")
+  if (!toolRow) throw new Error("expected shell tool row")
+  const kids = childrenOf(nodes, toolRow.id)
+  expect(kids[kids.length - 1]?.label).toBe("Permissions")
+  expect(kids[kids.length - 1]?.add).toBe("rule")
+  const group = nodes.find((node) => node.id === "group:project:Implementer:tool:shell:perms")
+  expect(group?.label).toBe("Permissions")
+  const rows = childrenOf(nodes, group?.id ?? "")
+  expect(rows.map((node) => node.id).sort()).toEqual(
+    ["item:project:Implementer:perm:shell:custom", "item:project:Implementer:perm:shell:git-push"].sort(),
+  )
+  const curated = nodes.find((node) => node.id === "item:project:Implementer:perm:shell:git-push")
+  expect(curated?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(curated?.badges.state).toBe("on")
+  const custom = nodes.find((node) => node.id === "item:project:Implementer:perm:shell:custom")
+  expect(custom?.actions?.remove).toBe(true)
+  expect(custom?.actions?.edit).toBe(false)
+  expect(custom?.actions?.pin).toBe(false)
+})

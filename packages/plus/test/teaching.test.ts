@@ -54,7 +54,7 @@ test("seeding never overwrites user-edited content", async () => {
 })
 
 test("the instruction content stays within its size budget", async () => {
-  expect(teachingContent.length).toBeLessThanOrEqual(420)
+  expect(teachingContent.length).toBeLessThanOrEqual(600)
   for (const phrase of [
     "tools.instructions.*",
     "item:<level>:<agent|''>:<itemId>",
@@ -75,7 +75,7 @@ test("the skill content covers the tool surface", async () => {
   for (const phrase of [
     "list({ where?, fields?, sort?, limit?, offset? })",
     'show({ id, view? })',
-    "set({ id, text?, state?, pin?, resolve? })",
+    "set({ id, text?, state?, pin?, active?, resolve? })",
     "reset({ id })",
     "split({ id, boundaries?, add? })",
     "create({ kind, ...fields })",

@@ -32,6 +32,7 @@ export const ItemKind = Schema.Union([
   Schema.Literal("system"),
   Schema.Literal("mcp"),
   Schema.Literal("model"),
+  Schema.Literal("perm"),
 ]).annotate({ identifier: "Plus.ItemKind" })
 
 export type ItemGroup = typeof ItemGroup.Type
@@ -60,6 +61,12 @@ export const SnapshotItem = Schema.Struct({
   namespace: Schema.optionalKey(Schema.String),
   pinned: Schema.optionalKey(Schema.Boolean),
   execute: Schema.optionalKey(Schema.Boolean),
+  permTool: Schema.optionalKey(Schema.String),
+  ruleId: Schema.optionalKey(Schema.String),
+  patterns: Schema.optionalKey(Schema.Array(Schema.String)),
+  keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+  provenance: Schema.optionalKey(Schema.Array(Schema.String)),
+  custom: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.SnapshotItem" })
 
 export interface Boundary extends Schema.Schema.Type<typeof Boundary> {}
@@ -644,6 +651,63 @@ export const ModelInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.ModelInvalid" })
 
+// Tool-specific permission rules (phase 3). A RuleRecord defines a user-added
+// rule; toggling any rule (curated, mined, or custom) is a CustomizationRecord
+// with state on/off on the perm item address. Patterns are CORE RESOURCE
+// WILDCARDS over the parsed command text, NOT regex: `*` spans any run, `?`
+// matches one character. For shell the resource is the parsed command text,
+// so `git *` also matches a bare `git`.
+export interface RuleAddInput extends Schema.Schema.Type<typeof RuleAddInput> {}
+export const RuleAddInput = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+  label: Schema.String,
+  patterns: Schema.Array(Schema.String),
+  keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+}).annotate({ identifier: "Plus.RuleAddInput" })
+
+export interface RuleRemoveInput extends Schema.Schema.Type<typeof RuleRemoveInput> {}
+export const RuleRemoveInput = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+}).annotate({ identifier: "Plus.RuleRemoveInput" })
+
+export interface RuleRef extends Schema.Schema.Type<typeof RuleRef> {}
+export const RuleRef = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+  label: Schema.String,
+}).annotate({ identifier: "Plus.RuleRef" })
+
+export interface RuleExists extends Schema.Schema.Type<typeof RuleExists> {}
+export const RuleExists = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+}).annotate({ identifier: "Plus.RuleExists" })
+
+export interface RuleMissing extends Schema.Schema.Type<typeof RuleMissing> {}
+export const RuleMissing = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+}).annotate({ identifier: "Plus.RuleMissing" })
+
+export interface RuleInvalid extends Schema.Schema.Type<typeof RuleInvalid> {}
+export const RuleInvalid = Schema.Struct({
+  tool: Schema.String,
+  id: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.RuleInvalid" })
+
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
@@ -750,6 +814,14 @@ const PortableCatalogModelsOutput = Schema.toStandardSchemaV1(
 const PortableModelExists = Schema.toStandardSchemaV1(ModelExists.annotate({ identifier: "Plus.ModelExists" }))
 const PortableModelMissing = Schema.toStandardSchemaV1(ModelMissing.annotate({ identifier: "Plus.ModelMissing" }))
 const PortableModelInvalid = Schema.toStandardSchemaV1(ModelInvalid.annotate({ identifier: "Plus.ModelInvalid" }))
+const PortableRuleAddInput = Schema.toStandardSchemaV1(RuleAddInput.annotate({ identifier: "Plus.RuleAddInput" }))
+const PortableRuleRemoveInput = Schema.toStandardSchemaV1(
+  RuleRemoveInput.annotate({ identifier: "Plus.RuleRemoveInput" }),
+)
+const PortableRuleRef = Schema.toStandardSchemaV1(RuleRef.annotate({ identifier: "Plus.RuleRef" }))
+const PortableRuleExists = Schema.toStandardSchemaV1(RuleExists.annotate({ identifier: "Plus.RuleExists" }))
+const PortableRuleMissing = Schema.toStandardSchemaV1(RuleMissing.annotate({ identifier: "Plus.RuleMissing" }))
+const PortableRuleInvalid = Schema.toStandardSchemaV1(RuleInvalid.annotate({ identifier: "Plus.RuleInvalid" }))
 
 export const Definition = Rpc.define({
   id: "opencode.plus",
@@ -953,6 +1025,24 @@ export const Definition = Rpc.define({
       output: PortableCatalogModelsOutput,
       errors: {
         "project.disabled": PortableProjectDisabled,
+      },
+    },
+    "rule.add": {
+      input: PortableRuleAddInput,
+      output: PortableRuleRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "rule.exists": PortableRuleExists,
+        "rule.invalid": PortableRuleInvalid,
+      },
+    },
+    "rule.remove": {
+      input: PortableRuleRemoveInput,
+      output: PortableRuleRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "rule.missing": PortableRuleMissing,
+        "rule.invalid": PortableRuleInvalid,
       },
     },
   },

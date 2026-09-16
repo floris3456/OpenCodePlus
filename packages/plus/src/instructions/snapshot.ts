@@ -19,6 +19,12 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
     ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
     ...(item.execute === undefined ? {} : { execute: item.execute }),
+    ...(item.permTool === undefined ? {} : { permTool: item.permTool }),
+    ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
+    ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
+    ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
+    ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
+    ...(item.custom === undefined ? {} : { custom: item.custom }),
   }
 }
 
@@ -114,11 +120,14 @@ export function teamOf(team: Plus.TeamEntry): TeamInput {
 export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
   return {
     items: snapshot.items.map(itemOf),
-    // Model records are tree rows in phase 2; rule records stay filtered
-    // until phase 3. They round-trip through recordOf losslessly above.
+    // Model and rule records are tree rows in phases 2 and 3. They
+    // round-trip through recordOf losslessly above.
     records: snapshot.records
       .map(recordOf)
-      .filter((record): record is CustomizationRecord | SplitRecord | ModelRecord => record.type === "customization" || record.type === "split" || record.type === "model"),
+      .filter(
+        (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord =>
+          record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule",
+      ),
     agents: snapshot.agents.map(agentOf),
     teams: (snapshot.teams ?? []).map(teamOf),
   }

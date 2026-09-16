@@ -22,6 +22,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
           { title: "MCP server", value: "mcp" },
           { title: "Team", value: "team" },
           { title: "Model", value: "model" },
+          { title: "Permission rule", value: "rule" },
         ],
       })
       if (disposed) return
@@ -40,6 +41,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (kind === "team") return addTeam(node)
     if (kind === "section") return addSection(node)
     if (kind === "model") return addModel(node)
+    if (kind === "rule") return addRule(node)
     return addMcp()
   }
 
@@ -423,7 +425,87 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, dispose }
+  // a on a Permissions group: label → patterns → keywords (defaulting through
+  // keywordsForPattern) → scope. Patterns are core wildcards, not regex.
+  // The parent tool comes from the group when invoked there, otherwise prompt.
+  async function addRule(node?: TreeNode): Promise<void> {
+    if (disposed) return
+    const fromGroup = node?.id.match(/^group:(project|global|defaults):(.*):tool:[^:]+:perms$/)
+    let tool = fromGroup !== null && fromGroup !== undefined ? parentToolOf(node) : undefined
+    if (tool === undefined) {
+      const rawTool = await context.ui.dialog.prompt({ title: "Rule tool", placeholder: "shell" })
+      if (disposed) return
+      if (rawTool === undefined) return
+      const trimmed = rawTool.trim()
+      if (trimmed.length === 0) {
+        context.ui.toast.show({ variant: "error", message: "Rule tool cannot be empty" })
+        return
+      }
+      tool = trimmed
+    }
+    const rawLabel = await context.ui.dialog.prompt({ title: "Rule label", placeholder: "No force pushes" })
+    if (disposed) return
+    if (rawLabel === undefined) return
+    const label = rawLabel.trim()
+    if (label.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Rule label cannot be empty" })
+      return
+    }
+    const rawPatterns = await context.ui.dialog.prompt({ title: "Rule patterns", placeholder: "git push --force *, separated by commas" })
+    if (disposed) return
+    if (rawPatterns === undefined) return
+    const patterns = rawPatterns
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+    if (patterns.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Rule patterns cannot be empty" })
+      return
+    }
+    const rawKeywords = await context.ui.dialog.prompt({ title: "Rule keywords", placeholder: "blank for defaults" })
+    if (disposed) return
+    const keywords = rawKeywords === undefined || rawKeywords.trim().length === 0 ? undefined : rawKeywords.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+    const level = await context.ui.dialog.select<"project" | "global" | "defaults">({
+      title: "Rule scope",
+      options: [
+        { title: "Project", value: "project", description: "Stored with this project" },
+        { title: "Global", value: "global", description: "Stored in your global config" },
+        { title: "Defaults", value: "defaults", description: "Shared default for every agent" },
+      ],
+    })
+    if (disposed) return
+    if (level === undefined) return
+    try {
+      const ref = await plus["rule.add"](
+        { level, agent: null, tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }) },
+        { location: context.location },
+      )
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Added rule ${ref.tool}:${ref.id}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  function parentToolOf(node: TreeNode | undefined): string | undefined {
+    if (node === undefined) return undefined
+    const match = node.id.match(/^group:(?:project|global|defaults):.*:(tool:[^:]+):perms$/)
+    const toolId = match?.[1]
+    if (toolId === undefined) return undefined
+    return toolId.startsWith("tool:") ? toolId.slice("tool:".length) : toolId
+  }
+
+  function slugify(name: string): string {
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+    return slug.length > 0 ? slug : "rule"
+  }
+
+  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

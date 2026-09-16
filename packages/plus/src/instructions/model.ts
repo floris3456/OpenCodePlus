@@ -36,6 +36,18 @@ export interface Item {
   readonly pinned?: boolean
   /** Marks the single synthetic host-owned `execute` row. Only discovery ever sets it, always `true`. */
   readonly execute?: boolean
+  /** Perm rule rows only: the parent tool id (e.g. "shell", "edit", "subagent"). Only discovery ever sets it. */
+  readonly permTool?: string
+  /** Perm rule rows only: the rule id within its tool (e.g. "git-push"). Only discovery ever sets it. */
+  readonly ruleId?: string
+  /** Perm rule rows only: core wildcard patterns denied when the row is off. Only discovery ever sets it. */
+  readonly patterns?: readonly string[]
+  /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern. Only discovery ever sets it. */
+  readonly keywords?: readonly string[]
+  /** Perm rule rows only: item ids whose text mentioned this rule, most-mentioned first. Only discovery ever sets it. */
+  readonly provenance?: readonly string[]
+  /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
+  readonly custom?: boolean
 }
 
 // Id forms (documented, not enforced):
