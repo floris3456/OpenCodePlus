@@ -824,6 +824,7 @@ function lazyItem(
   const splittable =
     !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
   const perm = item.kind === "perm"
+  const hostRules = canHostPermRules(item)
   const kids = (): readonly Lazy[] => {
     if (executable) return []
     if (perm) return []
@@ -832,9 +833,10 @@ function lazyItem(
         lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth),
       ),
     )
-    const perms = permsGroup(ctx, memo, level, owner, item, depth + 1)
-    if (perms === undefined) return sections
-    return [...sections, perms]
+    // Permission rows hang directly off the tool row after its sections, in
+    // byOrderTitle order. Empty sets emit nothing; the `a` choice on the tool
+    // row still offers rule creation.
+    return [...sections, ...toolPermRows(ctx, memo, level, owner, item, depth + 1)]
   }
   if (perm) {
     const permAddress: Address = { level, agent: owner, item: item.id, section: null }
@@ -846,7 +848,7 @@ function lazyItem(
       address: permAddress,
       actions: {
         toggle: true,
-        edit: false,
+        edit: true,
         reset: canReset(ctx.customizations, permAddress),
         remove: item.custom === true,
         split: false,
@@ -864,7 +866,10 @@ function lazyItem(
     label: item.id === "system:role" ? "Role/persona" : item.title,
     depth,
     address,
-    ...(splittable ? { add: "section" as const } : {}),
+    // A tool row that can host rules offers both sections and rules through
+    // `a`, so it carries no direct add: dialogs present the Section /
+    // Permission rule choice. Every other splittable row keeps add:"section".
+    ...(splittable && !hostRules ? { add: "section" as const } : {}),
     actions: {
       toggle: executable || codemode || !wholeNoToggle,
       edit: !executable,
@@ -880,38 +885,38 @@ function lazyItem(
   }
 }
 
-// Permissions subgroup after a native/plus tool's section rows. Lists perm
-// rule rows for that tool (curated ∪ mined via discover, plus user customs).
-// Empty subgroups are never emitted, like Code Mode groups. Carries
-// add:"rule" so `a` opens the rule creation flow.
-export function permsGroup(
+// Whether a tool row can host permission rules: native/plus, non-Code-Mode,
+// non-execute, with a tool: id. Eligibility is structural (not row count) so
+// an empty rule set still offers the `a` choice.
+function canHostPermRules(item: Item): boolean {
+  if (item.kind !== "tool") return false
+  if (item.group !== "native" && item.group !== "plus") return false
+  if (item.codemode === true || item.execute === true) return false
+  const toolId = item.id.startsWith("tool:") ? item.id.slice("tool:".length) : undefined
+  if (toolId === undefined || toolId.length === 0) return false
+  return true
+}
+
+// Permission rule rows for a native/plus tool, in byOrderTitle order, as
+// direct children of the tool row after its sections. Empty sets emit
+// nothing. Carries no group wrapper: expanding the tool shows sections, then
+// rules.
+export function toolPermRows(
   ctx: BuildContext,
   memo: Memo,
   level: Level,
   owner: string | null,
   item: Item,
   depth: number,
-): Lazy | undefined {
-  if (item.kind !== "tool") return undefined
-  if (item.group !== "native" && item.group !== "plus") return undefined
-  if (item.codemode === true || item.execute === true) return undefined
-  const toolId = item.id.startsWith("tool:") ? item.id.slice("tool:".length) : undefined
-  if (toolId === undefined || toolId.length === 0) return undefined
+): Lazy[] {
+  if (!canHostPermRules(item)) return []
+  const toolId = item.id.slice("tool:".length)
   const rows = ctx.items
     .filter((entry) => entry.kind === "perm" && entry.permTool === toolId)
     .filter((entry) => (owner === null ? entry.agents === undefined : applies(entry, owner)))
     .toSorted(byOrderTitle)
-  if (rows.length === 0) return undefined
-  const id = `group:${level}:${owner ?? ""}:${item.id}:perms`
-  return branch(memo, {
-    kind: "group",
-    id,
-    label: "Permissions",
-    depth,
-    add: "rule",
-    actions: noActions(),
-    children: () => rows.map((entry) => lazyPermRow(memo, level, owner, entry, depth + 1)),
-  })
+  if (rows.length === 0) return []
+  return rows.map((entry) => lazyPermRow(memo, level, owner, entry, depth))
 }
 
 function lazyPermRow(memo: Memo, level: Level, owner: string | null, item: Item, depth: number): Lazy {
@@ -924,7 +929,7 @@ function lazyPermRow(memo: Memo, level: Level, owner: string | null, item: Item,
     address,
     actions: {
       toggle: true,
-      edit: false,
+      edit: true,
       reset: canReset(memo.ctx.customizations, address),
       remove: item.custom === true,
       split: false,

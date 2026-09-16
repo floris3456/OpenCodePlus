@@ -41,6 +41,7 @@ test("every method and event is declared", () => {
     "catalog.models",
     "rule.add",
     "rule.remove",
+    "rule.update",
   ]
 
   for (const name of expectedMethods) {
@@ -141,6 +142,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "catalog.models",
     "rule.add",
     "rule.remove",
+    "rule.update",
   ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
 
   for (const method of instructionsAndMutatingMethods) {
@@ -205,6 +207,8 @@ test("error schemas are correctly bound to their corresponding methods", () => {
 
   expect("rule.missing" in errorsOf("rule.remove")).toBe(true)
   expect("rule.invalid" in errorsOf("rule.remove")).toBe(true)
+
+  expect("rule.invalid" in errorsOf("rule.update")).toBe(true)
 })
 
 function errorsOf(method: keyof typeof Plus.Definition.methods): Record<string, unknown> {

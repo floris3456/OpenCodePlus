@@ -8,7 +8,7 @@ import type {
   SplitRecord,
 } from "./model.js"
 import { buildMemo, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { materialize, permsGroup, skeletonOf, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { materialize, skeletonOf, toolPermRows, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 
 export type Field =
@@ -182,15 +182,19 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
         for (const section of enumerated)
           push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: lazy, address: section.address, sectionIds: [] })
       }
-      // Item rows may own non-section children (the Permissions subgroup for
-      // tool rows). Sections are already pushed above; visit the perms group
-      // directly (it filters items with no resolve) instead of
-      // lazy.children(), which would also derive sections via splitOf and
-      // resolve every address even for structural misses.
+      // Item rows may own non-section children (permission rows hanging
+      // directly off tool rows after their sections). Sections are already
+      // pushed above; enumerate perm rows directly (they filter items with no
+      // resolve) instead of lazy.children(), which would also derive sections
+      // via splitOf and resolve every address even for structural misses.
       const address = lazy.address
       const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
-      const group = item === undefined || address === undefined ? undefined : permsGroup(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.depth + 1)
-      if (group !== undefined) visit(group)
+      const permRows =
+        item === undefined || address === undefined
+          ? []
+          : toolPermRows(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.depth + 1)
+      for (const perm of permRows)
+        push({ id: perm.id, kind: perm.kind, label: perm.label, depth: perm.depth, orphan: false, lazy: perm, parent: undefined, address: perm.address, sectionIds: [] })
       return
     }
     push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [] })
@@ -340,7 +344,7 @@ function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
   if (item?.kind === "perm")
     return {
       toggle: true,
-      edit: false,
+      edit: true,
       reset: canReset(state.memo.ctx.customizations, address),
       remove: item.custom === true,
       split: false,

@@ -1246,3 +1246,123 @@ test("rule.remove RPC from another agent's row refuses with no write and no log 
   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
   expect(await logLines(project)).toEqual(beforeLogs)
 })
+
+test("updating a protected agent's custom rule through another agent's row is refused (tools API)", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
+  if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
+  const snapshot = await snapshotOf(api)
+  const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
+    (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
+  )
+  if (betaRow === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  const error = await runFail(need(tools, "instructions_set"), { id: betaRow.id, label: "Hacked", patterns: ["evil *"] })
+  expect(error.message).toContain("agent.protected")
+  const after = await snapshotOf(api)
+  const kept = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
+  if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
+  expect(kept.label).toBe("Custom")
+})
+
+test("rule.update RPC from another agent's row refuses with no write and no log", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const state = createState()
+  const api = createPlusApi(ctx, state)
+  const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
+  if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
+  const snapshot = await snapshotOf(api)
+  const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
+    (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
+  )
+  if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  const beforeLogs = await logLines(project)
+  const handlers = createHandlers(ctx, state)
+  const captured: { current?: { type: string; message: string } } = {}
+  const throwing = {
+    error: (type: string, message: string, _data?: unknown) => {
+      captured.current = { type, message }
+      throw captured.current
+    },
+  }
+  const exit = await Effect.runPromiseExit(
+    handlers["rule.update"](
+      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
+      throwing,
+    ),
+  )
+  expect(Exit.isFailure(exit)).toBe(true)
+  expect(captured.current?.type).toBe("rule.invalid")
+  expect(captured.current?.message).toContain("agent.protected")
+  const after = await snapshotOf(api)
+  const kept = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
+  if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
+  expect(kept.label).toBe("Custom")
+  expect(await logLines(project)).toEqual(beforeLogs)
+})
+
+test("updateRule creates a custom override for a curated row and updates it with a log line", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const snapshot = await snapshotOf(api)
+  const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "perm:shell:git-push")
+  if (row?.address === undefined) throw new Error("missing curated perm row")
+  const created = await api.updateRule({
+    level: row.address.level,
+    agent: row.address.agent,
+    tool: "shell",
+    id: "git-push",
+    label: "Git push edited",
+    patterns: ["git push --force *"],
+    actor: { type: "tui" },
+  })
+  if (!created.ok) throw new Error(`updateRule failed: ${created.error.message}`)
+  expect(created.value).toMatchObject({ tool: "shell", id: "git-push", label: "Git push edited" })
+  const afterCreate = await snapshotOf(api)
+  const custom = afterCreate.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "git-push")
+  if (custom === undefined || custom.type !== "rule") throw new Error("expected custom override")
+  expect(custom.label).toBe("Git push edited")
+  expect(custom.keywords).toContain("git push")
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  expect(logged.value.total).toBeGreaterThan(0)
+  expect(logged.value.entries.some((entry) => entry.op === "rule.update")).toBe(true)
+  const updated = await api.updateRule({
+    level: row.address.level,
+    agent: row.address.agent,
+    tool: "shell",
+    id: "git-push",
+    label: "Git push v2",
+    patterns: ["git push *"],
+    keywords: ["custom-key"],
+    actor: { type: "tui" },
+  })
+  if (!updated.ok) throw new Error(`second update failed: ${updated.error.message}`)
+  const afterUpdate = await snapshotOf(api)
+  const second = afterUpdate.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "git-push")
+  if (second === undefined || second.type !== "rule") throw new Error("expected rule after second update")
+  expect(second.label).toBe("Git push v2")
+  expect(second.keywords).toEqual(["custom-key"])
+})

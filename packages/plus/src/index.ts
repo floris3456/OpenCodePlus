@@ -287,6 +287,15 @@ export type RemoveRuleResult =
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
     }
 
+export type UpdateRuleResult =
+  | { ok: true; value: Plus.RuleRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
+    }
+
 export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
@@ -312,6 +321,7 @@ export interface PlusApi {
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
   readonly removeRule: (input: Plus.RuleRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveRuleResult>
+  readonly updateRule: (input: Plus.RuleUpdateInput & { readonly actor?: Plus.Actor }) => Promise<UpdateRuleResult>
 }
 
 export interface PlusApiOptions {
@@ -1131,13 +1141,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { level: input.level, agent: input.agent, tool: validated.tool, id: validated.id },
           },
         }
-      if (existing.agent !== null && loaded.protectedAgents.includes(existing.agent)) {
-        const reason = `agent.protected: row belongs to protected agent "${existing.agent}"`
+      const protectedRefusal = ruleProtectedRefusal(loaded.protectedAgents, existing)
+      if (protectedRefusal !== undefined)
         return {
           ok: false as const,
-          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+          error: { code: "rule.invalid" as const, message: protectedRefusal, data: { tool: validated.tool, id: validated.id, reason: protectedRefusal } },
         }
-      }
       const next = loaded.records.filter((record) => record !== existing)
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
@@ -1158,6 +1167,60 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { level: existing.level, agent: existing.agent, tool: existing.tool, id: existing.id, label: existing.label } }
+    },
+    updateRule: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: validated.reason, data: { tool: input.tool, id: input.id, reason: validated.reason } },
+        }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const existing = loaded.records.find(
+        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+      )
+      const refusal = ruleProtectedRefusal(loaded.protectedAgents, existing)
+      if (refusal !== undefined)
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: refusal, data: { tool: validated.tool, id: validated.id, reason: refusal } },
+        }
+      const next: RuleRecord = {
+        type: "rule",
+        level: input.level,
+        agent: input.agent,
+        tool: validated.tool,
+        id: validated.id,
+        label: validated.label,
+        patterns: validated.patterns,
+        keywords: validated.keywords,
+        updated: new Date().toISOString(),
+      }
+      const nextRecords = existing === undefined ? [...loaded.records, next] : loaded.records.map((record) => (record === existing ? next : record))
+      const saved = await saveRuleRecords(directory, loaded, nextRecords)
+      if (!saved.ok) {
+        const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+        }
+      }
+      if (saved.changed)
+        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          ts: new Date().toISOString(),
+          actor: normalizeActor(input.actor),
+          op: "rule.update",
+          target: ruleRecordTarget(next),
+          summary: `rule.update ${validated.tool}:${validated.id} (${input.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return { ok: true as const, value: { level: next.level, agent: next.agent, tool: next.tool, id: next.id, label: next.label } }
     },
   }
 }
@@ -1456,6 +1519,16 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         }
         return result.value
       }),
+    "rule.update": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.updateRule(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
     "catalog.models": (_input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.catalogModels())
@@ -1573,6 +1646,18 @@ function validateRuleIdentity(
   if (trimmedId.length === 0) return { ok: false, reason: "Rule id cannot be empty" }
   if (trimmedId.includes("\n") || trimmedId.includes("\0")) return { ok: false, reason: `Invalid rule id "${id}"` }
   return { ok: true, tool: trimmedTool, id: trimmedId }
+}
+
+// Shared protected-agent guard for rule writes: protection follows the matched
+// record's owner, not the caller's row address, so a protected agent's custom
+// rule cannot be deleted or updated through another agent's globally displayed
+// row. Both removeRule and updateRule call this at the same PlusApi boundary
+// so the tools API, the RPC, and the TUI all inherit it.
+function ruleProtectedRefusal(protectedAgents: readonly string[], existing: RuleRecord | undefined): string | undefined {
+  if (existing === undefined) return undefined
+  if (existing.agent !== null && protectedAgents.includes(existing.agent))
+    return `agent.protected: row belongs to protected agent "${existing.agent}"`
+  return undefined
 }
 
 function validateModelRef(
