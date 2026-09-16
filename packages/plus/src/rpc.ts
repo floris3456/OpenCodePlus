@@ -677,6 +677,17 @@ export const RuleRemoveInput = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.RuleRemoveInput" })
 
+export interface RuleUpdateInput extends Schema.Schema.Type<typeof RuleUpdateInput> {}
+export const RuleUpdateInput = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+  label: Schema.String,
+  patterns: Schema.Array(Schema.String),
+  keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+}).annotate({ identifier: "Plus.RuleUpdateInput" })
+
 export interface RuleRef extends Schema.Schema.Type<typeof RuleRef> {}
 export const RuleRef = Schema.Struct({
   level: Level,
@@ -818,6 +829,9 @@ const PortableModelInvalid = Schema.toStandardSchemaV1(ModelInvalid.annotate({ i
 const PortableRuleAddInput = Schema.toStandardSchemaV1(RuleAddInput.annotate({ identifier: "Plus.RuleAddInput" }))
 const PortableRuleRemoveInput = Schema.toStandardSchemaV1(
   RuleRemoveInput.annotate({ identifier: "Plus.RuleRemoveInput" }),
+)
+const PortableRuleUpdateInput = Schema.toStandardSchemaV1(
+  RuleUpdateInput.annotate({ identifier: "Plus.RuleUpdateInput" }),
 )
 const PortableRuleRef = Schema.toStandardSchemaV1(RuleRef.annotate({ identifier: "Plus.RuleRef" }))
 const PortableRuleExists = Schema.toStandardSchemaV1(RuleExists.annotate({ identifier: "Plus.RuleExists" }))
@@ -1043,6 +1057,14 @@ export const Definition = Rpc.define({
       errors: {
         "project.disabled": PortableProjectDisabled,
         "rule.missing": PortableRuleMissing,
+        "rule.invalid": PortableRuleInvalid,
+      },
+    },
+    "rule.update": {
+      input: PortableRuleUpdateInput,
+      output: PortableRuleRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
         "rule.invalid": PortableRuleInvalid,
       },
     },

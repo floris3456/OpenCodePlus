@@ -652,3 +652,58 @@ test("ordinary tool sections still enumerate with real counts", () => {
   const [coderRow] = query(snap, { where: "id:item:project:Implementer:tool:coder", fields: ["id", "sections"] }).rows
   expect(coderRow?.sections?.slice().sort()).toEqual(["section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
 })
+
+function permSnap() {
+  return input({
+    items: [
+      makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "shell tool" }),
+      makeItem({
+        id: "perm:shell:git-push",
+        kind: "perm",
+        group: "none",
+        title: "Git push",
+        text: "Git push\ngit push *",
+        permTool: "shell",
+        ruleId: "git-push",
+        patterns: ["git push *"],
+        keywords: ["git push"],
+        provenance: [],
+      }),
+    ],
+    records: [],
+  })
+}
+
+test("perm rows hang directly off the tool with item:perm and tool filters and no group", () => {
+  const snap = permSnap()
+  const tree = expandedTree(snap)
+  expect(tree.some((node) => node.label === "Permissions")).toBe(false)
+  expect(tree.some((node) => node.id.includes(":perms"))).toBe(false)
+  const toolRow = tree.find((node) => node.id === "item:project:Implementer:tool:shell")
+  if (!toolRow) throw new Error("missing shell tool row")
+  const index = tree.findIndex((node) => node.id === toolRow.id)
+  const depth = tree[index]?.depth ?? 0
+  const direct: string[] = []
+  for (const node of tree.slice(index + 1)) {
+    if (node.depth <= depth) break
+    if (node.depth === depth + 1) direct.push(node.id)
+  }
+  expect(direct).toContain("item:project:Implementer:perm:shell:git-push")
+  const byItem = query(snap, { where: "item:perm", fields: ["id"] }).rows.map((row) => row.id)
+  expect(byItem).toContain("item:project:Implementer:perm:shell:git-push")
+  const byTool = query(snap, { where: "item:perm tool:shell", fields: ["id"] }).rows.map((row) => row.id)
+  expect(byTool).toContain("item:project:Implementer:perm:shell:git-push")
+  const otherTool = query(snap, { where: "item:perm tool:edit", fields: ["id"] }).rows
+  expect(otherTool).toHaveLength(0)
+  const editable = query(snap, { where: "can:edit", fields: ["id"] }).rows.map((row) => row.id)
+  expect(editable).toContain("item:project:Implementer:perm:shell:git-push")
+})
+
+test("perm structural misses still resolve nothing", () => {
+  const snap = permSnap()
+  const memo = buildMemo(snap)
+  const missed = query(snap, { where: "item:perm tool:nope" }, memo)
+  expect(missed.rows).toHaveLength(0)
+  expect(memo.whole.size).toBe(0)
+  expect(memo.section.size).toBe(0)
+})

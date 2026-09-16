@@ -49,7 +49,7 @@ const ShowDescription =
 const SetDescription =
   "Save an override, toggle, pin, activate a model, or resolve a review row (TUI Enter/Space/p/k/t/e).\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
-  "Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
+  "On a perm row with label+patterns (keywords optional) update the rule. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -131,6 +131,9 @@ const SetInput = Schema.Struct({
   pin: Schema.optionalKey(Schema.Boolean),
   active: Schema.optionalKey(Schema.Boolean),
   resolve: Schema.optionalKey(Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit")])),
+  label: Schema.optionalKey(Schema.String),
+  patterns: Schema.optionalKey(Schema.Array(Schema.String)),
+  keywords: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 
 const ResetInput = Schema.Struct({
@@ -666,11 +669,17 @@ function setPerm(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit" },
+  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; label?: string; patterns?: readonly string[]; keywords?: readonly string[] },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
+    if (input.label !== undefined || input.patterns !== undefined || input.keywords !== undefined)
+      return yield* updateRuleRow(api, snapshot, memo, id, actor, {
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.patterns === undefined ? {} : { patterns: input.patterns }),
+        ...(input.keywords === undefined ? {} : { keywords: input.keywords }),
+      })
     if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
@@ -763,6 +772,49 @@ function deleteRuleRow(
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: `Removed "${id}"` } }
+  })
+}
+
+function updateRuleRow(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+  input: { label?: string; patterns?: readonly string[]; keywords?: readonly string[] },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const found = findRow(memo, id)
+    const address = found?.address
+    if (address === undefined) return yield* Effect.fail(unknownError(id))
+    const parsed = parsePermItemId(address.item)
+    if (parsed === undefined) return yield* Effect.fail(unknownError(id))
+    if (input.label === undefined || input.patterns === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: "set rule requires label and patterns" }))
+    // Same global-identity protection as delete: the row's agent is whatever
+    // subtree is open, so check the matched record's owner before writing, or
+    // a protected owner's rule is editable through another agent's row. The
+    // PlusApi updateRule repeats this guard at the shared boundary, so direct
+    // RPC callers inherit it too.
+    const existing = memo.records.find(
+      (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
+    )
+    if (existing !== undefined && existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
+      return yield* Effect.fail(protectedError(existing.agent))
+    const result = yield* Effect.promise(() =>
+      api.updateRule({
+        level: address.level,
+        agent: address.agent,
+        tool: parsed.tool,
+        id: parsed.ruleId,
+        label: input.label as string,
+        patterns: [...(input.patterns as readonly string[])],
+        ...(input.keywords === undefined ? {} : { keywords: [...input.keywords] }),
+        actor,
+      }),
+    )
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    return { output: { ...result.value, status: `Updated "${id}"` } }
   })
 }
 

@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition } from "../../rpc.js"
+import { parsePermItemId } from "../../instructions/model.js"
 import type { AddKind, TreeNode } from "../../instructions/tree.js"
 import type { InstructionsState } from "./state.js"
 
@@ -9,6 +10,23 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addFor(node: TreeNode | undefined): Promise<void> {
     if (disposed) return
+    // A tool row that hosts both sections and rules carries no direct add:
+    // `a` offers the Section / Permission rule choice. Every other row keeps
+    // today's direct add or the generic picker.
+    if (node?.kind === "item" && node.address !== undefined && node.add === undefined && node.actions?.split === true && node.address.item.startsWith("tool:")) {
+      const picked = await context.ui.dialog.select<"section" | "rule">({
+        title: "Add",
+        placeholder: "Select what to add",
+        options: [
+          { title: "Section", value: "section" },
+          { title: "Permission rule", value: "rule" },
+        ],
+      })
+      if (disposed) return
+      if (picked === undefined) return
+      await addKind(picked, node)
+      return
+    }
     const kind = node?.add
     if (kind === undefined) {
       const picked = await context.ui.dialog.select<AddKind>({
@@ -425,31 +443,36 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  function scopeFromPermsGroup(node: TreeNode | undefined): { level: "project" | "global" | "defaults"; agent: string | null } | undefined {
-    if (node === undefined) return undefined
-    const match = node.id.match(/^group:(project|global|defaults):(.*):tool:[^:]+:perms$/)
-    if (match === null) return undefined
-    const level = match[1]
-    if (level !== "project" && level !== "global" && level !== "defaults") return undefined
-    const owner = match[2] ?? ""
-    if (owner === "") {
-      if (level !== "defaults") return undefined
-      return { level, agent: null }
-    }
-    return { level, agent: owner }
+  // Level/agent come from the tool item row or the perm row itself (their own
+  // address); otherwise undefined so the caller prompts. Tool rows address
+  // tool:<id>, perm rows address perm:<tool>:<rule>.
+  function scopeFromToolOrPermRow(node: TreeNode | undefined): { level: "project" | "global" | "defaults"; agent: string | null } | undefined {
+    if (node === undefined || node.kind !== "item" || node.address === undefined) return undefined
+    if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:")) return undefined
+    return { level: node.address.level, agent: node.address.agent }
   }
 
-  // a on a Permissions group: label → patterns → keywords (defaulting through
+  function toolFromToolOrPermRow(node: TreeNode | undefined): string | undefined {
+    if (node === undefined || node.address === undefined) return undefined
+    const item = node.address.item
+    if (item.startsWith("tool:")) {
+      const tool = item.slice("tool:".length)
+      return tool.length > 0 ? tool : undefined
+    }
+    if (item.startsWith("perm:")) return parsePermItemId(item)?.tool
+    return undefined
+  }
+
+  // a on a tool row: label → patterns → keywords (defaulting through
   // keywordsForPattern) → scope. Patterns are core wildcards, not regex.
-  // The parent tool comes from the group when invoked there, otherwise prompt.
-  // Scope comes from the group when invoked there, otherwise prompt for level
-  // then agent, mirroring addModel.
+  // The parent tool and scope come from the tool row when invoked there,
+  // otherwise prompt. Scope prompts mirror addModel.
   async function addRule(node?: TreeNode): Promise<void> {
     if (disposed) return
-    const scoped = scopeFromPermsGroup(node)
+    const scoped = scopeFromToolOrPermRow(node)
     let level: "project" | "global" | "defaults" | undefined = scoped?.level
     let agent: string | null | undefined = scoped?.agent
-    let tool = parentToolOf(node)
+    let tool = toolFromToolOrPermRow(node)
     if (tool === undefined) {
       const rawTool = await context.ui.dialog.prompt({ title: "Rule tool", placeholder: "shell" })
       if (disposed) return
@@ -548,12 +571,78 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  function parentToolOf(node: TreeNode | undefined): string | undefined {
-    if (node === undefined) return undefined
-    const match = node.id.match(/^group:(?:project|global|defaults):.*:(tool:[^:]+):perms$/)
-    const toolId = match?.[1]
-    if (toolId === undefined) return undefined
-    return toolId.startsWith("tool:") ? toolId.slice("tool:".length) : toolId
+  // enter on a perm row: label → patterns → keywords, each prefilled with the
+  // row's current values. Tool and rule id reuse the snapshot item's permTool
+  // and ruleId; level/agent come from the row's own address, so no tool or
+  // scope prompts. Blank keywords derive via keywordsForPattern on the server.
+  async function editRule(node: TreeNode): Promise<void> {
+    if (disposed) return
+    const address = node.address
+    if (address === undefined) {
+      context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
+      return
+    }
+    const parsed = parsePermItemId(address.item)
+    if (parsed === undefined) {
+      context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
+      return
+    }
+    const snapshot = state.snapshot()
+    const current = snapshot?.items.find((entry) => entry.id === address.item)
+    const tool = current?.permTool ?? parsed.tool
+    const ruleId = current?.ruleId ?? parsed.ruleId
+    const rawLabel = await context.ui.dialog.prompt({
+      title: "Rule label",
+      placeholder: "No force pushes",
+      value: current?.title ?? node.label,
+    })
+    if (disposed) return
+    if (rawLabel === undefined) return
+    const label = rawLabel.trim()
+    if (label.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Rule label cannot be empty" })
+      return
+    }
+    const rawPatterns = await context.ui.dialog.prompt({
+      title: "Rule patterns",
+      placeholder: "git push --force *, separated by commas",
+      value: (current?.patterns ?? []).join(", "),
+    })
+    if (disposed) return
+    if (rawPatterns === undefined) return
+    const patterns = rawPatterns
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+    if (patterns.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Rule patterns cannot be empty" })
+      return
+    }
+    const rawKeywords = await context.ui.dialog.prompt({
+      title: "Rule keywords",
+      placeholder: "blank for defaults",
+      value: (current?.keywords ?? []).join(", "),
+    })
+    if (disposed) return
+    const keywords =
+      rawKeywords === undefined || rawKeywords.trim().length === 0
+        ? undefined
+        : rawKeywords
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0)
+    try {
+      const ref = await plus["rule.update"](
+        { level: address.level, agent: address.agent, tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }) },
+        { location: context.location },
+      )
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Updated rule ${ref.tool}:${ref.id}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
   }
 
   function slugify(name: string): string {
@@ -564,7 +653,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, dispose }
+  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, editRule, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

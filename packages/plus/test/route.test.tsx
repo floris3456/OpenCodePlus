@@ -469,7 +469,7 @@ test("a on a tool row adds a section", async () => {
     snapshots: [before, after],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["Flags", "extra flags"] },
+    dialogs: { selects: ["section"], prompts: ["Flags", "extra flags"] },
   })
   try {
     // Agent subtree by label: Agents group, agent, Tools, subgroup, item.
@@ -481,11 +481,11 @@ test("a on a tool row adds a section", async () => {
     await expand(fixture)
     await moveTo(fixture, "bash")
     await fixture.waitForFrame((frame) => frame.includes("run commands"))
-    expect(fixture.fake.dialogSelects.length).toBe(0)
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes('Added "Flags"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
-    expect(fixture.fake.dialogSelects.length).toBe(0)
+    // The tool row hosts both sections and rules, so `a` offers the choice.
+    expect(fixture.fake.dialogSelects.length).toBe(1)
     const records = fixture.fake.mutateInputs[0].records
     const split = records.find((record) => record.type === "split")
     const customization = records.find((record) => record.type === "customization")
@@ -1756,7 +1756,7 @@ test("reviewer persona shows its own prompt and saves only its record", async ()
   }
 })
 
-test("a on a Permissions group creates a per-agent rule without scope prompts", async () => {
+test("a on a tool row offers Section or Permission rule and creates without scope prompts", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
     items: [
@@ -1789,7 +1789,7 @@ test("a on a Permissions group creates a per-agent rule without scope prompts", 
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["No force pushes", "git push --force *", ""] },
+    dialogs: { selects: ["rule"], prompts: ["No force pushes", "git push --force *", ""] },
   })
   try {
     await gotoAgent(fixture, "Implementer")
@@ -1799,8 +1799,6 @@ test("a on a Permissions group creates a per-agent rule without scope prompts", 
     await moveTo(fixture, "Native")
     await expand(fixture)
     await moveTo(fixture, "shell")
-    await expand(fixture)
-    await moveTo(fixture, "Permissions")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
     expect(fixture.fake.ruleAdds[0]).toMatchObject({
@@ -1810,7 +1808,7 @@ test("a on a Permissions group creates a per-agent rule without scope prompts", 
       label: "No force pushes",
     })
     expect(fixture.fake.ruleAdds[0]?.patterns).toEqual(["git push --force *"])
-    expect(fixture.fake.dialogSelects.length).toBe(0)
+    expect(fixture.fake.dialogSelects.length).toBe(1)
   } finally {
     fixture.destroy()
   }
@@ -1838,6 +1836,87 @@ test("a on a generic row prompts for rule scope and creates a per-agent rule", a
       label: "No force pushes",
     })
     expect(fixture.fake.ruleAdds[0]?.patterns).toEqual(["git push --force *"])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("perm rows hang directly off the tool and enter opens the rule editor", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "tool:shell",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "shell",
+        text: "run shell commands",
+        enabled: true,
+        fingerprint: "fp-shell",
+      },
+      {
+        id: "perm:shell:git-push",
+        kind: "perm" as const,
+        group: "none" as const,
+        title: "Git push",
+        text: "Git push\ngit push *",
+        enabled: true,
+        fingerprint: "fp-push",
+        permTool: "shell",
+        ruleId: "git-push",
+        patterns: ["git push *"],
+        keywords: ["git push"],
+        provenance: [],
+      },
+    ],
+  })
+  const liveSnapshots: Snapshot[] = [snapshot]
+  const ruleUpdates: { level: string; agent: string | null; tool: string; id: string; label: string; patterns: string[] }[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["No force pushes", "git push --force *", ""] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => liveSnapshots[liveSnapshots.length - 1],
+        "rule.update": async (input: { level: "project" | "global" | "defaults"; agent: string | null; tool: string; id: string; label: string; patterns: string[]; keywords?: string[] }) => {
+          ruleUpdates.push({ level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label, patterns: [...input.patterns] })
+          return { level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label }
+        },
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveToNext(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "shell")
+    await expand(fixture)
+    await moveTo(fixture, "Git push")
+    // Perm rows are editable leaves directly under the tool: no Permissions
+    // group, enter offers the rule editor.
+    expect(fixture.captureCharFrame()).not.toContain("Permissions")
+    await fixture.waitForFrame((frame) => frame.includes("enter edit rule"))
+    expect(fixture.captureCharFrame()).toContain("enter edit rule")
+    expect(dispatch(fixture, "return")).toBe(true)
+    await fixture.waitForFrame(() => ruleUpdates.length === 1)
+    expect(ruleUpdates[0]).toMatchObject({
+      level: "project",
+      agent: "Implementer",
+      tool: "shell",
+      id: "git-push",
+      label: "No force pushes",
+    })
+    expect(ruleUpdates[0]?.patterns).toEqual(["git push --force *"])
   } finally {
     fixture.destroy()
   }

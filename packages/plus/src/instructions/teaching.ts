@@ -44,7 +44,7 @@ Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|b
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 
-Permission rows live under each native/plus tool's \`Permissions\` group (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`.
+Permission rows hang directly off each native/plus tool row (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`.
 
 ## show
 

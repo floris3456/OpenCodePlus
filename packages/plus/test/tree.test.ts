@@ -683,7 +683,9 @@ test("Code Mode tool rows offer toggle/edit/split/pin/add and read live, never u
   expect(coder?.badges.unsupported).toBeUndefined()
   const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")
   expect(bash?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: true, pin: false })
-  expect(bash?.add).toBe("section")
+  // Native non-Code-Mode tools host both sections and rules, so `a` offers a
+  // Section / Permission rule choice instead of a direct section add.
+  expect(bash?.add).toBeUndefined()
   expect(bash?.badges.unsupported).toBeUndefined()
 })
 
@@ -925,7 +927,7 @@ test("model union shows chain candidates with source badges and one active winne
   ])
 })
 
-test("native tool rows list a Permissions subgroup after sections with toggle-only rule rows", () => {
+test("native tool rows list perm rows directly after sections with editable rule rows", () => {
   const shellText = "shell tool"
   const all = [
     makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
@@ -958,25 +960,46 @@ test("native tool rows list a Permissions subgroup after sections with toggle-on
   const nodes = expandAll({ items: all, records: [], agents: agents() })
   const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:shell")
   if (!toolRow) throw new Error("expected shell tool row")
+  // No intermediate Permissions group: perm rows hang directly off the tool.
+  expect(nodes.some((node) => node.id === "group:project:Implementer:tool:shell:perms")).toBe(false)
+  expect(nodes.some((node) => node.label === "Permissions")).toBe(false)
+  // The tool row hosts both sections and rules, so `a` offers the choice
+  // instead of a direct section add.
+  expect(toolRow.add).toBeUndefined()
   const kids = childrenOf(nodes, toolRow.id)
-  expect(kids[kids.length - 1]?.label).toBe("Permissions")
-  expect(kids[kids.length - 1]?.add).toBe("rule")
-  const group = nodes.find((node) => node.id === "group:project:Implementer:tool:shell:perms")
-  expect(group?.label).toBe("Permissions")
-  const rows = childrenOf(nodes, group?.id ?? "")
-  expect(rows.map((node) => node.id).sort()).toEqual(
+  expect(kids.map((node) => node.id).sort()).toEqual(
+    ["item:project:Implementer:perm:shell:custom", "item:project:Implementer:perm:shell:git-push"].sort().concat(kids.filter((node) => node.kind === "section").map((node) => node.id)).sort(),
+  )
+  // Perm rows come after section rows, ordered among themselves by title.
+  const permKids = kids.filter((node) => node.address?.item.startsWith("perm:"))
+  expect(permKids.map((node) => node.id).sort()).toEqual(
     ["item:project:Implementer:perm:shell:custom", "item:project:Implementer:perm:shell:git-push"].sort(),
   )
+  const sectionCount = kids.length - permKids.length
+  for (const perm of permKids) expect(kids.indexOf(perm)).toBeGreaterThanOrEqual(sectionCount)
   const curated = nodes.find((node) => node.id === "item:project:Implementer:perm:shell:git-push")
-  expect(curated?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(curated?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: false, pin: false })
   expect(curated?.badges.state).toBe("on")
   const custom = nodes.find((node) => node.id === "item:project:Implementer:perm:shell:custom")
   expect(custom?.actions?.remove).toBe(true)
-  expect(custom?.actions?.edit).toBe(false)
+  expect(custom?.actions?.edit).toBe(true)
   expect(custom?.actions?.pin).toBe(false)
 })
 
-test("permissions subgroup shows most-mentioned first, not title order", () => {
+test("empty rule sets emit no perm rows but the tool still offers the add choice", () => {
+  const nodes = expandAll({
+    items: [makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "shell tool" })],
+    records: [],
+    agents: agents(),
+  })
+  const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:shell")
+  if (!toolRow) throw new Error("expected shell tool row")
+  expect(toolRow.add).toBeUndefined()
+  expect(childrenOf(nodes, toolRow.id).some((node) => node.address?.item.startsWith("perm:"))).toBe(false)
+  expect(nodes.some((node) => node.label === "Permissions")).toBe(false)
+})
+
+test("perm rows order most-mentioned first, not title order", () => {
   const shellText = "shell tool"
   const all = [
     makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
@@ -1008,8 +1031,8 @@ test("permissions subgroup shows most-mentioned first, not title order", () => {
     }),
   ]
   const nodes = expandAll({ items: all, records: [], agents: agents() })
-  const group = nodes.find((node) => node.id === "group:project:Implementer:tool:shell:perms")
-  if (!group) throw new Error("expected perms group")
-  const rows = childrenOf(nodes, group.id)
+  const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:shell")
+  if (!toolRow) throw new Error("expected shell tool row")
+  const rows = childrenOf(nodes, toolRow.id).filter((node) => node.address?.item.startsWith("perm:"))
   expect(rows.map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa generic"])
 })

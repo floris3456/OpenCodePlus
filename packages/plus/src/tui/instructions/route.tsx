@@ -246,7 +246,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   // Enter on a normal node opens the detail editor; Enter on a yellow review
-  // node opens the three-pane diff.
+  // node opens the three-pane diff; Enter on a permission row opens the rule
+  // editor.
   function enter() {
     const node = current()
     if (!node || node.address === undefined) {
@@ -256,6 +257,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (isReview(node)) {
       setDiffNode(node)
       setMode("diff")
+      return
+    }
+    if (node.address.item.startsWith("perm:")) {
+      void dialogs.editRule(node)
       return
     }
     if (!canEdit(node)) {
@@ -304,7 +309,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node && isExpandable(node)) hints.push("left/right expand")
     if (!wide() && node && node.address !== undefined && !isExpandable(node) && !showDetail())
       hints.push("right detail")
-    hints.push("enter edit")
+    if (node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
+    else hints.push("enter edit")
     if (canToggle(node)) hints.push("space toggle")
     if (canPin(node)) hints.push("p pin")
     hints.push("a add")
@@ -321,7 +327,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function helpText(): string {
     return [
       "arrows move · left collapse · right expand",
-      "enter edit (diff on yellow review rows)",
+      "enter edit (diff on yellow review rows, rule editor on permission rows)",
       "space toggle include/exclude · p pin Code Mode tool · a add · d delete (confirm)",
       "r reset override · s split into sections",
       "/ filter rows · ? help · esc back",
