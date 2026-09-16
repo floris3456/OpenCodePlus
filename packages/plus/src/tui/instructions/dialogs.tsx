@@ -425,13 +425,31 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
+  function scopeFromPermsGroup(node: TreeNode | undefined): { level: "project" | "global" | "defaults"; agent: string | null } | undefined {
+    if (node === undefined) return undefined
+    const match = node.id.match(/^group:(project|global|defaults):(.*):tool:[^:]+:perms$/)
+    if (match === null) return undefined
+    const level = match[1]
+    if (level !== "project" && level !== "global" && level !== "defaults") return undefined
+    const owner = match[2] ?? ""
+    if (owner === "") {
+      if (level !== "defaults") return undefined
+      return { level, agent: null }
+    }
+    return { level, agent: owner }
+  }
+
   // a on a Permissions group: label → patterns → keywords (defaulting through
   // keywordsForPattern) → scope. Patterns are core wildcards, not regex.
   // The parent tool comes from the group when invoked there, otherwise prompt.
+  // Scope comes from the group when invoked there, otherwise prompt for level
+  // then agent, mirroring addModel.
   async function addRule(node?: TreeNode): Promise<void> {
     if (disposed) return
-    const fromGroup = node?.id.match(/^group:(project|global|defaults):(.*):tool:[^:]+:perms$/)
-    let tool = fromGroup !== null && fromGroup !== undefined ? parentToolOf(node) : undefined
+    const scoped = scopeFromPermsGroup(node)
+    let level: "project" | "global" | "defaults" | undefined = scoped?.level
+    let agent: string | null | undefined = scoped?.agent
+    let tool = parentToolOf(node)
     if (tool === undefined) {
       const rawTool = await context.ui.dialog.prompt({ title: "Rule tool", placeholder: "shell" })
       if (disposed) return
@@ -465,19 +483,60 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     const rawKeywords = await context.ui.dialog.prompt({ title: "Rule keywords", placeholder: "blank for defaults" })
     if (disposed) return
     const keywords = rawKeywords === undefined || rawKeywords.trim().length === 0 ? undefined : rawKeywords.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-    const level = await context.ui.dialog.select<"project" | "global" | "defaults">({
-      title: "Rule scope",
-      options: [
-        { title: "Project", value: "project", description: "Stored with this project" },
-        { title: "Global", value: "global", description: "Stored in your global config" },
-        { title: "Defaults", value: "defaults", description: "Shared default for every agent" },
-      ],
-    })
-    if (disposed) return
-    if (level === undefined) return
+    if (level === undefined) {
+      const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
+        title: "Rule scope",
+        options: [
+          { title: "Project", value: "project", description: "Stored with this project" },
+          { title: "Global", value: "global", description: "Stored in your global config" },
+          { title: "Defaults", value: "defaults", description: "Shared default for every agent" },
+        ],
+      })
+      if (disposed) return
+      if (pickedLevel === undefined) return
+      level = pickedLevel
+    }
+    if (level === "defaults" && agent === undefined) {
+      const shared = await context.ui.dialog.select<string>({
+        title: "Rule agent",
+        placeholder: "Shared or per-agent?",
+        options: [
+          { title: "Shared (every agent)", value: "" },
+          { title: "Per-agent…", value: "__agent__" },
+        ],
+      })
+      if (disposed) return
+      if (shared === undefined) return
+      if (shared === "") {
+        agent = null
+      }
+      if (shared !== "") {
+        const raw = await context.ui.dialog.prompt({ title: "Agent id", placeholder: "my-agent" })
+        if (disposed) return
+        if (raw === undefined) return
+        const trimmed = raw.trim()
+        if (trimmed.length === 0) {
+          context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
+          return
+        }
+        agent = trimmed
+      }
+    }
+    if (agent === undefined) {
+      const raw = await context.ui.dialog.prompt({ title: "Agent id", placeholder: "my-agent" })
+      if (disposed) return
+      if (raw === undefined) return
+      const trimmed = raw.trim()
+      if (trimmed.length === 0) {
+        context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
+        return
+      }
+      agent = trimmed
+    }
+    if (level === undefined || agent === undefined) return
     try {
       const ref = await plus["rule.add"](
-        { level, agent: null, tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }) },
+        { level, agent, tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }) },
         { location: context.location },
       )
       if (disposed) return

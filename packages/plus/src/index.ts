@@ -24,7 +24,7 @@ import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { dedupeAgents, installTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type RuleRecord, type SplitRecord } from "./instructions/model.js"
+import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
@@ -45,6 +45,7 @@ export interface PlusState {
   globalRevision: number | undefined
   baselines: Map<string, PromptBaseline>
   modelBaselines: Map<string, ModelBaseline>
+  activeModels: Map<string, ModelRefLike>
   semaphore: Semaphore.Semaphore
 }
 
@@ -59,6 +60,7 @@ export function createState(): PlusState {
     globalRevision: undefined,
     baselines: new Map(),
     modelBaselines: new Map(),
+    activeModels: new Map(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
 }
@@ -2047,6 +2049,29 @@ function scopeLevel(scope: "project" | "global" | "defaults"): Level {
   return "project"
 }
 
+// Per-agent active-model cache: the answer to "what model should this agent
+// use?" computed where the work already happens (publishFresh holds the
+// discovered agents, scopes, and stored records). Only non-upstream winners
+// are cached; a missing entry means no switch, preserving the upstream guard.
+export function buildActiveModels(
+  agents: readonly AgentSource[],
+  models: readonly ModelRecord[],
+  scopes: Scopes,
+): Map<string, ModelRefLike> {
+  const next = new Map<string, ModelRefLike>()
+  for (const agent of dedupeAgents(agents)) {
+    const winner = resolveActiveModel({ models, scopes, level: scopeLevel(agent.scope), agent: agent.id })
+    if (winner === undefined) continue
+    if (winner.source === "upstream") continue
+    next.set(agent.id, {
+      providerID: winner.providerID,
+      modelID: winner.modelID,
+      ...(winner.variant === undefined ? {} : { variant: winner.variant }),
+    })
+  }
+  return next
+}
+
 async function readTemplate(
   ctx: Context,
   directory: string,
@@ -2278,6 +2303,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.globalRevision = undefined
       state.baselines = new Map()
       state.modelBaselines = new Map()
+      state.activeModels = new Map()
     }),
   )
 }
@@ -2312,6 +2338,8 @@ function publishFresh(
       const customizations = customizationsOf(stored.records)
       const splits = splitsOf(stored.records)
       const modelRecords = modelsOf(stored.records)
+      const scopes = scopesOf(discovered.agents)
+      state.activeModels = buildActiveModels(discovered.agents, modelRecords, scopes)
       const fingerprint = yield* Effect.promise(() =>
         fingerprintPublish(discovered, stored.records, ctx.location.directory, builtins),
       )
@@ -2617,8 +2645,9 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
 // A session created with, or switched to, an agent adopts that agent's active
 // model via switchModel, and only when the session's current model differs.
 // Manual mid-session picks emit session.model.selected, which we never
-// subscribe to, so user choices are never overridden.
-function applySessionModel(
+// subscribe to, so user choices are never overridden. The wanted model comes
+// from the publishFresh cache: no store reads and no discovery run here.
+export function applySessionModel(
   ctx: Context,
   state: PlusState,
   event: { type: string; properties?: Record<string, unknown>; data?: unknown },
@@ -2630,20 +2659,12 @@ function applySessionModel(
     const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
     const sessionID = payload.sessionID
     if (typeof sessionID !== "string" || sessionID.length === 0) return
-    const stored = yield* Effect.promise(() => loadCurrent(directory))
-    const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines, state.modelBaselines))
-    const scopes = scopesOf(discovered.agents)
-    const models = modelsOf(stored.records)
     const agentID = typeof payload.agent === "string" ? payload.agent : undefined
     const targetAgent = agentID ?? (yield* Effect.promise(() => currentSessionAgent(ctx, sessionID)))
     if (targetAgent === undefined) return
-    const source = discovered.agents.find((entry) => entry.id === targetAgent)
-    if (source === undefined) return
-    const winner = resolveActiveModel({ models, scopes, level: scopeLevel(source.scope), agent: targetAgent })
-    if (winner === undefined) return
-    if (winner.source === "upstream") return
+    const wanted = state.activeModels.get(targetAgent)
+    if (wanted === undefined) return
     const current = yield* Effect.promise(() => currentSessionModel(ctx, sessionID))
-    const wanted: ModelRefLike = { providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }
     if (current !== undefined && sameModelRef(current, wanted)) return
     yield* ctx.session.switchModel({ sessionID: Session.ID.make(sessionID), model: toHostModelRef(wanted) }).pipe(
       Effect.catchCause(() => Effect.void),
