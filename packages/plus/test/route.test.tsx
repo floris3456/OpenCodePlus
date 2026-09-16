@@ -1755,3 +1755,90 @@ test("reviewer persona shows its own prompt and saves only its record", async ()
     fixture.destroy()
   }
 })
+
+test("a on a Permissions group creates a per-agent rule without scope prompts", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "tool:shell",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "shell",
+        text: "run shell commands",
+        enabled: true,
+        fingerprint: "fp-shell",
+      },
+      {
+        id: "perm:shell:git-push",
+        kind: "perm" as const,
+        group: "none" as const,
+        title: "Git push",
+        text: "Git push\ngit push *",
+        enabled: true,
+        fingerprint: "fp-push",
+        permTool: "shell",
+        ruleId: "git-push",
+        patterns: ["git push *"],
+        keywords: ["git push"],
+        provenance: [],
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["No force pushes", "git push --force *", ""] },
+  })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "shell")
+    await expand(fixture)
+    await moveTo(fixture, "Permissions")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
+    expect(fixture.fake.ruleAdds[0]).toMatchObject({
+      level: "project",
+      agent: "Implementer",
+      tool: "shell",
+      label: "No force pushes",
+    })
+    expect(fixture.fake.ruleAdds[0]?.patterns).toEqual(["git push --force *"])
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a generic row prompts for rule scope and creates a per-agent rule", async () => {
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    dialogs: {
+      selects: ["rule", "project"],
+      prompts: ["shell", "No force pushes", "git push --force *", "", "my-agent"],
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Tools")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
+    expect(fixture.fake.ruleAdds[0]).toMatchObject({
+      level: "project",
+      agent: "my-agent",
+      tool: "shell",
+      label: "No force pushes",
+    })
+    expect(fixture.fake.ruleAdds[0]?.patterns).toEqual(["git push --force *"])
+  } finally {
+    fixture.destroy()
+  }
+})

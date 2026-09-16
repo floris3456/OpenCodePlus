@@ -5,7 +5,7 @@ import { Effect, Exit } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createHandlers, createState, type PlusState } from "../src/index.js"
+import { applySessionModel, createHandlers, createState, type PlusState } from "../src/index.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { enable } from "../src/project.js"
@@ -1065,4 +1065,104 @@ test("mcp methods refuse to destroy an unparseable project config", async () => 
   const removeBad: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["mcp.remove"]({ name: "search" }, throwingContext(removeBad)), removeBad, "mcp.invalid")
   expect(await Bun.file(target).text()).toBe("{not json\n")
+})
+
+test("session.created uses the cached active model without rediscovery", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const counts = { agentLists: 0, skillLists: 0 }
+  const switches: Array<{ sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }> = []
+  const countingAgent = {
+    ...agents.domain,
+    list: () => {
+      counts.agentLists++
+      return agents.domain.list()
+    },
+  }
+  const countingSkill = {
+    ...skill,
+    list: () => {
+      counts.skillLists++
+      return skill.list()
+    },
+  }
+  const ctx = context({
+    location,
+    agent: countingAgent,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
+    skill: countingSkill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+    session: {
+      get: () => Effect.succeed({ agent: "alpha", model: { providerID: "acme", id: "nova-1" } } as never),
+      switchModel: (input: { sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }) =>
+        Effect.sync(() => {
+          switches.push({ sessionID: input.sessionID, model: input.model })
+        }),
+    },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  const afterAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const active: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: afterAdd.revision,
+      expectedGlobalRevision: afterAdd.globalRevision,
+      records: [active],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(state.activeModels.get("alpha")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+  counts.agentLists = 0
+  counts.skillLists = 0
+  switches.length = 0
+  await Effect.runPromise(
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1", agent: "alpha" } }),
+  )
+  expect(switches).toHaveLength(1)
+  expect(String(switches[0]?.model.providerID)).toBe("acme")
+  expect(String(switches[0]?.model.id)).toBe("nova-2")
+  expect(counts.agentLists).toBe(0)
+  expect(counts.skillLists).toBe(0)
+  const { load, save } = await import("../src/instructions/store.js")
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [],
+  })
+  switches.length = 0
+  counts.agentLists = 0
+  counts.skillLists = 0
+  await Effect.runPromise(
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_2", agent: "alpha" } }),
+  )
+  expect(switches).toHaveLength(1)
+  expect(String(switches[0]?.model.id)).toBe("nova-2")
+  expect(counts.agentLists).toBe(0)
+  expect(counts.skillLists).toBe(0)
 })

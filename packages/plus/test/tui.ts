@@ -16,6 +16,7 @@ import type {
   DeleteSkillInput,
   ImportSkillInput,
   MutateInput,
+  RuleAddInput,
   Snapshot,
   Status,
 } from "../src/rpc.js"
@@ -94,6 +95,7 @@ export interface FakeRpc {
   readonly instructionDeletes: { name: string }[]
   readonly mcpAdds: AddMcpInput[]
   readonly mcpRemoves: { name: string }[]
+  readonly ruleAdds: RuleAddInput[]
   readonly dialogPrompts: string[][]
   readonly dialogSelects: unknown[][]
   readonly dialogConfirms: unknown[][]
@@ -151,6 +153,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     instructionDeletes: [],
     mcpAdds: [],
     mcpRemoves: [],
+    ruleAdds: [],
     dialogPrompts: [],
     dialogSelects: [],
     dialogConfirms: [],
@@ -235,6 +238,10 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         "mcp.remove": async (input: { name: string }) => {
           fake.mcpRemoves.push(input)
           return { name: input.name }
+        },
+        "rule.add": async (input: RuleAddInput) => {
+          fake.ruleAdds.push(input)
+          return { level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label }
         },
         events: {
           on: (name: string, handler: RpcListener) => {
