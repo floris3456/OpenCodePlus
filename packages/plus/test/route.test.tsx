@@ -1921,3 +1921,66 @@ test("perm rows hang directly off the tool and enter opens the rule editor", asy
     fixture.destroy()
   }
 })
+
+test("detail pane e starts text editing on a tool row but not on a permission rule", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "tool:shell",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "shell",
+        text: "run shell commands",
+        enabled: true,
+        fingerprint: "fp-shell",
+      },
+      {
+        id: "perm:shell:git-push",
+        kind: "perm" as const,
+        group: "none" as const,
+        title: "Git push",
+        text: "Git push\ngit push *",
+        enabled: true,
+        fingerprint: "fp-push",
+        permTool: "shell",
+        ruleId: "git-push",
+        patterns: ["git push *"],
+        keywords: ["git push"],
+        provenance: [],
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveToNext(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "shell")
+    // Tool row: 'e' is bound and starts text editing.
+    expect(binds(fixture)).toContain("e")
+    expect(dispatch(fixture, "e")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    expect(fixture.captureCharFrame()).toContain("ctrl+s save")
+    // Cancel editing to return to navigation.
+    expect(dispatch(fixture, "escape")).toBe(true)
+    await fixture.waitForFrame((frame) => !frame.includes("ctrl+s save"))
+
+    // Navigate to the permission rule child.
+    await expand(fixture)
+    await moveTo(fixture, "Git push")
+    // Permission row: 'e' is unavailable and does not start text editing.
+    expect(binds(fixture)).not.toContain("e")
+    expect(dispatch(fixture, "e")).toBe(false)
+    expect(fixture.captureCharFrame()).not.toContain("ctrl+s save")
+  } finally {
+    fixture.destroy()
+  }
+})

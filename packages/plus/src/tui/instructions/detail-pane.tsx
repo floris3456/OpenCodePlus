@@ -172,6 +172,7 @@ export function permDetail(
 export function isEditable(node: TreeNode | undefined): boolean {
   if (!node) return false
   if (node.address === undefined) return false
+  if (node.address.item.startsWith("perm:")) return false
   return node.actions?.edit === true
 }
 
