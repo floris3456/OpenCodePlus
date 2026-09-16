@@ -20,9 +20,13 @@ Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the th
 
 ```
 <Agent>
+  Models                     union down the chain plus the agent's upstream model (`source` badge, one `active`)
+    <model>
   Tools                      Native / OpenCodePlus / MCP > <server>, each with a `Code Mode` subgroup when it has Code Mode rows (namespaced below Native/OpenCodePlus, flat below an MCP server)
     <tool>
       <section>
+      Permissions              (after sections; native/plus non-Code-Mode non-`execute` tools only)
+        <rule>
   Base                       [a: add base prompt]
     <template>.txt           (the one matching the agent's model is marked "active")
       <section>
@@ -35,9 +39,17 @@ Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the th
       <section>
 ```
 
-`Defaults` holds `Agents` followed by the shared inventories: `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on an Agents group adds an agent at that level. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
+`Defaults` holds `Agents` followed by the shared inventories: `Models`, `Tools`, `Base`, `Skills`, `System`, `MCP` (`[a: add MCP server]`). `a` on an Agents group adds an agent at that level. `d` deletes project/global agents (`agent.delete`), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), and project instruction files (`instruction.delete`). Rows that still cannot be deleted — upstream-owned skills, builtin base templates, native/MCP tool rows, section rows, and an agent's own `Role/persona` prompt body — keep a specific refusal message naming why.
 
-Code Mode tool rows support toggle, edit, split, reset and a new **pin** (`p` toggles it, the `pinned` badge reads the resolved pin); pinning keeps a tool's full listing inline in the catalog even when the inline budget is tight. The synthetic `execute` row is a native toggle-only row.
+Code Mode tool rows support toggle, edit, split, reset and a new **pin** (`p` toggles it, the `pinned` badge reads the resolved pin); pinning keeps a tool's full listing inline in the catalog even when the inline budget is tight. The synthetic `execute` row is a native toggle-only row. Code Mode and `execute` rows carry no `Permissions` subgroup: their denies are whole-tool only.
+
+## Model selection
+
+Each agent subtree opens with a `Models` group (`[a: add model]` from the host catalog). Rows are the union of stored candidates down the existing chain (most-specific source wins) plus the agent's upstream model, each with a `source` badge (`project`/`global`/`defaults`/`upstream`). At most one stored row per (level, agent) carries `active`; the effective model is the first active row down the chain, else upstream. Space (or `set` with or without `active: true`) activates one candidate exclusively at that level, creating the local row when the candidate is inherited; `r` clears only that level's active flag so the chain falls through; `d` deletes the candidate at that level only. Adding stores an inactive row and never steals the effective model. The active model reaches the host in one `ctx.agent.transform` (`applyModels` in `src/instructions/apply.ts`) and reaches sessions through `switchModel` on `session.created` / `session.agent.selected` only when the session's current model differs; manual mid-session picks (`session.model.selected`) are never subscribed to and never overridden. The base template follows the model family automatically: the context hook classifies each request's model through `ctx.prompt.active` and applies only the template active for that request.
+
+## Permission rules
+
+Each native/plus non-Code-Mode non-`execute` tool row carries a `Permissions` subgroup (`[a: add rule]`) after its sections, listing that tool's rules: curated defaults plus candidates mined from text Plus already holds (tool/base/skill/role/file/teaching text, with `provenance` naming the mentioning item ids, most-mentioned first), plus user `RuleRecord` customs. Turning a rule OFF installs one core deny per pattern (`{ action, resource, effect: "deny" }`, appended; core evaluates last-match-wins) for that agent and scrubs matching lines from tool descriptions, system parts, and catalog descriptions. Patterns are CORE RESOURCE WILDCARDS, not regex (`*` spans any run, `?` one character); for shell the resource is the parsed command text, so `git *` also matches a bare `git`. The action derives from the tool id (`edit`/`write`/`patch` share core's `edit` action, everything else uses its own id). Scrub keywords come only from the single `keywordsForPattern` (head plus subcommands, stopping at wildcards/flags, so `git push *` scrubs `git push` lines, not every `git` line). Mined candidates are view-time only: never persisted and never part of the publish fingerprint (only a stored off-state or a `RuleRecord` enters it via `records`).
 
 ## Inheritance
 
@@ -53,13 +65,13 @@ Derived from markdown headings, else XML-style blocks, else the whole text. `s` 
 
 ## Keys
 
-Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude, `p` pin (Code Mode tool rows), `a` add, `d` delete, `r` reset override, `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
+Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude (on a Models row: activate exclusively at that level; on a rule row: toggle the rule), `p` pin (Code Mode tool rows), `a` add (`a` on a Models group adds a catalog candidate; `a` on a Permissions group adds a shared rule), `d` delete (`d` on a model row deletes the candidate at that level; `d` on a rule row deletes only user-created rules), `r` reset override (`r` on a model row clears only that level's active flag), `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
 
 ## Storage
 
 Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl` (`level === "project"` only), global scope and Defaults in `<configDir>/opencodeplus/instructions/records.jsonl` (global and defaults levels). Each store tracks its own revision from its file header. Saves supply separate expected project and global revisions and serialize under a process-wide global gate plus the per-project gate in a fixed order, so concurrent projects cannot clobber the shared global file. Stale saves identify the conflicting store (`project` or `global`), and a save only writes and bumps the store whose routed records actually changed (a project-only save leaves the global revision untouched and vice versa). Format is v2 JSONL: a `{"version":2,"revision":n}` header line, then one canonical record per line. A v1 `records.jsonl` header (no `version`) is migrated on load and the first save writes v2 to both stores, so v1 is never written and the two formats never sit side by side.
 
-RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `team.setEnabled`; events `project.changed`, `instructions.changed`. The binding contract is `SPEC.md`.
+RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove`, `team.setEnabled`; events `project.changed`, `instructions.changed`. The binding contract is `SPEC.md`.
 
 ## Tools
 
@@ -67,13 +79,13 @@ Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` 
 
 | tool | input |
 | --- | --- |
-| `list` | `{ where?, fields?, sort?, limit?, offset? }` (`limit` defaults to 40) |
-| `show` | `{ id, view? }` (`view` defaults to `resolved`) |
-| `set` | `{ id, text?, state?, resolve?, pin? }` (`state` is `on`\|`off`; `resolve` is `keep`\|`take`\|`edit`; `pin` keeps the tool's full listing inline in the catalog) |
-| `reset` | `{ id }` (deletes the override at that row) |
-| `split` | `{ id, boundaries?, add? }` (`boundaries` is `[{ id, name, start }]` with character offsets; `add: { name, text }` appends a trailing section) |
-| `create` | `{ kind, ...fields }`, one row per call: agent needs `id` + `prompt`; skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction needs `name` + `text`; mcp needs `name` + `config`; team needs `team` + `level` |
-| `delete` | `{ id, confirm: true }` (refused without `confirm: true`) |
+| `list` | `{ where?, fields?, sort?, limit?, offset? }` (`limit` defaults to 40; `where` accepts `item:model\|perm`, `active`, and `tool:<id>`) |
+| `show` | `{ id, view? }` (`view` defaults to `resolved`; on a perm row any view returns `patterns`, `keywords`, `provenance`, and a scrub preview) |
+| `set` | `{ id, text?, state?, resolve?, pin?, active? }` (`state` is `on`\|`off`; `resolve` is `keep`\|`take`\|`edit`; `pin` keeps the tool's full listing inline in the catalog; `active: true` activates a model row exclusively at that level — a bare `set` on a model row activates too; perm rows accept only `state`) |
+| `reset` | `{ id }` (deletes the override at that row; on a model row clears only that level's active flag) |
+| `split` | `{ id, boundaries?, add? }` (`boundaries` is `[{ id, name, start }]` with character offsets; `add: { name, text }` appends a trailing section; perm and model rows cannot be split) |
+| `create` | `{ kind, ...fields }`, one row per call: agent needs `id` + `prompt`; skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction needs `name` + `text`; mcp needs `name` + `config`; team needs `team` + `level`; model needs `providerID` + `modelID` (optional `variant`, `level`/`agent`); rule needs `tool` + `id` + `label` + `patterns` (optional `keywords`, `level`/`agent`) |
+| `delete` | `{ id, confirm: true }` (refused without `confirm: true`; on a model row removes the candidate at that level; only user-created rules can be deleted) |
 | `log` | `{ where?, limit?, offset? }` → `{ entries, total }`, both log files merged newest-first |
 
 `show` views: `resolved` (default), `upstream` (text above the override), `mine` (stored text), `record` (raw override), `sections` (section ids), `diff` (original→mine and original→upstream unified diffs plus a one-line summary), `assembled` (full effective prompt, agent row ids only). `set` with `resolve: "keep"` acks upstream keeping text, `"take"` drops stored text and follows upstream, `"edit"` stores `text` against current upstream.
@@ -84,6 +96,8 @@ Row ids name one row everywhere: the TUI filter, tool calls, log targets, and er
 - `section:<level>:<agent|''>:<itemId>:<sectionId>` — one section inside a row
 - `agent:<level>:<id>` — one agent's subtree (only these accept `view: "assembled"`)
 - `team:<level>:<name>` — one team
+- `model:<providerID>/<modelID>` (optionally `@<variant>`) — the `<itemId>` of a model row
+- `perm:<toolId>:<ruleId>` (the rule id keeps any extra `:` it contains) — the `<itemId>` of a permission row
 
 `<level>` is `project`, `global`, or `defaults`.
 
@@ -119,6 +133,10 @@ Only what is provably impossible, with what was tried:
 - **Never send an optional key whose value is `undefined` across the RPC boundary.** Results are validated as JSON, so the whole call fails with HTTP 400. Omit the key instead. `expectRpcBody` in `test/rpc.test.ts` guards this.
 - **Upstream permission denials are invisible.** `ctx.skill.list()` and the tool editor list return the full inventory without agent permission evaluation (core filters later in `packages/core/src/skill.ts` and `packages/core/src/tool.ts`), and `Item.available` is one boolean per item, not per agent. A denied row shows `[enabled]` and toggling it is a no-op upstream. Threading per-agent availability through discover, model, tree, and RPC was cut as disproportionate. No test currently pins this.
 - **Async MCP tools regain customizations at the next publish, not on reappearance.** Core reconciles MCP tools behind a 100 ms debounce plus `tools.reload()` (`packages/core/src/tool/mcp.ts`), which emits none of the events Plus watches (`agent.updated`, `skill.updated`, `config.updated`). Closing it needs a public post-reconciliation inventory notification.
+- **Custom rules are globally unique by tool+id, not per level/agent.** `rule.add`/`rule.remove` match existing records by `(tool, id)` only, so a second level or agent cannot define its own rule with the same tool+id.
+- **The TUI add-rule flow stores shared (`agent: null`) rules.** Per-agent customs go through the tools API (`create` with `agent`); the dialog always calls `rule.add` with `agent: null`.
+- **MCP tool rows get no Permissions subgroup** because their resource is always `"*"`, so per-resource rules would never match core evaluation.
+- **Code Mode and `execute` rows only support whole-tool denies.** Per-resource subgroups are skipped there (`tree.ts` `permsGroup`); use the row toggle.
 
 ## Shortcut
 

@@ -14,17 +14,21 @@ group (`[a: add team]`) holding that level's on-disk teams. `Defaults` holds
 `Agents` (template agents, each with the full subtree, `[a: add agent template]`),
 `Teams` (built-in shipped teams with working toggles and informational
 member rows, `[a: add team]` still creates at project or global, never
-defaults), and then the shared inventories: `Tools`, `Base` `[a]`, `Skills`,
+defaults), and then the shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`,
 `System` `[a]`, `MCP` `[a: add MCP server]`.
 
 Every agent in all three roots has the identical subtree:
 
 ```
 <Agent>
+  Models
+    <model>
   Tools
     Native / OpenCodePlus
       <tool>
         <section>
+        Permissions            (after sections; native/plus non-Code-Mode non-execute tools only)
+          <rule>
       Code Mode                (only when that origin has Code Mode rows)
         <namespace>
           <tool>
@@ -52,7 +56,7 @@ Every agent in all three roots has the identical subtree:
 `[a: add agent template]`), `Teams` (built-in shipped teams, each with
 working toggles and informational member rows, `[a: add team]` still creates
 at project or global, never defaults), and then the shared inventories:
-`Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
+`Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
 
 Code Mode grouping (`tree.ts`): inside each origin group, Code Mode tools
 sit under a `Code Mode` subgroup; below Native and OpenCodePlus it holds one
@@ -67,6 +71,27 @@ never emitted: the caller skips the group when there are no rows, and every
 namespace group comes from a row so it is non-empty by construction. The
 synthetic `execute` row (`tool:execute`) is a plain Native row, toggle-only:
 its text is host-owned and not editable, and it carries no other affordance.
+
+Models group (`tree.ts` `lazyModels`): first child of every agent subtree
+and first shared Defaults inventory. The group id is
+`group:<level>:<agent|''>:models` (the shared Defaults group is
+`group:defaults::models`); it carries `add: "model"`. Rows are the union
+down the chain (deduplicated) plus the agent's upstream model, each with a
+`source` badge naming the level it came from. Toggle activates exclusively
+at this level (creating the local row when the candidate is inherited),
+remove deletes the row at this level only; no edit, split, or pin. `active`
+marks the resolved winner down the chain (or upstream when nothing is
+active).
+
+Permissions subgroup (`tree.ts` `permsGroup`): after a native/plus tool's
+section rows. The group id is
+`group:<level>:<agent|''>:<tool item id>:perms` (for example
+`group:project:alpha:tool:shell:perms`); it carries `add: "rule"`. It lists
+that tool's perm rule rows (curated ∪ mined via discovery, plus user
+customs), sorted by title. Empty subgroups are never emitted. Only
+native/plus, non-Code-Mode, non-`execute` tools get one: MCP resources are
+always `"*"` and Code Mode denies are whole-tool, so per-resource rules
+there would never match core evaluation.
 
 Agent sources and scopes (`model.ts`)
 
@@ -137,7 +162,7 @@ export interface Address {
   readonly item: string
   readonly section: string | null // null = the whole item
 }
-export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp"
+export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm"
 export type ItemGroup = "native" | "plus" | "mcp" | "project" | "none"
 export interface Item {
   readonly id: string
@@ -150,6 +175,8 @@ export interface Item {
   readonly fingerprint: string
   readonly agents?: readonly string[]
   readonly order?: number
+  /** True for user-created base templates (deletable, never the host active answer). */
+  readonly userBase?: boolean
   /** True for Code Mode tools: applied through deny rules and the catalog hook. */
   readonly codemode?: boolean
   /** The Code Mode namespace the tool is grouped under (`tool.options.namespace`). */
@@ -158,13 +185,30 @@ export interface Item {
   readonly pinned?: boolean
   /** Marks the single synthetic host-owned `execute` row. Only discovery ever sets it, always `true`. */
   readonly execute?: boolean
+  /** Perm rule rows only: the parent tool id (e.g. "shell", "edit", "subagent"). Only discovery ever sets it. */
+  readonly permTool?: string
+  /** Perm rule rows only: the rule id within its tool (e.g. "git-push"). Only discovery ever sets it. */
+  readonly ruleId?: string
+  /** Perm rule rows only: core wildcard patterns denied when the row is off. Only discovery ever sets it. */
+  readonly patterns?: readonly string[]
+  /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern. Only discovery ever sets it. */
+  readonly keywords?: readonly string[]
+  /** Perm rule rows only: item ids whose text mentioned this rule, most-mentioned first. Only discovery ever sets it. */
+  readonly provenance?: readonly string[]
+  /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
+  readonly custom?: boolean
 }
 ```
 
 Item id forms (documented, not enforced): `tool:<toolId>`,
 `base:<templateId>` (gpt|claude|muse|gemini|general), `skill:<skillId>`,
 `system:role` (the agent's own prompt body = Role/persona),
-`system:<relativePath>`, `mcp:<server>`.
+`system:<relativePath>`, `mcp:<server>`,
+`model:<providerID>/<modelID>` or `model:<providerID>/<modelID>@<variant>`,
+`perm:<toolId>:<ruleId>` (the rule id keeps any extra `:` it contains; row
+ids address the whole row by concatenation and match by exact string
+equality, so `/`, `@`, and extra `:` inside the item segment need no
+escaping; the parsers split on the first `/` and the first `:` only).
 
 Resolution chain, most specific first, resolving `text`, `state`, and `pin`
 independently — first level supplying that field wins:
@@ -232,6 +276,52 @@ address)` (remove the override at that level only), `canReset`,
 no `text`, so it re-resolves from the chain every read and a change above is
 seen with no user action.
 
+### Model selection (`model.ts`)
+
+```ts
+export interface ModelRefLike { readonly providerID: string; readonly modelID: string; readonly variant?: string }
+export interface ModelCandidate extends ModelRefLike { readonly source: Level | "upstream" }
+export function modelItemId(input: { providerID: string; modelID: string; variant?: string }): string
+export function parseModelItemId(id: string): { providerID: string; modelID: string; variant?: string } | undefined
+export function permItemId(tool: string, ruleId: string): string
+export function parsePermItemId(id: string): { tool: string; ruleId: string } | undefined
+export function modelKey(candidate: Pick<ModelRefLike, "providerID" | "modelID" | "variant">): string
+export function modelCandidates(input: { models: readonly ModelRecord[]; scopes: Scopes; level: Level; agent: string | null; upstream?: ModelRefLike }): ModelCandidate[]
+export function resolveActiveModel(input: { models: readonly ModelRecord[]; scopes: Scopes; level: Level; agent: string | null; upstream?: ModelRefLike }): ModelCandidate | undefined
+export function addModelRecord(models: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }, updated: string): ModelRecord[]
+export function ensureActivateModel(models: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }, updated: string): ModelRecord[]
+export function activateModel(records: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }): ModelRecord[]
+export function clearModelActive(models: readonly ModelRecord[], address: { level: Level; agent: string | null }): ModelRecord[]
+export function removeModelRecord(models: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }): ModelRecord[]
+```
+
+- Candidates are the union down the existing `resolutionChain` (most
+  specific first), deduplicated with most-specific source winning, plus the
+  agent's upstream model appended last when not already present. Shared rows
+  (`agent: null`) contribute only at `defaults`; upstream contributes only
+  when `agent !== null`.
+- The effective model is the first `active === true` record down the chain,
+  else upstream. No active record and no upstream means Plus installs
+  nothing for that agent.
+- Invariant: at most one record per (level, agent) carries `active`.
+  `activateModel` clears `active` from only that pair's other records;
+  activating the already-active record (with no stray actives) or a target
+  with no record at all returns an identical list. `addModelRecord` stores
+  an inactive row and never steals the effective model; `ensureActivateModel`
+  plants the local row first, then flips it exclusively (this is the TUI
+  space path for inherited candidates). `r` (`clearModelActive`) clears only
+  this level's active flag, leaving candidates in place so the chain falls
+  through; with no active at this address it returns an identical list.
+- Delivery: `applyModels` (`apply.ts`) resolves each effective agent and
+  sets the host model in one `ctx.agent.transform`; upstream winners install
+  nothing. Sessions adopt the agent's active model through `switchModel` on
+  `session.created` / `session.agent.selected` only when the session's
+  current model differs (`index.ts`); manual mid-session picks
+  (`session.model.selected`) are never subscribed to and never overridden.
+  The base template follows the model family automatically: the context
+  hook classifies each request's model through `ctx.prompt.active` and
+  applies only the template active for that request.
+
 ## Store (`store.ts`, `paths.ts`)
 
 ```ts
@@ -258,8 +348,47 @@ export interface SplitRecord {
   readonly boundaries: readonly Boundary[]
   readonly updated: string
 }
-export type StoredRecord = CustomizationRecord | SplitRecord | TeamRecord
+export type StoredRecord = CustomizationRecord | SplitRecord | TeamRecord | ModelRecord | RuleRecord
 ```
+
+```ts
+// Per-agent model selection: which provider model an agent uses. `active`
+// is `true` or omitted, never `false`: records cross the RPC boundary as
+// JSON, where a present-but-undefined key fails validation.
+export interface ModelRecord {
+  readonly type: "model"
+  readonly level: Level
+  readonly agent: string | null
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+  readonly active?: true
+  readonly updated: string
+}
+// One user-added tool permission rule. On/off reuses CustomizationRecord
+// state on the `perm:<tool>:<rule>` item address, so resolve() already
+// yields `enabled` with no new logic.
+export interface RuleRecord {
+  readonly type: "rule"
+  readonly level: Level
+  readonly agent: string | null
+  readonly tool: string
+  readonly id: string
+  readonly label: string
+  readonly patterns: readonly string[]
+  readonly keywords: readonly string[]
+  readonly updated: string
+}
+```
+
+Splits belong to the **item**, not the agent, and are stored at the level they
+were made; they resolve down the same chain as overrides. Model and rule
+records route by level like any other record: `project` to the project file,
+`global`/`defaults` to the global file. Canonical sort keys order models by
+`["model", providerID, modelID, variant ?? "", String(agent), level,
+active ? "active" : "", updated]` and rules by `["rule", tool, id,
+String(agent), level, updated]`, ending with `updated` so the order is total
+and an unchanged save stays a no-op.
 
 Splits belong to the **item**, not the agent, and are stored at the level they
 were made; they resolve down the same chain as overrides.
@@ -326,12 +455,33 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
 | `team.create` | `{ level, team }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
+| `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
+| `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
+| `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
+| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid` |
+| `rule.remove` | `{ level, agent, tool, id }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid` |
+
+`ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
+`RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
+inactive candidate and requires it to exist in the host model catalog
+(unknown models fail with `model.invalid`); shared rows (`agent: null`)
+live at `defaults` only. `rule.add` derives `keywords` through
+`keywordsForPattern` when omitted and matches existing rules by `(tool, id)`
+globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
+`level`/`agent` are carried but not part of the lookup.
 
 Events: `project.changed`, `instructions.changed`.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
-`pinned`, `execute`; `SnapshotCustomizationRecord` carries `pin`;
-`AssembledTool` carries `codemode`, `pinned`. Optional keys are omitted
+`pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
+`provenance`, `custom`; `SnapshotCustomizationRecord` carries `pin`;
+`AssembledTool` carries `codemode`, `pinned`. `SnapshotRecord` is the union
+of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,
+`SnapshotModelRecord` (`{ type: "model", level, agent, providerID, modelID,
+variant?, active?: true, updated }`), and `SnapshotRuleRecord`
+(`{ type: "rule", level, agent, tool, id, label, patterns, keywords,
+updated }`). `AgentEntry` carries `model?` (`{ providerID, modelID,
+variant? }`) and `fileBacked`. Optional keys are omitted
 when unset: never send an optional key whose value is `undefined` across
 the RPC boundary, because results are validated as JSON and the whole call
 fails with HTTP 400.
@@ -385,6 +535,12 @@ export interface AssembledTool {
 - `team.unknown`: `{ level: FileScope, team: string }`
 - `team.exists`: `{ level: FileScope, team: string }`
 - `team.create`: `{ level: FileScope, team: string, reason: string }`
+- `model.exists`: `{ level: Level, agent: string | null, providerID: string, modelID: string, variant?: string }`
+- `model.missing`: `{ level: Level, agent: string | null, providerID: string, modelID: string, variant?: string }`
+- `model.invalid`: `{ providerID: string, modelID: string, variant?: string, reason: string }`
+- `rule.exists`: `{ level: Level, agent: string | null, tool: string, id: string }`
+- `rule.missing`: `{ level: Level, agent: string | null, tool: string, id: string }`
+- `rule.invalid`: `{ tool: string, id: string, reason: string }`
 
 ## Teams (`teams.ts`, `builtin-teams.ts`, `paths.ts`, `store.ts`, `rpc.ts`)
 
@@ -555,7 +711,7 @@ export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" 
 export type ToolResolve = "keep" | "take" | "edit"
 export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
 export interface ShowInput { readonly id: string; readonly view?: ToolView }
-export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean }
+export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean }
 export interface ResetInput { readonly id: string }
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
@@ -565,26 +721,48 @@ export type CreateInput =
   | { readonly kind: "instruction"; readonly name: string; readonly text: string }
   | { readonly kind: "mcp"; readonly name: string; readonly config: Record<string, unknown> }
   | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global" }
+  | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
+  | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
 export interface DeleteInput { readonly id: string; readonly confirm: true }
 ```
 
 - `list` returns the matching row ids (default projection `id, badges,
   source, tokens`; `limit` defaults to 40). `show` defaults to view
-  `resolved`. `assembled` renders the full effective prompt and accepts agent
+  `resolved`. On a perm row any view returns the rule view (`tool`, `rule`,
+  `label`, `patterns`, `keywords`, `provenance`, `custom`, `enabled`,
+  `source`, plus a scrub preview: `scrub.hidden` lines would drop,
+  `scrub.preview` shows up to 3). `assembled` renders the full effective prompt and accepts agent
   row ids only (`agent:<level>:<id>`); any other id fails with
   `view.unsupported`. `record` returns the raw override including `pin`
   when set. `diff` returns two unified diffs (original→mine and
   original→upstream) plus a one-line summary. `set` with `pin` keeps the
   tool's full listing inline in the catalog even when the inline budget is
-  tight. `set` with `resolve: "keep"`
+  tight. `set` with `active: true` activates a model row exclusively at that
+  level (a bare `set` on a model row activates too; model rows refuse text,
+  state, pin, and resolve); on a perm row only `state` applies (no text,
+  pin, active, or resolve). `set` with `resolve: "keep"`
   acks upstream keeping text, `"take"` drops stored text and follows upstream,
   `"edit"` stores `text` against current upstream. `reset` deletes the
-  override at that row. `split` boundaries are `{ id, name, start }` with
+  override at that row (on a model row clears only that level's active flag).
+  `split` boundaries are `{ id, name, start }` with
   character offsets into the row text; `add: { name, text }` appends a new
-  trailing section. `create` writes one row per call; `create` with
+  trailing section; perm and model rows cannot be split. `create` writes one row per call; `create` with
   `kind: "team"` creates the team directory DISABLED (enabling stays a
-  separate `set` on the team row). `delete` without
-  `confirm: true` fails with `delete.unconfirmed` and writes nothing.
+  separate `set` on the team row); `create` with `kind: "model"` needs
+  `providerID` + `modelID` (`level` defaults to `project`, `agent` is
+  required for project/global levels); `create` with `kind: "rule"` needs
+  `tool` + `id` + `label` + `patterns` (patterns are core wildcards, not
+  regex). `delete` without
+  `confirm: true` fails with `delete.unconfirmed` and writes nothing;
+  on a model row it removes the candidate at that level, and only
+  user-created (`custom`) rules can be deleted.
+- Row ids (same string in the TUI filter, tool calls, the log, and error
+  messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
+  shared Defaults row), `section:<level>:<agent|''>:<itemId>:<sectionId>`,
+  `agent:<level>:<id>`, `team:<level>:<name>`, with item ids
+  `model:<providerID>/<modelID>[@<variant>]` and
+  `perm:<toolId>:<ruleId>`. `<level>` is `project`,
+  `global`, or `defaults`.
 - Row ids (same string in the TUI filter, tool calls, the log, and error
   messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
   shared Defaults row), `section:<level>:<agent|''>:<itemId>:<sectionId>`,
@@ -605,6 +783,52 @@ derived from the Item's namespace plus the normalized title
 (`title.replace(/[^a-zA-Z0-9_-]/g, "_")`) rather than reversible from the
 registry id. The hook only mutates entries that already exist: an unknown
 path is skipped.
+
+### Permission rules (`tool-permissions.ts`, `discover.ts`, `apply.ts`, `assembled.ts`, `index.ts`)
+
+- Rules come from two view-time sources merged by `mergeRules` (curated
+  label wins on a pattern-set collision; most-mentioned discovered first,
+  then unmentioned curated generics): the curated registry (shell, edit,
+  write, read, webfetch, glob, grep entries, plus one `idRules` row per
+  discovered agent/skill id for `subagent`/`skill`), and candidates mined
+  from text Plus already holds (tool/base/skill/role/file/teaching rows,
+  with `provenance` naming the mentioning item ids). User `RuleRecord`
+  customs overlay as `custom: true` rows. Mined candidates are view-time
+  only: never persisted, and never part of the publish fingerprint
+  (`fingerprintPublish` filters out `kind === "perm"`; only a stored
+  off-state or a `RuleRecord` enters it via `records`). Deliberate
+  deviation from the obvious expectation: the TUI add-rule flow always
+  stores shared (`agent: null`) rules, while per-agent customs go through
+  the tools API; and custom rules are globally unique by `(tool, id)`, not
+  per level/agent (`rule.add`/`rule.remove` match by tool+id only).
+- Toggling any rule is a `CustomizationRecord` with state on/off on the
+  `perm:<tool>:<rule>` item address, so `resolve()` already yields
+  `enabled`. Every perm item OFF for an agent installs one core deny per
+  pattern (`{ action, resource: pattern, effect: "deny" }`) through the
+  agent registration; because core permission evaluation is last-match-wins,
+  appending is always sufficient. The action derives from the tool id via
+  `actionForToolId`: `edit`/`write`/`patch` share core's `edit` action,
+  every other tool uses its own id.
+- Patterns are CORE RESOURCE WILDCARDS over the parsed command text, NOT
+  regex: `*` spans any run, `?` matches one character. For shell the
+  resource is the parsed command text, so `git *` also matches a bare `git`
+  (the curated head-only rules still carry both `git` and `git *`); for file
+  tools the resource is the file path, for webfetch the URL, for
+  subagent/skill the exact id. User patterns validate through
+  `validateRuleInput` (at least one non-empty pattern; keywords default
+  through `keywordsForPattern` when omitted). `commandHeads` (Plus's own
+  head-depth table: `git: 2`, `docker: 2`, `rm: 1`, …) drives the miner's
+  `git rebase *`-style patterns.
+- Keywords derive only through the single `keywordsForPattern`: head word
+  plus subcommand words, stopping at the first wildcard or flag (`git push
+  *` → `["git push"]`); a pattern with no literal leading word falls back
+  to its first meaningful segment (`**/.git/**` → `[".git"]`).
+- Scrub points (all line-level whole-word, case-insensitive
+  `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
+  description plus every system part, after the text plans), the
+  `session.catalog` hook (Code Mode catalog descriptions, after the
+  text/pin plans), and the `assembled` view (registry descriptions, system,
+  and skill content). Empty keyword sets install no extra hooks.
 
 ### Log (`log.ts`, `rpc.ts`, `index.ts`)
 
@@ -665,14 +889,16 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   `bad query offset|limit`); `offset` defaults to 0, `limit` defaults to all
   matches.
 - Key semantics: `kind` is `root|group|agent|team|item|section`;
-  `item` is `tool|base|skill|system|mcp`; `group` is
+  `item` is `tool|base|skill|system|mcp|model|perm`; `tool` is the parent
+  tool id on perm rows (e.g. `tool:shell`); `group` is
   `native|plus|mcp|project|none`; `server` is the exact (case-insensitive)
   MCP server name; `level` is `project|global|defaults`; `agent` is a
   case-insensitive substring match, `_` is the shared (agent-less) row; `state`
   is `on|off`; `modified`/`overridden` read the row's own stored text;
   `review` includes rolled-up descendant review; `source` is
   `project|global|defaults|upstream`; `active` is the base template active
-  for the row's agent model; `inactive` is a user base template that can
+  for the row's agent model, or the resolved active model on model rows;
+  `inactive` is a user base template that can
   never become active; `unsupported` is whole `system:role` and whole base
   rows; `codemode` reads the item flag; `namespace` is the exact Code Mode
   namespace; `pinned` reads the resolved pin; `execute` reads the
@@ -700,7 +926,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   text. Numeric keys take `>`, `<`, `>=`, `<=`, `=` comparisons (`=` may be
   bare); boolean keys take `true|false`.
 - Evaluation order: filters run sorted by rank — structural keys first
-  (`kind item group server level agent overridden active inactive
+  (`kind item tool group server level agent overridden active inactive
   unsupported codemode namespace pinned execute can has id label updated team acked), then `state modified review source excluded`, then the
   text-dependent keys in order `identical dead shadowed orphan tokens delta
   overriders text upstream`. Structural filters never resolve row text.
