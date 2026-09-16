@@ -479,7 +479,13 @@ globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
 `level`/`agent` are carried but not part of the lookup. `rule.update`
 upserts a `RuleRecord` by `(tool, id)`, so editing a curated or mined row
 materialises a custom override of the same identity; blank `keywords`
-derive server-side via `keywordsForPattern` like `rule.add`. `updateRule`
+derive server-side via `keywordsForPattern` like `rule.add`. Curated-identity
+policy: a stored record whose `tool` + `id` matches a curated rule is treated
+as an override of that curated rule and inherits its action. Consequence: a
+custom rule created earlier under a colliding id is reinterpreted as a curated
+override, so `patch`/`delete-file` now carries `patch.delete` rather than
+`edit`. This is accepted reserved-identity semantics, not an unconditional
+compatibility guarantee. `updateRule`
 and `removeRule` share one `ruleProtectedRefusal` guard: protection follows
 the matched record's owner, not the caller's row address.
 

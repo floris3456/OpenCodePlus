@@ -170,6 +170,13 @@ describe("Permission", () => {
         .pipe(Effect.flip)
       expect(blocked).toBeInstanceOf(Permission.BlockedError)
 
+      // Wildcard-only spellings are catch-alls too: no literal means no decision about this check.
+      for (const pattern of ["**", "*?", "?*", "???", "***"] as const) {
+        yield* setup([{ action: pattern, resource: "*", effect: "deny" }])
+        yield* service.assert(assertion({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
+        expect(yield* service.list()).toEqual([])
+      }
+
       // Exact action counts as targeting.
       yield* setup([{ action: "patch.delete", resource: "*", effect: "deny" }])
       const deleteBlocked = yield* service
@@ -188,6 +195,16 @@ describe("Permission", () => {
           .pipe(Effect.flip)
         expect(denied).toBeInstanceOf(Permission.BlockedError)
       }
+      expect(yield* service.list()).toEqual([])
+
+      // Leading wildcard with a literal suffix still counts as targeting.
+      yield* setup([{ action: "*.delete", resource: "*", effect: "deny" }])
+      const suffixBlocked = yield* service
+        .assert(assertion({ action: "patch.delete", resources: ["src/a.ts"], targetedOnly: true }))
+        .pipe(Effect.flip)
+      expect(suffixBlocked).toBeInstanceOf(Permission.BlockedError)
+      expect(yield* service.list()).toEqual([])
+      yield* service.assert(assertion({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
       expect(yield* service.list()).toEqual([])
 
       // No rules at all: targetedOnly ask returns allow with no recorded request.

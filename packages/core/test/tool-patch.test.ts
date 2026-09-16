@@ -1482,6 +1482,64 @@ describe("PatchTool permission decisions (real Permission.Service)", () => {
     }),
   )
 
+  itReal.effect("double-star catch-all does not opt in to patch checks", () =>
+    Effect.gen(function* () {
+      yield* setupReal([
+        { action: "**", resource: "*", effect: "deny" },
+        { action: "edit", resource: "src/*", effect: "allow" },
+      ])
+      const service = yield* Permission.Service
+      // patch.ts order: typed assert first, then edit.
+      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
+      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  itReal.effect("double-star ask catch-all adds no prompt beyond upstream edit", () =>
+    Effect.gen(function* () {
+      yield* setupReal([
+        { action: "**", resource: "*", effect: "ask" },
+        { action: "edit", resource: "src/*", effect: "allow" },
+      ])
+      const service = yield* Permission.Service
+      expect(
+        yield* service.ask(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true })),
+      ).toMatchObject({ effect: "allow" })
+      expect(yield* service.list()).toEqual([])
+      expect(yield* service.ask(patchSequence({ action: "edit", resources: ["src/a.ts"] }))).toMatchObject({
+        effect: "allow",
+      })
+      // Upstream edit raises no request; the typed assert contributes none.
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  itReal.effect("star-question catch-all does not opt in to patch checks", () =>
+    Effect.gen(function* () {
+      yield* setupReal([
+        { action: "*?", resource: "*", effect: "deny" },
+        { action: "edit", resource: "src/*", effect: "allow" },
+      ])
+      const service = yield* Permission.Service
+      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
+      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  itReal.effect("targeted patch.delete deny still blocks deletes", () =>
+    Effect.gen(function* () {
+      yield* setupReal([{ action: "patch.delete", resource: "*", effect: "deny" }])
+      const service = yield* Permission.Service
+      const blocked = yield* service
+        .assert(patchSequence({ action: "patch.delete", resources: ["src/a.ts"], targetedOnly: true }))
+        .pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(Permission.BlockedError)
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
   itReal.effect("no rules adds no prompt beyond upstream edit", () =>
     Effect.gen(function* () {
       yield* setupReal([])

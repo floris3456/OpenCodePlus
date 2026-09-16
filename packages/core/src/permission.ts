@@ -43,6 +43,8 @@ export const AssertInput = Schema.Struct({
   id: ID.pipe(Schema.optional),
   ...RequestFields,
   agent: Agent.ID.pipe(Schema.optional),
+  // Supplemental checks only, layered on an existing authorization. Never a
+  // substitute for ordinary authorization: skipped entirely when unconfigured.
   targetedOnly: Schema.Boolean.pipe(Schema.optional),
 }).annotate({ identifier: "Permission.AssertInput" })
 export type AssertInput = typeof AssertInput.Type
@@ -214,7 +216,12 @@ const layer = Layer.effect(
 
     const isTargeted = Effect.fnUntraced(function* (input: AssertInput) {
       const rules = yield* configured(input.sessionID, input.agent)
-      return rules.some((rule) => rule.action !== "*" && Wildcard.match(input.action, rule.action))
+      return rules.some(
+        (rule) =>
+          // A wildcard-only pattern expresses "everything", not a decision about this supplemental check.
+          [...rule.action].some((char) => char !== "*" && char !== "?") &&
+          Wildcard.match(input.action, rule.action),
+      )
     })
 
     const ask = Effect.fn("Permission.ask")(function* (input: AssertInput) {
