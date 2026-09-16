@@ -14,6 +14,14 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { Tool } from "@opencode/core/tool"
 import { PatchTool } from "@opencode/core/tool/plugin/patch"
+import { Agent } from "@opencode/core/agent"
+import { Database } from "@opencode/core/database/database"
+import { Bus } from "@opencode/core/bus"
+import { PermissionSaved } from "@opencode/core/permission/saved"
+import { Project } from "@opencode/core/project"
+import { ProjectTable } from "@opencode/core/project/sql"
+import { SessionStore } from "@opencode/core/session/store"
+import { SessionTable } from "@opencode/core/session/sql"
 import { transformEnvironmentFiles } from "./fixture/environment"
 import { location } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
@@ -1374,5 +1382,153 @@ describe("PatchTool", () => {
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),
+  )
+
+  it.live("marks per-operation asserts targetedOnly and leaves edit untouched", () =>
+    withTempTool((directory, registry) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() =>
+          Promise.all([
+            fs.writeFile(path.join(directory, "update.txt"), "before\n"),
+            fs.writeFile(path.join(directory, "remove.txt"), "remove\n"),
+          ]),
+        )
+        const settled = yield* executeTool(
+          registry,
+          call(
+            "*** Begin Patch\n*** Add File: added.txt\n+created\n*** Update File: update.txt\n@@\n-before\n+after\n*** Delete File: remove.txt\n*** End Patch",
+          ),
+        )
+        expect(settled.status).toBe("completed")
+        for (const input of assertions) {
+          if (input.action.startsWith("patch.")) expect(input.targetedOnly).toBe(true)
+          if (input.action === "edit") expect(input.targetedOnly).toBeUndefined()
+        }
+      }),
+    ),
+  )
+})
+
+const realLocation = Layer.succeed(
+  Location.Service,
+  Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+)
+const itReal = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([Database.node, Bus.node, SessionStore.node, PermissionSaved.node, Agent.node, Permission.node]),
+    [Location.node.replace(realLocation)],
+  ),
+)
+
+const realSessionID = Session.ID.make("ses_patch_real")
+
+function setupReal(rules: Permission.Ruleset) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id: realSessionID,
+        project_id: Project.ID.global,
+        slug: "test",
+        directory: "/project",
+        title: "test",
+        version: "test",
+        agent: "test",
+      })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    const agents = yield* Agent.Service
+    yield* agents.transform((editor) =>
+      editor.update(Agent.ID.make("test"), (agent) => {
+        agent.permissions = [...rules]
+      }),
+    )
+  })
+}
+
+function patchSequence(input: {
+  action: string
+  resources: string[]
+  targetedOnly?: true
+}) {
+  return {
+    sessionID: realSessionID,
+    action: input.action,
+    resources: input.resources,
+    ...(input.targetedOnly ? { targetedOnly: true as const } : {}),
+  } satisfies Permission.AssertInput
+}
+
+describe("PatchTool permission decisions (real Permission.Service)", () => {
+  itReal.effect("reviewer counterexample stays allowed without a patch rule", () =>
+    Effect.gen(function* () {
+      yield* setupReal([
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "edit", resource: "src/*", effect: "allow" },
+      ])
+      const service = yield* Permission.Service
+      // patch.ts order: typed assert first, then edit.
+      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
+      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  itReal.effect("no rules adds no prompt beyond upstream edit", () =>
+    Effect.gen(function* () {
+      yield* setupReal([])
+      const service = yield* Permission.Service
+      for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
+        expect(
+          yield* service.ask(patchSequence({ action, resources: ["src/a.ts"], targetedOnly: true })),
+        ).toMatchObject({ effect: "allow" })
+      }
+      expect(yield* service.list()).toEqual([])
+      expect(
+        yield* service.ask(patchSequence({ action: "edit", resources: ["src/a.ts"] })),
+      ).toMatchObject({ effect: "ask" })
+      // Upstream would raise exactly one request (edit); typed asserts add none.
+      expect(yield* service.list()).toHaveLength(1)
+      const pending = yield* service.list()
+      yield* service.reply({ requestID: pending[0]!.id, reply: "once" })
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  itReal.effect("patch.delete deny blocks deletes while add and update pass", () =>
+    Effect.gen(function* () {
+      yield* setupReal([{ action: "patch.delete", resource: "*", effect: "deny" }])
+      const service = yield* Permission.Service
+      const blocked = yield* service
+        .assert(patchSequence({ action: "patch.delete", resources: ["src/a.ts"], targetedOnly: true }))
+        .pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(Permission.BlockedError)
+      expect(yield* service.list()).toEqual([])
+      yield* service.assert(patchSequence({ action: "patch.add", resources: ["src/a.ts"], targetedOnly: true }))
+      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  itReal.effect("patch.* deny blocks all three operations", () =>
+    Effect.gen(function* () {
+      yield* setupReal([{ action: "patch.*", resource: "*", effect: "deny" }])
+      const service = yield* Permission.Service
+      for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
+        const blocked = yield* service
+          .assert(patchSequence({ action, resources: ["src/a.ts"], targetedOnly: true }))
+          .pipe(Effect.flip)
+        expect(blocked).toBeInstanceOf(Permission.BlockedError)
+      }
+      expect(yield* service.list()).toEqual([])
+    }),
   )
 })
