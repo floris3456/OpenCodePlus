@@ -227,6 +227,47 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("targetedOnly classifies catch-alls semantically via the matcher", () =>
+    Effect.gen(function* () {
+      const service = yield* Permission.Service
+
+      // Catch-alls match the probe action yet never opt in: targetedOnly skips
+      // despite deny, while the same input without the flag denies (proving the
+      // pattern matches and the flag is what skipped). Space patterns use a
+      // double-space action because they only match strings containing one.
+      for (const [pattern, action] of [
+        ["*", "patch.update"],
+        ["**", "patch.update"],
+        ["*?", "patch.update"],
+        ["?*", "patch.update"],
+        ["* *", "patch.update"],
+        ["*  *", "a  b"],
+        ["**  **", "a  b"],
+      ] as const) {
+        yield* setup([{ action: pattern, resource: "*", effect: "deny" }])
+        yield* service.assert(assertion({ action, resources: ["src/a.ts"], targetedOnly: true }))
+        expect(yield* service.list()).toEqual([])
+        const blocked = yield* service.assert(assertion({ action, resources: ["src/a.ts"] })).pipe(Effect.flip)
+        expect(blocked).toBeInstanceOf(Permission.BlockedError)
+        expect(yield* service.list()).toEqual([])
+      }
+
+      // Targeted patterns opt in: targetedOnly enforces deny for matching actions.
+      for (const [pattern, action] of [
+        ["patch.delete", "patch.delete"],
+        ["patch.*", "patch.delete"],
+        ["*.delete", "patch.delete"],
+      ] as const) {
+        yield* setup([{ action: pattern, resource: "*", effect: "deny" }])
+        const blocked = yield* service
+          .assert(assertion({ action, resources: ["src/a.ts"], targetedOnly: true }))
+          .pipe(Effect.flip)
+        expect(blocked).toBeInstanceOf(Permission.BlockedError)
+        expect(yield* service.list()).toEqual([])
+      }
+    }),
+  )
+
   it.effect("allows managed output reads without granting external directory access", () =>
     Effect.gen(function* () {
       yield* setup([
