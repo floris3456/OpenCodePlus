@@ -1176,7 +1176,12 @@ describe("PatchTool", () => {
         reset()
         const source = path.join(active.path, "source.txt")
         const destination = path.join(outside.path, "moved.txt")
-        return Effect.promise(() => fs.writeFile(source, "before\n")).pipe(
+        return Effect.promise(() =>
+          Promise.all([
+            fs.writeFile(source, "before\n"),
+            fs.mkdir(path.join(outside.path, ".git"), { recursive: true }),
+          ]),
+        ).pipe(
           Effect.andThen(
             withTool(active.path, (registry) =>
               Effect.gen(function* () {

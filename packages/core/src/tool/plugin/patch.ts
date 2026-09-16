@@ -209,6 +209,8 @@ export const Plugin = {
                 yield* permission.assert({
                   action: `patch.${type}`,
                   resources: paths,
+                  save: ["*"],
+                  metadata: { filepath: paths.join(", ") },
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source,
@@ -216,14 +218,7 @@ export const Plugin = {
               }
               yield* permission.assert({
                 action: "edit",
-                resources: [
-                  ...new Set(
-                    prepared.flatMap((change) => [
-                      change.target.resource,
-                      ...(change.type === "update" && change.moveTarget ? [change.moveTarget.resource] : []),
-                    ]),
-                  ),
-                ],
+                resources: [...new Set(targets.map((target) => target.resource))],
                 save: ["*"],
                 metadata: {
                   filepath: targets.map((target) => target.resource).join(", "),
