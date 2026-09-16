@@ -5,12 +5,13 @@ import os from "node:os"
 import path from "node:path"
 import { createComponent } from "solid-js"
 import { formatMarkdown } from "../src/agents/files.js"
-import { createHandlers, createState } from "../src/index.js"
+import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { resolve, scopesOf } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { enable } from "../src/project.js"
 import type { Snapshot } from "../src/rpc.js"
 import { Definition } from "../src/rpc.js"
+import { createInstructionsDialogs } from "../src/tui/instructions/dialogs.js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import type { TestFixture } from "./tui.js"
@@ -1983,4 +1984,173 @@ test("detail pane e starts text editing on a tool row but not on a permission ru
   } finally {
     fixture.destroy()
   }
+})
+
+test("addRule cancelling any prompt writes nothing, blank keywords saves with defaults", async () => {
+  async function runAdd(prompts: readonly (string | undefined)[]) {
+    const parent = process.env.TMPDIR ?? os.tmpdir()
+    const root = await fs.mkdtemp(path.join(parent, "plus-add-cancel-"))
+    e2eRoots.push(root)
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    await enable(project)
+    const realCtx = fullContext({
+      directory: project,
+      agents: [agentInfo("alpha", "upstream role")],
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    })
+    const state = createState()
+    const handlers = createHandlers(realCtx, state)
+    const throwing = { error: (type: string, message: string, data?: unknown): never => { throw { type, message, data } } }
+    const promptQueue = [...prompts]
+    let addCalls = 0
+    let refreshCalls = 0
+    const fakeContext = {
+      location: realCtx.location,
+      client: {
+        rpc: () => ({
+          "rule.add": async (input: never) => {
+            addCalls++
+            return Effect.runPromise(handlers["rule.add"](input, throwing))
+          },
+        }),
+      },
+      ui: {
+        dialog: {
+          prompt: async () => promptQueue.shift(),
+          select: async () => undefined,
+          clear: () => {},
+        },
+        toast: { show: () => {} },
+        router: { navigate: () => {} },
+      },
+    } as unknown as import("@opencode/plugin/tui").Plugin.Context
+    const fakeState = {
+      snapshot: () => undefined,
+      refresh: async () => {
+        refreshCalls++
+      },
+    } as unknown as import("../src/tui/instructions/state.js").InstructionsState
+    const dialogs = createInstructionsDialogs(fakeContext, fakeState)
+    const toolNode = {
+      id: "tool-node",
+      kind: "item",
+      label: "shell",
+      depth: 0,
+      address: { level: "project", agent: "my-agent", item: "tool:shell", section: null },
+      badges: {},
+    } as unknown as import("../src/instructions/tree.js").TreeNode
+    await dialogs.addRule(toolNode)
+    const api = createPlusApi(realCtx, state)
+    const snap = await api.snapshot()
+    if (!snap.ok) throw new Error("snapshot failed")
+    const logged = await api.log({})
+    if (!logged.ok) throw new Error("log failed")
+    return { addCalls, refreshCalls, records: snap.value.records, logTotal: logged.value.total }
+  }
+  for (const prompts of [[undefined], ["My Rule", undefined], ["My Rule", "git push *", undefined]] as const) {
+    const result = await runAdd(prompts)
+    expect(result.addCalls).toBe(0)
+    expect(result.records).toEqual([])
+    expect(result.logTotal).toBe(0)
+    expect(result.refreshCalls).toBe(0)
+  }
+  const saved = await runAdd(["My Rule", "git push --force *", ""])
+  expect(saved.addCalls).toBe(1)
+  expect(saved.records).toHaveLength(1)
+  const rule = saved.records.find((record) => record.type === "rule")
+  if (rule === undefined || rule.type !== "rule") throw new Error("expected rule")
+  expect(rule.keywords.length).toBeGreaterThan(0)
+  expect(saved.logTotal).toBe(1)
+  expect(saved.refreshCalls).toBe(1)
+})
+
+test("editRule cancelling any prompt writes nothing, blank keywords saves with defaults", async () => {
+  async function runEdit(prompts: readonly (string | undefined)[]) {
+    const parent = process.env.TMPDIR ?? os.tmpdir()
+    const root = await fs.mkdtemp(path.join(parent, "plus-edit-cancel-"))
+    e2eRoots.push(root)
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    await enable(project)
+    const realCtx = fullContext({
+      directory: project,
+      agents: [agentInfo("alpha", "upstream role")],
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    })
+    const state = createState()
+    const handlers = createHandlers(realCtx, state)
+    const throwing = { error: (type: string, message: string, data?: unknown): never => { throw { type, message, data } } }
+    await Effect.runPromise(
+      handlers["rule.add"](
+        { level: "project", agent: "alpha", tool: "shell", id: "my-rule", label: "Original", patterns: ["orig *"], keywords: ["old-key"] },
+        throwing,
+      ),
+    )
+    const fresh = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+    const promptQueue = [...prompts]
+    let updateCalls = 0
+    let refreshCalls = 0
+    const fakeContext = {
+      location: realCtx.location,
+      client: {
+        rpc: () => ({
+          "rule.update": async (input: never) => {
+            updateCalls++
+            return Effect.runPromise(handlers["rule.update"](input, throwing))
+          },
+        }),
+      },
+      ui: {
+        dialog: {
+          prompt: async () => promptQueue.shift(),
+          select: async () => undefined,
+          clear: () => {},
+        },
+        toast: { show: () => {} },
+        router: { navigate: () => {} },
+      },
+    } as unknown as import("@opencode/plugin/tui").Plugin.Context
+    const fakeState = {
+      snapshot: () => fresh,
+      refresh: async () => {
+        refreshCalls++
+      },
+    } as unknown as import("../src/tui/instructions/state.js").InstructionsState
+    const dialogs = createInstructionsDialogs(fakeContext, fakeState)
+    const permNode = {
+      id: "perm-node",
+      kind: "item",
+      label: "My rule",
+      depth: 0,
+      address: { level: "project", agent: "alpha", item: "perm:shell:my-rule", section: null },
+      badges: {},
+    } as unknown as import("../src/instructions/tree.js").TreeNode
+    await dialogs.editRule(permNode)
+    const api = createPlusApi(realCtx, state)
+    const snap = await api.snapshot()
+    if (!snap.ok) throw new Error("snapshot failed")
+    const persisted = snap.value.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "my-rule")
+    if (persisted === undefined || persisted.type !== "rule") throw new Error("expected rule to persist")
+    const logged = await api.log({ where: "op:rule.update" })
+    if (!logged.ok) throw new Error("log failed")
+    return { updateCalls, refreshCalls, persisted, logTotal: logged.value.total }
+  }
+  for (const prompts of [[undefined], ["New label", undefined], ["New label", "new *", undefined]] as const) {
+    const result = await runEdit(prompts)
+    expect(result.updateCalls).toBe(0)
+    expect(result.persisted.label).toBe("Original")
+    expect(result.persisted.patterns).toEqual(["orig *"])
+    expect(result.persisted.keywords).toEqual(["old-key"])
+    expect(result.logTotal).toBe(0)
+    expect(result.refreshCalls).toBe(0)
+  }
+  const saved = await runEdit(["New label", "new pattern *", ""])
+  expect(saved.updateCalls).toBe(1)
+  expect(saved.persisted.label).toBe("New label")
+  expect(saved.persisted.patterns).toEqual(["new pattern *"])
+  expect(saved.persisted.keywords).not.toEqual(["old-key"])
+  expect(saved.persisted.keywords.length).toBeGreaterThan(0)
+  expect(saved.logTotal).toBe(1)
+  expect(saved.refreshCalls).toBe(1)
 })

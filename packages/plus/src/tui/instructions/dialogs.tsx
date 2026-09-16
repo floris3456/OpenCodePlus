@@ -505,7 +505,8 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
     const rawKeywords = await context.ui.dialog.prompt({ title: "Rule keywords", placeholder: "blank for defaults" })
     if (disposed) return
-    const keywords = rawKeywords === undefined || rawKeywords.trim().length === 0 ? undefined : rawKeywords.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+    if (rawKeywords === undefined) return
+    const keywords = rawKeywords.trim().length === 0 ? undefined : rawKeywords.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
     if (level === undefined) {
       const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
         title: "Rule scope",
@@ -624,8 +625,9 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       value: (current?.keywords ?? []).join(", "),
     })
     if (disposed) return
+    if (rawKeywords === undefined) return
     const keywords =
-      rawKeywords === undefined || rawKeywords.trim().length === 0
+      rawKeywords.trim().length === 0
         ? undefined
         : rawKeywords
             .split(",")
