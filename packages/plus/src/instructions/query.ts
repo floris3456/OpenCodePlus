@@ -8,7 +8,7 @@ import type {
   SplitRecord,
 } from "./model.js"
 import { buildMemo, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { materialize, skeletonOf, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { materialize, permsGroup, skeletonOf, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 
 export type Field =
@@ -182,6 +182,15 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
         for (const section of enumerated)
           push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: lazy, address: section.address, sectionIds: [] })
       }
+      // Item rows may own non-section children (the Permissions subgroup for
+      // tool rows). Sections are already pushed above; visit the perms group
+      // directly (it filters items with no resolve) instead of
+      // lazy.children(), which would also derive sections via splitOf and
+      // resolve every address even for structural misses.
+      const address = lazy.address
+      const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
+      const group = item === undefined || address === undefined ? undefined : permsGroup(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.depth + 1)
+      if (group !== undefined) visit(group)
       return
     }
     push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [] })
@@ -192,7 +201,7 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
   return out
 }
 
-const propagatingKeys = new Set(["level", "agent", "item", "group", "server", "codemode", "namespace", "execute"])
+const propagatingKeys = new Set(["level", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool"])
 // pinned is resolved state like state:/modified: (per-row resolve through the
 // shared memo), so it must not propagate: a section inherits its whole row's
 // pin for display, but enumeration cannot skip sections from the item test.
@@ -328,6 +337,15 @@ function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
       pin: false,
     }
   if (executable) return { toggle: true, edit: false, reset: false, remove: false, split: false, pin: false }
+  if (item?.kind === "perm")
+    return {
+      toggle: true,
+      edit: false,
+      reset: canReset(state.memo.ctx.customizations, address),
+      remove: item.custom === true,
+      split: false,
+      pin: false,
+    }
   const pinnable = item !== undefined && item.kind === "tool" && item.codemode === true
   return {
     toggle: true,
@@ -546,6 +564,7 @@ function rankFor(key: string, term: string): number {
 const structuralKeys = new Set([
   "kind",
   "item",
+  "tool",
   "group",
   "server",
   "namespace",
@@ -773,8 +792,18 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => allowed.some((alt) => candidate.kind === lower(alt))
     }
     case "item": {
-      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model"], term)
+      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "perm"], term)
       return (candidate) => allowed.some((alt) => itemKindOf(state, candidate) === lower(alt))
+    }
+    case "tool": {
+      return (candidate) => {
+        const address = candidate.address
+        if (address === undefined) return false
+        const item = lookupItem(state, address.item, address.agent)
+        if (item === undefined) return false
+        if (item.kind !== "perm" || item.permTool === undefined) return false
+        return alts.some((alt) => lower(item.permTool as string) === lower(alt))
+      }
     }
     case "group": {
       const allowed = oneOf(key, alts, ["native", "plus", "mcp", "project", "none"], term)

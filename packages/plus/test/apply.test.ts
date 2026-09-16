@@ -1224,6 +1224,59 @@ test("a mid-way failure unwinds earlier registrations in reverse order", async (
   expect(stateAgents.disposes).toBe(stateAgents.transforms)
 })
 
+test("a perm rule off installs a core deny proved by Permission.evaluate (not a local matcher)", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const shellText = "Execute shell commands."
+  const permText = "Git push\ngit push *"
+  const items = [
+    { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: shellText, enabled: true, fingerprint: fingerprint(shellText) },
+    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"], provenance: [] as string[] },
+  ]
+  const records = [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })]
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }))
+  expect(applied.registrations.length).toBeGreaterThan(0)
+  const alphaRules = agents.state.get("alpha")?.permissions ?? []
+  expect(alphaRules.slice(-1)).toEqual([{ action: "shell", resource: "git push *", effect: "deny" }])
+  expect(agents.state.get("beta")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
+  expect(evaluate("shell", "git push origin", alphaRules).effect).toBe("deny")
+  expect(evaluate("shell", "git status", alphaRules).effect).not.toBe("deny")
+})
+
+test("a perm rule off scrubs whole-word lines, keeping head-only lines", async () => {
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const description = "Use git push to publish.\nUse git status to inspect.\nUse gitpush without space."
+  const permText = "Git push\ngit push *"
+  const items = [
+    { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: "shell tool", enabled: true, fingerprint: fingerprint("shell tool") },
+    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"], provenance: [] as string[] },
+  ]
+  const records = [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })]
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }] }))
+  expect(applied.registrations.length).toBeGreaterThan(0)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: description }])
+  await Effect.runPromise(run(event))
+  const text = event.system.map((part) => part.text).join("\n")
+  expect(text).not.toContain("git push to publish")
+  expect(text).toContain("git status")
+  expect(text).toContain("gitpush without space")
+})
+
 test("editing the teaching row for one agent replaces that agent's part only", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-teaching-"))
   applyRoots.push(parent)

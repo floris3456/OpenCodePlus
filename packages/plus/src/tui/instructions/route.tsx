@@ -328,9 +328,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       "filter: words or key:value · ! negates · a,b ors · sort:key",
       "keys: kind item group server namespace level agent state modified review",
       "  source overridden active inactive unsupported codemode pinned execute can",
-      "  has id label updated team acked excluded",
+      "  has id label updated team acked excluded tool",
       "slow text: text upstream tokens delta overriders identical dead",
       "  shadowed orphan",
+      "perms: item:perm tool:<id> (e.g. item:perm tool:shell)",
     ].join("\n")
   }
 

@@ -6,12 +6,15 @@ import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
 import { Agent } from "@opencode/schema/agent"
 import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
+import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import { Effect, Exit, Scope, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
+import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
@@ -21,7 +24,7 @@ import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { dedupeAgents, installTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type SplitRecord } from "./instructions/model.js"
+import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type RuleRecord, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
@@ -258,6 +261,26 @@ export type CatalogModelsResult =
   | { ok: true; value: Plus.CatalogModelsOutput }
   | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
 
+export type AddRuleResult =
+  | { ok: true; value: Plus.RuleRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "rule.exists"; message: string; data: Plus.RuleExists }
+        | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
+    }
+
+export type RemoveRuleResult =
+  | { ok: true; value: Plus.RuleRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "rule.missing"; message: string; data: Plus.RuleMissing }
+        | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
+    }
+
 export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
@@ -281,6 +304,8 @@ export interface PlusApi {
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
+  readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
+  readonly removeRule: (input: Plus.RuleRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveRuleResult>
 }
 
 export interface PlusApiOptions {
@@ -1019,6 +1044,108 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         },
       }
     },
+    addRule: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: validated.reason, data: { tool: input.tool, id: input.id, reason: validated.reason } },
+        }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const existing = loaded.records.find(
+        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+      )
+      if (existing !== undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "rule.exists" as const,
+            message: `Rule ${validated.tool}:${validated.id} already exists`,
+            data: { level: existing.level, agent: existing.agent, tool: validated.tool, id: validated.id },
+          },
+        }
+      const next: RuleRecord = {
+        type: "rule",
+        level: input.level,
+        agent: input.agent,
+        tool: validated.tool,
+        id: validated.id,
+        label: validated.label,
+        patterns: validated.patterns,
+        keywords: validated.keywords,
+        updated: new Date().toISOString(),
+      }
+      const saved = await saveRuleRecords(directory, loaded, [...loaded.records, next])
+      if (!saved.ok) {
+        const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+        }
+      }
+      if (saved.changed)
+        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          ts: new Date().toISOString(),
+          actor: normalizeActor(input.actor),
+          op: "rule.add",
+          target: ruleRecordTarget(next),
+          summary: `rule.add ${validated.tool}:${validated.id} (${input.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return { ok: true as const, value: { level: next.level, agent: next.agent, tool: next.tool, id: next.id, label: next.label } }
+    },
+    removeRule: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateRuleIdentity(input.tool, input.id)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: validated.reason, data: { tool: input.tool, id: input.id, reason: validated.reason } },
+        }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const existing = loaded.records.find(
+        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+      )
+      if (existing === undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "rule.missing" as const,
+            message: `Rule ${validated.tool}:${validated.id} does not exist`,
+            data: { level: input.level, agent: input.agent, tool: validated.tool, id: validated.id },
+          },
+        }
+      const next = loaded.records.filter((record) => record !== existing)
+      const saved = await saveRuleRecords(directory, loaded, next)
+      if (!saved.ok) {
+        const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+        }
+      }
+      if (saved.changed)
+        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          ts: new Date().toISOString(),
+          actor: normalizeActor(input.actor),
+          op: "rule.remove",
+          target: ruleRecordTarget(existing),
+          summary: `rule.remove ${validated.tool}:${validated.id} (${input.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return { ok: true as const, value: { level: existing.level, agent: existing.agent, tool: existing.tool, id: existing.id, label: existing.label } }
+    },
   }
 }
 
@@ -1292,6 +1419,30 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         }
         return result.value
       }),
+    "rule.add": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.addRule(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "rule.exists")
+            return yield* Effect.fail(context.error("rule.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "rule.remove": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.removeRule(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "rule.missing")
+            return yield* Effect.fail(context.error("rule.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
     "catalog.models": (_input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.catalogModels())
@@ -1375,8 +1526,40 @@ function modelsOf(records: readonly StoredRecord[]): ModelRecord[] {
   return records.filter((record): record is ModelRecord => record.type === "model")
 }
 
+function rulesOf(records: readonly StoredRecord[]): RuleRecord[] {
+  return records.filter((record): record is RuleRecord => record.type === "rule")
+}
+
 function modelRecordTarget(record: ModelRecord): string {
   return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
+}
+
+function ruleRecordTarget(record: RuleRecord): string {
+  return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
+}
+
+function validateRuleRef(
+  tool: string,
+  id: string,
+  label: string,
+  patterns: readonly string[],
+  keywords?: readonly string[],
+): { ok: true; tool: string; id: string; label: string; patterns: string[]; keywords: string[] } | { ok: false; reason: string } {
+  return validateRuleInput({ tool, id, label, patterns, ...(keywords === undefined ? {} : { keywords }) })
+}
+
+function validateRuleIdentity(
+  tool: string,
+  id: string,
+): { ok: true; tool: string; id: string } | { ok: false; reason: string } {
+  const trimmedTool = tool.trim()
+  const trimmedId = id.trim()
+  if (trimmedTool.length === 0) return { ok: false, reason: "Rule tool cannot be empty" }
+  if (trimmedTool.includes(":") || trimmedTool.includes("/") || trimmedTool.includes(" ") || trimmedTool.includes("*") || trimmedTool.includes("?"))
+    return { ok: false, reason: `Invalid rule tool "${tool}"` }
+  if (trimmedId.length === 0) return { ok: false, reason: "Rule id cannot be empty" }
+  if (trimmedId.includes("\n") || trimmedId.includes("\0")) return { ok: false, reason: `Invalid rule id "${id}"` }
+  return { ok: true, tool: trimmedTool, id: trimmedId }
 }
 
 function validateModelRef(
@@ -1457,6 +1640,58 @@ function mergeModelInto(
   })
   const freshTargets = new Set(modelsOf(kept).map((record) => modelRecordTarget(record)))
   const added = [...nextModels.values()].filter((record) => !freshTargets.has(modelRecordTarget(record)))
+  return [...kept, ...added]
+}
+
+async function saveRuleRecords(
+  directory: string,
+  loaded: LoadedStores,
+  next: readonly StoredRecord[],
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
+  const level = nextRuleLevelOf(next, loaded.records)
+  const revisionOf = (projectRevision: number, globalRevision: number) =>
+    level === "project" ? projectRevision : globalRevision
+  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
+    level === "project" ? changed.project : changed.global
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: next,
+  })
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision) }
+  const fresh = await load(directory)
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: mergeRuleInto(fresh.records, next, loaded.records),
+  })
+  if (retried.ok)
+    return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
+  return { ok: false }
+}
+
+function nextRuleLevelOf(next: readonly StoredRecord[], previous: readonly StoredRecord[]): Level {
+  const delta = deltaRows(previous, next)
+  const first = delta.find((record) => record.type === "rule")
+  if (first !== undefined && first.level === "project") return "project"
+  if (first !== undefined) return "global"
+  return "global"
+}
+
+function mergeRuleInto(
+  fresh: readonly StoredRecord[],
+  next: readonly StoredRecord[],
+  previous: readonly StoredRecord[],
+): readonly StoredRecord[] {
+  const previousRules = new Set(rulesOf(previous).map((record) => ruleRecordTarget(record)))
+  const nextRules = new Map(rulesOf(next).map((record) => [ruleRecordTarget(record), record] as const))
+  const removed = [...previousRules].filter((target) => !nextRules.has(target))
+  const kept = fresh.filter((record) => {
+    if (record.type !== "rule") return true
+    return !removed.includes(ruleRecordTarget(record))
+  })
+  const freshTargets = new Set(rulesOf(kept).map((record) => ruleRecordTarget(record)))
+  const added = [...nextRules.values()].filter((record) => !freshTargets.has(ruleRecordTarget(record)))
   return [...kept, ...added]
 }
 
@@ -1801,6 +2036,7 @@ async function discoverAll(
     baseTemplates: resolved.templates,
     activeBase: (agent) => resolved.active(agent),
     modelRecords: modelsOf(loaded.records),
+    ruleRecords: rulesOf(loaded.records),
     ...(modelBaselines === undefined ? {} : { modelBaselines }),
   })
 }
@@ -2237,7 +2473,12 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
 // refresh keeps an identical fingerprint and stays a no-op instead of a
 // dispose/reinstall loop. An enable/disable toggle changes nothing in apply's
 // own inputs, so only the resolved team winners (with their markdown bodies,
-// file-backed or built-in) make the toggle change the fingerprint.
+// file-backed or built-in) make the toggle change the fingerprint. Perm items
+// are view-time data like sections (curated ∪ mined, most-mentioned first):
+// they are derived from upstream text Plus already holds, so including them
+// would unmask Plus's own scrubbed output into a dispose/reinstall loop.
+// Only user-toggled (CustomizationRecord off) or user-added (RuleRecord)
+// rules enter the fingerprint via `records`.
 async function fingerprintPublish(
   discovered: Discovered,
   records: readonly StoredRecord[],
@@ -2259,7 +2500,7 @@ async function fingerprintPublish(
     })),
   )
   return JSON.stringify({
-    items: discovered.items,
+    items: discovered.items.filter((item) => item.kind !== "perm"),
     agents: discovered.agents,
     servers: discovered.servers,
     records,
@@ -2404,19 +2645,23 @@ function applySessionModel(
     const current = yield* Effect.promise(() => currentSessionModel(ctx, sessionID))
     const wanted: ModelRefLike = { providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }
     if (current !== undefined && sameModelRef(current, wanted)) return
-    yield* ctx.session.switchModel({ sessionID: sessionID as never, model: toHostModelRef(wanted) } as never).pipe(
+    yield* ctx.session.switchModel({ sessionID: Session.ID.make(sessionID), model: toHostModelRef(wanted) }).pipe(
       Effect.catchCause(() => Effect.void),
     )
   })
 }
 
 function toHostModelRef(wanted: ModelRefLike): Model.Ref {
-  return { providerID: wanted.providerID as never, id: wanted.modelID as never, ...(wanted.variant === undefined ? {} : { variant: wanted.variant as never }) }
+  return Model.Ref.make({
+    providerID: Provider.ID.make(wanted.providerID),
+    id: Model.ID.make(wanted.modelID),
+    ...(wanted.variant === undefined ? {} : { variant: Model.VariantID.make(wanted.variant) }),
+  })
 }
 
 async function currentSessionAgent(ctx: Context, sessionID: string): Promise<string | undefined> {
   const session = await Effect.runPromise(
-    ctx.session.get(sessionID as never).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
+    ctx.session.get({ sessionID: Session.ID.make(sessionID) }).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
   ).catch(() => undefined)
   const agent = (session as { agent?: unknown } | undefined)?.agent
   if (typeof agent === "string" && agent.length > 0) return agent
@@ -2425,7 +2670,7 @@ async function currentSessionAgent(ctx: Context, sessionID: string): Promise<str
 
 async function currentSessionModel(ctx: Context, sessionID: string): Promise<ModelRefLike | undefined> {
   const session = await Effect.runPromise(
-    ctx.session.get(sessionID as never).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
+    ctx.session.get({ sessionID: Session.ID.make(sessionID) }).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
   ).catch(() => undefined)
   const model = (session as { model?: { providerID?: unknown; id?: unknown; variant?: unknown } } | undefined)?.model
   if (model === undefined) return undefined
@@ -2469,28 +2714,31 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
           }),
       fileBacked: agent.path !== undefined,
     })),
-    // Perm items stay excluded until phase 3; model rows ship in phase 2.
-    items: discovered.items.flatMap((item): Plus.SnapshotItem[] => {
-      if (item.kind === "perm") return []
-      return [
-        {
-          id: item.id,
-          kind: item.kind,
-          group: item.group,
-          ...(item.server === undefined ? {} : { server: item.server }),
-          title: item.title,
-          text: item.text,
-          enabled: item.enabled,
-          fingerprint: item.fingerprint,
-          ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
-          ...(item.order === undefined ? {} : { order: item.order }),
-          ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
-          ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
-          ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
-          ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
-          ...(item.execute === undefined ? {} : { execute: item.execute }),
-        },
-      ]
+    // Perm items ship in phase 3 with their rule metadata; model rows shipped in phase 2.
+    items: discovered.items.map((item): Plus.SnapshotItem => {
+      return {
+        id: item.id,
+        kind: item.kind,
+        group: item.group,
+        ...(item.server === undefined ? {} : { server: item.server }),
+        title: item.title,
+        text: item.text,
+        enabled: item.enabled,
+        fingerprint: item.fingerprint,
+        ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
+        ...(item.order === undefined ? {} : { order: item.order }),
+        ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+        ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+        ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
+        ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
+        ...(item.execute === undefined ? {} : { execute: item.execute }),
+        ...(item.permTool === undefined ? {} : { permTool: item.permTool }),
+        ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
+        ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
+        ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
+        ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
+        ...(item.custom === undefined ? {} : { custom: item.custom }),
+      }
     }),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
       if (record.type === "split")

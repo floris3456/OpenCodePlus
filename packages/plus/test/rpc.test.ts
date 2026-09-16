@@ -630,6 +630,79 @@ test("two publishes with an active model keep an identical fingerprint and do no
   expect(state.fingerprint).toBe(fingerprintAfterMutate)
 })
 
+test("two publishes with discovered perm candidates keep an identical fingerprint and do not reinstall", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  // Texts mention shell commands, file paths, and URLs, so discovery mines
+  // perm candidates (view-time, not persisted). The publish fingerprint must
+  // exclude them, or reporting Plus's own output as upstream would storm.
+  const tools = toolHarness([
+    { id: "shell", description: "Run `git push --force origin` and `bun run test`. See package.json and https://github.com/acme/repo.", options: { codemode: false } },
+    { id: "reader", description: "read things", options: { codemode: false } },
+  ])
+  const hooks = { current: 0 }
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    session: {
+      hook: () =>
+        Effect.sync(() => {
+          hooks.current++
+          return { dispose: Effect.sync(() => { hooks.current-- }) }
+        }),
+    },
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  // Mined perm rows are present as view-time items but create no records.
+  expect(snapshot.items.some((entry) => entry.id === "perm:shell:git-push")).toBe(true)
+  expect(snapshot.records).toEqual([])
+  const role = snapshot.items.find((entry) => entry.id === "system:role")
+  if (!role) throw new Error("expected system:role")
+  const records: Plus.SnapshotCustomizationRecord[] = [{
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "custom role",
+    basedOn: role.fingerprint,
+    updated: UPDATED,
+  }]
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records,
+    }, throwingContext({})),
+  )
+  expect(first.ok).toBe(true)
+  if (!first.ok) throw new Error("expected mutate to succeed")
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  const fingerprintAfterMutate = state.fingerprint
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+})
+
 test("instructions.assembled reports the registry tool description for a per-agent override", async () => {
   const { project } = await tempRoot()
   await enable(project)

@@ -967,3 +967,28 @@ test("discovery emits model candidates with agent scoping plus file-backed upstr
   expect(discovered.agents.find((entry) => entry.id === "alpha")?.model).toEqual({ providerID: "acme", modelID: "nova-1" })
   expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
 })
+
+test("discovery mines perm candidates with provenance, merging curated labels first", async () => {
+  const directory = await tempDir("plus-discover-")
+  const shellDesc = "Run `git push --force origin` and `bun run test`. See package.json and https://github.com/acme/repo."
+  const editEntry = nativeTool("edit", "Edit files like package.json.")
+  const discovered = await discover({
+    ctx: fullContext({
+      directory,
+      tools: [nativeTool("shell", shellDesc), editEntry, nativeTool("webfetch", "Fetch URLs.")],
+      skills: [skill("notes", "Use `rm -rf /tmp/work` to clean.", path.join(directory, "skills", "notes", "SKILL.md"))],
+    }),
+    records: [],
+    baseTemplates: [{ id: "general", title: "General.txt", text: "Use git status here." }],
+    activeBase: noBase,
+  })
+  const perms = new Map(discovered.items.filter((item) => item.kind === "perm").map((item) => [item.id, item]))
+  expect(perms.get("perm:shell:git-push")).toMatchObject({ permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"] })
+  expect(perms.get("perm:shell:git-push-force")).toMatchObject({ patterns: ["git push --force *"] })
+  expect(perms.get("perm:shell:git-push-force")?.provenance?.length ?? 0).toBeGreaterThan(0)
+  expect(perms.get("perm:edit:package-json")).toMatchObject({ patterns: ["package.json"] })
+  expect(perms.get("perm:edit:package-json")?.provenance?.length ?? 0).toBeGreaterThan(0)
+  expect(perms.get("perm:webfetch:github")).toMatchObject({ patterns: ["*github.com*"] })
+  expect(perms.get("perm:webfetch:github")?.provenance?.length ?? 0).toBeGreaterThan(0)
+  expect([...perms.keys()].some((id) => id.startsWith("perm:mcp:"))).toBe(false)
+})

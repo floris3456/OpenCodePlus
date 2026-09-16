@@ -14,11 +14,14 @@ import {
   fingerprint,
   isCodeModeToolEntry,
   modelItemId,
+  permItemId,
   type AgentSource,
   type CustomizationRecord,
   type Item,
   type ModelRecord,
+  type RuleRecord,
 } from "./model.js"
+import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 
 export type { AgentScope, AgentSource } from "./model.js"
@@ -52,6 +55,7 @@ export interface DiscoverInput {
   readonly activeBase: (agent: Agent.Info) => string | undefined
   readonly modelRecords?: readonly ModelRecord[]
   readonly modelBaselines?: ReadonlyMap<string, ModelBaseline>
+  readonly ruleRecords?: readonly RuleRecord[]
 }
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
@@ -64,6 +68,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const baselines = input.baselines ?? new Map<string, PromptBaseline>()
   const modelBaselines = input.modelBaselines ?? new Map<string, ModelBaseline>()
   const modelRecords = input.modelRecords ?? []
+  const ruleRecords = input.ruleRecords ?? []
   const sources = await resolveAgentSources(directory, agents, input.activeBase)
   const bodies = await readAgentBodies(sources)
   const instructions = await discoverInstructionFiles(directory, projectDirectory)
@@ -75,15 +80,35 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     if (model === undefined) return source
     return { ...source, model }
   })
+  const toolRows = toolItems(tools, baselines)
+  const baseRows = baseItems(input.baseTemplates)
+  const skillRows = skillItems(skills, directory, baselines)
+  const roleRows = roleItems(agents, baselines, bodies)
+  const fileRows = instructionFileItems(directory, instructions)
+  const teachingRows = teachingItems(teaching, instructions.length)
+  const modelRows = modelItems(modelRecords, upstream)
+  const permRows = permItems({
+    tools,
+    toolRows,
+    baseRows,
+    skillRows,
+    roleRows,
+    fileRows,
+    teachingRows,
+    agents,
+    skills,
+    ruleRecords,
+  })
   const items = [
-    ...toolItems(tools, baselines),
-    ...baseItems(input.baseTemplates),
-    ...skillItems(skills, directory, baselines),
-    ...roleItems(agents, baselines, bodies),
-    ...instructionFileItems(directory, instructions),
-    ...teachingItems(teaching, instructions.length),
+    ...toolRows,
+    ...baseRows,
+    ...skillRows,
+    ...roleRows,
+    ...fileRows,
+    ...teachingRows,
     ...mcp.items,
-    ...modelItems(modelRecords, upstream),
+    ...modelRows,
+    ...permRows,
   ]
   return { items, agents: withModels, servers: mcp.servers, bodies, modelUpstream: upstream }
 }
@@ -714,4 +739,100 @@ function teachingItems(teaching: { path: string; text: string } | undefined, ord
       order,
     },
   ]
+}
+
+// Tool-specific permission rules as view-time perm items. Curated defaults
+// (plus subagent/skill idRules from discovered ids) merge with mined
+// candidates by pattern via mergeRules (curated label wins, most-mentioned
+// first). User RuleRecords overlay as custom rows. Only native/plus,
+// non-Code-Mode, non-execute tools get a subgroup: MCP resources are always
+// "*" and Code Mode denies are whole-tool, so per-resource rules there would
+// never match core evaluation.
+function permItems(input: {
+  readonly tools: readonly (Tool.Info & { readonly id: string })[]
+  readonly toolRows: readonly Item[]
+  readonly baseRows: readonly Item[]
+  readonly skillRows: readonly Item[]
+  readonly roleRows: readonly Item[]
+  readonly fileRows: readonly Item[]
+  readonly teachingRows: readonly Item[]
+  readonly agents: readonly Agent.Info[]
+  readonly skills: readonly Skill.Info[]
+  readonly ruleRecords: readonly RuleRecord[]
+}): Item[] {
+  const eligible = new Set(
+    input.toolRows
+      .filter((item) => (item.group === "native" || item.group === "plus") && item.codemode !== true && item.execute !== true)
+      .map((item) => item.id),
+  )
+  if (eligible.size === 0 && input.ruleRecords.length === 0) return []
+  const agentIds = [...new Set(input.agents.map((agent) => String(agent.id)))].toSorted()
+  const skillIds = [...new Set(input.skills.map((skill) => String(skill.id)).filter((id) => !id.startsWith("plus/")))].toSorted()
+  const texts: { item: string; text: string }[] = [
+    ...input.toolRows.map((item) => ({ item: item.id, text: item.text })),
+    ...input.baseRows.map((item) => ({ item: item.id, text: item.text })),
+    ...input.skillRows.map((item) => ({ item: item.id, text: item.text })),
+    ...input.roleRows.map((item) => ({ item: item.id, text: item.text })),
+    ...input.fileRows.map((item) => ({ item: item.id, text: item.text })),
+    ...input.teachingRows.map((item) => ({ item: item.id, text: item.text })),
+  ]
+  const mined = mineDiscoveredRules({ texts, agents: agentIds, skills: skillIds })
+  const byId = new Map<string, Item>()
+  for (const row of input.toolRows) {
+    if (!eligible.has(row.id)) continue
+    const toolId = row.id.startsWith("tool:") ? row.id.slice("tool:".length) : row.id
+    if (toolId.length === 0) continue
+    const curated = [
+      ...curatedRules.filter((rule) => rule.tool === toolId),
+      ...(toolId === "subagent" ? idRules("subagent", agentIds) : []),
+      ...(toolId === "skill" ? idRules("skill", skillIds) : []),
+    ]
+    const discovered = mined.filter((entry) => entry.tool === toolId)
+    if (curated.length === 0 && discovered.length === 0) continue
+    for (const merged of mergeRules(curated, discovered)) {
+      const id = permItemId(toolId, merged.id)
+      if (byId.has(id)) {
+        const current = byId.get(id)
+        if (current === undefined) continue
+        const combined = [...new Set([...(current.provenance ?? []), ...merged.provenance])].toSorted()
+        byId.set(id, { ...current, provenance: combined })
+        continue
+      }
+      const text = `${merged.label}\n${merged.patterns.join("\n")}`
+      byId.set(id, {
+        id,
+        kind: "perm",
+        group: "none",
+        title: merged.label,
+        text,
+        enabled: upstreamEnabled(),
+        fingerprint: fingerprint(text),
+        permTool: toolId,
+        ruleId: merged.id,
+        patterns: [...merged.patterns],
+        keywords: [...merged.keywords],
+        provenance: [...merged.provenance],
+      })
+    }
+  }
+  for (const record of input.ruleRecords) {
+    const id = permItemId(record.tool, record.id)
+    const text = `${record.label}\n${record.patterns.join("\n")}`
+    byId.set(id, {
+      id,
+      kind: "perm",
+      group: "none",
+      title: record.label,
+      text,
+      enabled: upstreamEnabled(),
+      fingerprint: fingerprint(text),
+      permTool: record.tool,
+      ruleId: record.id,
+      patterns: [...record.patterns],
+      keywords: [...record.keywords],
+      provenance: [],
+      custom: true,
+    })
+  }
+  return [...byId.values()].toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
 }

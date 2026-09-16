@@ -43,7 +43,7 @@ export interface MemoInput extends Omit<BaseMemoInput, "teams"> {
 }
 
 export type TreeNodeKind = "root" | "group" | "agent" | "team" | "item" | "section"
-export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section" | "team" | "model"
+export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section" | "team" | "model" | "rule"
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
@@ -823,13 +823,40 @@ function lazyItem(
   const wholeNoToggle = item.id === "system:role" || item.kind === "base"
   const splittable =
     !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
+  const perm = item.kind === "perm"
   const kids = (): readonly Lazy[] => {
     if (executable) return []
-    return cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
+    if (perm) return []
+    const sections = cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
       splitOf(memo, level, owner, item).sections.map((section) =>
         lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth),
       ),
     )
+    const perms = permsGroup(ctx, memo, level, owner, item, depth + 1)
+    if (perms === undefined) return sections
+    return [...sections, perms]
+  }
+  if (perm) {
+    const permAddress: Address = { level, agent: owner, item: item.id, section: null }
+    return {
+      id: `item:${level}:${owner ?? ""}:${item.id}`,
+      kind: "item",
+      label: item.title,
+      depth,
+      address: permAddress,
+      actions: {
+        toggle: true,
+        edit: false,
+        reset: canReset(ctx.customizations, permAddress),
+        remove: item.custom === true,
+        split: false,
+        pin: false,
+      },
+      selfReview: () => false,
+      partial: () => permBadges(memo, level, owner, item),
+      reviewCount: () => 0,
+      children: kids,
+    }
   }
   return {
     id: `item:${level}:${owner ?? ""}:${item.id}`,
@@ -851,6 +878,68 @@ function lazyItem(
     reviewCount: () => itemRollup(memo, level, owner, item),
     children: kids,
   }
+}
+
+// Permissions subgroup after a native/plus tool's section rows. Lists perm
+// rule rows for that tool (curated ∪ mined via discover, plus user customs).
+// Empty subgroups are never emitted, like Code Mode groups. Carries
+// add:"rule" so `a` opens the rule creation flow.
+export function permsGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  depth: number,
+): Lazy | undefined {
+  if (item.kind !== "tool") return undefined
+  if (item.group !== "native" && item.group !== "plus") return undefined
+  if (item.codemode === true || item.execute === true) return undefined
+  const toolId = item.id.startsWith("tool:") ? item.id.slice("tool:".length) : undefined
+  if (toolId === undefined || toolId.length === 0) return undefined
+  const rows = ctx.items
+    .filter((entry) => entry.kind === "perm" && entry.permTool === toolId)
+    .filter((entry) => (owner === null ? entry.agents === undefined : applies(entry, owner)))
+    .toSorted((left, right) => (left.title < right.title ? -1 : left.title > right.title ? 1 : 0))
+  if (rows.length === 0) return undefined
+  const id = `group:${level}:${owner ?? ""}:${item.id}:perms`
+  return branch(memo, {
+    kind: "group",
+    id,
+    label: "Permissions",
+    depth,
+    add: "rule",
+    actions: noActions(),
+    children: () => rows.map((entry) => lazyPermRow(memo, level, owner, entry, depth + 1)),
+  })
+}
+
+function lazyPermRow(memo: Memo, level: Level, owner: string | null, item: Item, depth: number): Lazy {
+  const address: Address = { level, agent: owner, item: item.id, section: null }
+  return {
+    id: `item:${level}:${owner ?? ""}:${item.id}`,
+    kind: "item",
+    label: item.title,
+    depth,
+    address,
+    actions: {
+      toggle: true,
+      edit: false,
+      reset: canReset(memo.ctx.customizations, address),
+      remove: item.custom === true,
+      split: false,
+      pin: false,
+    },
+    selfReview: () => false,
+    partial: () => permBadges(memo, level, owner, item),
+    reviewCount: () => 0,
+    children: () => [],
+  }
+}
+
+function permBadges(memo: Memo, level: Level, owner: string | null, item: Item): TreeNodeBadges {
+  const resolved = wholeOf(memo, level, owner, item)
+  return { state: resolved.enabled ? "on" : "off", modified: resolved.modified, source: resolved.source }
 }
 
 function itemBadges(

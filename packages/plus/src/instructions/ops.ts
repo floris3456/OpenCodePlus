@@ -711,6 +711,14 @@ export function isModelRowId(rowId: string): boolean {
   return rowId.includes(":model:")
 }
 
+export function isPermRowId(rowId: string): boolean {
+  return rowId.includes(":perm:")
+}
+
+export function ruleRecordsOf(input: MemoInput): import("./model.js").RuleRecord[] {
+  return input.records.filter((record): record is import("./model.js").RuleRecord => record.type === "rule")
+}
+
 export function modelRecordsOf(input: MemoInput): ModelRecord[] {
   return modelsOfInput(input)
 }

@@ -18,12 +18,14 @@ export function hasVisibleChildren(nodes: readonly TreeNode[], index: number): b
   return next.depth > node.depth
 }
 
-// Sections and model rows are always leaves. Every other row owns logical children (an item
-// always has its split sections), so a collapsed non-section row keeps its
-// "+" marker even though the children are hidden from the flat list.
+// Sections, model rows, and perm rule rows are always leaves. Every other row
+// owns logical children (an item always has its split sections), so a
+// collapsed non-section row keeps its "+" marker even though the children are
+// hidden from the flat list.
 export function isExpandableRow(node: TreeNode, visibleChildren: boolean, expanded: ReadonlySet<string>): boolean {
   if (node.kind === "section") return false
   if (node.address?.item.startsWith("model:")) return false
+  if (node.address?.item.startsWith("perm:")) return false
   if (visibleChildren) return true
   if (expanded.has(node.id)) return false
   return true

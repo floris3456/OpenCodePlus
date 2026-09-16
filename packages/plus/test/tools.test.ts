@@ -105,47 +105,60 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
       ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
       ...(item.execute === undefined ? {} : { execute: item.execute }),
+      ...(item.permTool === undefined ? {} : { permTool: item.permTool }),
+      ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
+      ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
+      ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
+      ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
+      ...(item.custom === undefined ? {} : { custom: item.custom }),
     })),
-    // Rule records stay filtered until phase 3; model records are tree rows.
-    records: snapshot.records.flatMap((record) =>
-      record.type === "rule"
-        ? []
-        : [
-            record.type === "split"
-              ? {
-                  type: "split" as const,
-                  level: record.level,
-                  agent: record.agent,
-                  item: record.item,
-                  boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
-                  updated: record.updated,
-                }
-              : record.type === "model"
-                ? {
-                    type: "model" as const,
-                    level: record.level,
-                    agent: record.agent,
-                    providerID: record.providerID,
-                    modelID: record.modelID,
-                    ...(record.variant === undefined ? {} : { variant: record.variant }),
-                    ...(record.active === undefined ? {} : { active: record.active }),
-                    updated: record.updated,
-                  }
-                : {
-                    type: "customization" as const,
-                    level: record.level,
-                    agent: record.agent,
-                    item: record.item,
-                    section: record.section,
-                    ...(record.text === undefined ? {} : { text: record.text }),
-                    ...(record.state === undefined ? {} : { state: record.state }),
-                    ...(record.pin === undefined ? {} : { pin: record.pin }),
-                    basedOn: record.basedOn,
-                    ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-                    ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-                    updated: record.updated,
-                  },
-          ],
+    records: snapshot.records.map((record) =>
+      record.type === "split"
+        ? {
+            type: "split" as const,
+            level: record.level,
+            agent: record.agent,
+            item: record.item,
+            boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+            updated: record.updated,
+          }
+        : record.type === "model"
+          ? {
+              type: "model" as const,
+              level: record.level,
+              agent: record.agent,
+              providerID: record.providerID,
+              modelID: record.modelID,
+              ...(record.variant === undefined ? {} : { variant: record.variant }),
+              ...(record.active === undefined ? {} : { active: record.active }),
+              updated: record.updated,
+            }
+          : record.type === "rule"
+            ? {
+                type: "rule" as const,
+                level: record.level,
+                agent: record.agent,
+                tool: record.tool,
+                id: record.id,
+                label: record.label,
+                patterns: [...record.patterns],
+                keywords: [...record.keywords],
+                updated: record.updated,
+              }
+            : {
+                type: "customization" as const,
+                level: record.level,
+                agent: record.agent,
+                item: record.item,
+                section: record.section,
+                ...(record.text === undefined ? {} : { text: record.text }),
+                ...(record.state === undefined ? {} : { state: record.state }),
+                ...(record.pin === undefined ? {} : { pin: record.pin }),
+                basedOn: record.basedOn,
+                ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+                ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+                updated: record.updated,
+              },
     ),
     agents: snapshot.agents.map((agent) => ({
       id: agent.id,
@@ -1091,4 +1104,44 @@ test("create model, activate through set, list with item:model and active, then 
   const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { providerID: string }
   expect(deleted).toMatchObject({ providerID: "acme" })
   void catalogHarness
+})
+
+test("perm rules toggle, show, list by item:perm and tool, create custom, and delete only customs", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell. Use git push to publish.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "perm:shell:git-push")
+  if (row === undefined) throw new Error("missing perm:shell:git-push row")
+  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell" })) as { rows: readonly { id: string }[]; total: number }
+  expect(listed.total).toBeGreaterThan(0)
+  expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
+  const shown = (await runOk(need(tools, "instructions_show"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number } }
+  expect(shown.patterns).toEqual(["git push *"])
+  expect(shown.keywords).toContain("git push")
+  expect(Array.isArray(shown.provenance)).toBe(true)
+  const toggled = (await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }
+  expect(toggled.status).toContain("Disabled")
+  const afterOff = await snapshotOf(api)
+  expect(afterOff.records.some((record) => record.type === "customization" && record.item === "perm:shell:git-push" && record.state === "off")).toBe(true)
+  const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
+  expect(textError.message).toContain("cannot be edited")
+  const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"] })) as { tool: string; id: string }
+  expect(created).toMatchObject({ tool: "shell", id: "no-push" })
+  const afterCreate = await snapshotOf(api)
+  const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.address?.item === "perm:shell:no-push")
+  if (customRow === undefined) throw new Error("missing custom perm row")
+  const unconfirmed = await runFail(need(tools, "instructions_delete"), { id: customRow.id })
+  expect(unconfirmed.message).toContain("delete.unconfirmed")
+  const deleted = (await runOk(need(tools, "instructions_delete"), { id: customRow.id, confirm: true })) as { tool: string }
+  expect(deleted).toMatchObject({ tool: "shell" })
+  const curatedDelete = await runFail(need(tools, "instructions_delete"), { id: row.id, confirm: true })
+  expect(curatedDelete.message).toContain("only user-created rules")
 })
