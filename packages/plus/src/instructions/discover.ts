@@ -156,12 +156,15 @@ function hostModelOf(agent: Agent.Info): ModelRefLike | undefined {
   return { providerID, modelID, variant }
 }
 
-// File frontmatter wins over the host view, including when the file carries
-// no model (file-backed agents with no frontmatter model have no upstream,
-// never the host's Plus-masked output). Only non-file agents read the host
-// model unmasked through the model baseline. First source per id wins:
-// resolveAgentSources orders the effective identity before its shadows, so
-// the most specific file owns the upstream.
+// File frontmatter wins over the host view at field level, mirroring core's
+// per-document merge (`packages/core/src/config/plugin/agent.ts:94-110`):
+// core only replaces `agent.model` when a later document DEFINES one, so a
+// file without a model never masks a model defined further down the chain or
+// the unmasked host model. The first file per id that DEFINES a model owns
+// the upstream; a file that defines none falls through. Only when no file
+// defines a model does the host view (unmasked through the model baseline)
+// answer. ResolveAgentSources orders the effective identity before its
+// shadows, so the most specific defining file wins.
 async function upstreamModels(
   sources: readonly AgentSource[],
   agents: readonly Agent.Info[],
@@ -172,8 +175,9 @@ async function upstreamModels(
   const ids = [...new Set(sources.map((source) => source.id))]
   const out = new Map<string, ModelRefLike | undefined>()
   for (const id of ids) {
-    if (fileBacked.has(id)) {
-      out.set(id, files.get(id))
+    const filed = fileBacked.has(id) ? files.get(id) : undefined
+    if (filed !== undefined) {
+      out.set(id, filed)
       continue
     }
     const host = agents.find((agent) => String(agent.id) === id)
@@ -185,11 +189,8 @@ async function upstreamModels(
 
 async function readAgentModels(sources: readonly AgentSource[]): Promise<Map<string, ModelRefLike>> {
   const found = new Map<string, ModelRefLike>()
-  const seen = new Set<string>()
   const texts = await Promise.all(sources.map((source) => (source.path === undefined ? undefined : readText(source.path))))
   sources.forEach((source, index) => {
-    if (seen.has(source.id)) return
-    seen.add(source.id)
     if (found.has(source.id)) return
     const text = texts[index]
     if (text === undefined) return

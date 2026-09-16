@@ -9,6 +9,7 @@ import {
   idRules,
   keywordsForPattern,
   mergeRules,
+  mineDiscoveredRules,
   type CuratedRule,
 } from "../src/instructions/tool-permissions.js"
 
@@ -40,7 +41,7 @@ test("curated registry covers the planned tool actions", () => {
   expect(rule("shell", "kill").patterns).toContain("kill *")
   expect(rule("edit", "env").patterns).toEqual(["*.env*"])
   expect(rule("write", "lock").patterns).toEqual(["*.lock", "**/*.lock"])
-  expect(rule("read", "ssh").patterns).toEqual(["*/.ssh/*", "*/.ssh"])
+  expect(rule("read", "ssh").patterns).toEqual(["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"])
   expect(rule("read", "git").patterns).toEqual([".git/*", "**/.git/**"])
   expect(rule("read", "package-json").patterns).toEqual(["package.json", "*/package.json"])
   expect(rule("webfetch", "github").patterns).toEqual(["*github.com*"])
@@ -161,11 +162,25 @@ test("curated file patterns match what core FileAccess actually emits, root and 
     pkg.patterns.some((pattern) => match(resource, pattern))
   expect(pkgDenied("package.json")).toBe(true)
   expect(pkgDenied("sub/package.json")).toBe(true)
-  // SSH resources are expanded absolute paths, never a literal tilde: the old
-  // `~/.ssh/**` pattern never matched what core emits.
+  // Core FileAccess.resolve emits LOCATION-RELATIVE resources for internal
+  // paths (core/src/file-access.ts:99-109): with the Location at the home
+  // directory, `read("~/.ssh/id_ed25519")` authorizes `.ssh/id_ed25519`, and
+  // a `.ssh` directory at a project root authorizes `.ssh/id_ed25519` too.
+  // Absolute external paths still emit absolute resources.
   const ssh = rule("read", "ssh")
   const sshDenied = (resource: string): boolean =>
     ssh.patterns.some((pattern) => match(resource, pattern))
   expect(sshDenied("/home/user/.ssh/id_rsa")).toBe(true)
+  expect(sshDenied(".ssh/id_ed25519")).toBe(true)
+  expect(sshDenied(".ssh")).toBe(true)
+  expect(sshDenied("sub/.ssh/id_ed25519")).toBe(true)
   expect(match("/home/user/.ssh/id_rsa", "~/.ssh/**")).toBe(false)
+})
+
+test("mined ssh candidates carry the same root-relative coverage", () => {
+  const mined = mineDiscoveredRules({ texts: [{ item: "tool:read", text: "read ~/.ssh/id_ed25519" }] })
+  const ssh = mined.find((entry) => entry.tool === "read" && entry.id === "ssh")
+  if (ssh === undefined) throw new Error("expected mined read:ssh")
+  expect(ssh.patterns).toEqual(["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"])
+  expect(ssh.patterns.some((pattern) => match(".ssh/id_ed25519", pattern))).toBe(true)
 })

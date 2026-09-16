@@ -12,9 +12,7 @@ export interface AgentPermissionRule {
 
 export interface StructuredModel {
   readonly providerID: string
-  readonly model?: string
-  readonly modelID?: string
-  readonly id?: string
+  readonly model: string
   readonly variant?: string
 }
 
@@ -246,8 +244,12 @@ export function serializeFrontmatter(fields?: AgentFields): string {
 // subset so callers can prefer file-backed model/variant over Agent.Info.model.
 // `model` accepts the host's native ConfigModel.Selection forms: a short
 // string (`provider/id#variant`) or an explicit object
-// (`{ providerID, model, variant? }`, with `modelID`/`id` accepted as aliases
-// for `model`). A separate `variant` key wins over both.
+// (`{ providerID, model, variant? }`, matching
+// `packages/schema/src/config/model.ts:12-21`). A separate top-level
+// `variant` combines only with a short string that carries no `#` suffix,
+// mirroring core's decode (`packages/core/src/config/plugin/agent.ts:187-203`);
+// an object variant or an embedded `#` suffix keeps its own variant and the
+// top-level key is ignored.
 export function parseFrontmatter(markdown: string): AgentFields | undefined {
   const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   if (!match) return undefined
@@ -274,13 +276,11 @@ function structuredModel(value: unknown): StructuredModel | undefined {
   const providerID = value["providerID"]
   if (typeof providerID !== "string" || providerID.length === 0) return undefined
   const model = value["model"]
-  const modelID = value["modelID"] ?? value["id"]
-  const candidate = typeof model === "string" ? model : typeof modelID === "string" ? modelID : undefined
-  if (candidate === undefined || candidate.length === 0) return undefined
+  if (typeof model !== "string" || model.length === 0) return undefined
   const variant = value["variant"]
   return {
     providerID,
-    model: candidate,
+    model,
     ...(typeof variant === "string" && variant.length > 0 ? { variant } : {}),
   }
 }
@@ -293,8 +293,10 @@ export interface ParsedModelRef {
 
 // File frontmatter model forms: `model: "provider/id#variant"`, or
 // `model: "provider/id"` plus a separate `variant: "..."` key, or the host's
-// native explicit object (`model: { providerID, model, variant? }`). An
-// explicit variant field wins over the `#` suffix and the object variant.
+// native explicit object (`model: { providerID, model, variant? }`). The
+// separate `variant` combines only with a short string that carries no `#`
+// suffix, mirroring core (`packages/core/src/config/plugin/agent.ts:187-203`):
+// an object variant or an embedded `#` suffix keeps its own variant.
 // Anything without a `/` (string) or without provider/model parts (object) is invalid.
 export function modelRefFromFields(fields: AgentFields | undefined): ParsedModelRef | undefined {
   if (fields?.model === undefined) {
@@ -303,11 +305,12 @@ export function modelRefFromFields(fields: AgentFields | undefined): ParsedModel
   }
   if (typeof fields.model !== "string") {
     const providerID = fields.model.providerID
-    const modelID = fields.model.model ?? fields.model.modelID ?? fields.model.id
-    if (providerID.length === 0 || modelID === undefined || modelID.length === 0) return undefined
+    const modelID = fields.model.model
+    if (typeof providerID !== "string" || typeof modelID !== "string") return undefined
+    if (providerID.length === 0 || modelID.length === 0) return undefined
     if (providerID.includes("/") || providerID.includes("#")) return undefined
     if (modelID.includes("#")) return undefined
-    const variant = fields.variant ?? fields.model.variant
+    const variant = fields.model.variant
     if (variant !== undefined && variant.length === 0) return undefined
     if (variant === undefined) return { providerID, modelID }
     return { providerID, modelID, variant }
@@ -324,7 +327,11 @@ export function modelRefFromFields(fields: AgentFields | undefined): ParsedModel
   const stringVariant = hash === -1 ? undefined : rest.slice(hash + 1)
   if (modelID.length === 0) return undefined
   if (stringVariant !== undefined && stringVariant.length === 0) return undefined
-  const variant = fields.variant === undefined ? stringVariant : fields.variant
+  if (hash !== -1) {
+    if (stringVariant === undefined) return { providerID, modelID }
+    return { providerID, modelID, variant: stringVariant }
+  }
+  const variant = fields.variant
   if (variant !== undefined && variant.length === 0) return undefined
   if (variant === undefined) return { providerID, modelID }
   return { providerID, modelID, variant }

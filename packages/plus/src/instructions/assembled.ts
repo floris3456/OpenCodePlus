@@ -53,7 +53,7 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   })]))
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
   const scrubbed = scrubKeywords(input.items, resolved)
-  const system = systemEntry?.system === undefined ? [] : [scrubLines(systemEntry.system, scrubbed).text]
+  const system = systemEntry?.system === undefined ? [] : [preserveScrub(systemEntry.system, scrubbed)]
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])
@@ -87,7 +87,7 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
         const installed = (input.installedTools ?? []).find(
           (plan) => plan.agent === input.agent && plan.codemode === true && plan.catalogPath === catalogPath(item),
         )
-        const description = scrubLines(installed?.text ?? live.description, scrubbed).text
+        const description = preserveScrub(installed?.text ?? live.description, scrubbed)
         const pinned = installed?.pinned ?? live.pinned
         return [{ id: live.id, description, codemode: true as const, pinned }]
       }
@@ -97,7 +97,7 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // installed denial excludes the tool, while an unapplied or cleared
       // stored off leaves the tool present because the host still serves it.
       if (deniedTools.has(live.id)) return []
-      return [{ id: live.id, description: scrubLines(live.description, scrubbed).text }]
+      return [{ id: live.id, description: preserveScrub(live.description, scrubbed) }]
     })
   const skills = await listSkills(input.ctx)
   const deniedSkills: ReadonlySet<string> | undefined =
@@ -142,7 +142,7 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // win and the copy would never be consulted.
       const current = skillContent(skills, input.agent, id)
       if (current === undefined) return []
-      return [{ id, content: scrubLines(current, scrubbed).text }]
+      return [{ id, content: preserveScrub(current, scrubbed) }]
     })
   return { agent: input.agent, system, tools: visibleTools, skills: visibleSkills }
 }
@@ -155,6 +155,16 @@ function scrubKeywords(items: readonly Item[], resolved: ReadonlyMap<string, { e
     return [...item.keywords]
   })
   return [...new Set(keywords)]
+}
+
+// Live request scrub (apply.ts applyRuleScrub/applyCatalogScrub) never
+// installs an emptied description: when every line matches, it keeps the
+// original text. The assembled readback mirrors that preservation so the
+// view agrees with what sessions actually receive.
+function preserveScrub(text: string, keywords: readonly string[]): string {
+  const scrubbed = scrubLines(text, keywords).text
+  if (scrubbed.trim().length === 0) return text
+  return scrubbed
 }
 
 async function readAgentEntry(ctx: Context, agent: string): Promise<Agent.Info | undefined> {

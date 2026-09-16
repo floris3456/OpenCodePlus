@@ -3,7 +3,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect } from "effect"
+import { Deferred, Effect, Exit } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -11,7 +11,7 @@ import { createPlusApi, createState, createHandlers } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
 import { enable } from "../src/project.js"
-import { projectTeamsPath } from "../src/instructions/paths.js"
+import { projectLogPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import {
@@ -1170,4 +1170,79 @@ test("deleting a protected agent's custom rule through another agent's row is re
   expect(error.message).toContain("agent.protected")
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+})
+
+async function logLines(project: string): Promise<string[]> {
+  const file = Bun.file(projectLogPath(project))
+  if (!(await file.exists())) return []
+  const text = await file.text()
+  return text.split("\n").filter((line) => line.length > 0)
+}
+
+test("removeRule refuses a protected owner's rule with no write and no log", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
+  if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
+  const beforeLogs = await logLines(project)
+  // Direct API with the owner's own address still refuses: protection follows
+  // the matched record, not the caller's row address.
+  const refused = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tui" } })
+  expect(refused.ok).toBe(false)
+  if (refused.ok) throw new Error("expected removeRule refusal")
+  expect(refused.error.code).toBe("rule.invalid")
+  expect(refused.error.message).toContain("agent.protected")
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+  expect(await logLines(project)).toEqual(beforeLogs)
+})
+
+test("rule.remove RPC from another agent's row refuses with no write and no log (TUI state.ts path)", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const state = createState()
+  const api = createPlusApi(ctx, state)
+  const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
+  if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
+  const snapshot = await snapshotOf(api)
+  const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
+    (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
+  )
+  if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  const beforeLogs = await logLines(project)
+  // state.ts remove() forwards the selected row address verbatim:
+  // `plus["rule.remove"]({ level: address.level, agent: address.agent, ... })`.
+  const handlers = createHandlers(ctx, state)
+  const captured: { current?: { type: string; message: string } } = {}
+  const throwing = {
+    error: (type: string, message: string, _data?: unknown) => {
+      captured.current = { type, message }
+      throw captured.current
+    },
+  }
+  const exit = await Effect.runPromiseExit(
+    handlers["rule.remove"](
+      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
+      throwing,
+    ),
+  )
+  expect(Exit.isFailure(exit)).toBe(true)
+  expect(captured.current?.type).toBe("rule.invalid")
+  expect(captured.current?.message).toContain("agent.protected")
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+  expect(await logLines(project)).toEqual(beforeLogs)
 })
