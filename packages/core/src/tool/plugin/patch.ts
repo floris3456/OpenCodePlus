@@ -194,7 +194,17 @@ export const Plugin = {
               ])
               yield* permission.assert({
                 action: "edit",
-                resources: [...new Set(targets.map((target) => target.resource))],
+                resources: [
+                  ...new Set(
+                    prepared.flatMap((change) => [
+                      change.target.resource,
+                      `${change.type}:${change.target.resource}`,
+                      ...(change.type === "update" && change.moveTarget
+                        ? [change.moveTarget.resource, `${change.type}:${change.moveTarget.resource}`]
+                        : []),
+                    ]),
+                  ),
+                ],
                 save: ["*"],
                 metadata: {
                   filepath: targets.map((target) => target.resource).join(", "),
