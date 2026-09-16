@@ -1156,6 +1156,9 @@ function normalizeActor(actor: Plus.Actor | undefined): Plus.Actor {
 // teams address team:<level>:<name>.
 function recordTarget(record: StoredRecord): string {
   if (record.type === "team") return `team:${record.level}:${record.team}`
+  if (record.type === "model")
+    return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
+  if (record.type === "rule") return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
   const agent = record.agent ?? ""
   if (record.type === "split") return `item:${record.level}:${agent}:${record.item}`
   if (record.section !== null) return `section:${record.level}:${agent}:${record.item}:${record.section}`
@@ -1327,6 +1330,29 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       agent: record.agent,
       item: record.item,
       boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+      updated: record.updated,
+    }
+  if (record.type === "model")
+    return {
+      type: "model",
+      level: record.level,
+      agent: record.agent,
+      providerID: record.providerID,
+      modelID: record.modelID,
+      ...(record.variant === undefined ? {} : { variant: record.variant }),
+      ...(record.active === undefined ? {} : { active: record.active }),
+      updated: record.updated,
+    }
+  if (record.type === "rule")
+    return {
+      type: "rule",
+      level: record.level,
+      agent: record.agent,
+      tool: record.tool,
+      id: record.id,
+      label: record.label,
+      patterns: [...record.patterns],
+      keywords: [...record.keywords],
       updated: record.updated,
     }
   return {
@@ -1999,23 +2025,31 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
       ...(agent.base === undefined ? {} : { base: agent.base }),
       fileBacked: agent.path !== undefined,
     })),
-    items: discovered.items.map((item) => ({
-      id: item.id,
-      kind: item.kind,
-      group: item.group,
-      ...(item.server === undefined ? {} : { server: item.server }),
-      title: item.title,
-      text: item.text,
-      enabled: item.enabled,
-      fingerprint: item.fingerprint,
-      ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
-      ...(item.order === undefined ? {} : { order: item.order }),
-      ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
-      ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
-      ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
-      ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
-      ...(item.execute === undefined ? {} : { execute: item.execute }),
-    })),
+    // Model/perm items have no snapshot row until phase 2 widens
+    // SnapshotItem.kind: discovery emits none in phase 1, so this gate is
+    // types-only today and drops nothing.
+    items: discovered.items.flatMap((item): Plus.SnapshotItem[] => {
+      if (item.kind === "model" || item.kind === "perm") return []
+      return [
+        {
+          id: item.id,
+          kind: item.kind,
+          group: item.group,
+          ...(item.server === undefined ? {} : { server: item.server }),
+          title: item.title,
+          text: item.text,
+          enabled: item.enabled,
+          fingerprint: item.fingerprint,
+          ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
+          ...(item.order === undefined ? {} : { order: item.order }),
+          ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+          ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+          ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
+          ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
+          ...(item.execute === undefined ? {} : { execute: item.execute }),
+        },
+      ]
+    }),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
       if (record.type === "split")
         return [
@@ -2025,6 +2059,33 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
             agent: record.agent,
             item: record.item,
             boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+            updated: record.updated,
+          },
+        ]
+      if (record.type === "model")
+        return [
+          {
+            type: "model" as const,
+            level: record.level,
+            agent: record.agent,
+            providerID: record.providerID,
+            modelID: record.modelID,
+            ...(record.variant === undefined ? {} : { variant: record.variant }),
+            ...(record.active === undefined ? {} : { active: record.active }),
+            updated: record.updated,
+          },
+        ]
+      if (record.type === "rule")
+        return [
+          {
+            type: "rule" as const,
+            level: record.level,
+            agent: record.agent,
+            tool: record.tool,
+            id: record.id,
+            label: record.label,
+            patterns: [...record.patterns],
+            keywords: [...record.keywords],
             updated: record.updated,
           },
         ]

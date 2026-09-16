@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test"
+import { Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
 import { load, save, stable, type StoredRecord } from "../src/instructions/store.js"
+import { Plus } from "../src/rpc.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const roots: string[] = []
@@ -455,4 +457,125 @@ test("unchanged save with a pin is a no-op and a changed pin writes", async () =
   const changed = await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: flipped })
   expect(changed).toEqual({ ok: true, projectRevision: 2, globalRevision: 0, changed: { project: true, global: false } })
   expect((await load(project)).records).toContainEqual(customization({ pin: false }))
+})
+
+function model(overrides?: Partial<Extract<StoredRecord, { type: "model" }>>): StoredRecord {
+  return {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "openai",
+    modelID: "gpt-5",
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+function rule(overrides?: Partial<Extract<StoredRecord, { type: "rule" }>>): StoredRecord {
+  return {
+    type: "rule",
+    level: "project",
+    agent: "alpha",
+    tool: "shell",
+    id: "git-push",
+    label: "Git push",
+    patterns: ["git push *"],
+    keywords: ["git push"],
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+test("model and rule records round-trip through save then load", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    model({ active: true, variant: "high" }),
+    model({ level: "global", agent: "beta", providerID: "anthropic", modelID: "claude-4" }),
+    rule({}),
+    rule({ level: "defaults", agent: null, tool: "read", id: "env", label: ".env files", patterns: ["*.env*"], keywords: ["env"] }),
+  ]
+  const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1, changed: { project: true, global: true } })
+  const loaded = await load(project)
+  expect(loaded.migrated).toBe(false)
+  expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
+})
+
+test("model and rule records land in the project vs global files by level", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    model({ agent: "alpha" }),
+    rule({ agent: "alpha" }),
+    model({ level: "global", agent: "beta", providerID: "anthropic", modelID: "claude-4" }),
+    model({ level: "defaults", agent: null }),
+    rule({ level: "defaults", agent: null, tool: "read", id: "env", label: ".env files", patterns: ["*.env*"], keywords: ["env"] }),
+  ]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const projectText = await Bun.file(projectRecordsPath(project)).text()
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  expect(projectText).toContain(`"type":"model"`)
+  expect(projectText).toContain(`"type":"rule"`)
+  expect(projectText).not.toContain(`"level":"global"`)
+  expect(projectText).not.toContain(`"level":"defaults"`)
+  expect(globalText).toContain(`"type":"model"`)
+  expect(globalText).toContain(`"type":"rule"`)
+  expect(globalText).not.toContain(`"level":"project"`)
+})
+
+test("unchanged save containing models and rules is a no-op", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    model({ active: true, variant: "high" }),
+    model({ level: "global", agent: "beta", providerID: "anthropic", modelID: "claude-4" }),
+    rule({}),
+    rule({ level: "defaults", agent: null, tool: "read", id: "env", label: ".env files", patterns: ["*.env*"], keywords: ["env"] }),
+  ]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const beforeProject = await Bun.file(projectRecordsPath(project)).text()
+  const beforeGlobal = await Bun.file(globalRecordsPath()).text()
+  expect(await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 1, records: [...records].reverse() })).toEqual({
+    ok: true,
+    projectRevision: 1,
+    globalRevision: 1,
+    changed: { project: false, global: false },
+  })
+  expect(await Bun.file(projectRecordsPath(project)).text()).toBe(beforeProject)
+  expect(await Bun.file(globalRecordsPath()).text()).toBe(beforeGlobal)
+})
+
+test("stable() omits unset model keys and round-trips set ones", async () => {
+  const { project } = await isolated()
+  const bare = model()
+  expect("variant" in stable(bare)).toBe(false)
+  expect("active" in stable(bare)).toBe(false)
+  const full = model({ variant: "high", active: true })
+  expect(stable(full)).toEqual(full)
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [bare, rule({})] })
+  const projectText = await Bun.file(projectRecordsPath(project)).text()
+  expect(projectText).not.toContain(`"variant"`)
+  expect(projectText).not.toContain(`"active"`)
+  expect((await load(project)).records).toContainEqual(bare)
+})
+
+test("model and rule records sort canonically and survive a load round-trip in order", async () => {
+  const { project } = await isolated()
+  const first = rule({ tool: "shell", id: "aaa" })
+  const second = model({ providerID: "anthropic", modelID: "claude-4" })
+  const third = model({ providerID: "openai", modelID: "gpt-5" })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [third, first, second] })
+  const loaded = await load(project)
+  expect(loaded.records).toEqual([second, third, first])
+  const reSave = await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: loaded.records })
+  expect(reSave).toEqual({ ok: true, projectRevision: 1, globalRevision: 0, changed: { project: false, global: false } })
+})
+
+test("snapshot record schemas accept model and rule records over the RPC boundary", async () => {
+  const decode = Schema.decodeUnknownSync(Plus.SnapshotRecord)
+  expect(decode({ type: "model", level: "project", agent: "alpha", providerID: "openai", modelID: "gpt-5", updated: UPDATED }).type).toBe("model")
+  expect(
+    decode({ type: "model", level: "project", agent: "alpha", providerID: "openai", modelID: "gpt-5", variant: "high", active: true, updated: UPDATED }),
+  ).toMatchObject({ variant: "high", active: true })
+  expect(
+    decode({ type: "rule", level: "project", agent: "alpha", tool: "shell", id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], updated: UPDATED }),
+  ).toMatchObject({ tool: "shell", id: "git-push" })
 })

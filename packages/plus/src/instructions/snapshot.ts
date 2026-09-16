@@ -1,5 +1,5 @@
 import type { Plus } from "../rpc.js"
-import type { AgentSource, CustomizationRecord, Item, SplitRecord } from "./model.js"
+import type { AgentSource, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
 import type { MemoInput, TeamInput } from "./tree.js"
 
 export function itemOf(item: Plus.SnapshotItem): Item {
@@ -31,8 +31,10 @@ export function agentOf(agent: Plus.AgentEntry): AgentSource {
   }
 }
 
-export function recordOf(record: Plus.SnapshotRecord): CustomizationRecord | SplitRecord {
+export function recordOf(record: Plus.SnapshotRecord): CustomizationRecord | SplitRecord | ModelRecord | RuleRecord {
   if (record.type === "split") return splitOf(record)
+  if (record.type === "model") return modelOf(record)
+  if (record.type === "rule") return ruleOf(record)
   return customizationOf(record)
 }
 
@@ -43,6 +45,33 @@ function splitOf(record: Plus.SnapshotSplitRecord): SplitRecord {
     agent: record.agent,
     item: record.item,
     boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+    updated: record.updated,
+  }
+}
+
+function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
+  return {
+    type: "model",
+    level: record.level,
+    agent: record.agent,
+    providerID: record.providerID,
+    modelID: record.modelID,
+    ...(record.variant === undefined ? {} : { variant: record.variant }),
+    ...(record.active === undefined ? {} : { active: record.active }),
+    updated: record.updated,
+  }
+}
+
+function ruleOf(record: Plus.SnapshotRuleRecord): RuleRecord {
+  return {
+    type: "rule",
+    level: record.level,
+    agent: record.agent,
+    tool: record.tool,
+    id: record.id,
+    label: record.label,
+    patterns: [...record.patterns],
+    keywords: [...record.keywords],
     updated: record.updated,
   }
 }
@@ -76,7 +105,11 @@ export function teamOf(team: Plus.TeamEntry): TeamInput {
 export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
   return {
     items: snapshot.items.map(itemOf),
-    records: snapshot.records.map(recordOf),
+    // Model and rule records are not tree rows in phase 1, so they never
+    // reach the memo; they round-trip through recordOf losslessly above.
+    records: snapshot.records
+      .map(recordOf)
+      .filter((record): record is CustomizationRecord | SplitRecord => record.type === "customization" || record.type === "split"),
     agents: snapshot.agents.map(agentOf),
     teams: (snapshot.teams ?? []).map(teamOf),
   }

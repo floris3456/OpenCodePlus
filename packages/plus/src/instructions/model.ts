@@ -12,7 +12,7 @@ export interface Address {
   readonly section: string | null
 }
 
-export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp"
+export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm"
 export type ItemGroup = "native" | "plus" | "mcp" | "project" | "none"
 
 export interface Item {
@@ -44,6 +44,8 @@ export interface Item {
 // - `skill:<skillId>`
 // - `system:role` (the agent's own prompt body = Role/persona), `system:<relativePath>`
 // - `mcp:<server>`
+// - `model:<providerID>/<modelID>` or `model:<providerID>/<modelID>@<variant>`
+// - `perm:<toolId>:<ruleId>`
 
 export interface Scopes {
   readonly global: ReadonlySet<string>
@@ -70,6 +72,91 @@ export function scopesOf(agents: readonly AgentSource[]): Scopes {
   }
 }
 
+// Item ids for the two phase-1 record kinds. Row ids address the whole row as
+// `item:<level>:<agent|''>:<itemId>` by concatenation and match by exact
+// string equality (ops.ts findNode), so `/`, `@`, and extra `:` inside the
+// item segment need no escaping; the parsers below split on the first `/`
+// (provider vs model) and the first `:` (tool vs rule) only.
+
+// `model:<providerID>/<modelID>` or `model:<providerID>/<modelID>@<variant>`.
+export function modelItemId(input: { providerID: string; modelID: string; variant?: string }): string {
+  const base = `model:${input.providerID}/${input.modelID}`
+  if (input.variant === undefined) return base
+  return `${base}@${input.variant}`
+}
+
+export function parseModelItemId(id: string): { providerID: string; modelID: string; variant?: string } | undefined {
+  if (!id.startsWith("model:")) return undefined
+  const rest = id.slice("model:".length)
+  const slash = rest.indexOf("/")
+  if (slash === -1) return undefined
+  const providerID = rest.slice(0, slash)
+  const remainder = rest.slice(slash + 1)
+  if (providerID.length === 0 || remainder.length === 0) return undefined
+  const at = remainder.indexOf("@")
+  if (at === -1) return { providerID, modelID: remainder }
+  const modelID = remainder.slice(0, at)
+  const variant = remainder.slice(at + 1)
+  if (modelID.length === 0 || variant.length === 0) return undefined
+  return { providerID, modelID, variant }
+}
+
+// `perm:<toolId>:<ruleId>`; the rule id keeps any extra `:` it contains.
+export function permItemId(tool: string, ruleId: string): string {
+  return `perm:${tool}:${ruleId}`
+}
+
+export function parsePermItemId(id: string): { tool: string; ruleId: string } | undefined {
+  if (!id.startsWith("perm:")) return undefined
+  const rest = id.slice("perm:".length)
+  const colon = rest.indexOf(":")
+  if (colon === -1) return undefined
+  const tool = rest.slice(0, colon)
+  const ruleId = rest.slice(colon + 1)
+  if (tool.length === 0 || ruleId.length === 0) return undefined
+  return { tool, ruleId }
+}
+
+// Activating one model clears `active` from ONLY the same (level, agent)
+// pair's other model records; other levels and agents are untouched, so at
+// most one record per (level, agent) stays active. Records keep their own
+// `updated` timestamps: this is a pure content flip and the store's `same`
+// still detects the change. Activating the already-active record, or a target
+// with no record at all, returns an identical list (an unchanged save stays a
+// no-op).
+export function activateModel(
+  records: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+  target: { providerID: string; modelID: string; variant?: string },
+): ModelRecord[] {
+  const scoped = (record: ModelRecord) => record.level === address.level && record.agent === address.agent
+  const wanted = (record: ModelRecord) =>
+    record.providerID === target.providerID && record.modelID === target.modelID && record.variant === target.variant
+  const targetRecord = records.find((record) => scoped(record) && wanted(record))
+  if (targetRecord === undefined) return [...records]
+  const stray = records.some((record) => scoped(record) && !wanted(record) && record.active === true)
+  if (targetRecord.active === true && !stray) return [...records]
+  return records.map((record) => {
+    if (!scoped(record)) return record
+    if (wanted(record)) return { ...cleared(record), active: true as const }
+    if (record.active === true) return cleared(record)
+    return record
+  })
+}
+
+function cleared(record: ModelRecord): ModelRecord {
+  if (record.active === undefined) return record
+  return {
+    type: "model",
+    level: record.level,
+    agent: record.agent,
+    providerID: record.providerID,
+    modelID: record.modelID,
+    ...(record.variant === undefined ? {} : { variant: record.variant }),
+    updated: record.updated,
+  }
+}
+
 export interface CustomizationRecord {
   readonly type: "customization"
   readonly level: Level
@@ -91,6 +178,36 @@ export interface SplitRecord {
   readonly agent: string | null
   readonly item: string
   readonly boundaries: readonly { id: string; name: string; start: number }[]
+  readonly updated: string
+}
+
+// Per-agent model selection: which provider model an agent uses. At most one
+// record per (level, agent) carries `active`. `active` is `true` or omitted,
+// never `false`: records cross the RPC boundary as JSON, where a
+// present-but-undefined key fails validation.
+export interface ModelRecord {
+  readonly type: "model"
+  readonly level: Level
+  readonly agent: string | null
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+  readonly active?: true
+  readonly updated: string
+}
+
+// One curated or mined tool permission rule. On/off reuses
+// CustomizationRecord.state on a `perm:<tool>:<rule>` item address, so
+// resolve() already yields `enabled` with no new logic here.
+export interface RuleRecord {
+  readonly type: "rule"
+  readonly level: Level
+  readonly agent: string | null
+  readonly tool: string
+  readonly id: string
+  readonly label: string
+  readonly patterns: readonly string[]
+  readonly keywords: readonly string[]
   readonly updated: string
 }
 

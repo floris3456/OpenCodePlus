@@ -12,12 +12,15 @@ import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } fro
 import { agentOf, itemOf, recordOf, teamOf } from "../../instructions/snapshot.js"
 import { addSection, removalPlan, reset, resolveReview, saveSplit, saveText, setEnabled, setPin, teamPlan, toggle } from "../../instructions/ops.js"
 import { query } from "../../instructions/query.js"
-import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
+import { Definition, type Snapshot, type SnapshotItem, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
 
 function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord)[] {
-  return records.map(recordOf)
+  // Model and rule records are not tree rows in phase 1; see memoInputOf.
+  return records
+    .map(recordOf)
+    .filter((record): record is CustomizationRecord | SplitRecord => record.type === "customization" || record.type === "split")
 }
 
 function toRpcRecords(
@@ -272,7 +275,7 @@ export function createInstructionsState(context: Plugin.Context) {
     setSelectedId(list[next].id)
   }
 
-  function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+  function upstreamFor(items: readonly SnapshotItem[], address: Address): SnapshotItem | undefined {
     const matches = items.filter((entry) => entry.id === address.item)
     const owner = address.agent
     if (owner === null) return matches[0]
