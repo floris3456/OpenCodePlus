@@ -16,6 +16,7 @@ export interface CuratedRule {
   readonly label: string
   readonly patterns: readonly string[]
   readonly keywords: readonly string[]
+  readonly action?: string
 }
 
 export interface DiscoveredRule {
@@ -35,6 +36,7 @@ export interface MergedRule {
   readonly patterns: readonly string[]
   readonly keywords: readonly string[]
   readonly provenance: readonly string[]
+  readonly action?: string
 }
 
 // How deep each known command head's subcommands go, so phase 3's miner can
@@ -73,10 +75,6 @@ export const commandHeads: Record<string, number> = {
 // its first meaningful segment: "**/.git/**" -> [".git"].
 export function keywordsForPattern(pattern: string): string[] {
   const trimmed = pattern.trim()
-  // Typed resources like "add:*" (patch tool): the bare type ("add") would
-  // scrub ordinary prose, so keep the full typed pattern as the keyword.
-  // URLs keep the existing fallback ("http://*" -> ["http"]).
-  if (trimmed.includes(":") && !trimmed.includes(" ") && !trimmed.includes("\t") && !trimmed.includes("://")) return [trimmed]
   const tokens = trimmed.split(/\s+/).filter((token) => token.length > 0)
   const stop = tokens.findIndex((token) => token.includes("*") || token.includes("?") || token.startsWith("-"))
   const words = stop === -1 ? tokens : tokens.slice(0, stop)
@@ -92,6 +90,7 @@ interface RawRule {
   readonly id: string
   readonly label: string
   readonly patterns: readonly string[]
+  readonly action?: string
 }
 
 // Raw curated entries: label plus patterns grouped by tool action. Keywords
@@ -154,9 +153,9 @@ const rawRules: readonly RawRule[] = [
   { tool: "read", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
   { tool: "read", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
   { tool: "read", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"] },
-  { tool: "patch", id: "add-file", label: "Add file", patterns: ["add:*"] },
-  { tool: "patch", id: "update-file", label: "Update file", patterns: ["update:*"] },
-  { tool: "patch", id: "delete-file", label: "Delete file", patterns: ["delete:*"] },
+  { tool: "patch", id: "add-file", label: "Add file", patterns: ["*"], action: "patch.add" },
+  { tool: "patch", id: "update-file", label: "Update file", patterns: ["*"], action: "patch.update" },
+  { tool: "patch", id: "delete-file", label: "Delete file", patterns: ["*"], action: "patch.delete" },
   { tool: "webfetch", id: "http", label: "Plain HTTP", patterns: ["http://*"] },
   { tool: "webfetch", id: "github", label: "GitHub", patterns: ["*github.com*"] },
   { tool: "webfetch", id: "localhost", label: "Localhost", patterns: ["*localhost*"] },
@@ -178,6 +177,7 @@ export const curatedRules: readonly CuratedRule[] = rawRules.map((rule) => ({
   label: rule.label,
   patterns: [...rule.patterns],
   keywords: [...new Set(rule.patterns.flatMap(keywordsForPattern))],
+  ...(rule.action === undefined ? {} : { action: rule.action }),
 }))
 
 // Subagent and skill rules populate from discovered agents/skills at
@@ -193,16 +193,16 @@ export function idRules(tool: string, ids: readonly string[]): CuratedRule[] {
   }))
 }
 
-// Merge curated defaults with mined discoveries by pattern set. The CURATED
-// LABEL (plus id and keywords) WINS on a collision; the discovered
-// provenance stays. Order: most-mentioned discovered first, then the curated
-// generics nobody mentioned.
+// Merge curated defaults with mined discoveries by pattern set (plus action
+// for operation-scoped rules). The CURATED LABEL (plus id and keywords) WINS
+// on a collision; the discovered provenance stays. Order: most-mentioned
+// discovered first, then the curated generics nobody mentioned.
 export function mergeRules(curated: readonly CuratedRule[], discovered: readonly DiscoveredRule[]): MergedRule[] {
-  const byPatterns = new Map(curated.map((rule) => [patternKey(rule.patterns), rule]))
+  const byPatterns = new Map(curated.map((rule) => [ruleKey(rule.patterns, rule.action), rule]))
   const consumed = new Set<string>()
   const ranked = [...discovered].toSorted((left, right) => right.provenance.length - left.provenance.length)
   const merged = ranked.map((entry) => {
-    const key = patternKey(entry.patterns)
+    const key = ruleKey(entry.patterns, undefined)
     const match = byPatterns.get(key)
     if (match === undefined) return { id: entry.id, label: entry.label, patterns: [...entry.patterns], keywords: [...entry.keywords], provenance: [...entry.provenance] }
     consumed.add(key)
@@ -212,12 +212,17 @@ export function mergeRules(curated: readonly CuratedRule[], discovered: readonly
       patterns: [...match.patterns],
       keywords: [...match.keywords],
       provenance: [...entry.provenance],
+      ...(match.action === undefined ? {} : { action: match.action }),
     }
   })
   const generics = curated
-    .filter((rule) => !consumed.has(patternKey(rule.patterns)))
-    .map((rule) => ({ id: rule.id, label: rule.label, patterns: [...rule.patterns], keywords: [...rule.keywords], provenance: [] }))
+    .filter((rule) => !consumed.has(ruleKey(rule.patterns, rule.action)))
+    .map((rule) => ({ id: rule.id, label: rule.label, patterns: [...rule.patterns], keywords: [...rule.keywords], provenance: [], ...(rule.action === undefined ? {} : { action: rule.action }) }))
   return [...merged, ...generics]
+}
+
+function ruleKey(patterns: readonly string[], action: string | undefined): string {
+  return `${action ?? ""}\n${patternKey(patterns)}`
 }
 
 function patternKey(patterns: readonly string[]): string {
@@ -227,10 +232,11 @@ function patternKey(patterns: readonly string[]): string {
 // Core permission action for a Plus tool id. Discovery carries the tool's own
 // `options.permission` on perm items when the registry provides one (edit,
 // write, and patch all register `permission: "edit"`); this map is the
-// fallback for items that predate that seam and for tools without one. Edit,
-// write, and patch share core's `edit` action (core/src/tool/plugin/edit.ts,
-// write.ts, patch.ts all assert `action: "edit"`); every other tool asserts
-// its own id.
+// fallback for items that predate that seam and for tools without one. Edit
+// and write share core's `edit` action (core/src/tool/plugin/edit.ts,
+// write.ts assert `action: "edit"`); patch additionally asserts per-operation
+// `patch.add`/`patch.update`/`patch.delete` actions (carried per rule, not
+// here). Every other tool asserts its own id.
 export function actionForToolId(toolId: string): string {
   if (toolId === "write" || toolId === "patch" || toolId === "edit") return "edit"
   return toolId

@@ -826,7 +826,7 @@ function permItems(input: {
     const discovered = mined.filter((entry) => entry.tool === toolId)
     if (curated.length === 0 && discovered.length === 0) continue
     const ranked = mergeRules(curated, discovered)
-    const action = permActionForTool(input.tools, toolId)
+    const toolAction = permActionForTool(input.tools, toolId)
     ranked.forEach((merged, order) => {
       const id = permItemId(toolId, merged.id)
       if (byId.has(id)) {
@@ -837,6 +837,7 @@ function permItems(input: {
         return
       }
       const text = `${merged.label}\n${merged.patterns.join("\n")}`
+      const action = merged.action ?? toolAction
       byId.set(id, {
         id,
         kind: "perm",

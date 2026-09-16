@@ -20,14 +20,18 @@ function rule(tool: string, id: string): CuratedRule {
   return found
 }
 
-test("every curated entry has at least one pattern and non-empty keywords", () => {
+test("every curated entry has at least one pattern and safe keywords", () => {
   expect(curatedRules.length).toBeGreaterThan(0)
   for (const entry of curatedRules) {
     expect(entry.patterns.length).toBeGreaterThanOrEqual(1)
+    if (entry.tool === "patch") {
+      expect(entry.keywords).toEqual([])
+      continue
+    }
     expect(entry.keywords.length).toBeGreaterThanOrEqual(1)
     for (const keyword of entry.keywords) expect(keyword.length).toBeGreaterThan(0)
   }
-  const keys = curatedRules.map((entry) => `${entry.tool}:${entry.id}`)
+  const keys = curatedRules.map((entry) => `${entry.tool}:${entry.id}:${entry.action ?? ""}`)
   expect(new Set(keys).size).toBe(keys.length)
 })
 
@@ -58,6 +62,7 @@ test("keywordsForPattern keeps head plus subcommands, stopping at wildcards and 
   expect(keywordsForPattern("**/*.lock")).toEqual([".lock"])
   expect(keywordsForPattern("http://*")).toEqual(["http"])
   expect(keywordsForPattern("**/.git/**")).toEqual([".git"])
+  expect(keywordsForPattern("*")).toEqual([])
 })
 
 test("head-only shell rules carry both bare and star patterns", () => {
@@ -256,24 +261,24 @@ test("mineGenericPaths deduplicates paths mentioned with and without line refere
   expect(patterns).toEqual(["src/index.ts"])
 })
 
-test("patch ships typed add/update/delete curated rules", () => {
+test("patch ships per-operation curated rules on patch actions", () => {
   const patch = curatedRules.filter((entry) => entry.tool === "patch")
   expect(patch.map((entry) => entry.id).toSorted()).toEqual(["add-file", "delete-file", "update-file"])
-  expect(rule("patch", "add-file").patterns).toEqual(["add:*"])
-  expect(rule("patch", "update-file").patterns).toEqual(["update:*"])
-  expect(rule("patch", "delete-file").patterns).toEqual(["delete:*"])
+  expect(rule("patch", "add-file").patterns).toEqual(["*"])
+  expect(rule("patch", "update-file").patterns).toEqual(["*"])
+  expect(rule("patch", "delete-file").patterns).toEqual(["*"])
+  expect(rule("patch", "add-file").action).toBe("patch.add")
+  expect(rule("patch", "update-file").action).toBe("patch.update")
+  expect(rule("patch", "delete-file").action).toBe("patch.delete")
   expect(rule("patch", "add-file").label).toBe("Add file")
   expect(rule("patch", "update-file").label).toBe("Update file")
   expect(rule("patch", "delete-file").label).toBe("Delete file")
 })
 
 test("patch keywords do not scrub ordinary prose", () => {
-  expect(keywordsForPattern("add:*")).toEqual(["add:*"])
-  expect(keywordsForPattern("update:*")).toEqual(["update:*"])
-  expect(keywordsForPattern("delete:*")).toEqual(["delete:*"])
+  expect(keywordsForPattern("*")).toEqual([])
   const keywords = curatedRules.filter((entry) => entry.tool === "patch").flatMap((entry) => entry.keywords)
-  expect(keywords.length).toBeGreaterThan(0)
-  for (const keyword of keywords) expect(["add", "update", "delete"]).not.toContain(keyword.toLowerCase())
+  expect(keywords).toEqual([])
   const prose = [
     "Please add a new file for the helper",
     "Update the docs when you finish",
