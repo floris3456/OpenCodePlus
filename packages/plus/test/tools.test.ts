@@ -1366,3 +1366,121 @@ test("updateRule creates a custom override for a curated row and updates it with
   expect(second.label).toBe("Git push v2")
   expect(second.keywords).toEqual(["custom-key"])
 })
+
+test("updateRule stale retry preserves the edit and the log agrees with what persisted", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const seeded = await api.addRule({
+    level: "project",
+    agent: "alpha",
+    tool: "shell",
+    id: "race",
+    label: "Original",
+    patterns: ["orig *"],
+    keywords: ["orig"],
+    actor: { type: "tui" },
+  })
+  if (!seeded.ok) throw new Error(`seed failed: ${seeded.error.message}`)
+  // An unrelated write started first bumps the revision mid-update, forcing
+  // saveRuleRecords through its merge retry. Without the content-replacement
+  // fix the retry keeps the old label while reporting the new one.
+  const [addedOther, updated] = await Promise.all([
+    api.addRule({
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "other",
+      label: "Other",
+      patterns: ["other *"],
+      actor: { type: "tui" },
+    }),
+    api.updateRule({
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "race",
+      label: "New label",
+      patterns: ["new *"],
+      keywords: ["new"],
+      actor: { type: "tui" },
+    }),
+  ])
+  if (!addedOther.ok) throw new Error(`unrelated add failed: ${addedOther.error.message}`)
+  if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
+  const after = await snapshotOf(api)
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "race")
+  if (persisted === undefined || persisted.type !== "rule") throw new Error("expected race rule to persist")
+  expect(persisted.label).toBe("New label")
+  expect(persisted.patterns).toEqual(["new *"])
+  expect(persisted.keywords).toEqual(["new"])
+  expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "other")).toBe(true)
+  expect(updated.value.label).toBe(persisted.label)
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:race")
+  if (entry === undefined) throw new Error("missing rule.update log entry for the persisted target")
+  expect(entry.revision).toBe(after.revision)
+})
+
+test("updateRule through a project row keeps a global rule in the global store", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const added = await api.addRule({
+    level: "global",
+    agent: "alpha",
+    tool: "shell",
+    id: "shared",
+    label: "Original",
+    patterns: ["orig *"],
+    actor: { type: "tui" },
+  })
+  if (!added.ok) throw new Error(`add failed: ${added.error.message}`)
+  const updated = await api.updateRule({
+    level: "project",
+    agent: "alpha",
+    tool: "shell",
+    id: "shared",
+    label: "Edited",
+    patterns: ["edited *"],
+    keywords: ["edited"],
+    actor: { type: "tui" },
+  })
+  if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
+  expect(updated.value.level).toBe("global")
+  expect(updated.value.agent).toBe("alpha")
+  expect(updated.value.label).toBe("Edited")
+  const after = await snapshotOf(api)
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared")
+  if (persisted === undefined || persisted.type !== "rule") throw new Error("expected shared rule to persist")
+  expect(persisted.level).toBe("global")
+  expect(persisted.agent).toBe("alpha")
+  expect(persisted.label).toBe("Edited")
+  expect(persisted.patterns).toEqual(["edited *"])
+  const { load } = await import("../src/instructions/store.js")
+  const stored = await load(project)
+  expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "global")).toBe(true)
+  expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")).toBe(false)
+  const { globalRecordsPath, projectRecordsPath } = await import("../src/instructions/paths.js")
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  expect(globalText).toContain(`"id":"shared"`)
+  if (await Bun.file(projectRecordsPath(project)).exists()) {
+    const projectText = await Bun.file(projectRecordsPath(project)).text()
+    expect(projectText).not.toContain(`"id":"shared"`)
+  }
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:global:alpha:shell:shared")
+  if (entry === undefined) throw new Error("missing global rule.update log entry")
+})

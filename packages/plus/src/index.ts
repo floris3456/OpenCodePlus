@@ -1192,8 +1192,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const next: RuleRecord = {
         type: "rule",
-        level: input.level,
-        agent: input.agent,
+        level: existing?.level ?? input.level,
+        agent: existing?.agent ?? input.agent,
         tool: validated.tool,
         id: validated.id,
         label: validated.label,
@@ -1211,12 +1211,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       if (saved.changed)
-        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await append(next.level === "project" ? projectLogPath(directory) : globalLogPath(), {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "rule.update",
           target: ruleRecordTarget(next),
-          summary: `rule.update ${validated.tool}:${validated.id} (${input.level})`,
+          summary: `rule.update ${validated.tool}:${validated.id} (${next.level})`,
           revision: saved.revision,
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
@@ -1781,16 +1781,37 @@ function mergeRuleInto(
   next: readonly StoredRecord[],
   previous: readonly StoredRecord[],
 ): readonly StoredRecord[] {
-  const previousRules = new Set(rulesOf(previous).map((record) => ruleRecordTarget(record)))
+  const previousByTarget = new Map(rulesOf(previous).map((record) => [ruleRecordTarget(record), record] as const))
   const nextRules = new Map(rulesOf(next).map((record) => [ruleRecordTarget(record), record] as const))
-  const removed = [...previousRules].filter((target) => !nextRules.has(target))
+  const removed = [...previousByTarget.keys()].filter((target) => !nextRules.has(target))
   const kept = fresh.filter((record) => {
     if (record.type !== "rule") return true
     return !removed.includes(ruleRecordTarget(record))
   })
   const freshTargets = new Set(rulesOf(kept).map((record) => ruleRecordTarget(record)))
   const added = [...nextRules.values()].filter((record) => !freshTargets.has(ruleRecordTarget(record)))
-  return [...kept, ...added]
+  // Same-target content updates (the rule.update case) are neither removed
+  // nor added, so without this the retry would keep the fresh old contents
+  // while the caller reports the new values. Re-apply only the targets the
+  // intent actually changed; every other fresh row (including concurrent
+  // edits elsewhere) passes through untouched.
+  const updatedTargets = new Set(
+    [...nextRules.entries()]
+      .filter(([target, intended]) => {
+        const before = previousByTarget.get(target)
+        if (before === undefined) return false
+        return JSON.stringify(stable(before)) !== JSON.stringify(stable(intended))
+      })
+      .map(([target]) => target),
+  )
+  const mergedKept = kept.map((record) => {
+    if (record.type !== "rule") return record
+    const intended = nextRules.get(ruleRecordTarget(record))
+    if (intended === undefined) return record
+    if (!updatedTargets.has(ruleRecordTarget(record))) return record
+    return intended
+  })
+  return [...mergedKept, ...added]
 }
 
 // A missing actor means the TUI; strip explicit undefined keys so the stored
