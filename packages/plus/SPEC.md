@@ -481,11 +481,8 @@ upserts a `RuleRecord` by `(tool, id)`, so editing a curated or mined row
 materialises a custom override of the same identity; blank `keywords`
 derive server-side via `keywordsForPattern` like `rule.add`. Curated-identity
 policy: a stored record whose `tool` + `id` matches a curated rule is treated
-as an override of that curated rule and inherits its action. Consequence: a
-custom rule created earlier under a colliding id is reinterpreted as a curated
-override, so `patch`/`delete-file` now carries `patch.delete` rather than
-`edit`. This is accepted reserved-identity semantics, not an unconditional
-compatibility guarantee. `updateRule`
+as an override of that curated rule. This is accepted reserved-identity
+semantics, not an unconditional compatibility guarantee. `updateRule`
 and `removeRule` share one `ruleProtectedRefusal` guard: protection follows
 the matched record's owner, not the caller's row address.
 
@@ -809,7 +806,7 @@ path is skipped.
 - Rules come from two view-time sources merged by `mergeRules` (curated
   label wins on a pattern-set collision; most-mentioned discovered first,
   then unmentioned curated generics): the curated registry (shell, edit,
-  write, read, patch, webfetch, glob, grep entries, plus one `idRules` row per
+  write, read, webfetch, glob, grep entries, plus one `idRules` row per
   discovered agent/skill id for `subagent`/`skill`), and candidates mined
   from text Plus already holds (tool/base/skill/role/file/teaching rows,
   with `provenance` naming the mentioning item ids). The merged rank carries
@@ -827,12 +824,10 @@ path is skipped.
   `enabled`. Every perm item OFF for an agent installs one core deny per
   pattern (`{ action, resource: pattern, effect: "deny" }`) through the
   agent registration; because core permission evaluation is last-match-wins,
-  appending is always sufficient. The action prefers the per-rule
-  `permAction` carried on the perm item by discovery (patch operation rules
-  carry `patch.add`/`patch.update`/`patch.delete`; other tools carry their
-  own `options.permission`, with edit and write registering
-  `permission: "edit"`), falling back to `actionForToolId`: `edit`/`write`
-  share core's `edit` action, every other tool uses its own id.
+  appending is always sufficient. The action comes from the per-rule
+  `permAction` carried on the perm item by discovery (the tool's own
+  `options.permission`), falling back to `actionForToolId`: `edit`/`write`/
+  `patch` share core's `edit` action, every other tool uses its own id.
 - Patterns are CORE RESOURCE WILDCARDS over the tool's permission resource,
   NOT regex: `*` spans any run, `?` matches one character. For shell the
   resource is the parsed command text, so `git *` also matches a bare `git`
@@ -841,15 +836,15 @@ path is skipped.
   absolute outside it), for webfetch the URL, for glob/grep the user's
   search pattern (PATH-scoped search restriction is NOT expressible: core
   authorizes `input.pattern`, so `grep({ pattern: "HEAD", path: ".git" })`
-  evaluates resource `"HEAD"`), for subagent/skill the exact id, for patch
-  the per-operation action with bare paths (core asserts `patch.add`/
-  `patch.update`/`patch.delete` with that type's bare paths before its
-  unchanged `edit` assert; three curated rules: `Add file` → action
-  `patch.add`, `Update file` → `patch.update`, `Delete file` →
-  `patch.delete`, each with pattern `*`). The per-operation asserts are
-  opt-in (`targetedOnly`): they fire only when a configured rule explicitly
-  targets a `patch.*` action, so configurations without one are unaffected
-  in outcome and in prompt count. User
+  evaluates resource `"HEAD"`), for subagent/skill the exact id. Operation-
+  scoped patch restriction is NOT expressible: core's permission resource for
+  patch is the file path only (core/src/tool/plugin/patch.ts asserts
+  `action: "edit"`), and the hunk type never reaches the permission layer.
+  Carrying it as an extra resource or an extra action both change decisions
+  for existing configurations that never enabled Plus, and a targeted opt-in
+  cannot be defined reliably against the wildcard matcher. So add/update/
+  delete cannot be distinguished; the `edit`-action path rules still apply to
+  patch. User
   patterns validate through `validateRuleInput` (at least one non-empty
   pattern; keywords default through `keywordsForPattern` when omitted).
   `commandHeads` (Plus's own head-depth table: `git: 2`, `docker: 2`,
@@ -861,8 +856,7 @@ path is skipped.
 - Keywords derive only through the single `keywordsForPattern`: head word
   plus subcommand words, stopping at the first wildcard or flag (`git push
   *` → `["git push"]`); a pattern with no literal leading word falls back
-  to its first meaningful segment (`*.git*` → `[".git"]`). A `*` pattern
-  yields no keyword, so the patch rows scrub nothing.
+  to its first meaningful segment (`*.git*` → `[".git"]`).
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
   description plus every system part, after the text plans), the
