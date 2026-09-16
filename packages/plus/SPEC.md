@@ -27,8 +27,7 @@ Every agent in all three roots has the identical subtree:
     Native / OpenCodePlus
       <tool>
         <section>
-        Permissions            (after sections; native/plus non-Code-Mode non-execute tools only)
-          <rule>
+        <rule>                 (permission rules after sections; native/plus non-Code-Mode non-execute tools only)
       Code Mode                (only when that origin has Code Mode rows)
         <namespace>
           <tool>
@@ -83,16 +82,23 @@ remove deletes the row at this level only; no edit, split, or pin. `active`
 marks the resolved winner down the chain (or upstream when nothing is
 active).
 
-Permissions subgroup (`tree.ts` `permsGroup`): after a native/plus tool's
-section rows. The group id is
-`group:<level>:<agent|''>:<tool item id>:perms` (for example
-`group:project:alpha:tool:shell:perms`); it carries `add: "rule"`. It lists
-that tool's perm rule rows (curated ∪ mined via discovery, plus user
-customs), sorted by `order` then title (`byOrderTitle`, carrying the miner's
-most-mentioned-first rank). Empty subgroups are never emitted. Only
-native/plus, non-Code-Mode, non-`execute` tools get one: MCP resources are
-always `"*"` and Code Mode denies are whole-tool, so per-resource rules
-there would never match core evaluation.
+Permission rows (`tree.ts` `toolPermRows`): direct children of a
+native/plus tool row after its section rows, sorted by `order` then title
+(`byOrderTitle`, carrying the miner's most-mentioned-first rank). No group
+wrapper is ever emitted: empty rule sets emit nothing at all. Only
+native/plus, non-Code-Mode, non-`execute` tools host rows
+(`canHostPermRules`): MCP resources are always `"*"` and Code Mode denies
+are whole-tool, so per-resource rules there would never match core
+evaluation. A tool row that can host rules carries no direct `add`: `a`
+presents the Section / Permission rule choice (`dialogs.tsx` `addFor`);
+every other splittable row keeps `add: "section"`. Scope and tool derive
+from the tool or perm row address (`scopeFromToolOrPermRow` /
+`toolFromToolOrPermRow`). `enter` on a perm row opens the rule editor
+(label → patterns → keywords, each prefilled; tool and rule id come from
+the snapshot item's `permTool`/`ruleId`, level and agent from the row
+address), persisting through `rule.update`, which upserts a `RuleRecord`
+by `tool` + `id` — so editing a curated or mined row materialises a custom
+override of the same identity.
 
 Agent sources and scopes (`model.ts`)
 
@@ -461,6 +467,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
 | `rule.add` | `{ level, agent, tool, id, label, patterns, keywords? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid` |
 | `rule.remove` | `{ level, agent, tool, id }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid` |
+| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords? }` | `RuleRef` | `project.disabled`, `rule.invalid` |
 
 `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
 `RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
@@ -469,7 +476,12 @@ inactive candidate and requires it to exist in the host model catalog
 live at `defaults` only. `rule.add` derives `keywords` through
 `keywordsForPattern` when omitted and matches existing rules by `(tool, id)`
 globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
-`level`/`agent` are carried but not part of the lookup.
+`level`/`agent` are carried but not part of the lookup. `rule.update`
+upserts a `RuleRecord` by `(tool, id)`, so editing a curated or mined row
+materialises a custom override of the same identity; blank `keywords`
+derive server-side via `keywordsForPattern` like `rule.add`. `updateRule`
+and `removeRule` share one `ruleProtectedRefusal` guard: protection follows
+the matched record's owner, not the caller's row address.
 
 Events: `project.changed`, `instructions.changed`.
 
@@ -712,7 +724,7 @@ export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" 
 export type ToolResolve = "keep" | "take" | "edit"
 export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
 export interface ShowInput { readonly id: string; readonly view?: ToolView }
-export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean }
+export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[] }
 export interface ResetInput { readonly id: string }
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
@@ -740,8 +752,9 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   tool's full listing inline in the catalog even when the inline budget is
   tight. `set` with `active: true` activates a model row exclusively at that
   level (a bare `set` on a model row activates too; model rows refuse text,
-  state, pin, and resolve); on a perm row only `state` applies (no text,
-  pin, active, or resolve). `set` with `resolve: "keep"`
+  state, pin, and resolve); on a perm row `state` applies, or `label` +
+  `patterns` (`keywords` optional) to update the rule through `rule.update`
+  (no text, pin, active, or resolve). `set` with `resolve: "keep"`
   acks upstream keeping text, `"take"` drops stored text and follows upstream,
   `"edit"` stores `text` against current upstream. `reset` deletes the
   override at that row (on a model row clears only that level's active flag).
@@ -790,7 +803,7 @@ path is skipped.
 - Rules come from two view-time sources merged by `mergeRules` (curated
   label wins on a pattern-set collision; most-mentioned discovered first,
   then unmentioned curated generics): the curated registry (shell, edit,
-  write, read, webfetch, glob, grep entries, plus one `idRules` row per
+  write, read, patch, webfetch, glob, grep entries, plus one `idRules` row per
   discovered agent/skill id for `subagent`/`skill`), and candidates mined
   from text Plus already holds (tool/base/skill/role/file/teaching rows,
   with `provenance` naming the mentioning item ids). The merged rank carries
@@ -799,10 +812,10 @@ path is skipped.
   view-time only: never persisted, and never part of the publish fingerprint
   (`fingerprintPublish` filters out `kind === "perm"`; only a stored
   off-state or a `RuleRecord` enters it via `records`). The TUI add-rule
-  flow prompts for scope (group scope when invoked there, otherwise level
-  then agent); custom rules are globally unique by `(tool, id)`, not per
-  level/agent (`rule.add`/`rule.remove` match by tool+id only, ownership and
-  logging follow the record actually matched).
+  flow prompts for scope (row scope when invoked on a tool or perm row,
+  otherwise level then agent); custom rules are globally unique by `(tool, id)`,
+  not per level/agent (`rule.add`/`rule.remove`/`rule.update` match by tool+id
+  only, ownership and logging follow the record actually matched).
 - Toggling any rule is a `CustomizationRecord` with state on/off on the
   `perm:<tool>:<rule>` item address, so `resolve()` already yields
   `enabled`. Every perm item OFF for an agent installs one core deny per
@@ -821,15 +834,24 @@ path is skipped.
   absolute outside it), for webfetch the URL, for glob/grep the user's
   search pattern (PATH-scoped search restriction is NOT expressible: core
   authorizes `input.pattern`, so `grep({ pattern: "HEAD", path: ".git" })`
-  evaluates resource `"HEAD"`), for subagent/skill the exact id. User
+  evaluates resource `"HEAD"`), for subagent/skill the exact id, for patch
+  the typed `<type>:<resource>` core asserts alongside each bare path (three
+  curated rules: `Add file` → `add:*`, `Update file` → `update:*`,
+  `Delete file` → `delete:*`). User
   patterns validate through `validateRuleInput` (at least one non-empty
   pattern; keywords default through `keywordsForPattern` when omitted).
   `commandHeads` (Plus's own head-depth table: `git: 2`, `docker: 2`,
   `rm: 1`, …) drives the miner's `git rebase *`-style patterns.
+  `mineGenericPaths` only keeps a token that is a glob containing `/` or an
+  extension, or a path whose last segment carries a file extension, stripping
+  trailing sentence punctuation and source-location references
+  (`src/services/process.ts:712.` → `src/services/process.ts`).
 - Keywords derive only through the single `keywordsForPattern`: head word
   plus subcommand words, stopping at the first wildcard or flag (`git push
-  *` → `["git push"]`); a pattern with no literal leading word falls back
-  to its first meaningful segment (`*.git*` → `[".git"]`).
+  *` → `["git push"]`); a single-token `:` pattern keeps the full typed
+  pattern (`add:*` → `["add:*"]`, never the bare word `add`); a pattern with
+  no literal leading word falls back to its first meaningful segment
+  (`*.git*` → `[".git"]`).
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
   description plus every system part, after the text plans), the
