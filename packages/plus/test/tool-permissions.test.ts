@@ -10,6 +10,7 @@ import {
   keywordsForPattern,
   mergeRules,
   mineDiscoveredRules,
+  scrubLines,
   type CuratedRule,
 } from "../src/instructions/tool-permissions.js"
 
@@ -183,4 +184,65 @@ test("mined ssh candidates carry the same root-relative coverage", () => {
   if (ssh === undefined) throw new Error("expected mined read:ssh")
   expect(ssh.patterns).toEqual(["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"])
   expect(ssh.patterns.some((pattern) => match(".ssh/id_ed25519", pattern))).toBe(true)
+})
+
+test("mineGenericPaths rejects slash-separated prose as paths", () => {
+  const noise = [
+    "4xx/5xx",
+    "Add/Delete/Update",
+    "./agent",
+    "agent/skill",
+    "AGENTS.md/skill",
+    "alert/confirm/prompt",
+    "and/or",
+    "***ANY***",
+    "/api/config",
+    "/api/example",
+  ]
+  for (const token of noise) {
+    const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please edit ${token} today` }] })
+    const patterns = mined.flatMap((entry) => entry.patterns)
+    expect(patterns).not.toContain(token)
+  }
+  const combined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: noise.join(" ") }] })
+  const combinedPatterns = combined.flatMap((entry) => entry.patterns)
+  for (const token of noise) expect(combinedPatterns).not.toContain(token)
+})
+
+test("mineGenericPaths keeps real file paths and globs", () => {
+  const kept = ["src/index.ts", "packages/core/src/tool/plugin/grep.ts", "*.env*", "**/*.lock"]
+  for (const token of kept) {
+    const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please edit ${token} today` }] })
+    const patterns = mined.flatMap((entry) => entry.patterns)
+    expect(patterns).toContain(token)
+  }
+})
+
+test("patch ships typed add/update/delete curated rules", () => {
+  const patch = curatedRules.filter((entry) => entry.tool === "patch")
+  expect(patch.map((entry) => entry.id).toSorted()).toEqual(["add-file", "delete-file", "update-file"])
+  expect(rule("patch", "add-file").patterns).toEqual(["add:*"])
+  expect(rule("patch", "update-file").patterns).toEqual(["update:*"])
+  expect(rule("patch", "delete-file").patterns).toEqual(["delete:*"])
+  expect(rule("patch", "add-file").label).toBe("Add file")
+  expect(rule("patch", "update-file").label).toBe("Update file")
+  expect(rule("patch", "delete-file").label).toBe("Delete file")
+})
+
+test("patch keywords do not scrub ordinary prose", () => {
+  expect(keywordsForPattern("add:*")).toEqual(["add:*"])
+  expect(keywordsForPattern("update:*")).toEqual(["update:*"])
+  expect(keywordsForPattern("delete:*")).toEqual(["delete:*"])
+  const keywords = curatedRules.filter((entry) => entry.tool === "patch").flatMap((entry) => entry.keywords)
+  expect(keywords.length).toBeGreaterThan(0)
+  for (const keyword of keywords) expect(["add", "update", "delete"]).not.toContain(keyword.toLowerCase())
+  const prose = [
+    "Please add a new file for the helper",
+    "Update the docs when you finish",
+    "Delete the stale cache entry",
+    "You can add, update, or delete files freely",
+  ].join("\n")
+  const scrubbed = scrubLines(prose, keywords)
+  expect(scrubbed.text).toBe(prose)
+  expect(scrubbed.hidden).toBe(0)
 })
