@@ -20,6 +20,7 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
     ...(item.execute === undefined ? {} : { execute: item.execute }),
     ...(item.permTool === undefined ? {} : { permTool: item.permTool }),
+    ...(item.permAction === undefined ? {} : { permAction: item.permAction }),
     ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
     ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
     ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),

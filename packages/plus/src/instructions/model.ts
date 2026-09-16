@@ -38,6 +38,8 @@ export interface Item {
   readonly execute?: boolean
   /** Perm rule rows only: the parent tool id (e.g. "shell", "edit", "subagent"). Only discovery ever sets it. */
   readonly permTool?: string
+  /** Perm rule rows only: the core permission action from the tool's own `options.permission` when the registry carries one. Only discovery ever sets it. */
+  readonly permAction?: string
   /** Perm rule rows only: the rule id within its tool (e.g. "git-push"). Only discovery ever sets it. */
   readonly ruleId?: string
   /** Perm rule rows only: core wildcard patterns denied when the row is off. Only discovery ever sets it. */

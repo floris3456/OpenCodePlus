@@ -65,7 +65,7 @@ Derived from markdown headings, else XML-style blocks, else the whole text. `s` 
 
 ## Keys
 
-Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude (on a Models row: activate exclusively at that level; on a rule row: toggle the rule), `p` pin (Code Mode tool rows), `a` add (`a` on a Models group adds a catalog candidate; `a` on a Permissions group adds a shared rule), `d` delete (`d` on a model row deletes the candidate at that level; `d` on a rule row deletes only user-created rules), `r` reset override (`r` on a model row clears only that level's active flag), `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
+Up/down move, left collapse/parent, right expand, Enter edit text (or diff on yellow review rows), Space toggle include/exclude (on a Models row: activate exclusively at that level; on a rule row: toggle the rule), `p` pin (Code Mode tool rows), `a` add (`a` on a Models group adds a catalog candidate; `a` on a Permissions group adds a rule scoped to that group, prompting otherwise), `d` delete (`d` on a model row deletes the candidate at that level; `d` on a rule row deletes only user-created rules), `r` reset override (`r` on a model row clears only that level's active flag), `s` split, `/` filter, `?` help, esc back. Inside the diff: `k` keep mine, `t` take new, `e` edit.
 
 ## Storage
 
@@ -134,9 +134,11 @@ Only what is provably impossible, with what was tried:
 - **Upstream permission denials are invisible.** `ctx.skill.list()` and the tool editor list return the full inventory without agent permission evaluation (core filters later in `packages/core/src/skill.ts` and `packages/core/src/tool.ts`), and `Item.available` is one boolean per item, not per agent. A denied row shows `[enabled]` and toggling it is a no-op upstream. Threading per-agent availability through discover, model, tree, and RPC was cut as disproportionate. No test currently pins this.
 - **Async MCP tools regain customizations at the next publish, not on reappearance.** Core reconciles MCP tools behind a 100 ms debounce plus `tools.reload()` (`packages/core/src/tool/mcp.ts`), which emits none of the events Plus watches (`agent.updated`, `skill.updated`, `config.updated`). Closing it needs a public post-reconciliation inventory notification.
 - **Custom rules are globally unique by tool+id, not per level/agent.** `rule.add`/`rule.remove` match existing records by `(tool, id)` only, so a second level or agent cannot define its own rule with the same tool+id.
-- **The TUI add-rule flow stores shared (`agent: null`) rules.** Per-agent customs go through the tools API (`create` with `agent`); the dialog always calls `rule.add` with `agent: null`.
+- **The TUI add-rule flow prompts for scope.** `a` on a Permissions group defaults to that group's level/agent and otherwise prompts for level then agent (mirroring add-model); the dialog calls `rule.add` with the chosen scope, shared (`agent: null`) or per-agent.
 - **MCP tool rows get no Permissions subgroup** because their resource is always `"*"`, so per-resource rules would never match core evaluation.
 - **Code Mode and `execute` rows only support whole-tool denies.** Per-resource subgroups are skipped there (`tree.ts` `permsGroup`); use the row toggle.
+- **`write`/`edit`/`patch` share one enforcement action.** Core asserts `action: "edit"` for all three (core/src/tool/plugin/edit.ts, write.ts, patch.ts); Plus prefers the tool's own `options.permission` carried on perm items and falls back to that map.
+- **PATH-scoped search restriction is NOT expressible for glob/grep.** Core authorizes `input.pattern`, not the search path (core/src/tool/plugin/grep.ts:87-89, glob.ts:68-70), so a deny can only match search text mentioning a string (e.g. `*node_modules*`), never a directory walk like `grep({ pattern: "HEAD", path: ".git" })`.
 
 ## Shortcut
 

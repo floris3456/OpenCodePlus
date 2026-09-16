@@ -26,7 +26,7 @@ import {
 import { query } from "./instructions/query.js"
 import { applies, parseModelItemId, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
 import { scrubLines } from "./instructions/tool-permissions.js"
-import type { CustomizationRecord, ModelRecord, SplitRecord } from "./instructions/model.js"
+import type { CustomizationRecord, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput } from "./instructions/tree.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { expandedTree } from "./instructions/tree.js"
@@ -401,7 +401,7 @@ function toSnapshotRecords(
   records: readonly CustomizationRecord[],
   splits: readonly SplitRecord[],
   models?: readonly ModelRecord[],
-  rules?: readonly import("./instructions/model.js").RuleRecord[],
+  rules?: readonly RuleRecord[],
 ): Plus.SnapshotRecord[] {
   return [
     ...records.map(
@@ -462,8 +462,8 @@ function modelsOfMemo(memo: MemoInput): ModelRecord[] {
   return memo.records.filter((record): record is ModelRecord => record.type === "model")
 }
 
-function rulesOfMemo(memo: MemoInput): import("./instructions/model.js").RuleRecord[] {
-  return memo.records.filter((record): record is import("./instructions/model.js").RuleRecord => record.type === "rule")
+function rulesOfMemo(memo: MemoInput): RuleRecord[] {
+  return memo.records.filter((record): record is RuleRecord => record.type === "rule")
 }
 
 function findRow(memo: MemoInput, id: string) {
@@ -600,7 +600,7 @@ function mutateModelsWithRetry(
   return Effect.gen(function* () {
     const customizations = memo.records.filter((record): record is CustomizationRecord => record.type === "customization")
     const splits = memo.records.filter((record): record is SplitRecord => record.type === "split")
-    const rules = memo.records.filter((record): record is import("./instructions/model.js").RuleRecord => record.type === "rule")
+    const rules = memo.records.filter((record): record is RuleRecord => record.type === "rule")
     const first = yield* Effect.promise(() =>
       api.mutate({
         expectedRevision: snapshot.revision,
@@ -618,7 +618,7 @@ function mutateModelsWithRetry(
     const freshMemo = memoFromSnapshot(fresh.value)
     const freshCustom = freshMemo.records.filter((record): record is CustomizationRecord => record.type === "customization")
     const freshSplits = freshMemo.records.filter((record): record is SplitRecord => record.type === "split")
-    const freshRules = freshMemo.records.filter((record): record is import("./instructions/model.js").RuleRecord => record.type === "rule")
+    const freshRules = freshMemo.records.filter((record): record is RuleRecord => record.type === "rule")
     const second = yield* Effect.promise(() =>
       api.mutate({
         expectedRevision: fresh.value.revision,
@@ -748,8 +748,18 @@ function deleteRuleRow(
       const label = found?.label ?? id
       return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deleted: only user-created rules can be deleted` }))
     }
+    // Custom rules display globally: the selected row's agent is whatever
+    // subtree the user happened to open, not the record's owner. Validate the
+    // owner of the record actually matched (by global tool+id identity) before
+    // deleting, or a rule owned by protected alpha is deletable through beta.
+    const existing = memo.records.find(
+      (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
+    )
+    if (existing === undefined) return yield* Effect.fail(unknownError(id))
+    if (existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
+      return yield* Effect.fail(protectedError(existing.agent))
     const result = yield* Effect.promise(() =>
-      api.removeRule({ level: address.level, agent: address.agent, tool: parsed.tool, id: parsed.ruleId, actor }),
+      api.removeRule({ level: existing.level, agent: existing.agent, tool: parsed.tool, id: parsed.ruleId, actor }),
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: `Removed "${id}"` } }

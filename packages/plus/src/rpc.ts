@@ -62,6 +62,7 @@ export const SnapshotItem = Schema.Struct({
   pinned: Schema.optionalKey(Schema.Boolean),
   execute: Schema.optionalKey(Schema.Boolean),
   permTool: Schema.optionalKey(Schema.String),
+  permAction: Schema.optionalKey(Schema.String),
   ruleId: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),

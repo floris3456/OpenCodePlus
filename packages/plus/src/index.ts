@@ -46,6 +46,8 @@ export interface PlusState {
   baselines: Map<string, PromptBaseline>
   modelBaselines: Map<string, ModelBaseline>
   activeModels: Map<string, ModelRefLike>
+  cachedAgents: readonly AgentSource[]
+  cachedScopes: Scopes
   semaphore: Semaphore.Semaphore
 }
 
@@ -61,6 +63,8 @@ export function createState(): PlusState {
     baselines: new Map(),
     modelBaselines: new Map(),
     activeModels: new Map(),
+    cachedAgents: [],
+    cachedScopes: { global: new Set(), defaults: new Set() },
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
 }
@@ -1137,12 +1141,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       if (saved.changed)
-        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await append(existing.level === "project" ? projectLogPath(directory) : globalLogPath(), {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "rule.remove",
           target: ruleRecordTarget(existing),
-          summary: `rule.remove ${validated.tool}:${validated.id} (${input.level})`,
+          summary: `rule.remove ${validated.tool}:${validated.id} (${existing.level})`,
           revision: saved.revision,
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
@@ -2304,6 +2308,8 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.baselines = new Map()
       state.modelBaselines = new Map()
       state.activeModels = new Map()
+      state.cachedAgents = []
+      state.cachedScopes = { global: new Set(), defaults: new Set() }
     }),
   )
 }
@@ -2340,6 +2346,8 @@ function publishFresh(
       const modelRecords = modelsOf(stored.records)
       const scopes = scopesOf(discovered.agents)
       state.activeModels = buildActiveModels(discovered.agents, modelRecords, scopes)
+      state.cachedAgents = discovered.agents.map((agent) => ({ ...agent }))
+      state.cachedScopes = { global: new Set(scopes.global), defaults: new Set(scopes.defaults) }
       const fingerprint = yield* Effect.promise(() =>
         fingerprintPublish(discovered, stored.records, ctx.location.directory, builtins),
       )
@@ -2458,10 +2466,9 @@ export function captureBaselines(
   const modelNext = new Map<string, ModelBaseline>()
   const effective = dedupeAgents(discovered.agents)
   for (const agent of effective) {
+    if (agent.path !== undefined) continue
     const level = scopeLevel(agent.scope)
     const upstream = discovered.modelUpstream.get(agent.id)
-    if (upstream === undefined) continue
-    if (agent.path !== undefined) continue
     const winner = resolveActiveModel({ models, scopes, level, agent: agent.id })
     if (winner === undefined) continue
     if (winner.source === "upstream") continue
@@ -2646,7 +2653,12 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
 // model via switchModel, and only when the session's current model differs.
 // Manual mid-session picks emit session.model.selected, which we never
 // subscribe to, so user choices are never overridden. The wanted model comes
-// from the publishFresh cache: no store reads and no discovery run here.
+// from the publishFresh cache, refreshed cheaply when the shared stores moved
+// (another live Location may have published Global/Defaults changes that Bus
+// never delivers here, since Bus.subscribe is Location-filtered and
+// RefreshEvents covers only host agent/skill/config events). The refresh is
+// two small file reads plus a cache rebuild from the last discovery's agents:
+// no host lists, no discovery run here.
 export function applySessionModel(
   ctx: Context,
   state: PlusState,
@@ -2656,6 +2668,7 @@ export function applySessionModel(
     const directory = ctx.location.directory
     const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) return
+    yield* Effect.promise(() => refreshActiveModelsIfStale(directory, state))
     const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
     const sessionID = payload.sessionID
     if (typeof sessionID !== "string" || sessionID.length === 0) return
@@ -2672,6 +2685,16 @@ export function applySessionModel(
   })
 }
 
+async function refreshActiveModelsIfStale(directory: string, state: PlusState): Promise<void> {
+  if (state.projectRevision === undefined || state.globalRevision === undefined) return
+  const stored = await load(directory).catch(() => undefined)
+  if (stored === undefined) return
+  if (stored.projectRevision === state.projectRevision && stored.globalRevision === state.globalRevision) return
+  state.activeModels = buildActiveModels(state.cachedAgents, modelsOf(stored.records), state.cachedScopes)
+  state.projectRevision = stored.projectRevision
+  state.globalRevision = stored.globalRevision
+}
+
 function toHostModelRef(wanted: ModelRefLike): Model.Ref {
   return Model.Ref.make({
     providerID: Provider.ID.make(wanted.providerID),
@@ -2681,18 +2704,26 @@ function toHostModelRef(wanted: ModelRefLike): Model.Ref {
 }
 
 async function currentSessionAgent(ctx: Context, sessionID: string): Promise<string | undefined> {
-  const session = await Effect.runPromise(
-    ctx.session.get({ sessionID: Session.ID.make(sessionID) }).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
-  ).catch(() => undefined)
+  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
   const agent = (session as { agent?: unknown } | undefined)?.agent
   if (typeof agent === "string" && agent.length > 0) return agent
+  // Core accepts an omitted agent and resolves the default itself
+  // (core/src/session.ts create without agent, core/src/agent.ts
+  // resolve/select put the selected default first in list). Mirror that here
+  // so a default-agent session still adopts the default agent's model.
+  const listed = await Effect.runPromise(ctx.agent.list()).catch(() => undefined)
+  const data = (listed as { data?: readonly { id?: unknown }[] } | undefined)?.data
+  const first = data?.[0]?.id
+  if (typeof first === "string" && first.length > 0) return first
+  if (first !== undefined && first !== null) {
+    const text = String(first)
+    if (text.length > 0) return text
+  }
   return undefined
 }
 
 async function currentSessionModel(ctx: Context, sessionID: string): Promise<ModelRefLike | undefined> {
-  const session = await Effect.runPromise(
-    ctx.session.get({ sessionID: Session.ID.make(sessionID) }).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
-  ).catch(() => undefined)
+  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
   const model = (session as { model?: { providerID?: unknown; id?: unknown; variant?: unknown } } | undefined)?.model
   if (model === undefined) return undefined
   const providerID = typeof model.providerID === "string" ? model.providerID : String(model.providerID ?? "")
@@ -2754,6 +2785,7 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
         ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
         ...(item.execute === undefined ? {} : { execute: item.execute }),
         ...(item.permTool === undefined ? {} : { permTool: item.permTool }),
+        ...(item.permAction === undefined ? {} : { permAction: item.permAction }),
         ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
         ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
         ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),

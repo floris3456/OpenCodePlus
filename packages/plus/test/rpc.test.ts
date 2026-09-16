@@ -1155,14 +1155,279 @@ test("session.created uses the cached active model without rediscovery", async (
     expectedGlobalRevision: stored.globalRevision,
     records: [],
   })
+  // The store moved underneath the cache (as a shared Global/Defaults change
+  // from another Location would): the next session event must invalidate the
+  // cache cheaply and NOT switch to the stale model.
   switches.length = 0
   counts.agentLists = 0
   counts.skillLists = 0
   await Effect.runPromise(
     applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_2", agent: "alpha" } }),
   )
-  expect(switches).toHaveLength(1)
-  expect(String(switches[0]?.model.id)).toBe("nova-2")
+  expect(switches).toHaveLength(0)
   expect(counts.agentLists).toBe(0)
   expect(counts.skillLists).toBe(0)
+})
+
+test("two publishes with a host-owned agent and absent upstream keep an identical fingerprint", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  // No agent file: host-owned built-in with no configured model (upstream absent).
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
+  const agents = agentHarness([agentInfo("ghost", "ghost role")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "ghost", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  const afterAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const active: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "ghost",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: afterAdd.revision,
+      expectedGlobalRevision: afterAdd.globalRevision,
+      records: [active],
+    }, throwingContext({})),
+  )
+  expect(first.ok).toBe(true)
+  if (!first.ok) throw new Error("expected mutate to succeed")
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  const fingerprintAfterMutate = state.fingerprint
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+})
+
+test("two publishes with a family-changing activation keep an identical fingerprint", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "gpt" }),
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  const afterAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const active: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: afterAdd.revision,
+      expectedGlobalRevision: afterAdd.globalRevision,
+      records: [active],
+    }, throwingContext({})),
+  )
+  expect(first.ok).toBe(true)
+  if (!first.ok) throw new Error("expected mutate to succeed")
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  const fingerprintAfterMutate = state.fingerprint
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+})
+
+test("session.created without an agent adopts the default agent's model", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
+  const agents = agentHarness([agentInfo("alpha", upstream), agentInfo("beta", "beta role")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const switches: Array<{ sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }> = []
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+    session: {
+      get: () => Effect.succeed({} as never),
+      switchModel: (input: { sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }) =>
+        Effect.sync(() => {
+          switches.push({ sessionID: input.sessionID, model: input.model })
+        }),
+    },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  const afterAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const active: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: afterAdd.revision,
+      expectedGlobalRevision: afterAdd.globalRevision,
+      records: [active],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  // No agent on the event and none on the session: core would resolve the
+  // default (first in list, alpha here), so Plus must switch to alpha's model.
+  await Effect.runPromise(
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1" } }),
+  )
+  expect(switches).toHaveLength(1)
+  expect(String(switches[0]?.model.id)).toBe("nova-2")
+})
+
+test("a shared change from another Location reaches this Location without discovery", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-rpc-shared-"))
+  roots.push(root)
+  const config = path.join(root, "config")
+  process.env.OPENCODE_CONFIG_DIR = config
+  const projectA = path.join(root, "a")
+  const projectB = path.join(root, "b")
+  await enable(projectA)
+  await enable(projectB)
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-9")]
+  const makeCtx = (directory: string, agentState: ReturnType<typeof agentHarness>) => {
+    const location = fullContext({ directory }).location
+    const skillState = skillHarness([])
+    const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+    const tools = toolHarness([])
+    return { location, skill, tools, agentState }
+  }
+  const agentsA = agentHarness([agentInfo("alpha", "upstream role")])
+  const partsA = makeCtx(projectA, agentsA)
+  const switches: Array<{ sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }> = []
+  const ctxA = context({
+    location: partsA.location,
+    agent: agentsA.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-9": "general" }),
+    skill: partsA.skill,
+    tool: partsA.tools.domain,
+    mcp: fullContext({ directory: projectA }).mcp,
+    session: {
+      get: () => Effect.succeed({ agent: "alpha", model: { providerID: "acme", id: "nova-1" } } as never),
+      switchModel: (input: { sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }) =>
+        Effect.sync(() => {
+          switches.push({ sessionID: input.sessionID, model: input.model })
+        }),
+    },
+  })
+  const stateA = createState()
+  const handlersA = createHandlers(ctxA, stateA)
+  await Effect.runPromise(handlersA["instructions.refresh"](undefined, throwingContext({})))
+  // Instance B publishes a shared Defaults model while A is live elsewhere.
+  const agentsB = agentHarness([agentInfo("alpha", "upstream role")])
+  const partsB = makeCtx(projectB, agentsB)
+  const ctxB = context({
+    location: partsB.location,
+    agent: agentsB.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-9": "general" }),
+    skill: partsB.skill,
+    tool: partsB.tools.domain,
+    mcp: fullContext({ directory: projectB }).mcp,
+  })
+  const stateB = createState()
+  const handlersB = createHandlers(ctxB, stateB)
+  await Effect.runPromise(
+    handlersB["model.add"]({ level: "defaults", agent: null, providerID: "acme", modelID: "nova-9" }, throwingContext({})),
+  )
+  const snapB = await Effect.runPromise(handlersB["instructions.snapshot"](undefined, throwingContext({})))
+  const shared: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "defaults",
+    agent: null,
+    providerID: "acme",
+    modelID: "nova-9",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutatedB = await Effect.runPromise(
+    handlersB["instructions.mutate"]({
+      expectedRevision: snapB.revision,
+      expectedGlobalRevision: snapB.globalRevision,
+      records: [shared],
+    }, throwingContext({})),
+  )
+  expect(mutatedB.ok).toBe(true)
+  if (!mutatedB.ok) throw new Error("expected B mutate to succeed")
+  // A never sees B's publish (Location-filtered Bus): its next session event
+  // must still pick up the shared model via cheap store invalidation.
+  await Effect.runPromise(
+    applySessionModel(ctxA, stateA, { type: "session.created", properties: { sessionID: "ses_shared", agent: "alpha" } }),
+  )
+  expect(switches).toHaveLength(1)
+  expect(String(switches[0]?.model.id)).toBe("nova-9")
 })

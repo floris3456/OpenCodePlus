@@ -1277,6 +1277,34 @@ test("a perm rule off scrubs whole-word lines, keeping head-only lines", async (
   expect(text).toContain("gitpush without space")
 })
 
+test("a broad scrub keyword never empties a tool description or system text", async () => {
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const description = "git push\n git PUSH "
+  const permText = "Git push\ngit push *"
+  const items = [
+    { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: "shell tool", enabled: true, fingerprint: fingerprint("shell tool") },
+    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"], provenance: [] as string[] },
+  ]
+  const records = [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })]
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }] }))
+  expect(applied.registrations.length).toBeGreaterThan(0)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", { shell: { description, input: { type: "object" } } }, [{ type: "text", text: description }])
+  await Effect.runPromise(run(event))
+  expect(event.tools["shell"]?.description).toBe(description)
+  expect(event.system.map((part) => part.text).join("\n")).toBe(description)
+})
+
 test("editing the teaching row for one agent replaces that agent's part only", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-teaching-"))
   applyRoots.push(parent)

@@ -80,6 +80,29 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     if (model === undefined) return source
     return { ...source, model }
   })
+  // Classify the base from the UNMASKED model, not the transformed host view.
+  // The host shows Plus's own output after applyModels installs it, so
+  // classifying from the transformed model moves the fingerprint on the next
+  // identical refresh whenever the activation changes family. Unmasked (file
+  // frontmatter or baseline-unmasked host, possibly absent) is stable.
+  const withBase = withModels.map((source) => {
+    const host = agents.find((agent) => String(agent.id) === source.id)
+    if (host === undefined) return source
+    const unmasked = upstream.get(source.id)
+    const synthetic = {
+      ...host,
+      model: unmaskedModel(unmasked),
+    } as Agent.Info
+    const base = input.activeBase(synthetic)
+    if (base === undefined) {
+      if (source.base === undefined) return source
+      const { base: _dropped, ...rest } = source
+      void _dropped
+      return rest
+    }
+    if (base === source.base) return source
+    return { ...source, base }
+  })
   const toolRows = toolItems(tools, baselines)
   const baseRows = baseItems(input.baseTemplates)
   const skillRows = skillItems(skills, directory, baselines)
@@ -110,7 +133,16 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...modelRows,
     ...permRows,
   ]
-  return { items, agents: withModels, servers: mcp.servers, bodies, modelUpstream: upstream }
+  return { items, agents: withBase, servers: mcp.servers, bodies, modelUpstream: upstream }
+}
+
+function unmaskedModel(model: ModelRefLike | undefined): Agent.Info["model"] {
+  if (model === undefined) return undefined
+  return {
+    providerID: model.providerID,
+    id: model.modelID,
+    ...(model.variant === undefined ? {} : { variant: model.variant }),
+  } as Agent.Info["model"]
 }
 
 function hostModelOf(agent: Agent.Info): ModelRefLike | undefined {
@@ -153,8 +185,11 @@ async function upstreamModels(
 
 async function readAgentModels(sources: readonly AgentSource[]): Promise<Map<string, ModelRefLike>> {
   const found = new Map<string, ModelRefLike>()
+  const seen = new Set<string>()
   const texts = await Promise.all(sources.map((source) => (source.path === undefined ? undefined : readText(source.path))))
   sources.forEach((source, index) => {
+    if (seen.has(source.id)) return
+    seen.add(source.id)
     if (found.has(source.id)) return
     const text = texts[index]
     if (text === undefined) return
@@ -789,14 +824,16 @@ function permItems(input: {
     ]
     const discovered = mined.filter((entry) => entry.tool === toolId)
     if (curated.length === 0 && discovered.length === 0) continue
-    for (const merged of mergeRules(curated, discovered)) {
+    const ranked = mergeRules(curated, discovered)
+    const action = permActionForTool(input.tools, toolId)
+    ranked.forEach((merged, order) => {
       const id = permItemId(toolId, merged.id)
       if (byId.has(id)) {
         const current = byId.get(id)
-        if (current === undefined) continue
+        if (current === undefined) return
         const combined = [...new Set([...(current.provenance ?? []), ...merged.provenance])].toSorted()
         byId.set(id, { ...current, provenance: combined })
-        continue
+        return
       }
       const text = `${merged.label}\n${merged.patterns.join("\n")}`
       byId.set(id, {
@@ -807,17 +844,20 @@ function permItems(input: {
         text,
         enabled: upstreamEnabled(),
         fingerprint: fingerprint(text),
+        order,
         permTool: toolId,
         ruleId: merged.id,
         patterns: [...merged.patterns],
         keywords: [...merged.keywords],
         provenance: [...merged.provenance],
+        ...(action === undefined ? {} : { permAction: action }),
       })
-    }
+    })
   }
   for (const record of input.ruleRecords) {
     const id = permItemId(record.tool, record.id)
     const text = `${record.label}\n${record.patterns.join("\n")}`
+    const action = permActionForTool(input.tools, record.tool)
     byId.set(id, {
       id,
       kind: "perm",
@@ -832,7 +872,15 @@ function permItems(input: {
       keywords: [...record.keywords],
       provenance: [],
       custom: true,
+      ...(action === undefined ? {} : { permAction: action }),
     })
   }
   return [...byId.values()].toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+}
+
+function permActionForTool(tools: readonly (Tool.Info & { readonly id: string })[], toolId: string): string | undefined {
+  const tool = tools.find((entry) => entry.id === toolId)
+  const permission = (tool as { options?: { permission?: unknown } } | undefined)?.options?.permission
+  if (typeof permission === "string" && permission.length > 0) return permission
+  return undefined
 }
