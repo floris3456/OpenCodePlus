@@ -1192,8 +1192,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const next: RuleRecord = {
         type: "rule",
-        level: existing?.level ?? input.level,
-        agent: existing?.agent ?? input.agent,
+        level: existing === undefined ? input.level : existing.level,
+        agent: existing === undefined ? input.agent : existing.agent,
         tool: validated.tool,
         id: validated.id,
         label: validated.label,
@@ -1758,10 +1758,12 @@ async function saveRuleRecords(
   })
   if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision) }
   const fresh = await load(directory)
+  const merged = mergeRuleInto(fresh.records, next, loaded.records)
+  if (merged === undefined) return { ok: false }
   const retried = await save(directory, {
     expectedProjectRevision: fresh.projectRevision,
     expectedGlobalRevision: fresh.globalRevision,
-    records: mergeRuleInto(fresh.records, next, loaded.records),
+    records: merged,
   })
   if (retried.ok)
     return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
@@ -1780,21 +1782,21 @@ function mergeRuleInto(
   fresh: readonly StoredRecord[],
   next: readonly StoredRecord[],
   previous: readonly StoredRecord[],
-): readonly StoredRecord[] {
+): readonly StoredRecord[] | undefined {
   const previousByTarget = new Map(rulesOf(previous).map((record) => [ruleRecordTarget(record), record] as const))
   const nextRules = new Map(rulesOf(next).map((record) => [ruleRecordTarget(record), record] as const))
-  const removed = [...previousByTarget.keys()].filter((target) => !nextRules.has(target))
-  const kept = fresh.filter((record) => {
-    if (record.type !== "rule") return true
-    return !removed.includes(ruleRecordTarget(record))
-  })
-  const freshTargets = new Set(rulesOf(kept).map((record) => ruleRecordTarget(record)))
-  const added = [...nextRules.values()].filter((record) => !freshTargets.has(ruleRecordTarget(record)))
-  // Same-target content updates (the rule.update case) are neither removed
-  // nor added, so without this the retry would keep the fresh old contents
-  // while the caller reports the new values. Re-apply only the targets the
-  // intent actually changed; every other fresh row (including concurrent
-  // edits elsewhere) passes through untouched.
+  // The actual delta this call intends, relative to the state it loaded:
+  // additions are next targets absent from previous (not next absent from
+  // fresh, which resurrects unrelated concurrent deletions), removals are
+  // previous targets absent from next, and edits are same-target content
+  // changes. Re-apply only that delta onto fresh; every other fresh row
+  // (including concurrent edits elsewhere) passes through untouched. A target
+  // the caller intended to create that someone else created first is a
+  // conflict when the contents differ (return undefined so the caller reports
+  // a concurrent-change error instead of success for values that were not
+  // persisted); identical contents are idempotent and succeed.
+  const addedTargets = new Set([...nextRules.keys()].filter((target) => !previousByTarget.has(target)))
+  const removedTargets = new Set([...previousByTarget.keys()].filter((target) => !nextRules.has(target)))
   const updatedTargets = new Set(
     [...nextRules.entries()]
       .filter(([target, intended]) => {
@@ -1804,14 +1806,47 @@ function mergeRuleInto(
       })
       .map(([target]) => target),
   )
+  const kept = fresh.filter((record) => {
+    if (record.type !== "rule") return true
+    return !removedTargets.has(ruleRecordTarget(record))
+  })
+  // Concurrent creation of the same target this call intended to add: when
+  // fresh already carries it with different contents, report a conflict so
+  // the caller never reports success for values that were not persisted.
+  // Identical contents are idempotent and succeed.
+  const freshByTarget = new Map(rulesOf(kept).map((record) => [ruleRecordTarget(record), record] as const))
+  for (const target of addedTargets) {
+    const intended = nextRules.get(target)
+    const concurrent = freshByTarget.get(target)
+    if (intended === undefined || concurrent === undefined) continue
+    if (JSON.stringify(stable(concurrent)) !== JSON.stringify(stable(intended))) return undefined
+  }
+  // Concurrent creation under a different level/agent still collides on the
+  // rule identity (tool + id), which addRule enforces across all levels.
+  const freshByRule = new Map(rulesOf(kept).map((record) => [`${record.tool}:${record.id}`, record] as const))
+  for (const target of addedTargets) {
+    const intended = nextRules.get(target)
+    if (intended === undefined) continue
+    const concurrent = freshByRule.get(`${intended.tool}:${intended.id}`)
+    if (concurrent === undefined) continue
+    if (ruleRecordTarget(concurrent) !== target) return undefined
+  }
   const mergedKept = kept.map((record) => {
     if (record.type !== "rule") return record
-    const intended = nextRules.get(ruleRecordTarget(record))
+    const target = ruleRecordTarget(record)
+    const intended = nextRules.get(target)
     if (intended === undefined) return record
-    if (!updatedTargets.has(ruleRecordTarget(record))) return record
-    return intended
+    if (updatedTargets.has(target)) return intended
+    return record
   })
-  return [...mergedKept, ...added]
+  const keptTargets = new Set(rulesOf(mergedKept).map((record) => ruleRecordTarget(record)))
+  const missing = [...addedTargets, ...updatedTargets].filter((target) => !keptTargets.has(target))
+  const appended = missing.flatMap((target) => {
+    const intended = nextRules.get(target)
+    if (intended === undefined) return []
+    return [intended]
+  })
+  return [...mergedKept, ...appended]
 }
 
 // A missing actor means the TUI; strip explicit undefined keys so the stored

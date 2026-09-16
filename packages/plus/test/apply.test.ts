@@ -21,7 +21,9 @@ import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
 import { seedSystemInstruction } from "../src/instructions/teaching.js"
 import { catalogPath, fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import type { CustomizationRecord, Level } from "../src/instructions/model.js"
-import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
+import { agentHarness, catalogHarness, context, fullContext, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
+import { createPlusApi, createState } from "../src/index.js"
+import { enable } from "../src/project.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 // Plus cannot depend on @opencode/core (core depends on Plus), so this
 // regression reads core's own template sources and renderer by path. That
@@ -1794,4 +1796,92 @@ test("a pin matching the registry default installs no catalog plan", async () =>
   const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
   expect(applied.registrations).toEqual([])
   expect(applied.tools).toEqual([])
+})
+
+test("editing a curated patch rule keeps its operation action through apply proved by Permission.evaluate", async () => {
+  // Whole path, not pieces: discovery -> edit and save through the real API
+  // -> discovery again -> apply. Editing just the label of Delete file must
+  // keep patch.delete; without the fix the custom overlay recomputes edit
+  // from the tool's options.permission, so turning the row off installs
+  // edit + * deny (blocking every patch operation plus ordinary edits)
+  // instead of only deletions.
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-patch-action-"))
+  applyRoots.push(parent)
+  const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = path.join(parent, "config")
+  try {
+    const project = path.join(parent, "project")
+    await enable(project)
+    const patchTool = {
+      id: "patch",
+      description: "Apply file patches.",
+      options: { codemode: false, permission: "edit" },
+    }
+    const plusCtx = fullContext({
+      directory: project,
+      agents: [agentInfo("alpha", "upstream role")],
+      tools: [patchTool],
+      session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+    })
+    const api = createPlusApi(plusCtx, createState())
+    const first = await api.snapshot()
+    if (!first.ok) throw new Error(`snapshot failed: ${first.error.message}`)
+    const curated = first.value.items.find((item) => item.id === "perm:patch:delete-file")
+    if (curated === undefined) throw new Error("expected perm:patch:delete-file")
+    expect(curated.permAction).toBe("patch.delete")
+    const edited = await api.updateRule({
+      level: "project",
+      agent: "alpha",
+      tool: "patch",
+      id: "delete-file",
+      label: "Delete file edited",
+      patterns: ["*"],
+      keywords: ["patch-delete-probe"],
+      actor: { type: "tui" },
+    })
+    if (!edited.ok) throw new Error(`updateRule failed: ${edited.error.message}`)
+    expect(edited.value.label).toBe("Delete file edited")
+    const second = await api.snapshot()
+    if (!second.ok) throw new Error(`second snapshot failed: ${second.error.message}`)
+    const custom = second.value.items.find((item) => item.id === "perm:patch:delete-file")
+    if (custom === undefined) throw new Error("expected custom perm:patch:delete-file after edit")
+    expect(custom.custom).toBe(true)
+    expect(custom.title).toBe("Delete file edited")
+    expect(custom.permAction).toBe("patch.delete")
+    expect(custom.patterns).toEqual(["*"])
+    // Turn the edited row off and apply through the real installer.
+    const off: CustomizationRecord = {
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "perm:patch:delete-file",
+      section: null,
+      state: "off",
+      basedOn: custom.fingerprint,
+      updated: UPDATED,
+    }
+    const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+    const applyCtx = context({ agent: agents.domain, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
+    const applied = await apply(
+      applyCtx,
+      makeInput({
+        items: second.value.items,
+        records: [off],
+        scopes: scopesOf(second.value.agents.map((agent) => ({ id: agent.id, scope: agent.scope }))),
+        agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }],
+      }),
+    )
+    expect(applied.registrations.length).toBeGreaterThan(0)
+    const alphaRules = agents.state.get("alpha")?.permissions ?? []
+    expect(alphaRules.slice(-1)).toEqual([{ action: "patch.delete", resource: "*", effect: "deny" }])
+    expect(agents.state.get("beta")?.permissions.some((rule) => String(rule.action).startsWith("patch."))).toBe(false)
+    const { evaluate } = await import("../../core/src/permission.js")
+    expect(evaluate("patch.delete", "src/a.ts", alphaRules).effect).toBe("deny")
+    expect(evaluate("patch.add", "src/a.ts", alphaRules).effect).not.toBe("deny")
+    expect(evaluate("patch.update", "src/a.ts", alphaRules).effect).not.toBe("deny")
+    expect(evaluate("edit", "src/a.ts", alphaRules).effect).not.toBe("deny")
+  } finally {
+    if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  }
 })
