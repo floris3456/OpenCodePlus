@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test"
 import {
+  activateModel,
   applies,
   canReset,
   countReview,
   fingerprint,
   merge,
+  modelItemId,
+  parseModelItemId,
+  parsePermItemId,
+  permItemId,
   reset,
   resolve,
   resolveResolution,
@@ -15,10 +20,13 @@ import {
   type ChainInput,
   type CustomizationRecord,
   type Item,
+  type ModelRecord,
   type Scopes,
   type SplitRecord,
 } from "../src/instructions/model.js"
 import { derive } from "../src/instructions/sections.js"
+import { expandedTree } from "../src/instructions/tree.js"
+import { toggle } from "../src/instructions/ops.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -513,4 +521,114 @@ test("merge clears a pin with null and never emits pin undefined", () => {
   const textOnly = merge([], address, { text: "mine" }, upstream)
   expect("pin" in (textOnly[0] ?? {})).toBe(false)
   expect(resolve(input({ upstream, records: set })).pinned).toBe(true)
+})
+
+test("model item ids round-trip with and without a variant", () => {
+  expect(modelItemId({ providerID: "openai", modelID: "gpt-5" })).toBe("model:openai/gpt-5")
+  expect(modelItemId({ providerID: "openai", modelID: "gpt-5", variant: "high" })).toBe("model:openai/gpt-5@high")
+  expect(parseModelItemId("model:openai/gpt-5")).toEqual({ providerID: "openai", modelID: "gpt-5" })
+  expect(parseModelItemId("model:openai/gpt-5@high")).toEqual({ providerID: "openai", modelID: "gpt-5", variant: "high" })
+})
+
+test("model item id parsing rejects malformed ids", () => {
+  expect(parseModelItemId("tool:bash")).toBeUndefined()
+  expect(parseModelItemId("model:openai")).toBeUndefined()
+  expect(parseModelItemId("model:/gpt-5")).toBeUndefined()
+  expect(parseModelItemId("model:openai/")).toBeUndefined()
+  expect(parseModelItemId("model:openai/@high")).toBeUndefined()
+})
+
+test("perm item ids round-trip and keep extra colons in the rule id", () => {
+  expect(permItemId("shell", "git-push")).toBe("perm:shell:git-push")
+  expect(parsePermItemId("perm:shell:git-push")).toEqual({ tool: "shell", ruleId: "git-push" })
+  expect(parsePermItemId(permItemId("shell", "a:b"))).toEqual({ tool: "shell", ruleId: "a:b" })
+  expect(parsePermItemId("tool:bash")).toBeUndefined()
+  expect(parsePermItemId("perm:shell")).toBeUndefined()
+  expect(parsePermItemId("perm::x")).toBeUndefined()
+})
+
+test("row ids tolerate /, @, and extra : in the item segment through the real tree path", () => {
+  // Row ids are built by concatenation and matched by exact string equality
+  // (ops.ts findNode): nothing splits the item segment apart, so the future
+  // `model:<provider>/<model>[@variant]` and `perm:<tool>:<rule>` forms ride
+  // through untouched. This pins that tolerance through tree build + toggle.
+  const memo = {
+    items: [
+      makeItem({ id: "perm:shell:git-push", title: "git-push" }),
+      makeItem({ id: "model:openai/gpt-5@high", title: "gpt-5" }),
+    ],
+    records: [],
+    agents: [{ id: "alpha", scope: "project" as const }],
+  }
+  const ids = expandedTree(memo).map((node) => node.id)
+  expect(ids).toContain("item:project:alpha:perm:shell:git-push")
+  expect(ids).toContain("item:project:alpha:model:openai/gpt-5@high")
+  const perm = toggle(memo, "item:project:alpha:perm:shell:git-push")
+  if ("refusal" in perm) throw new Error(`expected toggle success, got ${perm.refusal}`)
+  expect(perm.records.some((record) => record.item === "perm:shell:git-push" && record.state === "off")).toBe(true)
+  const model = toggle(memo, "item:project:alpha:model:openai/gpt-5@high")
+  if ("refusal" in model) throw new Error(`expected toggle success, got ${model.refusal}`)
+  expect(model.records.some((record) => record.item === "model:openai/gpt-5@high" && record.state === "off")).toBe(true)
+})
+
+test("a perm: item resolves enabled through the existing chain with no new logic", () => {
+  const upstream = makeItem({ id: "perm:shell:git-push", title: "git-push" })
+  const address: Address = { level: "project", agent: "alpha", item: upstream.id, section: null }
+  expect(resolve(input({ upstream, address })).enabled).toBe(true)
+  const off = [makeRecord({ item: upstream.id, state: "off" })]
+  expect(resolve(input({ upstream, records: off, address })).enabled).toBe(false)
+  const on = [makeRecord({ level: "global", agent: "alpha", item: upstream.id, state: "on" })]
+  expect(resolve(input({ upstream, records: [...off, ...on], address })).enabled).toBe(false)
+  expect(resolve(input({ upstream, records: on, address })).enabled).toBe(true)
+})
+
+function modelRecord(overrides?: Partial<ModelRecord>): ModelRecord {
+  return {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "openai",
+    modelID: "gpt-5",
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+test("activateModel flips active within one (level, agent) pair only", () => {
+  const records = [
+    modelRecord({ modelID: "gpt-5", active: true }),
+    modelRecord({ modelID: "claude-4" }),
+    modelRecord({ level: "global", modelID: "gpt-5", active: true }),
+    modelRecord({ agent: "beta", modelID: "gpt-5", active: true }),
+  ]
+  const next = activateModel(records, { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "claude-4" })
+  expect(next.find((record) => record.level === "project" && record.agent === "alpha" && record.modelID === "claude-4")?.active).toBe(true)
+  expect(next.find((record) => record.level === "project" && record.agent === "alpha" && record.modelID === "gpt-5")?.active).toBeUndefined()
+  expect("active" in (next.find((record) => record.level === "project" && record.agent === "alpha" && record.modelID === "gpt-5") ?? {})).toBe(false)
+  // Other levels and agents are untouched.
+  expect(next.find((record) => record.level === "global")?.active).toBe(true)
+  expect(next.find((record) => record.agent === "beta")?.active).toBe(true)
+  // At most one active record per (level, agent) is the invariant.
+  const actives = next.filter((record) => record.active === true)
+  const pairs = new Set(actives.map((record) => `${record.level}:${record.agent ?? ""}`))
+  expect(pairs.size).toBe(actives.length)
+})
+
+test("activateModel is a no-op on re-activate and on an unknown target", () => {
+  const records = [modelRecord({ active: true }), modelRecord({ modelID: "claude-4" })]
+  expect(activateModel(records, { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "gpt-5" })).toEqual(records)
+  expect(
+    activateModel(records, { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "ghost" }),
+  ).toEqual(records)
+})
+
+test("activateModel distinguishes variants and preserves timestamps", () => {
+  const records = [
+    modelRecord({ modelID: "gpt-5", variant: "high", active: true, updated: "2026-02-01T00:00:00.000Z" }),
+    modelRecord({ modelID: "gpt-5", updated: "2026-03-01T00:00:00.000Z" }),
+  ]
+  const next = activateModel(records, { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "gpt-5" })
+  expect(next.find((record) => record.variant === undefined)?.active).toBe(true)
+  expect(next.find((record) => record.variant === "high")?.active).toBeUndefined()
+  expect(next.map((record) => record.updated)).toEqual(["2026-02-01T00:00:00.000Z", "2026-03-01T00:00:00.000Z"])
 })

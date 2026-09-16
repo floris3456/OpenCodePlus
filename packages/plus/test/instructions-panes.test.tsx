@@ -105,15 +105,23 @@ function snapshot(records: Snapshot["records"]): Snapshot {
       { id: "Implementer", scope: "project", base: "gpt", fileBacked: true },
       { id: "Helper", scope: "global", base: "claude", fileBacked: true },
     ],
-    items: items().map((item) => ({
-      id: item.id,
-      kind: item.kind,
-      group: item.group,
-      title: item.title,
-      text: item.text,
-      enabled: item.enabled,
-      fingerprint: item.fingerprint,
-    })),
+    // Model/perm items have no snapshot row until phase 2 widens
+    // SnapshotItem.kind; this fixture never carries them.
+    items: items().flatMap((item) =>
+      item.kind === "model" || item.kind === "perm"
+        ? []
+        : [
+            {
+              id: item.id,
+              kind: item.kind,
+              group: item.group,
+              title: item.title,
+              text: item.text,
+              enabled: item.enabled,
+              fingerprint: item.fingerprint,
+            },
+          ],
+    ),
     records,
     servers: [],
     protectedAgents: [],

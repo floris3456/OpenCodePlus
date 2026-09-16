@@ -2,13 +2,14 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Option, Schema } from "effect"
 import type { Boundary } from "./sections.js"
-import type { CustomizationRecord, Level, SplitRecord } from "./model.js"
+import type { CustomizationRecord, Level, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, projectRecordsPath } from "./paths.js"
 
 export type { CustomizationRecord, SplitRecord }
+export type { ModelRecord, RuleRecord }
 export type { TeamRecord }
-export type StoredRecord = CustomizationRecord | SplitRecord | TeamRecord
+export type StoredRecord = CustomizationRecord | SplitRecord | TeamRecord | ModelRecord | RuleRecord
 export type RecordState = "on" | "off"
 
 export type { Level }
@@ -89,7 +90,33 @@ const V2Team = Schema.Struct({
   updated: Schema.String,
 })
 
-const V2Record = Schema.Union([V2Customization, V2Split, V2Team])
+// Per-agent model selection. `active` is `true` or omitted, never `false`:
+// records cross the RPC boundary as JSON, where a present-but-undefined key
+// fails validation.
+const V2Model = Schema.Struct({
+  type: Schema.Literal("model"),
+  level: LevelSchema,
+  agent: Schema.Union([Schema.String, Schema.Null]),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optional(Schema.String),
+  active: Schema.optional(Schema.Literal(true)),
+  updated: Schema.String,
+})
+
+const V2Rule = Schema.Struct({
+  type: Schema.Literal("rule"),
+  level: LevelSchema,
+  agent: Schema.Union([Schema.String, Schema.Null]),
+  tool: Schema.String,
+  id: Schema.String,
+  label: Schema.String,
+  patterns: Schema.Array(Schema.String),
+  keywords: Schema.Array(Schema.String),
+  updated: Schema.String,
+})
+
+const V2Record = Schema.Union([V2Customization, V2Split, V2Team, V2Model, V2Rule])
 
 const V2Header = Schema.Struct({
   version: Schema.Literal(2),
@@ -270,6 +297,33 @@ function parseV2(lines: string[]): StoredRecord[] {
           updated: record.updated,
         },
       ]
+    if (record.type === "model")
+      return [
+        {
+          type: "model",
+          level: record.level,
+          agent: record.agent,
+          providerID: record.providerID,
+          modelID: record.modelID,
+          ...(record.variant === undefined ? {} : { variant: record.variant }),
+          ...(record.active === undefined ? {} : { active: record.active }),
+          updated: record.updated,
+        },
+      ]
+    if (record.type === "rule")
+      return [
+        {
+          type: "rule",
+          level: record.level,
+          agent: record.agent,
+          tool: record.tool,
+          id: record.id,
+          label: record.label,
+          patterns: [...record.patterns],
+          keywords: [...record.keywords],
+          updated: record.updated,
+        },
+      ]
     return [
       {
         type: "customization",
@@ -364,8 +418,23 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 
 // Teams have no item/agent/section, so they order by team name first, then
 // level; enabled and updated last keep the order total for identical keys.
+// Models order by provider, model, and variant, then agent and level; rules
+// order by tool and id, then agent and level. Both end with `updated` so the
+// order is total and an unchanged save stays a no-op.
 function sortKey(record: StoredRecord): string[] {
   if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
+  if (record.type === "model")
+    return [
+      "model",
+      record.providerID,
+      record.modelID,
+      record.variant ?? "",
+      String(record.agent),
+      record.level,
+      record.active === true ? "active" : "",
+      record.updated,
+    ]
+  if (record.type === "rule") return ["rule", record.tool, record.id, String(record.agent), record.level, record.updated]
   return [record.type, record.item, String(record.agent), record.level, record.type === "customization" ? String(record.section) : ""]
 }
 
@@ -376,6 +445,29 @@ export function stable(record: StoredRecord): StoredRecord {
       level: record.level,
       team: record.team,
       enabled: record.enabled,
+      updated: record.updated,
+    }
+  if (record.type === "model")
+    return {
+      type: "model",
+      level: record.level,
+      agent: record.agent,
+      providerID: record.providerID,
+      modelID: record.modelID,
+      ...(record.variant === undefined ? {} : { variant: record.variant }),
+      ...(record.active === undefined ? {} : { active: record.active }),
+      updated: record.updated,
+    }
+  if (record.type === "rule")
+    return {
+      type: "rule",
+      level: record.level,
+      agent: record.agent,
+      tool: record.tool,
+      id: record.id,
+      label: record.label,
+      patterns: [...record.patterns],
+      keywords: [...record.keywords],
       updated: record.updated,
     }
   if (record.type === "split")

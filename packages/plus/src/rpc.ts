@@ -99,8 +99,41 @@ export const SnapshotSplitRecord = Schema.Struct({
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotSplitRecord" })
 
+// Per-agent model selection. `active` is `true` or omitted, never `false`:
+// results are validated as JSON, so a present-but-undefined key fails the
+// whole call with HTTP 400.
+export interface SnapshotModelRecord extends Schema.Schema.Type<typeof SnapshotModelRecord> {}
+export const SnapshotModelRecord = Schema.Struct({
+  type: Schema.Literal("model"),
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+  active: Schema.optionalKey(Schema.Literal(true)),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotModelRecord" })
+
+export interface SnapshotRuleRecord extends Schema.Schema.Type<typeof SnapshotRuleRecord> {}
+export const SnapshotRuleRecord = Schema.Struct({
+  type: Schema.Literal("rule"),
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  tool: Schema.String,
+  id: Schema.String,
+  label: Schema.String,
+  patterns: Schema.Array(Schema.String),
+  keywords: Schema.Array(Schema.String),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotRuleRecord" })
+
 export type SnapshotRecord = typeof SnapshotRecord.Type
-export const SnapshotRecord = Schema.Union([SnapshotCustomizationRecord, SnapshotSplitRecord]).annotate({
+export const SnapshotRecord = Schema.Union([
+  SnapshotCustomizationRecord,
+  SnapshotSplitRecord,
+  SnapshotModelRecord,
+  SnapshotRuleRecord,
+]).annotate({
   identifier: "Plus.SnapshotRecord",
 })
 

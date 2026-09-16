@@ -106,30 +106,36 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
       ...(item.execute === undefined ? {} : { execute: item.execute }),
     })),
-    records: snapshot.records.map((record) =>
-      record.type === "split"
-        ? {
-            type: "split" as const,
-            level: record.level,
-            agent: record.agent,
-            item: record.item,
-            boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
-            updated: record.updated,
-          }
-        : {
-            type: "customization" as const,
-            level: record.level,
-            agent: record.agent,
-            item: record.item,
-            section: record.section,
-            ...(record.text === undefined ? {} : { text: record.text }),
-            ...(record.state === undefined ? {} : { state: record.state }),
-            ...(record.pin === undefined ? {} : { pin: record.pin }),
-            basedOn: record.basedOn,
-            ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-            ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-            updated: record.updated,
-          },
+    // Model and rule records are not tree rows (see memoInputOf), so the
+    // memo drops them; this fixture's snapshots never carry them.
+    records: snapshot.records.flatMap((record) =>
+      record.type === "model" || record.type === "rule"
+        ? []
+        : [
+            record.type === "split"
+              ? {
+                  type: "split" as const,
+                  level: record.level,
+                  agent: record.agent,
+                  item: record.item,
+                  boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
+                  updated: record.updated,
+                }
+              : {
+                  type: "customization" as const,
+                  level: record.level,
+                  agent: record.agent,
+                  item: record.item,
+                  section: record.section,
+                  ...(record.text === undefined ? {} : { text: record.text }),
+                  ...(record.state === undefined ? {} : { state: record.state }),
+                  ...(record.pin === undefined ? {} : { pin: record.pin }),
+                  basedOn: record.basedOn,
+                  ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+                  ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+                  updated: record.updated,
+                },
+          ],
     ),
     agents: snapshot.agents.map((agent) => ({
       id: agent.id,
