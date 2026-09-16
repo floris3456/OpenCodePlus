@@ -856,10 +856,21 @@ function permItems(input: {
       })
     })
   }
+  // A custom override must retain the curated operation action for the same
+  // tool + id (patch delete-file carries patch.delete, while the patch tool
+  // itself registers permission "edit"). Recomputing from the tool alone
+  // converts an edited Delete file row to edit, so turning it off installs
+  // edit + * deny instead of patch.delete. Inheriting (rather than persisting
+  // the action on RuleRecord) avoids a storage and RPC shape change and stays
+  // backward compatible with records written before this fix; curatedRules is
+  // the single source of truth at discovery time.
+  const curatedActions = new Map(
+    curatedRules.flatMap((rule) => (rule.action === undefined ? [] : [[`${rule.tool}:${rule.id}`, rule.action] as const])),
+  )
   for (const record of input.ruleRecords) {
     const id = permItemId(record.tool, record.id)
     const text = `${record.label}\n${record.patterns.join("\n")}`
-    const action = permActionForTool(input.tools, record.tool)
+    const action = curatedActions.get(`${record.tool}:${record.id}`) ?? permActionForTool(input.tools, record.tool)
     byId.set(id, {
       id,
       kind: "perm",

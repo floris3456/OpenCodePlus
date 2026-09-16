@@ -1484,3 +1484,190 @@ test("updateRule through a project row keeps a global rule in the global store",
   const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:global:alpha:shell:shared")
   if (entry === undefined) throw new Error("missing global rule.update log entry")
 })
+
+test("updateRule retry preserves an unrelated concurrent deletion", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const seedKeep = await api.addRule({
+    level: "project",
+    agent: "alpha",
+    tool: "shell",
+    id: "keep",
+    label: "Keep",
+    patterns: ["keep *"],
+    actor: { type: "tui" },
+  })
+  if (!seedKeep.ok) throw new Error(`seed keep failed: ${seedKeep.error.message}`)
+  const seedGone = await api.addRule({
+    level: "project",
+    agent: "alpha",
+    tool: "shell",
+    id: "gone",
+    label: "Gone",
+    patterns: ["gone *"],
+    actor: { type: "tui" },
+  })
+  if (!seedGone.ok) throw new Error(`seed gone failed: ${seedGone.error.message}`)
+  // Both load [keep, gone]; the removal wins first, forcing the update
+  // through the stale-save merge retry. Without the delta fix the retry
+  // recomputes additions as next-minus-fresh and resurrects the concurrently
+  // removed row while the log mentions only the edited target.
+  const [removed, updated] = await Promise.all([
+    api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "gone", actor: { type: "tui" } }),
+    api.updateRule({
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "keep",
+      label: "Keep edited",
+      patterns: ["keep-new *"],
+      keywords: ["keep-new"],
+      actor: { type: "tui" },
+    }),
+  ])
+  if (!removed.ok) throw new Error(`concurrent remove failed: ${removed.error.message}`)
+  if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
+  const after = await snapshotOf(api)
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "keep")
+  if (persisted === undefined || persisted.type !== "rule") throw new Error("expected keep rule to persist")
+  expect(persisted.label).toBe("Keep edited")
+  expect(persisted.patterns).toEqual(["keep-new *"])
+  expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "gone")).toBe(false)
+  expect(updated.value.label).toBe(persisted.label)
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  const updateEntry = logged.value.entries.find(
+    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:keep",
+  )
+  if (updateEntry === undefined) throw new Error("missing rule.update log entry for the edited target")
+  const removedLog = await api.log({ where: "op:rule.remove" })
+  if (!removedLog.ok) throw new Error("log failed")
+  const removeEntry = removedLog.value.entries.find(
+    (candidate) => candidate.op === "rule.remove" && candidate.target === "rule:project:alpha:shell:gone",
+  )
+  if (removeEntry === undefined) throw new Error("missing rule.remove log entry for the concurrently removed target")
+})
+
+test("concurrent updateRule creates for the same target never report false success", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Both load an empty store and materialise the same curated target with
+  // different labels. The loser retries against fresh carrying the winner;
+  // without the fix it keeps the winner's values while returning the loser's
+  // label. The fix returns a conflict so response, persisted values, and log
+  // all agree.
+  const [first, second] = await Promise.all([
+    api.updateRule({
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "race-create",
+      label: "First",
+      patterns: ["first *"],
+      keywords: ["first"],
+      actor: { type: "tui" },
+    }),
+    api.updateRule({
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "race-create",
+      label: "Second",
+      patterns: ["second *"],
+      keywords: ["second"],
+      actor: { type: "tui" },
+    }),
+  ])
+  const succeeded = [first, second].filter((result) => result.ok)
+  const failed = [first, second].filter((result) => !result.ok)
+  expect(succeeded).toHaveLength(1)
+  expect(failed).toHaveLength(1)
+  const winner = succeeded[0]
+  if (winner === undefined || !winner.ok) throw new Error("expected one successful create")
+  const loser = failed[0]
+  if (loser === undefined || loser.ok) throw new Error("expected one concurrent conflict")
+  if (loser.error.code !== "rule.invalid") throw new Error(`expected rule.invalid conflict, got ${loser.error.code}`)
+  expect(loser.error.message).toContain("changed concurrently")
+  const after = await snapshotOf(api)
+  const persisted = after.records.filter((record) => record.type === "rule" && record.tool === "shell" && record.id === "race-create")
+  expect(persisted).toHaveLength(1)
+  const only = persisted[0]
+  if (only === undefined || only.type !== "rule") throw new Error("expected race-create to persist once")
+  expect(only.label).toBe(winner.value.label)
+  expect(winner.value.label === "First" || winner.value.label === "Second").toBe(true)
+  // The loser's requested values were never persisted and never logged.
+  const winnerLabel = winner.value.label
+  const loserLabel = winnerLabel === "First" ? "Second" : "First"
+  const loserPatterns = loserLabel === "First" ? ["first *"] : ["second *"]
+  expect(only.label).not.toBe(loserLabel)
+  expect(only.patterns).not.toEqual(loserPatterns)
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  const entries = logged.value.entries.filter(
+    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:race-create",
+  )
+  expect(entries).toHaveLength(1)
+  expect(entries[0]?.revision).toBe(after.revision)
+})
+
+test("updateRule preserves a shared agent:null owner instead of retargeting it", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  const seeded = await api.addRule({
+    level: "defaults",
+    agent: null,
+    tool: "shell",
+    id: "shared",
+    label: "Shared",
+    patterns: ["shared *"],
+    actor: { type: "tui" },
+  })
+  if (!seeded.ok) throw new Error(`seed failed: ${seeded.error.message}`)
+  expect(seeded.value.agent).toBeNull()
+  // Update through another agent's row address: protection follows the
+  // matched record, and the owner (including legitimate null) follows it too.
+  const updated = await api.updateRule({
+    level: "project",
+    agent: "alpha",
+    tool: "shell",
+    id: "shared",
+    label: "Shared edited",
+    patterns: ["shared-new *"],
+    keywords: ["shared-new"],
+    actor: { type: "tui" },
+  })
+  if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
+  expect(updated.value.level).toBe("defaults")
+  expect(updated.value.agent).toBeNull()
+  expect(updated.value.label).toBe("Shared edited")
+  const after = await snapshotOf(api)
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared")
+  if (persisted === undefined || persisted.type !== "rule") throw new Error("expected shared rule to persist")
+  expect(persisted.level).toBe("defaults")
+  expect(persisted.agent).toBeNull()
+  expect(persisted.label).toBe("Shared edited")
+  const logged = await api.log({ where: "op:rule.update" })
+  if (!logged.ok) throw new Error("log failed")
+  const updateEntry = logged.value.entries.find(
+    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:defaults::shell:shared",
+  )
+  if (updateEntry === undefined) throw new Error("missing shared rule.update log entry at the shared address")
+})
