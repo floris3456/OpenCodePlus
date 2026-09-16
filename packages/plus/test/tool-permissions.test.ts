@@ -210,7 +210,7 @@ test("mineGenericPaths rejects slash-separated prose as paths", () => {
 })
 
 test("mineGenericPaths keeps real file paths and globs", () => {
-  const kept = ["src/index.ts", "packages/core/src/tool/plugin/grep.ts", "*.env*", "**/*.lock"]
+  const kept = ["src/index.ts", "packages/core/src/tool/plugin/grep.ts", "*.env*", "**/*.lock", "src/**/*.tsx"]
   for (const token of kept) {
     const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please edit ${token} today` }] })
     const patterns = mined.flatMap((entry) => entry.patterns)
@@ -220,17 +220,24 @@ test("mineGenericPaths keeps real file paths and globs", () => {
 
 test("mineGenericPaths strips trailing source-location references", () => {
   const mined = mineDiscoveredRules({
-    texts: [{ item: "tool:edit", text: "inspect src/services/process.ts:712 and src/main.py:10:4" }],
+    texts: [
+      {
+        item: "tool:edit",
+        text: "inspect src/services/process.ts:712 and src/main.py:10:4. Also see src/services/process.ts:712. and src/main.py:10:4.",
+      },
+    ],
   })
   const patterns = mined.flatMap((entry) => entry.patterns)
   expect(patterns).toContain("src/services/process.ts")
   expect(patterns).toContain("src/main.py")
   expect(patterns).not.toContain("src/services/process.ts:712")
+  expect(patterns).not.toContain("src/services/process.ts:712.")
   expect(patterns).not.toContain("src/main.py:10:4")
+  expect(patterns).not.toContain("src/main.py:10:4.")
 })
 
 test("mineGenericPaths rejects bare line references and invalid paths after stripping", () => {
-  const rejected = [":712", ":10:4", "/api/config:42", "and/or:12"]
+  const rejected = [":712", ":10:4", ":712.", ":10:4.", "/api/config:42", "/api/config:42.", "and/or:12", "and/or:12."]
   for (const token of rejected) {
     const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please check ${token} today` }] })
     const patterns = mined.flatMap((entry) => entry.patterns)
@@ -243,7 +250,7 @@ test("mineGenericPaths rejects bare line references and invalid paths after stri
 
 test("mineGenericPaths deduplicates paths mentioned with and without line references", () => {
   const mined = mineDiscoveredRules({
-    texts: [{ item: "tool:edit", text: "update src/index.ts and check src/index.ts:42" }],
+    texts: [{ item: "tool:edit", text: "update src/index.ts and check src/index.ts:42 or see src/index.ts:42." }],
   })
   const patterns = mined.flatMap((entry) => entry.patterns)
   expect(patterns).toEqual(["src/index.ts"])
