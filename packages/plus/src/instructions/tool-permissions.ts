@@ -72,7 +72,12 @@ export const commandHeads: Record<string, number> = {
 // ["git"]. A pattern with no literal leading word (globs, URLs) falls back to
 // its first meaningful segment: "**/.git/**" -> [".git"].
 export function keywordsForPattern(pattern: string): string[] {
-  const tokens = pattern.trim().split(/\s+/).filter((token) => token.length > 0)
+  const trimmed = pattern.trim()
+  // Typed resources like "add:*" (patch tool): the bare type ("add") would
+  // scrub ordinary prose, so keep the full typed pattern as the keyword.
+  // URLs keep the existing fallback ("http://*" -> ["http"]).
+  if (trimmed.includes(":") && !trimmed.includes(" ") && !trimmed.includes("\t") && !trimmed.includes("://")) return [trimmed]
+  const tokens = trimmed.split(/\s+/).filter((token) => token.length > 0)
   const stop = tokens.findIndex((token) => token.includes("*") || token.includes("?") || token.startsWith("-"))
   const words = stop === -1 ? tokens : tokens.slice(0, stop)
   if (words.length > 0) return [words.join(" ")]
@@ -149,6 +154,9 @@ const rawRules: readonly RawRule[] = [
   { tool: "read", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
   { tool: "read", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
   { tool: "read", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"] },
+  { tool: "patch", id: "add-file", label: "Add file", patterns: ["add:*"] },
+  { tool: "patch", id: "update-file", label: "Update file", patterns: ["update:*"] },
+  { tool: "patch", id: "delete-file", label: "Delete file", patterns: ["delete:*"] },
   { tool: "webfetch", id: "http", label: "Plain HTTP", patterns: ["http://*"] },
   { tool: "webfetch", id: "github", label: "GitHub", patterns: ["*github.com*"] },
   { tool: "webfetch", id: "localhost", label: "Localhost", patterns: ["*localhost*"] },
@@ -426,9 +434,25 @@ function mineGenericPaths(text: string): string[] {
     const lower = token.toLowerCase()
     if (lower.includes(".env") || lower.includes(".lock") || lower.includes("package.json") || lower.includes(".git") || lower.includes(".ssh") || lower.includes("node_modules")) continue
     if (!/[A-Za-z0-9]/.test(token)) continue
+    if (!isMinedPath(token)) continue
     found.add(token)
   }
   return [...found].toSorted().slice(0, 20)
+}
+
+// A mined token is a path only when it is either a glob containing a "/" or
+// a file extension, or a path whose last segment carries a filename
+// extension ("." plus 1-10 alphanumerics). This drops slash-separated prose
+// ("and/or", "4xx/5xx") and extension-less routes ("/api/config") while
+// keeping real paths ("src/index.ts", "*.env*", "**/*.lock").
+function isMinedPath(token: string): boolean {
+  const isGlob = token.includes("*") || token.includes("?")
+  if (isGlob) {
+    if (token.includes("/")) return true
+    return /\.[A-Za-z0-9]{1,10}(?![A-Za-z0-9])/.test(token)
+  }
+  const last = token.split("/").pop() ?? token
+  return /\.[A-Za-z0-9]{1,10}(?![A-Za-z0-9])/.test(last)
 }
 
 interface MinedUrl {
