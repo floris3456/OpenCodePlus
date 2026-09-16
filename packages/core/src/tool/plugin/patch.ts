@@ -214,6 +214,7 @@ export const Plugin = {
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source,
+                  targetedOnly: true,
                 })
               }
               yield* permission.assert({

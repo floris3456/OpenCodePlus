@@ -148,6 +148,68 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("targetedOnly skips unless a rule explicitly targets the action", () =>
+    Effect.gen(function* () {
+      const service = yield* Permission.Service
+      const targeted = (action: string, rules: Permission.Ruleset) =>
+        Effect.gen(function* () {
+          yield* setup(rules)
+          yield* service.assert(
+            assertion({ action, resources: ["src/a.ts"], targetedOnly: true }),
+          )
+          return yield* service.list()
+        })
+
+      // Bare "*" never counts as targeting: skipped with no prompt, even under deny.
+      yield* setup([{ action: "*", resource: "*", effect: "deny" }])
+      yield* service.assert(assertion({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
+      expect(yield* service.list()).toEqual([])
+      // Same input without the flag still denies, proving the flag is what skipped.
+      const blocked = yield* service
+        .assert(assertion({ action: "patch.update", resources: ["src/a.ts"] }))
+        .pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(Permission.BlockedError)
+
+      // Exact action counts as targeting.
+      yield* setup([{ action: "patch.delete", resource: "*", effect: "deny" }])
+      const deleteBlocked = yield* service
+        .assert(assertion({ action: "patch.delete", resources: ["src/a.ts"], targetedOnly: true }))
+        .pipe(Effect.flip)
+      expect(deleteBlocked).toBeInstanceOf(Permission.BlockedError)
+      // Non-matching operation is untargeted and skipped.
+      yield* service.assert(assertion({ action: "patch.add", resources: ["src/a.ts"], targetedOnly: true }))
+      expect(yield* service.list()).toEqual([])
+
+      // Scoped wildcard counts as targeting.
+      yield* setup([{ action: "patch.*", resource: "*", effect: "deny" }])
+      for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
+        const denied = yield* service
+          .assert(assertion({ action, resources: ["src/a.ts"], targetedOnly: true }))
+          .pipe(Effect.flip)
+        expect(denied).toBeInstanceOf(Permission.BlockedError)
+      }
+      expect(yield* service.list()).toEqual([])
+
+      // No rules at all: targetedOnly ask returns allow with no recorded request.
+      yield* setup([])
+      expect(
+        yield* service.ask(assertion({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true })),
+      ).toMatchObject({ effect: "allow" })
+      expect(yield* service.list()).toEqual([])
+      expect(yield* targeted("patch.update", [])).toEqual([])
+
+      // Targeting ignores resource: action match alone opts in, evaluation decides.
+      yield* setup([{ action: "patch.update", resource: "other/*", effect: "allow" }])
+      expect(
+        yield* service.ask(assertion({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true })),
+      ).toMatchObject({ effect: "ask" })
+      const pending = yield* service.list()
+      expect(pending).toHaveLength(1)
+      yield* service.reply({ requestID: pending[0]!.id, reply: "once" })
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
   it.effect("allows managed output reads without granting external directory access", () =>
     Effect.gen(function* () {
       yield* setup([

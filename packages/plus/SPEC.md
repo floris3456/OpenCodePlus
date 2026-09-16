@@ -840,8 +840,10 @@ path is skipped.
   `patch.update`/`patch.delete` with that type's bare paths before its
   unchanged `edit` assert; three curated rules: `Add file` → action
   `patch.add`, `Update file` → `patch.update`, `Delete file` →
-  `patch.delete`, each with pattern `*`). A wildcard-action `ask` can see
-  one extra prompt per patch. User
+  `patch.delete`, each with pattern `*`). The per-operation asserts are
+  opt-in (`targetedOnly`): they fire only when a configured rule explicitly
+  targets a `patch.*` action, so configurations without one are unaffected
+  in outcome and in prompt count. User
   patterns validate through `validateRuleInput` (at least one non-empty
   pattern; keywords default through `keywordsForPattern` when omitted).
   `commandHeads` (Plus's own head-depth table: `git: 2`, `docker: 2`,

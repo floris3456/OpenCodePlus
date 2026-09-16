@@ -43,6 +43,7 @@ export const AssertInput = Schema.Struct({
   id: ID.pipe(Schema.optional),
   ...RequestFields,
   agent: Agent.ID.pipe(Schema.optional),
+  targetedOnly: Schema.Boolean.pipe(Schema.optional),
 }).annotate({ identifier: "Permission.AssertInput" })
 export type AssertInput = typeof AssertInput.Type
 
@@ -211,7 +212,14 @@ const layer = Layer.effect(
         }),
       )
 
+    const isTargeted = Effect.fnUntraced(function* (input: AssertInput) {
+      const rules = yield* configured(input.sessionID, input.agent)
+      return rules.some((rule) => rule.action !== "*" && Wildcard.match(input.action, rule.action))
+    })
+
     const ask = Effect.fn("Permission.ask")(function* (input: AssertInput) {
+      if (input.targetedOnly && !(yield* isTargeted(input)))
+        return { id: input.id ?? ID.create(), effect: "allow" as const }
       const result = yield* evaluateInput(input)
       const value = request(input, result.message)
       if (result.effect === "ask") yield* create(value, input.agent)
@@ -220,6 +228,7 @@ const layer = Layer.effect(
 
     const assert = Effect.fn("Permission.assert")((input: AssertInput) =>
       Effect.gen(function* () {
+        if (input.targetedOnly && !(yield* isTargeted(input))) return
         const result = yield* evaluateInput(input)
         return yield* Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
