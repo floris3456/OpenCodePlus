@@ -6,26 +6,43 @@ import type {
   AgentSource,
   CustomizationRecord,
   Item,
+  ModelRecord,
   SplitRecord,
 } from "../../instructions/model.js"
 import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import { agentOf, itemOf, recordOf, teamOf } from "../../instructions/snapshot.js"
-import { addSection, removalPlan, reset, resolveReview, saveSplit, saveText, setEnabled, setPin, teamPlan, toggle } from "../../instructions/ops.js"
+import {
+  activateModelRow,
+  addSection,
+  isModelRowId,
+  removalPlan,
+  removeModelRow,
+  reset,
+  resetModelRow,
+  resolveReview,
+  saveSplit,
+  saveText,
+  setEnabled,
+  setPin,
+  teamPlan,
+  toggle,
+} from "../../instructions/ops.js"
 import { query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotItem, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
 
-function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord)[] {
-  // Model and rule records are not tree rows in phase 1; see memoInputOf.
+function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord)[] {
+  // Rule records stay filtered until phase 3; model records are tree rows.
   return records
     .map(recordOf)
-    .filter((record): record is CustomizationRecord | SplitRecord => record.type === "customization" || record.type === "split")
+    .filter((record): record is CustomizationRecord | SplitRecord | ModelRecord => record.type === "customization" || record.type === "split" || record.type === "model")
 }
 
 function toRpcRecords(
   customizations: readonly CustomizationRecord[],
   splits: readonly (SplitRecord & { updated?: string })[],
+  models?: readonly ModelRecord[],
 ): SnapshotRecord[] {
   return [
     ...customizations.map(
@@ -55,6 +72,18 @@ function toRpcRecords(
         updated: known,
       }
     }),
+    ...(models ?? []).map(
+      (record): SnapshotRecord => ({
+        type: "model",
+        level: record.level,
+        agent: record.agent,
+        providerID: record.providerID,
+        modelID: record.modelID,
+        ...(record.variant === undefined ? {} : { variant: record.variant }),
+        ...(record.active === undefined ? {} : { active: record.active }),
+        updated: record.updated,
+      }),
+    ),
   ]
 }
 
@@ -76,7 +105,7 @@ export function createInstructionsState(context: Plugin.Context) {
     return current.items.map(itemOf)
   })
 
-  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord)[]>(() => {
+  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord)[]>(() => {
     const current = snapshot()
     if (!current) return []
     return recordsOf(current.records)
@@ -336,12 +365,16 @@ export function createInstructionsState(context: Plugin.Context) {
     nextSplits: readonly (SplitRecord & { updated?: string })[],
     successStatus: string,
     retryHint: string,
+    nextModels?: readonly ModelRecord[],
   ): Promise<boolean> {
     const current = snapshot()
     if (!current) {
       setStatus("No snapshot loaded")
       return false
     }
+    const preserved =
+      nextModels ??
+      recordsOf(current.records).filter((record): record is ModelRecord => record.type === "model")
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -349,7 +382,7 @@ export function createInstructionsState(context: Plugin.Context) {
         {
           expectedRevision: current.revision,
           expectedGlobalRevision: current.globalRevision,
-          records: toRpcRecords(nextCustomizations, nextSplits),
+          records: toRpcRecords(nextCustomizations, nextSplits, preserved),
         },
         { location: context.location },
       )
@@ -379,8 +412,28 @@ export function createInstructionsState(context: Plugin.Context) {
     return { items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() }
   }
 
+  async function persistModels(models: readonly ModelRecord[], successStatus: string, retryHint: string): Promise<boolean> {
+    const current = snapshot()
+    if (!current) {
+      setStatus("No snapshot loaded")
+      return false
+    }
+    const converted = recordsOf(current.records)
+    const customizations = converted.filter((record): record is CustomizationRecord => record.type === "customization")
+    const splits = converted.filter((record): record is SplitRecord => record.type === "split")
+    return persist(customizations, splits, successStatus, retryHint, models)
+  }
+
   async function toggleRow(node: TreeNode): Promise<boolean> {
     if (node.kind === "team") return toggleTeamRow(node)
+    if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
+      const result = activateModelRow(memoInput(), node.id)
+      if ("refusal" in result) {
+        setStatus(result.refusal)
+        return false
+      }
+      return persistModels(result.models, result.status, result.retryHint)
+    }
     const result = toggle(memoInput(), node.id)
     if ("refusal" in result) {
       setStatus(result.refusal)
@@ -494,6 +547,14 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function resetNode(node: TreeNode): Promise<boolean> {
+    if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
+      const result = resetModelRow(memoInput(), node.id)
+      if ("refusal" in result) {
+        setStatus(result.refusal)
+        return false
+      }
+      return persistModels(result.models, result.status, result.retryHint)
+    }
     const result = reset(memoInput(), node.id)
     if ("refusal" in result) {
       setStatus(result.refusal)
@@ -578,12 +639,29 @@ export function createInstructionsState(context: Plugin.Context) {
 
   // d: delete rows whose tree actions allow remove. Agent rows go through
   // agent.delete, shared MCP rows through mcp.remove, project skills through
-  // skill.delete, user base templates through base.delete, and project
-  // instruction files through instruction.delete. Anything else keeps an
+  // skill.delete, user base templates through base.delete, project
+  // instruction files through instruction.delete, and model candidates through
+  // the model mutate path (remove at this level only). Anything else keeps an
   // honest refusal naming why it cannot be deleted. The route offers d on
   // every item and section row so refusals reach the user as status text;
   // rows without remove actions never delete.
   async function remove(node: TreeNode): Promise<boolean> {
+    if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
+      const result = removeModelRow(memoInput(), node.id)
+      if ("refusal" in result) {
+        setStatus(result.refusal)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Remove "${node.label}"?`,
+        message: `Remove model "${node.label}" at this level? This cannot be undone.`,
+      })
+      if (confirmed !== true) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      return persistModels(result.models, result.status, result.retryHint)
+    }
     const plan = removalPlan(memoInput(), node.id)
     if ("refusal" in plan) {
       setStatus(plan.refusal)

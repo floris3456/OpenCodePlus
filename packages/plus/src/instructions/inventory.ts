@@ -13,6 +13,28 @@ export interface PromptBaseline {
   readonly fileBacked: boolean
 }
 
+export interface ModelRefLike {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+}
+
+// Per-agent model baseline: what Plus installed (`applied`) plus the upstream
+// model it replaced. Keyed by agent id. File-backed agents prefer their
+// frontmatter reread, so they never need a baseline; only host-owned
+// (non-file) agents retain one.
+export interface ModelBaseline {
+  readonly applied: ModelRefLike
+  readonly upstream: ModelRefLike
+}
+
+export function sameModelRef(left: ModelRefLike | undefined, right: ModelRefLike | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right
+  if (left.providerID !== right.providerID) return false
+  if (left.modelID !== right.modelID) return false
+  return (left.variant ?? "default") === (right.variant ?? "default")
+}
+
 // Plus's transforms rewrite the host text that the next discovery reads
 // back, so treating that as upstream would flip the publish fingerprint on
 // every pass and produce a permanent dispose/reinstall storm. While the
@@ -22,6 +44,20 @@ export interface PromptBaseline {
 export function unmaskText(current: string, baseline: PromptBaseline | undefined): string {
   if (baseline === undefined) return current
   if (current !== baseline.applied) return current
+  return baseline.upstream
+}
+
+// Model unmask: while the host agent model still shows exactly what Plus
+// installed, report the retained upstream model instead. Any other host
+// model is a genuine upstream edit and flows through untouched. File-backed
+// agents never reach here: their upstream prefers the frontmatter reread,
+// so host masking is irrelevant for them.
+export function unmaskModel(
+  current: ModelRefLike | undefined,
+  baseline: ModelBaseline | undefined,
+): ModelRefLike | undefined {
+  if (baseline === undefined) return current
+  if (!sameModelRef(current, baseline.applied)) return current
   return baseline.upstream
 }
 

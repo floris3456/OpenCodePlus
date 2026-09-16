@@ -21,13 +21,14 @@ import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { dedupeAgents, installTeamAgents } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { resolve, scopesOf, type AgentSource, type CustomizationRecord, type Level, type SplitRecord } from "./instructions/model.js"
+import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
 import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
-import type { PromptBaseline } from "./instructions/inventory.js"
+import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
+import { sameModelRef } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
 
@@ -40,6 +41,7 @@ export interface PlusState {
   projectRevision: number | undefined
   globalRevision: number | undefined
   baselines: Map<string, PromptBaseline>
+  modelBaselines: Map<string, ModelBaseline>
   semaphore: Semaphore.Semaphore
 }
 
@@ -53,6 +55,7 @@ export function createState(): PlusState {
     projectRevision: undefined,
     globalRevision: undefined,
     baselines: new Map(),
+    modelBaselines: new Map(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
 }
@@ -231,12 +234,37 @@ export type CreateTeamResult =
         | { code: "team.create"; message: string; data: Plus.TeamCreate }
     }
 
+export type AddModelResult =
+  | { ok: true; value: Plus.ModelRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "model.exists"; message: string; data: Plus.ModelExists }
+        | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
+    }
+
+export type RemoveModelResult =
+  | { ok: true; value: Plus.ModelRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "model.missing"; message: string; data: Plus.ModelMissing }
+        | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
+    }
+
+export type CatalogModelsResult =
+  | { ok: true; value: Plus.CatalogModelsOutput }
+  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+
 export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
   readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
+  readonly catalogModels: () => Promise<CatalogModelsResult>
   readonly createAgent: (input: Plus.CreateAgentInput & { readonly actor?: Plus.Actor }) => Promise<CreateAgentResult>
   readonly renameAgent: (input: Plus.RenameAgentInput & { readonly actor?: Plus.Actor }) => Promise<RenameAgentResult>
   readonly deleteAgent: (input: Plus.DeleteAgentInput & { readonly actor?: Plus.Actor }) => Promise<DeleteAgentResult>
@@ -251,6 +279,8 @@ export interface PlusApi {
   readonly removeMcp: (input: Plus.McpRef & { readonly actor?: Plus.Actor }) => Promise<RemoveMcpResult>
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
+  readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
+  readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
 }
 
 export interface PlusApiOptions {
@@ -267,7 +297,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state.baselines)
+      const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
     },
@@ -296,7 +326,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             ? ("global" as const)
             : undefined
       if (staleStore !== undefined) {
-        const discovered = await discoverAll(ctx, loaded, state.baselines)
+        const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
         const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
         return {
           ok: true as const,
@@ -314,7 +344,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       })
       if (!saved.ok) {
         const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
-        const discovered = await discoverAll(ctx, refreshed, state.baselines)
+        const discovered = await discoverAll(ctx, refreshed, state.baselines, state.modelBaselines)
         const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
         return {
           ok: true as const,
@@ -357,7 +387,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state.baselines)
+      const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
       const result = await assembled({
         ctx,
         agent: input.agent,
@@ -817,6 +847,178 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
     },
+    catalogModels: async () => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const catalog = await Effect.runPromise(
+        ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+      )
+      const models = catalog.data.flatMap((entry): Plus.CatalogModel[] => {
+        const providerID = String(entry.providerID)
+        const modelID = String(entry.id)
+        const name = String(entry.name ?? entry.id)
+        const base: Plus.CatalogModel = { providerID, modelID, name }
+        const variants = (entry.variants ?? []).map(
+          (variant): Plus.CatalogModel => ({
+            providerID,
+            modelID,
+            variant: String(variant.id),
+            name,
+          }),
+        )
+        return [base, ...variants]
+      })
+      return { ok: true as const, value: { models } }
+    },
+    addModel: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateModelRef(input.providerID, input.modelID, input.variant)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: validated.reason, data: { providerID: input.providerID, modelID: input.modelID, ...(input.variant === undefined ? {} : { variant: input.variant }), reason: validated.reason } },
+        }
+      if (input.agent === null && input.level !== "defaults") {
+        const reason = "Shared model rows live at defaults only"
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      const catalog = await Effect.runPromise(
+        ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+      )
+      if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
+        const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const existing = loaded.records.find(
+        (record): record is ModelRecord =>
+          record.type === "model" &&
+          record.level === input.level &&
+          record.agent === input.agent &&
+          record.providerID === validated.providerID &&
+          record.modelID === validated.modelID &&
+          record.variant === validated.variant,
+      )
+      if (existing !== undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "model.exists" as const,
+            message: `Model ${validated.providerID}/${validated.modelID} already exists`,
+            data: { level: input.level, agent: input.agent, providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }) },
+          },
+        }
+      const next: ModelRecord = {
+        type: "model",
+        level: input.level,
+        agent: input.agent,
+        providerID: validated.providerID,
+        modelID: validated.modelID,
+        ...(validated.variant === undefined ? {} : { variant: validated.variant }),
+        updated: new Date().toISOString(),
+      }
+      const saved = await saveModelRecords(directory, loaded, [...loaded.records, next])
+      if (!saved.ok) {
+        const reason = `Model ${validated.providerID}/${validated.modelID} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      if (saved.changed)
+        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          ts: new Date().toISOString(),
+          actor: normalizeActor(input.actor),
+          op: "model.add",
+          target: modelRecordTarget(next),
+          summary: `model.add ${validated.providerID}/${validated.modelID} (${input.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return {
+        ok: true as const,
+        value: {
+          level: next.level,
+          agent: next.agent,
+          providerID: next.providerID,
+          modelID: next.modelID,
+          ...(next.variant === undefined ? {} : { variant: next.variant }),
+        },
+      }
+    },
+    removeModel: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validated = validateModelRef(input.providerID, input.modelID, input.variant)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: validated.reason, data: { providerID: input.providerID, modelID: input.modelID, ...(input.variant === undefined ? {} : { variant: input.variant }), reason: validated.reason } },
+        }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const existing = loaded.records.find(
+        (record): record is ModelRecord =>
+          record.type === "model" &&
+          record.level === input.level &&
+          record.agent === input.agent &&
+          record.providerID === validated.providerID &&
+          record.modelID === validated.modelID &&
+          record.variant === validated.variant,
+      )
+      if (existing === undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "model.missing" as const,
+            message: `Model ${validated.providerID}/${validated.modelID} does not exist`,
+            data: { level: input.level, agent: input.agent, providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }) },
+          },
+        }
+      const next = loaded.records.filter((record) => record !== existing)
+      const saved = await saveModelRecords(directory, loaded, next)
+      if (!saved.ok) {
+        const reason = `Model ${validated.providerID}/${validated.modelID} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      if (saved.changed)
+        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          ts: new Date().toISOString(),
+          actor: normalizeActor(input.actor),
+          op: "model.remove",
+          target: modelRecordTarget(existing),
+          summary: `model.remove ${validated.providerID}/${validated.modelID} (${input.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return {
+        ok: true as const,
+        value: {
+          level: existing.level,
+          agent: existing.agent,
+          providerID: existing.providerID,
+          modelID: existing.modelID,
+          ...(existing.variant === undefined ? {} : { variant: existing.variant }),
+        },
+      }
+    },
   }
 }
 
@@ -1066,6 +1268,36 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         }
         return result.value
       }),
+    "model.add": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.addModel(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "model.exists")
+            return yield* Effect.fail(context.error("model.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "model.remove": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.removeModel(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "model.missing")
+            return yield* Effect.fail(context.error("model.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "catalog.models": (_input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.catalogModels())
+        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+        return result.value
+      }),
   }
 }
 
@@ -1137,6 +1369,95 @@ async function saveTeamRecord(
 
 function isTeamRecord(record: StoredRecord): record is TeamRecord {
   return record.type === "team"
+}
+
+function modelsOf(records: readonly StoredRecord[]): ModelRecord[] {
+  return records.filter((record): record is ModelRecord => record.type === "model")
+}
+
+function modelRecordTarget(record: ModelRecord): string {
+  return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
+}
+
+function validateModelRef(
+  providerID: string,
+  modelID: string,
+  variant?: string,
+): { ok: true; providerID: string; modelID: string; variant?: string } | { ok: false; reason: string } {
+  const provider = providerID.trim()
+  const model = modelID.trim()
+  const trimmedVariant = variant === undefined ? undefined : variant.trim()
+  if (provider.length === 0) return { ok: false, reason: "Model providerID cannot be empty" }
+  if (model.length === 0) return { ok: false, reason: "Model modelID cannot be empty" }
+  if (provider.includes("/") || provider.includes("@") || provider.includes(":")) return { ok: false, reason: `Invalid providerID "${providerID}"` }
+  if (model.includes("@")) return { ok: false, reason: `Invalid modelID "${modelID}"` }
+  if (trimmedVariant !== undefined && trimmedVariant.length === 0) return { ok: false, reason: "Model variant cannot be empty" }
+  if (trimmedVariant === undefined) return { ok: true, providerID: provider, modelID: model }
+  return { ok: true, providerID: provider, modelID: model, variant: trimmedVariant }
+}
+
+function catalogHas(
+  models: readonly Model.Info[],
+  providerID: string,
+  modelID: string,
+  variant?: string,
+): boolean {
+  const found = models.find((entry) => String(entry.providerID) === providerID && String(entry.id) === modelID)
+  if (found === undefined) return false
+  if (variant === undefined) return true
+  return (found.variants ?? []).some((entry) => String(entry.id) === variant)
+}
+
+async function saveModelRecords(
+  directory: string,
+  loaded: LoadedStores,
+  next: readonly StoredRecord[],
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
+  const level = nextLevelOf(next, loaded.records)
+  const revisionOf = (projectRevision: number, globalRevision: number) =>
+    level === "project" ? projectRevision : globalRevision
+  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
+    level === "project" ? changed.project : changed.global
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: next,
+  })
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision) }
+  const fresh = await load(directory)
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: mergeModelInto(fresh.records, next, loaded.records),
+  })
+  if (retried.ok)
+    return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
+  return { ok: false }
+}
+
+function nextLevelOf(next: readonly StoredRecord[], previous: readonly StoredRecord[]): Level {
+  const delta = deltaRows(previous, next)
+  const first = delta.find((record) => record.type === "model")
+  if (first !== undefined && first.level === "project") return "project"
+  if (first !== undefined) return "global"
+  return "global"
+}
+
+function mergeModelInto(
+  fresh: readonly StoredRecord[],
+  next: readonly StoredRecord[],
+  previous: readonly StoredRecord[],
+): readonly StoredRecord[] {
+  const previousModels = new Set(modelsOf(previous).map((record) => modelRecordTarget(record)))
+  const nextModels = new Map(modelsOf(next).map((record) => [modelRecordTarget(record), record] as const))
+  const removed = [...previousModels].filter((target) => !nextModels.has(target))
+  const kept = fresh.filter((record) => {
+    if (record.type !== "model") return true
+    return !removed.includes(modelRecordTarget(record))
+  })
+  const freshTargets = new Set(modelsOf(kept).map((record) => modelRecordTarget(record)))
+  const added = [...nextModels.values()].filter((record) => !freshTargets.has(modelRecordTarget(record)))
+  return [...kept, ...added]
 }
 
 // A missing actor means the TUI; strip explicit undefined keys so the stored
@@ -1466,7 +1787,12 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
     .filter((template): template is BaseTemplate => template !== undefined)
 }
 
-async function discoverAll(ctx: Context, loaded: LoadedStores, baselines: ReadonlyMap<string, PromptBaseline>): Promise<Discovered> {
+async function discoverAll(
+  ctx: Context,
+  loaded: LoadedStores,
+  baselines: ReadonlyMap<string, PromptBaseline>,
+  modelBaselines?: ReadonlyMap<string, ModelBaseline>,
+): Promise<Discovered> {
   const resolved = await resolveBaseTemplates(ctx)
   return discover({
     ctx,
@@ -1474,6 +1800,8 @@ async function discoverAll(ctx: Context, loaded: LoadedStores, baselines: Readon
     baselines,
     baseTemplates: resolved.templates,
     activeBase: (agent) => resolved.active(agent),
+    modelRecords: modelsOf(loaded.records),
+    ...(modelBaselines === undefined ? {} : { modelBaselines }),
   })
 }
 
@@ -1713,6 +2041,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.projectRevision = undefined
       state.globalRevision = undefined
       state.baselines = new Map()
+      state.modelBaselines = new Map()
     }),
   )
 }
@@ -1739,13 +2068,14 @@ function publishFresh(
 ): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
-      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines))
+      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines, state.modelBaselines))
       // A newer publish already won; this read is stale, so leave the applied
       // registrations and the last emitted revision untouched.
       if (state.projectRevision !== undefined && stored.projectRevision < state.projectRevision) return discovered
       if (state.globalRevision !== undefined && stored.globalRevision < state.globalRevision) return discovered
       const customizations = customizationsOf(stored.records)
       const splits = splitsOf(stored.records)
+      const modelRecords = modelsOf(stored.records)
       const fingerprint = yield* Effect.promise(() =>
         fingerprintPublish(discovered, stored.records, ctx.location.directory, builtins),
       )
@@ -1777,6 +2107,7 @@ function publishFresh(
           records: customizations,
           splits,
           scopes: scopesOf(discovered.agents),
+          models: modelRecords,
         }),
       )
       // Enabled teams become real core-visible agents: resolve the enabled
@@ -1800,7 +2131,7 @@ function publishFresh(
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
-      captureBaselines(ctx, state, discovered, customizations, splits)
+      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords)
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       return discovered
@@ -1815,13 +2146,16 @@ function publishFresh(
 // by agent id (file-backed agents additionally reread their markdown body:
 // `file` records that body as observed at baseline time via discovered.bodies,
 // so a later file edit is trusted only while the file still owned the prompt);
-// tools and skills key by item id.
+// tools and skills key by item id. Models retain (applied, upstream) per
+// non-file agent the same way: once applyModels sets agent.model the host
+// reports Plus's own output, so the next discovery unmasks it back.
 export function captureBaselines(
   ctx: Context,
   state: PlusState,
   discovered: Discovered,
   records: readonly CustomizationRecord[],
   splits: readonly SplitRecord[],
+  modelRecords?: readonly ModelRecord[],
 ): void {
   void ctx
   void splits
@@ -1852,6 +2186,28 @@ export function captureBaselines(
     next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: false })
   }
   state.baselines = next
+  const models = modelRecords ?? []
+  if (models.length === 0) {
+    state.modelBaselines = new Map()
+    return
+  }
+  const modelNext = new Map<string, ModelBaseline>()
+  const effective = dedupeAgents(discovered.agents)
+  for (const agent of effective) {
+    const level = scopeLevel(agent.scope)
+    const upstream = discovered.modelUpstream.get(agent.id)
+    if (upstream === undefined) continue
+    if (agent.path !== undefined) continue
+    const winner = resolveActiveModel({ models, scopes, level, agent: agent.id })
+    if (winner === undefined) continue
+    if (winner.source === "upstream") continue
+    if (sameModelRef(winner, upstream)) continue
+    modelNext.set(agent.id, {
+      applied: { providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) },
+      upstream,
+    })
+  }
+  state.modelBaselines = modelNext
 }
 
 function baselineKey(item: { id: string; agents?: readonly string[] }): string {
@@ -1988,8 +2344,10 @@ const RefreshEvents: Set<string> = new Set([
   Config.Event.Updated.type,
 ])
 
+const SessionModelEvents: Set<string> = new Set(["session.created", "session.agent.selected"])
+
 function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
-  return ctx.event.subscribe().pipe(
+  const refresh = ctx.event.subscribe().pipe(
     Stream.filter((event) => RefreshEvents.has(event.type)),
     Stream.runForEach((event) =>
       refreshFromHost(ctx, state).pipe(
@@ -1999,6 +2357,83 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )
+  const sessions = ctx.event.subscribe().pipe(
+    Stream.filter((event) => SessionModelEvents.has(event.type)),
+    Stream.runForEach((event) =>
+      applySessionModel(ctx, state, event).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus session model failed", { cause, type: event.type })),
+      ),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
+  return Effect.gen(function* () {
+    yield* refresh
+    yield* sessions
+  })
+}
+
+// A session created with, or switched to, an agent adopts that agent's active
+// model via switchModel, and only when the session's current model differs.
+// Manual mid-session picks emit session.model.selected, which we never
+// subscribe to, so user choices are never overridden.
+function applySessionModel(
+  ctx: Context,
+  state: PlusState,
+  event: { type: string; properties?: Record<string, unknown>; data?: unknown },
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const directory = ctx.location.directory
+    const config = yield* Effect.promise(() => read(directory))
+    if (config === undefined) return
+    const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
+    const sessionID = payload.sessionID
+    if (typeof sessionID !== "string" || sessionID.length === 0) return
+    const stored = yield* Effect.promise(() => loadCurrent(directory))
+    const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines, state.modelBaselines))
+    const scopes = scopesOf(discovered.agents)
+    const models = modelsOf(stored.records)
+    const agentID = typeof payload.agent === "string" ? payload.agent : undefined
+    const targetAgent = agentID ?? (yield* Effect.promise(() => currentSessionAgent(ctx, sessionID)))
+    if (targetAgent === undefined) return
+    const source = discovered.agents.find((entry) => entry.id === targetAgent)
+    if (source === undefined) return
+    const winner = resolveActiveModel({ models, scopes, level: scopeLevel(source.scope), agent: targetAgent })
+    if (winner === undefined) return
+    if (winner.source === "upstream") return
+    const current = yield* Effect.promise(() => currentSessionModel(ctx, sessionID))
+    const wanted: ModelRefLike = { providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }
+    if (current !== undefined && sameModelRef(current, wanted)) return
+    yield* ctx.session.switchModel({ sessionID: sessionID as never, model: toHostModelRef(wanted) } as never).pipe(
+      Effect.catchCause(() => Effect.void),
+    )
+  })
+}
+
+function toHostModelRef(wanted: ModelRefLike): Model.Ref {
+  return { providerID: wanted.providerID as never, id: wanted.modelID as never, ...(wanted.variant === undefined ? {} : { variant: wanted.variant as never }) }
+}
+
+async function currentSessionAgent(ctx: Context, sessionID: string): Promise<string | undefined> {
+  const session = await Effect.runPromise(
+    ctx.session.get(sessionID as never).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
+  ).catch(() => undefined)
+  const agent = (session as { agent?: unknown } | undefined)?.agent
+  if (typeof agent === "string" && agent.length > 0) return agent
+  return undefined
+}
+
+async function currentSessionModel(ctx: Context, sessionID: string): Promise<ModelRefLike | undefined> {
+  const session = await Effect.runPromise(
+    ctx.session.get(sessionID as never).pipe(Effect.catchCause(() => Effect.succeed(undefined as never))),
+  ).catch(() => undefined)
+  const model = (session as { model?: { providerID?: unknown; id?: unknown; variant?: unknown } } | undefined)?.model
+  if (model === undefined) return undefined
+  const providerID = typeof model.providerID === "string" ? model.providerID : String(model.providerID ?? "")
+  const modelID = typeof model.id === "string" ? model.id : String(model.id ?? "")
+  if (providerID.length === 0 || modelID.length === 0) return undefined
+  if (typeof model.variant === "string" && model.variant.length > 0) return { providerID, modelID, variant: model.variant }
+  return { providerID, modelID }
 }
 
 function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
@@ -2023,13 +2458,20 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
       scope: agent.scope,
       ...(agent.path === undefined ? {} : { path: agent.path }),
       ...(agent.base === undefined ? {} : { base: agent.base }),
+      ...(agent.model === undefined
+        ? {}
+        : {
+            model: {
+              providerID: agent.model.providerID,
+              modelID: agent.model.modelID,
+              ...(agent.model.variant === undefined ? {} : { variant: agent.model.variant }),
+            },
+          }),
       fileBacked: agent.path !== undefined,
     })),
-    // Model/perm items have no snapshot row until phase 2 widens
-    // SnapshotItem.kind: discovery emits none in phase 1, so this gate is
-    // types-only today and drops nothing.
+    // Perm items stay excluded until phase 3; model rows ship in phase 2.
     items: discovered.items.flatMap((item): Plus.SnapshotItem[] => {
-      if (item.kind === "model" || item.kind === "perm") return []
+      if (item.kind === "perm") return []
       return [
         {
           id: item.id,

@@ -1389,6 +1389,70 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
   }
 })
 
+test("Models group is first and space activates the candidate", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "model:acme/nova-1",
+        kind: "model" as const,
+        group: "none" as const,
+        title: "acme/nova-1",
+        text: "acme/nova-1",
+        enabled: true,
+        fingerprint: "fp-nova-1",
+        agents: ["Implementer"],
+      },
+      {
+        id: "model:acme/nova-2",
+        kind: "model" as const,
+        group: "none" as const,
+        title: "acme/nova-2",
+        text: "acme/nova-2",
+        enabled: true,
+        fingerprint: "fp-nova-2",
+        agents: ["Implementer"],
+      },
+    ],
+    records: [
+      {
+        type: "model" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        providerID: "acme",
+        modelID: "nova-1",
+        active: true as const,
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+      {
+        type: "model" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        providerID: "acme",
+        modelID: "nova-2",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => frame.includes("Models"))
+    await moveTo(fixture, "Models")
+    await expand(fixture)
+    await moveTo(fixture, "acme/nova-2")
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Activated "acme/nova-2"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const models = fixture.fake.mutateInputs[0].records.filter((record) => record.type === "model")
+    expect(models.length).toBeGreaterThan(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("filter matching a Code Mode section reveals a live editable row", async () => {
   const fixture = await renderInstructionsRoute({
     snapshots: [codemodeSnapshot()],

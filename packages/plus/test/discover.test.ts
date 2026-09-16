@@ -940,3 +940,30 @@ test("discovery emits exactly one synthetic execute row with the exact shape", a
     })
   }
 })
+
+test("discovery emits model candidates with agent scoping plus file-backed upstream", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const alphaPath = path.join(directory, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, "---\nmodel: acme/nova-1\n---\nAlpha prompt\n")
+  const agents = [agent("alpha", "Alpha prompt", modelRef("acme", "nova-9"))]
+  const modelRecords = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova-2", updated: UPDATED },
+    { type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "nova-3", updated: UPDATED },
+  ]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+    modelRecords,
+  })
+  const byId = new Map(discovered.items.filter((item) => item.kind === "model").map((item) => [item.id, item]))
+  expect(byId.get("model:acme/nova-2")).toMatchObject({ kind: "model", group: "none", agents: ["alpha"] })
+  expect(byId.get("model:acme/nova-3")?.agents).toBeUndefined()
+  expect(byId.get("model:acme/nova-1")).toMatchObject({ kind: "model", agents: ["alpha"] })
+  expect(discovered.agents.find((entry) => entry.id === "alpha")?.model).toEqual({ providerID: "acme", modelID: "nova-1" })
+  expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
+})

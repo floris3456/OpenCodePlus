@@ -28,6 +28,15 @@ export function agentOf(agent: Plus.AgentEntry): AgentSource {
     scope: agent.scope,
     ...(agent.path === undefined ? {} : { path: agent.path }),
     ...(agent.base === undefined ? {} : { base: agent.base }),
+    ...(agent.model === undefined
+      ? {}
+      : {
+          model: {
+            providerID: agent.model.providerID,
+            modelID: agent.model.modelID,
+            ...(agent.model.variant === undefined ? {} : { variant: agent.model.variant }),
+          },
+        }),
   }
 }
 
@@ -105,11 +114,11 @@ export function teamOf(team: Plus.TeamEntry): TeamInput {
 export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
   return {
     items: snapshot.items.map(itemOf),
-    // Model and rule records are not tree rows in phase 1, so they never
-    // reach the memo; they round-trip through recordOf losslessly above.
+    // Model records are tree rows in phase 2; rule records stay filtered
+    // until phase 3. They round-trip through recordOf losslessly above.
     records: snapshot.records
       .map(recordOf)
-      .filter((record): record is CustomizationRecord | SplitRecord => record.type === "customization" || record.type === "split"),
+      .filter((record): record is CustomizationRecord | SplitRecord | ModelRecord => record.type === "customization" || record.type === "split" || record.type === "model"),
     agents: snapshot.agents.map(agentOf),
     teams: (snapshot.teams ?? []).map(teamOf),
   }

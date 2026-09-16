@@ -13,7 +13,7 @@ export const teachingTitle = "OpenCodePlus"
 // namespace, the row-id shapes, the two happy flows, and the skill that
 // carries the rest. teaching.test.ts pins the character bound.
 export const teachingContent =
-  "`tools.instructions.*` edits Instructions rows (tools/base/skills/system/MCP/teams). " +
+  "`tools.instructions.*` edits Instructions rows (tools/base/skills/system/MCP/models/teams). " +
   "Ids: `item:<level>:<agent|''>:<itemId>`, `section:…:<sectionId>`, `agent:<level>:<id>`, `team:<level>:<name>`. " +
   "`list({where:\"review:true\"})`→`show({id,view:\"diff\"})`→`set({id,resolve:\"keep\"})`. " +
   "`list({where:\"agent:X item:tool\"})`→`set({id,text})`. " +
@@ -23,11 +23,11 @@ export const teachingContent =
 // fields per kind, split boundaries, the error table, and worked examples.
 export const teachingSkillContent = `# instructions-tools
 
-Read and write the Instructions tree through \`tools.instructions.*\` (namespace \`instructions\`, all Code Mode). Rows cover tools, base prompts, skills, system files, MCP servers, and teams. Every successful write is logged with actor \`tool\`; inspect history with \`log\`.
+Read and write the Instructions tree through \`tools.instructions.*\` (namespace \`instructions\`, all Code Mode). Rows cover tools, base prompts, skills, system files, MCP servers, models, and teams. Every successful write is logged with actor \`tool\`; inspect history with \`log\`.
 
 ## Row ids
 
-- \`item:<level>:<agent|''>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. An empty agent segment addresses the shared Defaults row.
+- \`item:<level>:<agent|''>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. An empty agent segment addresses the shared Defaults row. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`.
 - \`section:…:<sectionId>\` — one section inside a row; list exact ids with \`show({ id, view: "sections" })\`.
 - \`agent:<level>:<id>\` — one agent's subtree. Only these ids accept \`view: "assembled"\`.
 - \`team:<level>:<name>\` — one team.
@@ -38,7 +38,7 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 \`list({ where?, fields?, sort?, limit?, offset? })\` — \`limit\` defaults to 40. \`where\` terms are ANDed; \`!key:value\` negates one term; \`a,b\` is OR within a single key; a bare word matches case-insensitively over label or id; \`key:>7d\` and \`key:<N\` compare ages and counts.
 
-Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\`, \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\`, \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
+Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\`, \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 
@@ -48,9 +48,11 @@ Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead
 
 ## set and reset
 
-\`set({ id, text?, state?, pin?, resolve? })\` — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row.
+\`set({ id, text?, state?, pin?, active?, resolve? })\` — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`active\` is \`true\` to activate a model row exclusively at that level; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row (model rows clear only that level's active flag).
 
 Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that agent's catalog entry (first description line only, truncated at 120 characters), and \`pin\` overrides the registry default; the synthetic \`tool:execute\` row is toggle-only and \`off\` removes Code Mode entirely. Filter them with \`namespace:<name>\`, \`pinned:true|false\`, and \`execute:true|false\`, e.g. \`list({ where: "codemode:true pinned:true" })\`.
+
+Models are live: each agent subtree opens with a \`Models\` group holding the union down the chain plus the agent's upstream model. \`set({ id, active:true })\` (or bare \`set({ id })\`) activates one candidate exclusively at that level; \`reset({ id })\` clears that level's active flag; \`create({ kind:"model", providerID, modelID, variant?, level?, agent? })\` adds a candidate; \`delete({ id, confirm:true })\` removes the candidate at that level. Filter with \`item:model\` and \`active:true|false\`.
 
 ## split
 
@@ -67,6 +69,7 @@ Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that 
 | instruction | \`name\`, \`text\` |
 | mcp | \`name\`, \`config\` |
 | team | \`team\`, \`level\` |
+| model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\`, \`agent\`) |
 
 \`delete({ id, confirm: true })\` — refused without \`confirm: true\`.
 
@@ -99,7 +102,9 @@ Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that 
 \`show({ id, view: "diff" })\` → \`set({ id, resolve: "take" })\`.
 6. One \`execute\` updates three rows: acknowledge a review, reword a tool, and switch a server off — pass one \`set\` per row in the same call.
 7. Grow the tree: \`create({ kind: "base", id, title, text })\`, then \`split({ id, boundaries })\`, and remove with \`delete({ id, confirm: true })\`.
+8. Switch an agent's model: \`list({ where: "agent:alpha item:model" })\` → \`set({ id, active:true })\` → \`reset({ id })\` to fall back.
 `
+
 
 const teachingSkillDescription =
   "Read and write the Instructions tree: filter grammar, views, create/delete, and error meanings for tools.instructions.*."

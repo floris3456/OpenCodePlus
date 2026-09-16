@@ -1,6 +1,16 @@
 import { builtinBaseIds } from "../agents/base.js"
-import { applies, canReset } from "./model.js"
-import type { Address, AgentSource, CustomizationRecord, Item, Level, SplitRecord } from "./model.js"
+import {
+  applies,
+  canReset,
+  hasModelActiveAt,
+  hasModelRecordAt,
+  modelCandidates,
+  modelItemId,
+  parseModelItemId,
+  resolveActiveModel,
+  sameModelCandidate,
+} from "./model.js"
+import type { Address, AgentSource, CustomizationRecord, Item, Level, ModelRecord, SplitRecord } from "./model.js"
 import {
   flagOf,
   memoOf,
@@ -33,7 +43,7 @@ export interface MemoInput extends Omit<BaseMemoInput, "teams"> {
 }
 
 export type TreeNodeKind = "root" | "group" | "agent" | "team" | "item" | "section"
-export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section" | "team"
+export type AddKind = "agent" | "base" | "skill" | "instruction" | "mcp" | "section" | "team" | "model"
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
@@ -243,6 +253,7 @@ function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSour
     depth,
     actions: { ...noActions(), remove: true },
     children: () => [
+      lazyModels(ctx, memo, level, agent.id, agent, depth + 1),
       lazyTools(ctx, memo, level, agent.id, agent, depth + 1),
       lazyBase(ctx, memo, level, agent.id, agent, depth + 1),
       lazySkills(ctx, memo, level, agent.id, agent, depth + 1),
@@ -321,6 +332,7 @@ function lazyTeam(memo: Memo, level: Level, team: TeamInput): Lazy {
 
 function lazySharedGroups(ctx: BuildContext, memo: Memo): Lazy[] {
   return [
+    lazyModels(ctx, memo, "defaults", null, null, 1),
     lazyTools(ctx, memo, "defaults", null, null, 1),
     lazyBase(ctx, memo, "defaults", null, null, 1),
     lazySkills(ctx, memo, "defaults", null, null, 1),
@@ -339,6 +351,105 @@ function lazyMcpInventory(ctx: BuildContext, memo: Memo): Lazy {
     actions: noActions(),
     children: () => sortedKind(ctx, "mcp", null).map((item) => lazyItem(ctx, memo, "defaults", null, null, item, 2)),
   })
+}
+
+// Models group, first child of every agent subtree and first shared Defaults
+// inventory. Rows are the union down the chain (deduplicated) plus the
+// agent's upstream model, each carrying a source badge naming the level it
+// came from. Toggle activates exclusively at this level, remove deletes the
+// row at this level only; no edit, split, or pin. Active marks the resolved
+// winner down the chain (or upstream when nothing is active).
+function lazyModels(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+): Lazy {
+  const prefix = `group:${level}:${owner ?? ""}:models`
+  return branch(memo, {
+    kind: "group",
+    id: prefix,
+    label: "Models",
+    depth,
+    add: "model",
+    actions: noActions(),
+    children: () =>
+      cachedKids(memo, prefix, () => {
+        const upstream = upstreamForModels(ctx, level, owner, agent)
+        const candidates = modelCandidates({ models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...(upstream === undefined ? {} : { upstream }) })
+        const active = resolveActiveModel({ models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...(upstream === undefined ? {} : { upstream }) })
+        return candidates
+          .toSorted((left, right) => {
+            const leftId = modelItemId(left)
+            const rightId = modelItemId(right)
+            if (leftId < rightId) return -1
+            if (leftId > rightId) return 1
+            return 0
+          })
+          .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, active, depth + 1))
+      }) as readonly Lazy[],
+  })
+}
+
+function upstreamForModels(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+): { providerID: string; modelID: string; variant?: string } | undefined {
+  if (owner === null) return undefined
+  if (agent?.model !== undefined) return agent.model
+  const scoped = ctx.agents.find((entry) => entry.id === owner && entry.scope === level)
+  if (scoped?.model !== undefined) return scoped.model
+  return ctx.agents.find((entry) => entry.id === owner)?.model
+}
+
+function lazyModelItem(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream" },
+  active: { providerID: string; modelID: string; variant?: string } | undefined,
+  depth: number,
+): Lazy {
+  const itemId = modelItemId(candidate)
+  const address: Address = { level, agent: owner, item: itemId, section: null }
+  const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
+  const isActive = active !== undefined && sameModelCandidate(target, active)
+  const hasLocal = hasModelRecordAt(ctx.models, { level, agent: owner }, target)
+  const canResetHere = hasModelActiveAt(ctx.models, { level, agent: owner })
+  void memo
+  void parseModelItemId
+  return {
+    id: `item:${level}:${owner ?? ""}:${itemId}`,
+    kind: "item",
+    label: modelLabel(candidate),
+    depth,
+    address,
+    actions: {
+      toggle: true,
+      edit: false,
+      reset: canResetHere,
+      remove: hasLocal,
+      split: false,
+      pin: false,
+    },
+    selfReview: () => false,
+    partial: () => ({
+      ...(isActive ? { active: true as const } : {}),
+      source: candidate.source,
+    }),
+    reviewCount: () => 0,
+    children: () => [],
+  }
+}
+
+function modelLabel(candidate: { providerID: string; modelID: string; variant?: string }): string {
+  if (candidate.variant === undefined) return `${candidate.providerID}/${candidate.modelID}`
+  return `${candidate.providerID}/${candidate.modelID}@${candidate.variant}`
 }
 
 function lazyTools(

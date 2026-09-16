@@ -9,7 +9,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
-import { applies, catalogPath, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type Scopes, type SplitRecord } from "./model.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
 export interface ApplyAgent {
@@ -27,6 +27,7 @@ export interface ApplyInput {
   readonly records: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
+  readonly models?: readonly ModelRecord[]
 }
 
 export interface ToolPlan {
@@ -45,18 +46,21 @@ export interface Applied {
 }
 
 export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
-  if (input.records.length === 0) return { registrations: [], tools: [] }
+  const models = input.models ?? []
+  if (input.records.length === 0 && models.length === 0) return { registrations: [], tools: [] }
   const installed: Registration[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
     const role = await applyRoles(ctx, input)
     if (role !== undefined) installed.push(role)
+    const model = await applyModels(ctx, { agents: input.agents, models, scopes: input.scopes })
+    if (model !== undefined) installed.push(model)
     const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
     const session = await applySession(ctx, input)
     for (const registration of session.registrations) installed.push(registration)
     const mcp = await applyMcp(ctx, input)
     if (mcp !== undefined) installed.push(mcp)
-    if (role !== undefined || skills.agentChanged || session.agentChanged) await runVoid(ctx.agent.reload())
+    if (role !== undefined || model !== undefined || skills.agentChanged || session.agentChanged) await runVoid(ctx.agent.reload())
     if (skills.skillChanged) await runVoid(ctx.skill.reload())
     if (mcp !== undefined) await runVoid(ctx.mcp.reload())
     return { registrations: [...installed], tools: session.tools }
@@ -64,6 +68,34 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     await disposeRegistrations(installed)
     throw error
   }
+}
+
+// Per-agent model selection: resolve each effective agent's active model down
+// the existing chain and set the host agent's model in one transform. No
+// active model means Plus installs nothing for that agent, so an unchanged
+// save stays a no-op.
+export async function applyModels(
+  ctx: Context,
+  input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes },
+): Promise<Registration | undefined> {
+  const updates = input.agents.flatMap((agent) => {
+    const winner = resolveActiveModel({ models: input.models, scopes: input.scopes, level: agent.level, agent: agent.id })
+    if (winner === undefined) return []
+    if (winner.source === "upstream") return []
+    return [{ agent: agent.id, providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }]
+  })
+  if (updates.length === 0) return undefined
+  return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+    for (const update of updates) {
+      if (!editor.get(update.agent)) continue
+      const providerID = update.providerID
+      const id = update.modelID
+      const variant = update.variant
+      editor.update(update.agent, (agent) => {
+        agent.model = { providerID: providerID as never, id: id as never, ...(variant === undefined ? {} : { variant: variant as never }) }
+      })
+    }
+  })
 }
 
 async function disposeRegistrations(registrations: readonly Registration[]): Promise<void> {

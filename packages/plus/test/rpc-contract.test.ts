@@ -36,6 +36,9 @@ test("every method and event is declared", () => {
     "mcp.remove",
     "team.create",
     "team.setEnabled",
+    "model.add",
+    "model.remove",
+    "catalog.models",
   ]
 
   for (const name of expectedMethods) {
@@ -88,6 +91,9 @@ test("every declared error is reachable through the definition", () => {
     "team.unknown",
     "team.invalid",
     "team.create",
+    "model.exists",
+    "model.missing",
+    "model.invalid",
   ]
 
   const reachableErrors = new Set<string>()
@@ -125,6 +131,9 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "mcp.remove",
     "team.create",
     "team.setEnabled",
+    "model.add",
+    "model.remove",
+    "catalog.models",
   ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
 
   for (const method of instructionsAndMutatingMethods) {
@@ -177,6 +186,12 @@ test("error schemas are correctly bound to their corresponding methods", () => {
 
   expect("team.unknown" in errorsOf("team.setEnabled")).toBe(true)
   expect("team.invalid" in errorsOf("team.setEnabled")).toBe(true)
+
+  expect("model.exists" in errorsOf("model.add")).toBe(true)
+  expect("model.invalid" in errorsOf("model.add")).toBe(true)
+
+  expect("model.missing" in errorsOf("model.remove")).toBe(true)
+  expect("model.invalid" in errorsOf("model.remove")).toBe(true)
 })
 
 function errorsOf(method: keyof typeof Plus.Definition.methods): Record<string, unknown> {

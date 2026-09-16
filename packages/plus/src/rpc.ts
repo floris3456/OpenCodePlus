@@ -31,6 +31,7 @@ export const ItemKind = Schema.Union([
   Schema.Literal("skill"),
   Schema.Literal("system"),
   Schema.Literal("mcp"),
+  Schema.Literal("model"),
 ]).annotate({ identifier: "Plus.ItemKind" })
 
 export type ItemGroup = typeof ItemGroup.Type
@@ -144,12 +145,20 @@ export const AgentScope = Schema.Union([
   Schema.Literal("defaults"),
 ]).annotate({ identifier: "Plus.AgentScope" })
 
+export interface AgentModel extends Schema.Schema.Type<typeof AgentModel> {}
+export const AgentModel = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.AgentModel" })
+
 export interface AgentEntry extends Schema.Schema.Type<typeof AgentEntry> {}
 export const AgentEntry = Schema.Struct({
   id: Schema.String,
   scope: AgentScope,
   path: Schema.optionalKey(Schema.String),
   base: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(AgentModel),
   fileBacked: Schema.Boolean,
 }).annotate({ identifier: "Plus.AgentEntry" })
 
@@ -564,6 +573,77 @@ export const TeamCreate = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.TeamCreate" })
 
+// Per-agent model selection: candidates are stored ModelRecords, one row per
+// distinct (provider, model, variant). Adding stores an inactive row;
+// activation flips it exclusive at that (level, agent); reset clears only
+// that level's active flag; remove deletes the row at that address.
+export interface ModelAddInput extends Schema.Schema.Type<typeof ModelAddInput> {}
+export const ModelAddInput = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.ModelAddInput" })
+
+export interface ModelRemoveInput extends Schema.Schema.Type<typeof ModelRemoveInput> {}
+export const ModelRemoveInput = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.ModelRemoveInput" })
+
+export interface ModelRef extends Schema.Schema.Type<typeof ModelRef> {}
+export const ModelRef = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+  active: Schema.optionalKey(Schema.Literal(true)),
+}).annotate({ identifier: "Plus.ModelRef" })
+
+export interface CatalogModel extends Schema.Schema.Type<typeof CatalogModel> {}
+export const CatalogModel = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+  name: Schema.String,
+}).annotate({ identifier: "Plus.CatalogModel" })
+
+export interface CatalogModelsOutput extends Schema.Schema.Type<typeof CatalogModelsOutput> {}
+export const CatalogModelsOutput = Schema.Struct({
+  models: Schema.Array(CatalogModel),
+}).annotate({ identifier: "Plus.CatalogModelsOutput" })
+
+export interface ModelExists extends Schema.Schema.Type<typeof ModelExists> {}
+export const ModelExists = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.ModelExists" })
+
+export interface ModelMissing extends Schema.Schema.Type<typeof ModelMissing> {}
+export const ModelMissing = Schema.Struct({
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.ModelMissing" })
+
+export interface ModelInvalid extends Schema.Schema.Type<typeof ModelInvalid> {}
+export const ModelInvalid = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.ModelInvalid" })
+
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
@@ -659,6 +739,17 @@ const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ ide
 const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
 const PortableTeamExists = Schema.toStandardSchemaV1(TeamExists.annotate({ identifier: "Plus.TeamExists" }))
 const PortableTeamCreate = Schema.toStandardSchemaV1(TeamCreate.annotate({ identifier: "Plus.TeamCreate" }))
+const PortableModelAddInput = Schema.toStandardSchemaV1(ModelAddInput.annotate({ identifier: "Plus.ModelAddInput" }))
+const PortableModelRemoveInput = Schema.toStandardSchemaV1(
+  ModelRemoveInput.annotate({ identifier: "Plus.ModelRemoveInput" }),
+)
+const PortableModelRef = Schema.toStandardSchemaV1(ModelRef.annotate({ identifier: "Plus.ModelRef" }))
+const PortableCatalogModelsOutput = Schema.toStandardSchemaV1(
+  CatalogModelsOutput.annotate({ identifier: "Plus.CatalogModelsOutput" }),
+)
+const PortableModelExists = Schema.toStandardSchemaV1(ModelExists.annotate({ identifier: "Plus.ModelExists" }))
+const PortableModelMissing = Schema.toStandardSchemaV1(ModelMissing.annotate({ identifier: "Plus.ModelMissing" }))
+const PortableModelInvalid = Schema.toStandardSchemaV1(ModelInvalid.annotate({ identifier: "Plus.ModelInvalid" }))
 
 export const Definition = Rpc.define({
   id: "opencode.plus",
@@ -837,6 +928,31 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
+      },
+    },
+    "model.add": {
+      input: PortableModelAddInput,
+      output: PortableModelRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "model.exists": PortableModelExists,
+        "model.invalid": PortableModelInvalid,
+      },
+    },
+    "model.remove": {
+      input: PortableModelRemoveInput,
+      output: PortableModelRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "model.missing": PortableModelMissing,
+        "model.invalid": PortableModelInvalid,
+      },
+    },
+    "catalog.models": {
+      input: Empty,
+      output: PortableCatalogModelsOutput,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
       },
     },
   },

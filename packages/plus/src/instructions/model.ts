@@ -62,6 +62,221 @@ export interface AgentSource {
   readonly team?: string
   /** id of the base prompt template active for this agent's model, e.g. "gpt" */
   readonly base?: string
+  /** unmasked upstream model for this agent's Models group (file frontmatter wins, else host) */
+  readonly model?: ModelRefLike
+}
+
+export interface ModelRefLike {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+}
+
+export interface ModelCandidate {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+  readonly source: Level | "upstream"
+}
+
+export function modelKey(candidate: Pick<ModelRefLike, "providerID" | "modelID" | "variant">): string {
+  if (candidate.variant === undefined) return `${candidate.providerID}/${candidate.modelID}`
+  return `${candidate.providerID}/${candidate.modelID}@${candidate.variant}`
+}
+
+export function sameModelCandidate(
+  left: Pick<ModelRefLike, "providerID" | "modelID" | "variant">,
+  right: Pick<ModelRefLike, "providerID" | "modelID" | "variant">,
+): boolean {
+  if (left.providerID !== right.providerID) return false
+  if (left.modelID !== right.modelID) return false
+  return (left.variant ?? "default") === (right.variant ?? "default")
+}
+
+// Union down the chain, deduplicated, most-specific source wins. Chain is the
+// existing resolutionChain order (most specific first): the first record for
+// a candidate names its source. Upstream appends last when not already present.
+export function modelCandidates(input: {
+  models: readonly ModelRecord[]
+  scopes: Scopes
+  level: Level
+  agent: string | null
+  upstream?: ModelRefLike
+}): ModelCandidate[] {
+  const chain = resolutionChain(
+    { level: input.level, agent: input.agent, item: "", section: null },
+    input.scopes,
+  )
+  const seen = new Map<string, ModelCandidate>()
+  for (const node of chain) {
+    const matches = input.models.filter((record) => record.level === node.level && record.agent === node.agent)
+    for (const record of matches) {
+      const key = modelKey(record)
+      if (seen.has(key)) continue
+      seen.set(key, {
+        providerID: record.providerID,
+        modelID: record.modelID,
+        ...(record.variant === undefined ? {} : { variant: record.variant }),
+        source: node.level,
+      })
+    }
+  }
+  if (input.agent !== null && input.upstream !== undefined) {
+    const key = modelKey(input.upstream)
+    if (!seen.has(key))
+      seen.set(key, {
+        providerID: input.upstream.providerID,
+        modelID: input.upstream.modelID,
+        ...(input.upstream.variant === undefined ? {} : { variant: input.upstream.variant }),
+        source: "upstream",
+      })
+  }
+  return [...seen.values()]
+}
+
+// First active record down the chain, else upstream. No active and no
+// upstream means Plus installs nothing for this agent.
+export function resolveActiveModel(input: {
+  models: readonly ModelRecord[]
+  scopes: Scopes
+  level: Level
+  agent: string | null
+  upstream?: ModelRefLike
+}): ModelCandidate | undefined {
+  const chain = resolutionChain(
+    { level: input.level, agent: input.agent, item: "", section: null },
+    input.scopes,
+  )
+  for (const node of chain) {
+    const winner = input.models.find(
+      (record) => record.level === node.level && record.agent === node.agent && record.active === true,
+    )
+    if (winner !== undefined)
+      return {
+        providerID: winner.providerID,
+        modelID: winner.modelID,
+        ...(winner.variant === undefined ? {} : { variant: winner.variant }),
+        source: node.level,
+      }
+  }
+  if (input.agent !== null && input.upstream !== undefined)
+    return {
+      providerID: input.upstream.providerID,
+      modelID: input.upstream.modelID,
+      ...(input.upstream.variant === undefined ? {} : { variant: input.upstream.variant }),
+      source: "upstream",
+    }
+  return undefined
+}
+
+export function hasModelRecordAt(
+  models: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+  target: Pick<ModelRefLike, "providerID" | "modelID" | "variant">,
+): boolean {
+  return models.some(
+    (record) =>
+      record.level === address.level &&
+      record.agent === address.agent &&
+      record.providerID === target.providerID &&
+      record.modelID === target.modelID &&
+      record.variant === target.variant,
+  )
+}
+
+export function hasModelActiveAt(
+  models: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+): boolean {
+  return models.some((record) => record.level === address.level && record.agent === address.agent && record.active === true)
+}
+
+// Adding a candidate stores an inactive row; activation is a separate
+// exclusive flip so adding never steals the effective model. A duplicate at
+// the same address returns an identical list (an unchanged save stays a
+// no-op). Records keep caller-supplied timestamps: this is pure content.
+export function addModelRecord(
+  models: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+  target: { providerID: string; modelID: string; variant?: string },
+  updated: string,
+): ModelRecord[] {
+  const exists = models.some(
+    (record) =>
+      record.level === address.level &&
+      record.agent === address.agent &&
+      record.providerID === target.providerID &&
+      record.modelID === target.modelID &&
+      record.variant === target.variant,
+  )
+  if (exists) return [...models]
+  return [
+    ...models,
+    {
+      type: "model",
+      level: address.level,
+      agent: address.agent,
+      providerID: target.providerID,
+      modelID: target.modelID,
+      ...(target.variant === undefined ? {} : { variant: target.variant }),
+      updated,
+    },
+  ]
+}
+
+// Activating a candidate that has no row at this address first creates the
+// inactive row, then flips it active exclusively. This is the TUI space path:
+// the visible union includes inherited rows with no local record, and
+// choosing one must plant the level override rather than refuse.
+export function ensureActivateModel(
+  models: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+  target: { providerID: string; modelID: string; variant?: string },
+  updated: string,
+): ModelRecord[] {
+  const withRow = addModelRecord(models, address, target, updated)
+  return activateModel(withRow, address, target)
+}
+
+// Reset clears only this level's active flag, leaving candidates in place so
+// the chain falls through to the next active below (or upstream). No active
+// at this address returns an identical list.
+export function clearModelActive(
+  models: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+): ModelRecord[] {
+  const scoped = models.some((record) => record.level === address.level && record.agent === address.agent && record.active === true)
+  if (!scoped) return [...models]
+  return models.map((record) => {
+    if (record.level !== address.level || record.agent !== address.agent) return record
+    if (record.active === undefined) return record
+    return {
+      type: "model",
+      level: record.level,
+      agent: record.agent,
+      providerID: record.providerID,
+      modelID: record.modelID,
+      ...(record.variant === undefined ? {} : { variant: record.variant }),
+      updated: record.updated,
+    }
+  })
+}
+
+export function removeModelRecord(
+  models: readonly ModelRecord[],
+  address: { level: Level; agent: string | null },
+  target: { providerID: string; modelID: string; variant?: string },
+): ModelRecord[] {
+  return models.filter(
+    (record) =>
+      !(
+        record.level === address.level &&
+        record.agent === address.agent &&
+        record.providerID === target.providerID &&
+        record.modelID === target.modelID &&
+        record.variant === target.variant
+      ),
+  )
 }
 
 /** { global: ids with scope "global", defaults: ids with scope "defaults" } */
