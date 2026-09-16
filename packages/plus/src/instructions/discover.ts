@@ -8,19 +8,21 @@ import { Deferred, Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { idFromPath } from "../agents/files.js"
-import { unmaskText, upstreamEnabled, type PromptBaseline } from "./inventory.js"
+import { idFromPath, parseAgentModel } from "../agents/files.js"
+import { unmaskModel, unmaskText, upstreamEnabled, type ModelBaseline, type ModelRefLike, type PromptBaseline } from "./inventory.js"
 import {
   fingerprint,
   isCodeModeToolEntry,
+  modelItemId,
   type AgentSource,
   type CustomizationRecord,
   type Item,
+  type ModelRecord,
 } from "./model.js"
 import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 
 export type { AgentScope, AgentSource } from "./model.js"
-export type { PromptBaseline } from "./inventory.js"
+export type { ModelBaseline, ModelRefLike, PromptBaseline } from "./inventory.js"
 
 export interface Discovered {
   readonly items: Item[]
@@ -28,6 +30,8 @@ export interface Discovered {
   readonly servers: { readonly name: string; readonly enabled: boolean }[]
   /** Markdown bodies reread from the resolved agent source files, by agent id. Exported so baseline capture can record the baseline-time body. */
   readonly bodies: ReadonlyMap<string, string>
+  /** Unmasked upstream model per agent id (file frontmatter wins, else host unmasked). Exported for baseline capture and snapshot. */
+  readonly modelUpstream: ReadonlyMap<string, ModelRefLike | undefined>
 }
 
 export interface BaseTemplate {
@@ -46,6 +50,8 @@ export interface DiscoverInput {
   readonly baseTemplates: readonly BaseTemplate[]
   /** Resolves the active template id for an agent, by that agent's configured model. */
   readonly activeBase: (agent: Agent.Info) => string | undefined
+  readonly modelRecords?: readonly ModelRecord[]
+  readonly modelBaselines?: ReadonlyMap<string, ModelBaseline>
 }
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
@@ -56,11 +62,19 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const tools = await readTransform(input.ctx.tool.transform, (editor) => editor.list())
   const servers = await readTransform(input.ctx.mcp.transform, (editor) => editor.list())
   const baselines = input.baselines ?? new Map<string, PromptBaseline>()
+  const modelBaselines = input.modelBaselines ?? new Map<string, ModelBaseline>()
+  const modelRecords = input.modelRecords ?? []
   const sources = await resolveAgentSources(directory, agents, input.activeBase)
   const bodies = await readAgentBodies(sources)
   const instructions = await discoverInstructionFiles(directory, projectDirectory)
   const teaching = await readTeachingFile()
   const mcp = mcpInventory(servers, input.records)
+  const upstream = await upstreamModels(sources, agents, modelBaselines)
+  const withModels = sources.map((source) => {
+    const model = upstream.get(source.id)
+    if (model === undefined) return source
+    return { ...source, model }
+  })
   const items = [
     ...toolItems(tools, baselines),
     ...baseItems(input.baseTemplates),
@@ -69,8 +83,119 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...instructionFileItems(directory, instructions),
     ...teachingItems(teaching, instructions.length),
     ...mcp.items,
+    ...modelItems(modelRecords, upstream),
   ]
-  return { items, agents: sources, servers: mcp.servers, bodies }
+  return { items, agents: withModels, servers: mcp.servers, bodies, modelUpstream: upstream }
+}
+
+function hostModelOf(agent: Agent.Info): ModelRefLike | undefined {
+  const ref = agent.model
+  if (ref === undefined) return undefined
+  const providerID = String(ref.providerID)
+  const modelID = String(ref.id)
+  const variant = ref.variant === undefined ? undefined : String(ref.variant)
+  if (providerID.length === 0 || modelID.length === 0) return undefined
+  if (variant === undefined) return { providerID, modelID }
+  return { providerID, modelID, variant }
+}
+
+// File frontmatter wins over the host view, including when the file carries
+// no model (file-backed agents with no frontmatter model have no upstream,
+// never the host's Plus-masked output). Only non-file agents read the host
+// model unmasked through the model baseline. First source per id wins:
+// resolveAgentSources orders the effective identity before its shadows, so
+// the most specific file owns the upstream.
+async function upstreamModels(
+  sources: readonly AgentSource[],
+  agents: readonly Agent.Info[],
+  baselines: ReadonlyMap<string, ModelBaseline>,
+): Promise<Map<string, ModelRefLike | undefined>> {
+  const files = await readAgentModels(sources)
+  const fileBacked = new Set(sources.filter((source) => source.path !== undefined).map((source) => source.id))
+  const ids = [...new Set(sources.map((source) => source.id))]
+  const out = new Map<string, ModelRefLike | undefined>()
+  for (const id of ids) {
+    if (fileBacked.has(id)) {
+      out.set(id, files.get(id))
+      continue
+    }
+    const host = agents.find((agent) => String(agent.id) === id)
+    const current = host === undefined ? undefined : hostModelOf(host)
+    out.set(id, unmaskModel(current, baselines.get(id)))
+  }
+  return out
+}
+
+async function readAgentModels(sources: readonly AgentSource[]): Promise<Map<string, ModelRefLike>> {
+  const found = new Map<string, ModelRefLike>()
+  const texts = await Promise.all(sources.map((source) => (source.path === undefined ? undefined : readText(source.path))))
+  sources.forEach((source, index) => {
+    if (found.has(source.id)) return
+    const text = texts[index]
+    if (text === undefined) return
+    const parsed = parseAgentModel(text)
+    if (parsed === undefined) return
+    found.set(source.id, { providerID: parsed.providerID, modelID: parsed.modelID, ...(parsed.variant === undefined ? {} : { variant: parsed.variant }) })
+  })
+  return found
+}
+
+function modelDisplay(candidate: { providerID: string; modelID: string; variant?: string }): string {
+  if (candidate.variant === undefined) return `${candidate.providerID}/${candidate.modelID}`
+  return `${candidate.providerID}/${candidate.modelID}@${candidate.variant}`
+}
+
+function modelItems(
+  records: readonly ModelRecord[],
+  upstream: ReadonlyMap<string, ModelRefLike | undefined>,
+): Item[] {
+  const byKey = new Map<string, { providerID: string; modelID: string; variant?: string; agents: Set<string> | undefined }>()
+  for (const record of records) {
+    const key = record.variant === undefined ? `${record.providerID}/${record.modelID}` : `${record.providerID}/${record.modelID}@${record.variant}`
+    const entry = byKey.get(key)
+    if (entry === undefined) {
+      byKey.set(key, {
+        providerID: record.providerID,
+        modelID: record.modelID,
+        ...(record.variant === undefined ? {} : { variant: record.variant }),
+        agents: record.agent === null ? undefined : new Set([record.agent]),
+      })
+      continue
+    }
+    if (entry.agents === undefined) continue
+    if (record.agent === null) {
+      entry.agents = undefined
+      continue
+    }
+    entry.agents.add(record.agent)
+  }
+  for (const [agent, model] of upstream) {
+    if (model === undefined) continue
+    const key = model.variant === undefined ? `${model.providerID}/${model.modelID}` : `${model.providerID}/${model.modelID}@${model.variant}`
+    const entry = byKey.get(key)
+    if (entry === undefined) {
+      byKey.set(key, { providerID: model.providerID, modelID: model.modelID, ...(model.variant === undefined ? {} : { variant: model.variant }), agents: new Set([agent]) })
+      continue
+    }
+    if (entry.agents === undefined) continue
+    entry.agents.add(agent)
+  }
+  return [...byKey.entries()]
+    .toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0))
+    .map(([key, entry]): Item => {
+      const text = modelDisplay(entry)
+      void key
+      return {
+        id: modelItemId({ providerID: entry.providerID, modelID: entry.modelID, ...(entry.variant === undefined ? {} : { variant: entry.variant }) }),
+        kind: "model",
+        group: "none",
+        title: text,
+        text,
+        enabled: upstreamEnabled(),
+        fingerprint: fingerprint(text),
+        ...(entry.agents === undefined ? {} : { agents: [...entry.agents].toSorted() }),
+      }
+    })
 }
 
 async function yieldList<Data>(list: Effect.Effect<{ data: Data }, unknown, never>): Promise<Data> {

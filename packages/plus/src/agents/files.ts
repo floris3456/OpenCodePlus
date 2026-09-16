@@ -233,6 +233,65 @@ export function serializeFrontmatter(fields?: AgentFields): string {
   return lines.join("\n")
 }
 
+// Frontmatter parser for model upstream: reads the same fence formatMarkdown
+// writes (opening `---`, closing `---`, then body). Returns the AgentFields
+// subset so callers can prefer file-backed model/variant over Agent.Info.model.
+export function parseFrontmatter(markdown: string): AgentFields | undefined {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  if (!match) return undefined
+  try {
+    const data = Bun.YAML.parse(match[1] ?? "")
+    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
+    const fields = data as Record<string, unknown>
+    const picked: AgentFields = {
+      ...(typeof fields.model === "string" ? { model: fields.model } : {}),
+      ...(typeof fields.variant === "string" ? { variant: fields.variant } : {}),
+      ...(typeof fields.description === "string" ? { description: fields.description } : {}),
+      ...(fields.mode === "subagent" || fields.mode === "primary" || fields.mode === "all" ? { mode: fields.mode } : {}),
+    }
+    if (Object.keys(picked).length === 0) return undefined
+    return picked
+  } catch {
+    return undefined
+  }
+}
+
+export interface ParsedModelRef {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+}
+
+// File frontmatter model forms: `model: "provider/id#variant"`, or
+// `model: "provider/id"` plus a separate `variant: "..."` key. An explicit
+// variant field wins over the `#` suffix. Anything without a `/` is invalid.
+export function modelRefFromFields(fields: AgentFields | undefined): ParsedModelRef | undefined {
+  if (fields?.model === undefined) {
+    if (fields?.variant === undefined) return undefined
+    return undefined
+  }
+  const raw = fields.model.trim()
+  const slash = raw.indexOf("/")
+  if (slash <= 0) return undefined
+  const providerID = raw.slice(0, slash)
+  const rest = raw.slice(slash + 1)
+  if (providerID.length === 0 || rest.length === 0) return undefined
+  if (providerID.includes("#")) return undefined
+  const hash = rest.indexOf("#")
+  const modelID = hash === -1 ? rest : rest.slice(0, hash)
+  const stringVariant = hash === -1 ? undefined : rest.slice(hash + 1)
+  if (modelID.length === 0) return undefined
+  if (stringVariant !== undefined && stringVariant.length === 0) return undefined
+  const variant = fields.variant === undefined ? stringVariant : fields.variant
+  if (variant !== undefined && variant.length === 0) return undefined
+  if (variant === undefined) return { providerID, modelID }
+  return { providerID, modelID, variant }
+}
+
+export function parseAgentModel(markdown: string): ParsedModelRef | undefined {
+  return modelRefFromFields(parseFrontmatter(markdown))
+}
+
 function configDirectory(scope: Scope, projectDirectory: string): string {
   if (scope === "global") {
     return (

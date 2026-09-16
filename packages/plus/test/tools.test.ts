@@ -30,7 +30,7 @@ import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
-import { agentHarness, agentInfo, context, fullContext, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, catalogHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -106,10 +106,9 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
       ...(item.execute === undefined ? {} : { execute: item.execute }),
     })),
-    // Model and rule records are not tree rows (see memoInputOf), so the
-    // memo drops them; this fixture's snapshots never carry them.
+    // Rule records stay filtered until phase 3; model records are tree rows.
     records: snapshot.records.flatMap((record) =>
-      record.type === "model" || record.type === "rule"
+      record.type === "rule"
         ? []
         : [
             record.type === "split"
@@ -121,20 +120,31 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
                   boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
                   updated: record.updated,
                 }
-              : {
-                  type: "customization" as const,
-                  level: record.level,
-                  agent: record.agent,
-                  item: record.item,
-                  section: record.section,
-                  ...(record.text === undefined ? {} : { text: record.text }),
-                  ...(record.state === undefined ? {} : { state: record.state }),
-                  ...(record.pin === undefined ? {} : { pin: record.pin }),
-                  basedOn: record.basedOn,
-                  ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-                  ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-                  updated: record.updated,
-                },
+              : record.type === "model"
+                ? {
+                    type: "model" as const,
+                    level: record.level,
+                    agent: record.agent,
+                    providerID: record.providerID,
+                    modelID: record.modelID,
+                    ...(record.variant === undefined ? {} : { variant: record.variant }),
+                    ...(record.active === undefined ? {} : { active: record.active }),
+                    updated: record.updated,
+                  }
+                : {
+                    type: "customization" as const,
+                    level: record.level,
+                    agent: record.agent,
+                    item: record.item,
+                    section: record.section,
+                    ...(record.text === undefined ? {} : { text: record.text }),
+                    ...(record.state === undefined ? {} : { state: record.state }),
+                    ...(record.pin === undefined ? {} : { pin: record.pin }),
+                    basedOn: record.basedOn,
+                    ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
+                    ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+                    updated: record.updated,
+                  },
           ],
     ),
     agents: snapshot.agents.map((agent) => ({
@@ -142,6 +152,15 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       scope: agent.scope,
       ...(agent.path === undefined ? {} : { path: agent.path }),
       ...(agent.base === undefined ? {} : { base: agent.base }),
+      ...(agent.model === undefined
+        ? {}
+        : {
+            model: {
+              providerID: agent.model.providerID,
+              modelID: agent.model.modelID,
+              ...(agent.model.variant === undefined ? {} : { variant: agent.model.variant }),
+            },
+          }),
     })),
     teams: (snapshot.teams ?? []).map((team) => ({
       level: team.level,
@@ -1037,4 +1056,39 @@ test("toolHarness exposes agent, skill, and hook state for parity checks", async
   expect(agents.state.get("alpha")?.system).toBe("upstream")
   expect(skills.state.get("notes")?.content).toBe("body")
   expect(toolState.tools.get("reader")?.description).toBe("read")
+})
+
+test("create model, activate through set, list with item:model and active, then delete", async () => {
+  const { project } = await tempProject()
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "reader", description: "read things", options: { codemode: false } }],
+    skills: [skillInfo("notes", "skill body")],
+    models,
+    classifications: { "nova-1": "general", "nova-2": "general" },
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const created = (await runOk(need(tools, "instructions_create"), {
+    kind: "model",
+    providerID: "acme",
+    modelID: "nova-2",
+    level: "defaults",
+    agent: "alpha",
+  })) as { providerID: string; modelID: string }
+  expect(created).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+  const snapshot = await snapshotOf(api)
+  const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "model:acme/nova-2")
+  if (row === undefined) throw new Error("missing model row")
+  const activated = (await runOk(need(tools, "instructions_set"), { id: row.id, active: true })) as { status: string }
+  expect(activated.status).toBe(`Activated "acme/nova-2"`)
+  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true" })) as { rows: readonly { id: string }[] }
+  expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
+  const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { providerID: string }
+  expect(deleted).toMatchObject({ providerID: "acme" })
+  void catalogHarness
 })

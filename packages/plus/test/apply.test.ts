@@ -1071,6 +1071,59 @@ test("empty records install nothing", async () => {
   expect(applied.registrations).toEqual([])
 })
 
+test("an active model sets the host agent model and no active installs nothing", async () => {
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({ agent: agents.domain })
+  const discovered = await discoverFor(ctx)
+  const models = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova-2", active: true as const, updated: UPDATED },
+  ]
+  const applied = await apply(
+    ctx,
+    makeInput({ items: discovered.items, records: [], models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(agents.state.get("beta")?.model).toBeUndefined()
+  const none = await apply(ctx, makeInput({ items: discovered.items, records: [], models: [], agents: [{ id: "alpha", level: "project" }] }))
+  expect(none.registrations).toEqual([])
+})
+
+test("the base template follows the switched model family per request", async () => {
+  const baseTemplates = [
+    { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },
+    { id: "kimi", title: "Kimi.txt", text: "kimi base prompt" },
+  ]
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "", modelRef("openai", "gpt-4o"))])
+  const ctx = context({
+    agent: agents.domain,
+    prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt", "kimi-k2": "kimi" }),
+    catalog: catalogHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx, { baseTemplates, activeBase: () => "gpt" })
+  const models = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "moonshot", modelID: "kimi-k2", active: true as const, updated: UPDATED },
+  ]
+  const records = [makeRecord({ item: "base:kimi", agent: "alpha", level: "project", text: "custom kimi" })]
+  const applied = await apply(
+    ctx,
+    makeInput({ items: discovered.items, records, models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+  )
+  expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "moonshot", id: "kimi-k2" })
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", {}, [{ type: "text", text: "family default" }], { providerID: "moonshot", id: "kimi-k2" })
+  await Effect.runPromise(run(event))
+  expect(event.system[0]?.text).toBe("custom kimi")
+})
+
 test("a mid-way failure unwinds earlier registrations in reverse order", async () => {
   const events: string[] = []
   const skills = skillHarness([skillInfo("notes", "skill body")])

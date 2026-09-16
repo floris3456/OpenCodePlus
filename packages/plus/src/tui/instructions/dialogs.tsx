@@ -21,6 +21,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
           { title: "Instruction", value: "instruction" },
           { title: "MCP server", value: "mcp" },
           { title: "Team", value: "team" },
+          { title: "Model", value: "model" },
         ],
       })
       if (disposed) return
@@ -36,8 +37,9 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (kind === "base") return addBase()
     if (kind === "skill") return addSkill()
     if (kind === "instruction") return addInstruction()
-    if (kind === "team") return addTeam()
+    if (kind === "team") return addTeam(node)
     if (kind === "section") return addSection(node)
+    if (kind === "model") return addModel(node)
     return addMcp()
   }
 
@@ -248,7 +250,8 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  async function addTeam(): Promise<void> {
+  async function addTeam(_node?: TreeNode): Promise<void> {
+    void _node
     if (disposed) return
     const raw = await context.ui.dialog.prompt({
       title: "Team name",
@@ -286,7 +289,141 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     disposed = true
   }
 
-  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, dispose }
+  function scopeFromModelsGroup(node: TreeNode | undefined): { level: "project" | "global" | "defaults"; agent: string | null } | undefined {
+    if (node === undefined) return undefined
+    const match = node.id.match(/^group:(project|global|defaults):(.*):models$/)
+    if (match === null) return undefined
+    const level = match[1]
+    if (level !== "project" && level !== "global" && level !== "defaults") return undefined
+    const owner = match[2] ?? ""
+    if (owner === "") {
+      if (level !== "defaults") return undefined
+      return { level, agent: null }
+    }
+    return { level, agent: owner }
+  }
+
+  // a on a Models group: provider/model → variant → scope (scope comes from
+  // the group when invoked there, otherwise prompt for level then agent).
+  // Candidates come from the host model catalog, so only real models can be
+  // added. Adding stores an inactive row; activate with space afterwards.
+  async function addModel(node?: TreeNode): Promise<void> {
+    if (disposed) return
+    const scoped = scopeFromModelsGroup(node)
+    let level: "project" | "global" | "defaults" | undefined = scoped?.level
+    let agent: string | null | undefined = scoped?.agent
+    let catalog: { providerID: string; modelID: string; variant?: string; name: string }[]
+    try {
+      const output = await plus["catalog.models"](undefined, { location: context.location })
+      if (disposed) return
+      catalog = [...output.models]
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+      return
+    }
+    if (catalog.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "No models in the host catalog" })
+      return
+    }
+    const providers = [...new Set(catalog.map((entry) => entry.providerID))].toSorted()
+    const provider = await context.ui.dialog.select<string>({
+      title: "Model provider",
+      placeholder: "Select a provider",
+      options: providers.map((entry) => ({ title: entry, value: entry })),
+    })
+    if (disposed) return
+    if (provider === undefined) return
+    const forProvider = catalog.filter((entry) => entry.providerID === provider)
+    const modelIds = [...new Set(forProvider.map((entry) => entry.modelID))].toSorted()
+    const modelID = await context.ui.dialog.select<string>({
+      title: "Model",
+      placeholder: "Select a model",
+      options: modelIds.map((id) => {
+        const name = forProvider.find((entry) => entry.modelID === id)?.name ?? id
+        return { title: name === id ? id : `${name} (${id})`, value: id }
+      }),
+    })
+    if (disposed) return
+    if (modelID === undefined) return
+    const variants = forProvider.filter((entry) => entry.modelID === modelID).flatMap((entry) => (entry.variant === undefined ? [] : [entry.variant]))
+    let variant: string | undefined
+    if (variants.length > 0) {
+      const picked = await context.ui.dialog.select<string>({
+        title: "Variant",
+        placeholder: "Select a reasoning variant",
+        options: [{ title: "(no variant)", value: "" }, ...variants.toSorted().map((entry) => ({ title: entry, value: entry }))],
+      })
+      if (disposed) return
+      if (picked === undefined) return
+      variant = picked === "" ? undefined : picked
+    }
+    if (level === undefined) {
+      const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
+        title: "Model scope",
+        options: [
+          { title: "Project", value: "project", description: "Stored with this project" },
+          { title: "Global", value: "global", description: "Stored in your global config" },
+          { title: "Defaults", value: "defaults", description: "Shared default for every agent" },
+        ],
+      })
+      if (disposed) return
+      if (pickedLevel === undefined) return
+      level = pickedLevel
+    }
+    if (agent === undefined) {
+      if (level === "defaults") {
+        const shared = await context.ui.dialog.select<string>({
+          title: "Model agent",
+          placeholder: "Shared or per-agent?",
+          options: [
+            { title: "Shared (every agent)", value: "" },
+            { title: "Per-agent…", value: "__agent__" },
+          ],
+        })
+        if (disposed) return
+        if (shared === undefined) return
+        if (shared === "") {
+          agent = null
+        } else {
+          const raw = await context.ui.dialog.prompt({ title: "Agent id", placeholder: "my-agent" })
+          if (disposed) return
+          if (raw === undefined) return
+          const trimmed = raw.trim()
+          if (trimmed.length === 0) {
+            context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
+            return
+          }
+          agent = trimmed
+        }
+      } else {
+        const raw = await context.ui.dialog.prompt({ title: "Agent id", placeholder: "my-agent" })
+        if (disposed) return
+        if (raw === undefined) return
+        const trimmed = raw.trim()
+        if (trimmed.length === 0) {
+          context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
+          return
+        }
+        agent = trimmed
+      }
+    }
+    if (level === undefined || agent === undefined) return
+    try {
+      const ref = await plus["model.add"](
+        { level, agent, providerID: provider, modelID, ...(variant === undefined ? {} : { variant }) },
+        { location: context.location },
+      )
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Added model ${ref.providerID}/${ref.modelID}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

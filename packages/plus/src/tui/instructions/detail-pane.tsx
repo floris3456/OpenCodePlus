@@ -1,11 +1,11 @@
 import { TextAttributes } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
-import { applies, resolve, resolveSplit, scopesOf } from "../../instructions/model.js"
-import type { Address, AgentSource, CustomizationRecord, Item, Resolved, SplitRecord } from "../../instructions/model.js"
+import { applies, modelCandidates, parseModelItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
+import type { Address, AgentSource, CustomizationRecord, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
 import { agentOf, itemOf, recordOf } from "../../instructions/snapshot.js"
 import type { TreeNode } from "../../instructions/tree.js"
-import type { Snapshot } from "../../rpc.js"
+import type { Level, Snapshot } from "../../rpc.js"
 import { badgeColor, badgeLabels } from "./tree-pane.js"
 
 export interface DetailPaneState {
@@ -48,6 +48,47 @@ function upstreamFor(items: readonly Item[], address: Address): Item | undefined
   return matches.find((entry) => applies(entry, owner)) ?? matches[0]
 }
 
+function isModelAddress(address: Address): boolean {
+  return address.item.startsWith("model:")
+}
+
+function modelsOfSnapshot(snapshot: Snapshot): ModelRecord[] {
+  return snapshot.records
+    .map(recordOf)
+    .filter((record): record is ModelRecord => record.type === "model")
+}
+
+function upstreamModelOf(snapshot: Snapshot, agent: string | null): { providerID: string; modelID: string; variant?: string } | undefined {
+  if (agent === null) return undefined
+  const entry = agentsOf(snapshot).find((candidate) => candidate.id === agent)
+  return entry?.model
+}
+
+export function modelDetail(
+  node: TreeNode,
+  snapshot: Snapshot,
+): { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; active: boolean } | undefined {
+  const address = node.address
+  if (address === undefined || !isModelAddress(address)) return undefined
+  const parsed = parseModelItemId(address.item)
+  if (parsed === undefined) return undefined
+  const agents = agentsOf(snapshot)
+  const scopes = scopesOf(agents)
+  const models = modelsOfSnapshot(snapshot)
+  const upstream = upstreamModelOf(snapshot, address.agent)
+  const candidates = modelCandidates({ models, scopes, level: address.level, agent: address.agent, ...(upstream === undefined ? {} : { upstream }) })
+  const candidate = candidates.find((entry) => sameModelCandidate(entry, parsed))
+  if (candidate === undefined) return undefined
+  const active = resolveActiveModel({ models, scopes, level: address.level, agent: address.agent, ...(upstream === undefined ? {} : { upstream }) })
+  return {
+    providerID: candidate.providerID,
+    modelID: candidate.modelID,
+    ...(candidate.variant === undefined ? {} : { variant: candidate.variant }),
+    source: candidate.source,
+    active: active !== undefined && sameModelCandidate(active, candidate),
+  }
+}
+
 export function resolveNode(node: TreeNode, snapshot: Snapshot): Resolved | undefined {
   const address = node.address
   if (address === undefined) return undefined
@@ -84,6 +125,12 @@ export function displayLevel(level: Resolved["source"] | Address["level"]): stri
 export function provenanceLine(node: TreeNode, snapshot: Snapshot): string | undefined {
   const address = node.address
   if (address === undefined) return undefined
+  if (isModelAddress(address)) {
+    const detail = modelDetail(node, snapshot)
+    if (detail === undefined) return undefined
+    if (detail.active) return `active model from: ${displayLevel(detail.source)}`
+    return `candidate from: ${displayLevel(detail.source)}`
+  }
   const resolved = resolveNode(node, snapshot)
   if (!resolved) return undefined
   if (resolved.overriddenHere) return `overridden here: ${displayLevel(address.level)}`
@@ -99,6 +146,7 @@ export interface SectionRow {
 export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
+  if (isModelAddress(address)) return []
   const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream === undefined) return []
   const records = customizationsOf(snapshot)
@@ -343,6 +391,28 @@ export function DetailPane(props: DetailPaneProps) {
                       </text>
                     )}
                   </For>
+                  <Show when={modelDetail(node(), snapshot())}>
+                    {(detail) => (
+                      <box flexDirection="column" flexShrink={0}>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`provider: ${detail().providerID}`}
+                        </text>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`model: ${detail().modelID}`}
+                        </text>
+                        <Show when={detail().variant}>
+                          {(variant) => (
+                            <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                              {`variant: ${variant()}`}
+                            </text>
+                          )}
+                        </Show>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`source: ${displayLevel(detail().source)}${detail().active ? " · active" : ""}`}
+                        </text>
+                      </box>
+                    )}
+                  </Show>
                   <Show when={node().address?.section === null}>
                     <text flexShrink={0} fg={props.context.theme.text.subdued}>
                       Sections:

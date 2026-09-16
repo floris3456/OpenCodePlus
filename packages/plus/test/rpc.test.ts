@@ -10,7 +10,7 @@ import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { agentHarness, agentInfo, context, fullContext, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, modelInfo, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -560,6 +560,73 @@ test("two publishes after a Code Mode text edit keep an identical fingerprint an
   expect(agents.transforms).toBe(installs)
   expect(agents.disposes).toBe(disposes)
   expect(hooks.current).toBe(1)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+})
+
+test("two publishes with an active model keep an identical fingerprint and do not reinstall", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const upstream = "upstream role"
+  const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(alphaPath), { recursive: true })
+  await Bun.write(alphaPath, upstream)
+  const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
+  const agents = agentHarness([agentInfo("alpha", upstream)])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const added = await Effect.runPromise(
+    handlers["model.add"](
+      { level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" },
+      throwingContext({}),
+    ),
+  )
+  void added
+  const afterAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const modelRow = afterAdd.items.find((entry) => entry.id === "model:acme/nova-2")
+  if (!modelRow) throw new Error("expected model:acme/nova-2")
+  const active: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: afterAdd.revision,
+      expectedGlobalRevision: afterAdd.globalRevision,
+      records: [active],
+    }, throwingContext({})),
+  )
+  expect(first.ok).toBe(true)
+  if (!first.ok) throw new Error("expected mutate to succeed")
+  expect(snapshot.revision).toBeDefined()
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  const fingerprintAfterMutate = state.fingerprint
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(state.fingerprint).toBe(fingerprintAfterMutate)
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
   expect(state.fingerprint).toBe(fingerprintAfterMutate)
 })
 

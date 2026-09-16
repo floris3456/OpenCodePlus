@@ -117,6 +117,7 @@ test("Implementer subtree shape under the project root", () => {
   expect(agent?.kind).toBe("agent")
   expect(agent?.depth).toBe(2)
   expect(childrenOf(nodes, "agent:project:Implementer").map((node) => node.label)).toEqual([
+    "Models",
     "Tools",
     "Base",
     "Skills",
@@ -148,15 +149,16 @@ test("identical subtree under each of the three roots", () => {
   ] as const) {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
-    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Tools", "Base", "Skills", "System"])
+    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Models", "Tools", "Base", "Skills", "System"])
   }
 })
 
-test("Defaults holds Agents, Teams, plus the five shared inventories in order", () => {
+test("Defaults holds Agents, Teams, plus the six shared inventories in order", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toEqual([
     "group:defaults:agents",
     "group:defaults:teams",
+    "group:defaults::models",
     "group:defaults::tools",
     "group:defaults::base",
     "group:defaults::skills",
@@ -568,6 +570,7 @@ test("expansion emits only expanded children", () => {
     "root:project",
     "group:project:agents",
     "agent:project:Implementer",
+    "group:project:Implementer:models",
     "group:project:Implementer:tools",
     "group:project:Implementer:base",
     "group:project:Implementer:skills",
@@ -583,6 +586,7 @@ test("expansion emits only expanded children", () => {
     "root:defaults",
     "group:defaults:agents",
     "group:defaults:teams",
+    "group:defaults::models",
     "group:defaults::tools",
     "group:defaults::base",
     "group:defaults::skills",
@@ -868,4 +872,55 @@ test("badges carry state, modified, and source from resolution", () => {
   expect(plus?.badges.state).toBe("on")
   expect(plus?.badges.modified).toBe(false)
   expect(plus?.badges.source).toBe("upstream")
+})
+
+test("Models group is first under every agent with toggle/remove-only rows", () => {
+  const nodes = expandAll({ items: items(), records: [], agents: agents() })
+  for (const id of ["agent:project:Implementer", "agent:global:Helper", "agent:defaults:Template"]) {
+    const labels = childrenOf(nodes, id).map((node) => node.label)
+    expect(labels[0]).toBe("Models")
+  }
+  const group = nodes.find((node) => node.id === "group:project:Implementer:models")
+  expect(group?.label).toBe("Models")
+  expect(group?.add).toBe("model")
+  expect(nodes.find((node) => node.id === "group:defaults::models")?.add).toBe("model")
+})
+
+test("model union shows chain candidates with source badges and one active winner", () => {
+  const modelAgents = [
+    { id: "alpha", scope: "project" as const, model: { providerID: "acme", modelID: "nova-1" } },
+    { id: "alpha", scope: "global" as const, model: { providerID: "acme", modelID: "nova-1" } },
+  ]
+  const records = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova-2", updated: UPDATED },
+    { type: "model" as const, level: "global" as const, agent: "alpha", providerID: "acme", modelID: "nova-3", active: true as const, updated: UPDATED },
+    { type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "nova-4", updated: UPDATED },
+  ]
+  const nodes = expandAll({ items: [], records, agents: modelAgents })
+  const projectRows = nodes.filter((node) => node.id.startsWith("item:project:alpha:model:"))
+  expect(projectRows.map((node) => node.id).sort()).toEqual([
+    "item:project:alpha:model:acme/nova-1",
+    "item:project:alpha:model:acme/nova-2",
+    "item:project:alpha:model:acme/nova-3",
+    "item:project:alpha:model:acme/nova-4",
+  ])
+  const byId = new Map(projectRows.map((node) => [node.id, node]))
+  expect(byId.get("item:project:alpha:model:acme/nova-2")?.badges.source).toBe("project")
+  expect(byId.get("item:project:alpha:model:acme/nova-3")?.badges.source).toBe("global")
+  expect(byId.get("item:project:alpha:model:acme/nova-4")?.badges.source).toBe("defaults")
+  expect(byId.get("item:project:alpha:model:acme/nova-1")?.badges.source).toBe("upstream")
+  const actives = projectRows.filter((node) => node.badges.active === true)
+  expect(actives.map((node) => node.id)).toEqual(["item:project:alpha:model:acme/nova-3"])
+  for (const row of projectRows) {
+    expect(row.actions).toMatchObject({ toggle: true, edit: false, split: false, pin: false })
+  }
+  expect(byId.get("item:project:alpha:model:acme/nova-2")?.actions?.remove).toBe(true)
+  expect(byId.get("item:project:alpha:model:acme/nova-3")?.actions?.reset).toBe(false)
+  const globalRows = nodes.filter((node) => node.id.startsWith("item:global:alpha:model:"))
+  expect(globalRows.some((node) => node.id === "item:global:alpha:model:acme/nova-2")).toBe(false)
+  expect(globalRows.map((node) => node.id).sort()).toEqual([
+    "item:global:alpha:model:acme/nova-1",
+    "item:global:alpha:model:acme/nova-3",
+    "item:global:alpha:model:acme/nova-4",
+  ])
 })

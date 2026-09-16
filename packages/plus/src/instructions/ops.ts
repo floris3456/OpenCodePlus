@@ -1,5 +1,18 @@
-import { applies, fingerprint, merge, resolve, resolveResolution, resolveSplit } from "./model.js"
-import type { Address, CustomizationRecord, Item, SplitRecord } from "./model.js"
+import {
+  addModelRecord,
+  applies,
+  clearModelActive,
+  ensureActivateModel,
+  fingerprint,
+  hasModelRecordAt,
+  merge,
+  parseModelItemId,
+  removeModelRecord,
+  resolve,
+  resolveResolution,
+  resolveSplit,
+} from "./model.js"
+import type { Address, CustomizationRecord, Item, ModelRecord, SplitRecord } from "./model.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, materialize, skeletonOf } from "./tree.js"
@@ -10,6 +23,7 @@ import type { Split } from "./sections.js"
 export interface OpSuccess {
   readonly records: CustomizationRecord[]
   readonly splits: SplitRecord[]
+  readonly models?: readonly ModelRecord[]
   readonly status: string
   readonly retryHint: string
 }
@@ -19,6 +33,14 @@ export interface OpFailure {
 }
 
 export type OpResult = OpSuccess | OpFailure
+
+export interface ModelOpSuccess {
+  readonly models: ModelRecord[]
+  readonly status: string
+  readonly retryHint: string
+}
+
+export type ModelOpResult = ModelOpSuccess | OpFailure
 
 export type RemovalPlan =
   | OpFailure
@@ -616,6 +638,89 @@ export function refusalFor(input: MemoInput, rowId: string): string | undefined 
   if (item.id === "system:role") return `"${node.label}" cannot be deleted: the agent's own prompt body is not a file`
   if (item.kind === "tool" || item.kind === "mcp") return `"${node.label}" cannot be deleted: ${item.kind} rows are not files`
   return undefined
+}
+
+function modelsOfInput(input: MemoInput): ModelRecord[] {
+  return input.records.filter((record): record is ModelRecord => record.type === "model")
+}
+
+function customizationsOfInput(input: MemoInput): CustomizationRecord[] {
+  return input.records.filter((record): record is CustomizationRecord => record.type === "customization")
+}
+
+function splitsOfInput(input: MemoInput): SplitRecord[] {
+  return input.records.filter((record): record is SplitRecord => record.type === "split")
+}
+
+function modelTargetOf(address: Address): { providerID: string; modelID: string; variant?: string } | undefined {
+  return parseModelItemId(address.item)
+}
+
+// Space on a model row activates it exclusively at that level, creating the
+// local row when the candidate is inherited. Activating the already-active
+// row is a no-op that still reports success without writing.
+export function activateModelRow(input: MemoInput, rowId: string): ModelOpResult {
+  const found = findNode(input, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" cannot be toggled` }
+  if (node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
+  const target = modelTargetOf(address)
+  if (target === undefined) return { refusal: `"${node.label}" cannot be toggled` }
+  const models = modelsOfInput(input)
+  const next = ensureActivateModel(models, { level: address.level, agent: address.agent }, target, now())
+  if (JSON.stringify(next) === JSON.stringify(models))
+    return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
+  return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
+}
+
+// r on a model row clears only that level's active flag, leaving candidates
+// so the chain falls through. No active at this level refuses.
+export function resetModelRow(input: MemoInput, rowId: string): ModelOpResult {
+  const found = findNode(input, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" has no override to reset` }
+  if (node.actions?.reset !== true) return { refusal: `"${node.label}" has no override to reset` }
+  const models = modelsOfInput(input)
+  const next = clearModelActive(models, { level: address.level, agent: address.agent })
+  if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no override to reset` }
+  return { models: next, status: `Reset "${node.label}" to default`, retryHint: `reset "${node.label}" against a stale revision; retry to apply` }
+}
+
+// d on a model row deletes the candidate at this level only. Inherited rows
+// with no local record refuse: remove at the source level instead.
+export function removeModelRow(input: MemoInput, rowId: string): ModelOpResult {
+  const found = findNode(input, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" cannot be deleted` }
+  const target = modelTargetOf(address)
+  if (target === undefined) return { refusal: `"${node.label}" cannot be deleted` }
+  const models = modelsOfInput(input)
+  if (!hasModelRecordAt(models, { level: address.level, agent: address.agent }, target))
+    return { refusal: `"${node.label}" cannot be deleted here: remove it at its source level` }
+  const next = removeModelRecord(models, { level: address.level, agent: address.agent }, target)
+  return { models: next, status: `Removed "${node.label}"`, retryHint: `removed "${node.label}" against a stale revision; retry to apply` }
+}
+
+export function isModelRowId(rowId: string): boolean {
+  return rowId.includes(":model:")
+}
+
+export function modelRecordsOf(input: MemoInput): ModelRecord[] {
+  return modelsOfInput(input)
+}
+
+export function customizationRecordsOf(input: MemoInput): CustomizationRecord[] {
+  return customizationsOfInput(input)
+}
+
+export function splitRecordsOf(input: MemoInput): SplitRecord[] {
+  return splitsOfInput(input)
 }
 
 function upstreamSliceOf(split: Split, text: string, id: string): string {

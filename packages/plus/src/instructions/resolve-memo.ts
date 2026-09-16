@@ -5,6 +5,7 @@ import type {
   CustomizationRecord,
   Item,
   Level,
+  ModelRecord,
   Resolved,
   Scopes,
   SplitRecord,
@@ -20,7 +21,7 @@ export interface TeamInput {
 
 export interface MemoInput {
   readonly items: readonly Item[]
-  readonly records: readonly (CustomizationRecord | SplitRecord)[]
+  readonly records: readonly (CustomizationRecord | SplitRecord | ModelRecord)[]
   readonly agents: readonly AgentSource[]
   readonly teams?: readonly TeamInput[]
 }
@@ -29,6 +30,7 @@ export interface BuildContext {
   readonly items: readonly Item[]
   readonly customizations: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
+  readonly models: readonly ModelRecord[]
   readonly scopes: Scopes
   readonly agents: readonly AgentSource[]
   readonly teams: readonly TeamInput[]
@@ -39,6 +41,7 @@ export function contextOf(input: MemoInput): BuildContext {
     items: input.items,
     customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
     splits: input.records.filter((record): record is SplitRecord => record.type === "split"),
+    models: input.records.filter((record): record is ModelRecord => record.type === "model"),
     scopes: scopesOf(input.agents),
     agents: input.agents,
     teams: input.teams ?? [],
