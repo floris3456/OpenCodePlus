@@ -427,7 +427,7 @@ function mineGenericPaths(text: string): string[] {
   const found = new Set<string>()
   const tokens = text.split(/[\s`"'<>()[\]{}]+/).filter((token) => token.length > 0)
   for (const raw of tokens) {
-    const token = raw.replace(/^[`'"]+|[`'";:,]+$/g, "")
+    const token = raw.replace(/^[`'"]+|[`'";:,]+$/g, "").replace(/:\d+(?::\d+)?$/, "")
     if (token.length < 3 || token.length > 100) continue
     if (token.startsWith("http://") || token.startsWith("https://")) continue
     if (!token.includes("/") && !token.startsWith("~") && !token.startsWith("*.") && !token.startsWith("**")) continue

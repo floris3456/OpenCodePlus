@@ -218,6 +218,37 @@ test("mineGenericPaths keeps real file paths and globs", () => {
   }
 })
 
+test("mineGenericPaths strips trailing source-location references", () => {
+  const mined = mineDiscoveredRules({
+    texts: [{ item: "tool:edit", text: "inspect src/services/process.ts:712 and src/main.py:10:4" }],
+  })
+  const patterns = mined.flatMap((entry) => entry.patterns)
+  expect(patterns).toContain("src/services/process.ts")
+  expect(patterns).toContain("src/main.py")
+  expect(patterns).not.toContain("src/services/process.ts:712")
+  expect(patterns).not.toContain("src/main.py:10:4")
+})
+
+test("mineGenericPaths rejects bare line references and invalid paths after stripping", () => {
+  const rejected = [":712", ":10:4", "/api/config:42", "and/or:12"]
+  for (const token of rejected) {
+    const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please check ${token} today` }] })
+    const patterns = mined.flatMap((entry) => entry.patterns)
+    expect(patterns).toEqual([])
+  }
+  const combined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: rejected.join(" ") }] })
+  const combinedPatterns = combined.flatMap((entry) => entry.patterns)
+  expect(combinedPatterns).toEqual([])
+})
+
+test("mineGenericPaths deduplicates paths mentioned with and without line references", () => {
+  const mined = mineDiscoveredRules({
+    texts: [{ item: "tool:edit", text: "update src/index.ts and check src/index.ts:42" }],
+  })
+  const patterns = mined.flatMap((entry) => entry.patterns)
+  expect(patterns).toEqual(["src/index.ts"])
+})
+
 test("patch ships typed add/update/delete curated rules", () => {
   const patch = curatedRules.filter((entry) => entry.tool === "patch")
   expect(patch.map((entry) => entry.id).toSorted()).toEqual(["add-file", "delete-file", "update-file"])
