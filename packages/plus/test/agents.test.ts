@@ -6,6 +6,8 @@ import {
   agentPath,
   create,
   idFromPath,
+  modelRefFromFields,
+  parseAgentModel,
   remove,
   rename,
   resolveDirectory,
@@ -482,4 +484,31 @@ test("delete resolves the file in agent/ even when an empty agents/ directory ex
   expect(removed.ok).toBe(true)
   expect(removed.path).toBe(path.join(agentDir, "alpha.md"))
   expect(await Bun.file(path.join(agentDir, "alpha.md")).exists()).toBe(false)
+})
+
+test("a top-level variant is ignored when the model already carries a variant", () => {
+  // Core decode (packages/core/src/config/plugin/agent.ts:187-203) only
+  // combines a top-level variant with a STRING model that has no `#` suffix.
+  const structured = modelRefFromFields({
+    model: { providerID: "acme", model: "nova-1", variant: "low" },
+    variant: "high",
+  })
+  expect(structured).toEqual({ providerID: "acme", modelID: "nova-1", variant: "low" })
+  const embedded = modelRefFromFields({ model: "acme/nova-1#low", variant: "high" })
+  expect(embedded).toEqual({ providerID: "acme", modelID: "nova-1", variant: "low" })
+  const combined = modelRefFromFields({ model: "acme/nova-1", variant: "high" })
+  expect(combined).toEqual({ providerID: "acme", modelID: "nova-1", variant: "high" })
+  expect(parseAgentModel("---\nmodel: acme/nova-1#low\nvariant: high\n---\nbody\n")).toEqual({
+    providerID: "acme",
+    modelID: "nova-1",
+    variant: "low",
+  })
+})
+
+test("structured object aliases outside ConfigModel.Selection are rejected", () => {
+  // packages/schema/src/config/model.ts:12-21 requires the object field
+  // `model`; `modelID`/`id` are not honoured by core.
+  expect(modelRefFromFields({ model: { providerID: "acme", modelID: "nova-1" } as never })).toBeUndefined()
+  expect(modelRefFromFields({ model: { providerID: "acme", id: "nova-1" } as never })).toBeUndefined()
+  expect(parseAgentModel("---\nmodel:\n  providerID: acme\n  modelID: nova-1\n---\nbody\n")).toBeUndefined()
 })

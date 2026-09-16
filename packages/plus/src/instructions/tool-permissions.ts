@@ -138,17 +138,17 @@ const rawRules: readonly RawRule[] = [
   { tool: "edit", id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] },
   { tool: "edit", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
   { tool: "edit", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
-  { tool: "edit", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] },
+  { tool: "edit", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"] },
   { tool: "write", id: "env", label: ".env files", patterns: ["*.env*"] },
   { tool: "write", id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] },
   { tool: "write", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
   { tool: "write", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
-  { tool: "write", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] },
+  { tool: "write", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"] },
   { tool: "read", id: "env", label: ".env files", patterns: ["*.env*"] },
   { tool: "read", id: "lock", label: "Lockfiles", patterns: ["*.lock", "**/*.lock"] },
   { tool: "read", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"] },
   { tool: "read", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"] },
-  { tool: "read", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] },
+  { tool: "read", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"] },
   { tool: "webfetch", id: "http", label: "Plain HTTP", patterns: ["http://*"] },
   { tool: "webfetch", id: "github", label: "GitHub", patterns: ["*github.com*"] },
   { tool: "webfetch", id: "localhost", label: "Localhost", patterns: ["*localhost*"] },
@@ -405,7 +405,7 @@ function mineFiles(text: string): MinedFile[] {
     for (const tool of ["glob", "grep"]) out.push({ tool, id: "git", label: "Search pattern matching .git", patterns: ["*.git*"] })
   }
   if (has(".ssh") || has("~/.ssh")) {
-    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh"] })
+    for (const tool of ["edit", "write", "read"]) out.push({ tool, id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"] })
   }
   if (has("node_modules")) {
     for (const tool of ["glob", "grep"]) out.push({ tool, id: "node-modules", label: "Search pattern matching node_modules", patterns: ["*node_modules*"] })

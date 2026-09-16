@@ -12,7 +12,7 @@ import {
   resolveResolution,
   resolveSplit,
 } from "./model.js"
-import type { Address, CustomizationRecord, Item, ModelRecord, SplitRecord } from "./model.js"
+import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, materialize, skeletonOf } from "./tree.js"
@@ -715,8 +715,8 @@ export function isPermRowId(rowId: string): boolean {
   return rowId.includes(":perm:")
 }
 
-export function ruleRecordsOf(input: MemoInput): import("./model.js").RuleRecord[] {
-  return input.records.filter((record): record is import("./model.js").RuleRecord => record.type === "rule")
+export function ruleRecordsOf(input: MemoInput): RuleRecord[] {
+  return input.records.filter((record): record is RuleRecord => record.type === "rule")
 }
 
 export function modelRecordsOf(input: MemoInput): ModelRecord[] {

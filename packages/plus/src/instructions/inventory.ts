@@ -53,8 +53,9 @@ export function unmaskText(current: string, baseline: PromptBaseline | undefined
 // Model unmask: while the host agent model still shows exactly what Plus
 // installed, report the retained upstream model instead. Any other host
 // model is a genuine upstream edit and flows through untouched. File-backed
-// agents never reach here: their upstream prefers the frontmatter reread,
-// so host masking is irrelevant for them.
+// agents whose frontmatter defines a model never reach here; file agents
+// without a defining model fall through to the host and unmask like any
+// other agent.
 export function unmaskModel(
   current: ModelRefLike | undefined,
   baseline: ModelBaseline | undefined,

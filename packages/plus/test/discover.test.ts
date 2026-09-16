@@ -993,7 +993,7 @@ test("discovery mines perm candidates with provenance, merging curated labels fi
   expect([...perms.keys()].some((id) => id.startsWith("perm:mcp:"))).toBe(false)
 })
 
-test("effective project file without a model owns the absent upstream (no fallthrough)", async () => {
+test("a model-less project file falls through to the defining file and host models", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
@@ -1001,13 +1001,53 @@ test("effective project file without a model owns the absent upstream (no fallth
   await Bun.write(path.join(directory, ".opencode", "agent", "alpha.md"), "project body\n")
   await fs.mkdir(path.join(global, "agents"), { recursive: true })
   await Bun.write(path.join(global, "agents", "alpha.md"), "---\nmodel: acme/nova-1\n---\nglobal body\n")
-  const discovered = await discover({
+  // Core merges per document (packages/core/src/config/plugin/agent.ts:94-110):
+  // a file without a model does not mask a model defined further down, so the
+  // global file owns the upstream and reaches the Models row.
+  const throughGlobal = await discover({
     ctx: fullContext({ directory, agents: [agent("alpha", "alpha upstream")] }),
     records: [],
     baseTemplates: [],
     activeBase: noBase,
   })
-  expect(discovered.modelUpstream.get("alpha")).toBeUndefined()
+  expect(throughGlobal.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
+  expect(throughGlobal.items.find((entry) => entry.id === "model:acme/nova-1")).toMatchObject({ agents: ["alpha"] })
+  expect(throughGlobal.agents.find((entry) => entry.id === "alpha")?.model).toEqual({ providerID: "acme", modelID: "nova-1" })
+})
+
+test("a model-less project file falls through to the unmasked host model", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "alpha.md"), "project body\n")
+  const hostModel = modelRef("acme", "nova-1")
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("alpha", "alpha upstream", hostModel)] }),
+    records: [],
+    baseTemplates: [],
+    activeBase: noBase,
+  })
+  expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
+  expect(discovered.items.find((entry) => entry.id === "model:acme/nova-1")).toMatchObject({ agents: ["alpha"] })
+})
+
+test("a project file that defines a model still owns the upstream over global and host", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "alpha.md"), "---\nmodel: acme/nova-2\n---\nproject body\n")
+  await fs.mkdir(path.join(global, "agents"), { recursive: true })
+  await Bun.write(path.join(global, "agents", "alpha.md"), "---\nmodel: acme/nova-1\n---\nglobal body\n")
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: [agent("alpha", "alpha upstream", modelRef("acme", "nova-9"))] }),
+    records: [],
+    baseTemplates: [],
+    activeBase: noBase,
+  })
+  expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-2" })
+  expect(discovered.items.find((entry) => entry.id === "model:acme/nova-2")).toMatchObject({ agents: ["alpha"] })
 })
 
 test("structured frontmatter models decode like the host ConfigModel.Selection", async () => {

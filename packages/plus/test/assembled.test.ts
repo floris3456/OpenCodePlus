@@ -4,6 +4,9 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState, deactivate } from "../src/index.js"
+import { assembled } from "../src/instructions/assembled.js"
+import { fingerprint } from "../src/instructions/model.js"
+import { scrubLines } from "../src/instructions/tool-permissions.js"
 import { save } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
@@ -769,4 +772,71 @@ test("disposal clears the installed pin, so a stale pin record falls back to def
   const coder = afterTeardown.tools.find((entry) => entry.id === "coder")
   if (!coder) throw new Error("expected coder after teardown")
   expect(coder.pinned).toBe(false)
+})
+
+test("an all-matching scrub preserves the original in assembled, matching the live request", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agents = agentHarness([agentInfo("alpha", "git push")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = {
+    ...skillState.domain,
+    list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
+  }
+  const tools = toolHarness([{ id: "shell", description: "git push", options: { codemode: false } }])
+  const ctx = context({ location, agent: agents.domain, skill, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const permText = "Git push\ngit push *"
+  const items = [
+    {
+      id: "tool:shell",
+      kind: "tool" as const,
+      group: "native" as const,
+      title: "shell",
+      text: "shell tool",
+      enabled: true,
+      fingerprint: fingerprint("shell tool"),
+    },
+    {
+      id: "perm:shell:git-push",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "Git push",
+      text: permText,
+      enabled: true,
+      fingerprint: fingerprint(permText),
+      permTool: "shell",
+      ruleId: "git-push",
+      patterns: ["git push *"],
+      keywords: ["git push"],
+      provenance: [] as string[],
+    },
+  ]
+  const records = [
+    {
+      type: "customization" as const,
+      level: "project" as const,
+      agent: "alpha",
+      item: "perm:shell:git-push",
+      section: null,
+      state: "off" as const,
+      basedOn: fingerprint(permText),
+      updated: UPDATED,
+    },
+  ]
+  const result = await assembled({
+    ctx,
+    agent: "alpha",
+    items,
+    agents: [{ id: "alpha", level: "project" as const }],
+    records,
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: new Set<string>() },
+  })
+  if ("ok" in result) throw new Error("expected assembled result")
+  // The raw scrub empties the text; the live request keeps the original
+  // (apply.ts preservation), so the readback must agree.
+  expect(scrubLines("git push", ["git push"]).text).toBe("")
+  expect(result.system).toEqual(["git push"])
+  expect(result.tools.find((entry) => entry.id === "shell")?.description).toBe("git push")
 })

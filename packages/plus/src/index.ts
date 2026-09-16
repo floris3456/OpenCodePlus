@@ -1131,6 +1131,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { level: input.level, agent: input.agent, tool: validated.tool, id: validated.id },
           },
         }
+      if (existing.agent !== null && loaded.protectedAgents.includes(existing.agent)) {
+        const reason = `agent.protected: row belongs to protected agent "${existing.agent}"`
+        return {
+          ok: false as const,
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+        }
+      }
       const next = loaded.records.filter((record) => record !== existing)
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
@@ -2419,8 +2426,12 @@ function publishFresh(
 // `file` records that body as observed at baseline time via discovered.bodies,
 // so a later file edit is trusted only while the file still owned the prompt);
 // tools and skills key by item id. Models retain (applied, upstream) per
-// non-file agent the same way: once applyModels sets agent.model the host
-// reports Plus's own output, so the next discovery unmasks it back.
+// agent the same way: once applyModels sets agent.model the host
+// reports Plus's own output, so the next discovery unmasks it back. File
+// agents whose frontmatter defines a model never consult the host, so their
+// baseline is unused; file agents without a defining model fall through to
+// the host like non-file agents and need the same baseline, so baselines are
+// captured for every agent with a non-upstream winner.
 export function captureBaselines(
   ctx: Context,
   state: PlusState,
@@ -2466,7 +2477,6 @@ export function captureBaselines(
   const modelNext = new Map<string, ModelBaseline>()
   const effective = dedupeAgents(discovered.agents)
   for (const agent of effective) {
-    if (agent.path !== undefined) continue
     const level = scopeLevel(agent.scope)
     const upstream = discovered.modelUpstream.get(agent.id)
     const winner = resolveActiveModel({ models, scopes, level, agent: agent.id })
