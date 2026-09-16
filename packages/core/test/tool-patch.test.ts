@@ -213,18 +213,20 @@ describe("PatchTool", () => {
                     },
                   ],
                 })
+                expect(assertions.map((input) => input.action)).toEqual([
+                  "patch.add",
+                  "patch.update",
+                  "patch.delete",
+                  "edit",
+                ])
                 expect(assertions).toMatchObject([
+                  { action: "patch.add", resources: ["nested/new.txt"] },
+                  { action: "patch.update", resources: ["update.txt"] },
+                  { action: "patch.delete", resources: ["remove.txt"] },
                   {
                     sessionID,
                     action: "edit",
-                    resources: [
-                      "nested/new.txt",
-                      "add:nested/new.txt",
-                      "update.txt",
-                      "update:update.txt",
-                      "remove.txt",
-                      "delete:remove.txt",
-                    ],
+                    resources: ["nested/new.txt", "update.txt", "remove.txt"],
                     save: ["*"],
                     metadata: {
                       filepath: "nested/new.txt, update.txt, remove.txt",
@@ -507,20 +509,19 @@ describe("PatchTool", () => {
         )
         expect(assertions).toMatchObject([
           {
+            action: "patch.update",
+            resources: ["old/name.txt", "renamed/dir/name.txt"],
+          },
+          {
             action: "edit",
-            resources: [
-              "old/name.txt",
-              "update:old/name.txt",
-              "renamed/dir/name.txt",
-              "update:renamed/dir/name.txt",
-            ],
+            resources: ["old/name.txt", "renamed/dir/name.txt"],
           },
         ])
       }),
     ),
   )
 
-  it.live("includes typed operation resources alongside bare paths", () =>
+  it.live("asserts per-operation actions with bare paths and keeps edit bare", () =>
     withTempTool((directory, registry) =>
       Effect.gen(function* () {
         yield* Effect.promise(() =>
@@ -536,17 +537,72 @@ describe("PatchTool", () => {
           ),
         )
         expect(settled.status).toBe("completed")
-        const resources = assertions.find((input) => input.action === "edit")?.resources ?? []
-        for (const [bare, typed] of [
-          ["added.txt", "add:added.txt"],
-          ["update.txt", "update:update.txt"],
-          ["remove.txt", "delete:remove.txt"],
-        ] as const) {
-          expect(resources).toContain(bare)
-          expect(resources).toContain(typed)
+        expect(assertions.map((input) => input.action)).toEqual([
+          "patch.add",
+          "patch.update",
+          "patch.delete",
+          "edit",
+        ])
+        const byAction = new Map(assertions.map((input) => [input.action, input]))
+        expect(byAction.get("patch.add")?.resources).toEqual(["added.txt"])
+        expect(byAction.get("patch.update")?.resources).toEqual(["update.txt"])
+        expect(byAction.get("patch.delete")?.resources).toEqual(["remove.txt"])
+        const editResources = byAction.get("edit")?.resources ?? []
+        expect(editResources).toEqual(["added.txt", "update.txt", "remove.txt"])
+        for (const resource of editResources) expect(resource).not.toContain(":")
+        expect(byAction.get("edit")?.metadata?.filepath).toBe("added.txt, update.txt, remove.txt")
+        for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
+          for (const resource of byAction.get(action)?.resources ?? []) expect(resource).not.toContain(":")
         }
-        expect(assertions.find((input) => input.action === "edit")?.metadata?.filepath).toBe(
-          "added.txt, update.txt, remove.txt",
+      }),
+    ),
+  )
+
+  it.live("edit-scoped path rules behave identically before and after (real Permission.evaluate)", () =>
+    withTempTool((directory, registry) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => fs.writeFile(path.join(directory, "src-a.txt"), "before\n"))
+        const settled = yield* executeTool(
+          registry,
+          call("*** Begin Patch\n*** Update File: src-a.txt\n@@\n-before\n+after\n*** End Patch"),
+        )
+        expect(settled.status).toBe("completed")
+        const rules = [
+          { action: "edit", resource: "*", effect: "ask" as const },
+          { action: "edit", resource: "src-a.txt", effect: "allow" as const },
+        ]
+        const edit = assertions.find((input) => input.action === "edit")
+        if (edit === undefined) return yield* Effect.fail(new Error("missing edit assertion"))
+        expect(edit.resources).toEqual(["src-a.txt"])
+        for (const resource of edit.resources) {
+          expect(Permission.evaluate("edit", resource, rules).effect).toBe("allow")
+        }
+        const legacyTyped = `update:src-a.txt`
+        expect(Permission.evaluate("edit", legacyTyped, rules).effect).toBe("ask")
+        const typed = assertions.find((input) => input.action === "patch.update")
+        if (typed === undefined) return yield* Effect.fail(new Error("missing patch.update assertion"))
+        expect(typed.resources).toEqual(["src-a.txt"])
+      }),
+    ),
+  )
+
+  it.live("rename move destination keeps the update operation type", () =>
+    withTempTool((directory, registry) =>
+      Effect.gen(function* () {
+        const source = path.join(directory, "old.txt")
+        yield* Effect.promise(() => fs.writeFile(source, "before\n"))
+        const settled = yield* executeTool(
+          registry,
+          call(
+            "*** Begin Patch\n*** Update File: old.txt\n*** Move to: moved.txt\n@@\n-before\n+after\n*** End Patch",
+          ),
+        )
+        expect(settled.status).toBe("completed")
+        const byAction = new Map(assertions.map((input) => [input.action, input]))
+        expect(byAction.get("patch.update")?.resources).toEqual(["old.txt", "moved.txt"])
+        expect(byAction.get("edit")?.resources).toEqual(["old.txt", "moved.txt"])
+        expect([...(byAction.get("patch.update")?.resources ?? [])].every((resource) => !resource.includes(":"))).toBe(
+          true,
         )
       }),
     ),
@@ -579,8 +635,12 @@ describe("PatchTool", () => {
                   })
                   expect(assertions).toMatchObject([
                     {
+                      action: "patch.update",
+                      resources: ["old.txt", "moved.txt"],
+                    },
+                    {
                       action: "edit",
-                      resources: ["old.txt", "update:old.txt", "moved.txt", "update:moved.txt"],
+                      resources: ["old.txt", "moved.txt"],
                     },
                   ])
                 }),
@@ -907,7 +967,11 @@ describe("PatchTool", () => {
                     call(`*** Begin Patch\n*** Update File: ${target}\n@@\n-before\n+after\n*** End Patch`),
                   ),
                 ).toMatchObject({ status: "completed" })
-                expect(assertions.map((input) => input.action)).toEqual(["external_directory", "edit"])
+                expect(assertions.map((input) => input.action)).toEqual([
+                  "external_directory",
+                  "patch.update",
+                  "edit",
+                ])
                 expect(assertions[0]).toMatchObject({
                   resources: [path.join(directory, "*").replaceAll("\\", "/")],
                   save: [path.join(repository, "*").replaceAll("\\", "/")],
@@ -916,10 +980,8 @@ describe("PatchTool", () => {
                     parentDir: directory,
                   },
                 })
-                expect(assertions[1]?.resources).toEqual([
-                  target.replaceAll("\\", "/"),
-                  `update:${target.replaceAll("\\", "/")}`,
-                ])
+                expect(assertions[1]?.resources).toEqual([target.replaceAll("\\", "/")])
+                expect(assertions[2]?.resources).toEqual([target.replaceAll("\\", "/")])
                 expect(readsBeforeEditApproval).toBe(1)
                 expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
               }),
@@ -981,7 +1043,25 @@ describe("PatchTool", () => {
             call("*** Begin Patch\n*** Update File: target.txt\n@@\n-before\n+after\n*** End Patch"),
           ),
         ).toMatchObject({ status: "error", error: { type: "permission.rejected" } })
-        expect(assertions.map((input) => input.action)).toEqual(["edit"])
+        expect(assertions.map((input) => input.action)).toEqual(["patch.update", "edit"])
+        expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("before\n")
+      }),
+    ),
+  )
+
+  it.live("preserves patch operation permission rejection", () =>
+    withTempTool((directory, registry) =>
+      Effect.gen(function* () {
+        const target = path.join(directory, "target.txt")
+        yield* Effect.promise(() => fs.writeFile(target, "before\n"))
+        denyAction = "patch.update"
+        expect(
+          yield* executeTool(
+            registry,
+            call("*** Begin Patch\n*** Update File: target.txt\n@@\n-before\n+after\n*** End Patch"),
+          ),
+        ).toMatchObject({ status: "error", error: { type: "permission.rejected" } })
+        expect(assertions.map((input) => input.action)).toEqual(["patch.update"])
         expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("before\n")
       }),
     ),
@@ -1006,8 +1086,9 @@ describe("PatchTool", () => {
                       call("*** Begin Patch\n*** Update File: ../sibling.txt\n@@\n-before\n+after\n*** End Patch"),
                     ),
                   ).toMatchObject({ status: "completed" })
-                  expect(assertions.map((input) => input.action)).toEqual(["edit"])
-                  expect(assertions[0]?.resources).toEqual(["../sibling.txt", "update:../sibling.txt"])
+                  expect(assertions.map((input) => input.action)).toEqual(["patch.update", "edit"])
+                  expect(assertions[0]?.resources).toEqual(["../sibling.txt"])
+                  expect(assertions[1]?.resources).toEqual(["../sibling.txt"])
                   expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
                 }),
               tmp.path,
@@ -1038,7 +1119,7 @@ describe("PatchTool", () => {
                     call("*** Begin Patch\n*** Update File: link.txt\n@@\n-before\n+after\n*** End Patch"),
                   ),
                 ).toMatchObject({ status: "completed" })
-                expect(assertions.map((input) => input.action)).toEqual(["edit"])
+                expect(assertions.map((input) => input.action)).toEqual(["patch.update", "edit"])
                 expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
               }),
             ),
@@ -1069,7 +1150,11 @@ describe("PatchTool", () => {
                     call(`*** Begin Patch\n*** Update File: ${relative}\n@@\n-before\n+after\n*** End Patch`),
                   ),
                 ).toMatchObject({ status: "completed" })
-                expect(assertions.map((input) => input.action)).toEqual(["external_directory", "edit"])
+                expect(assertions.map((input) => input.action)).toEqual([
+                  "external_directory",
+                  "patch.update",
+                  "edit",
+                ])
                 expect(readsBeforeEditApproval).toBe(1)
                 expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
               }),
@@ -1091,7 +1176,12 @@ describe("PatchTool", () => {
         reset()
         const source = path.join(active.path, "source.txt")
         const destination = path.join(outside.path, "moved.txt")
-        return Effect.promise(() => fs.writeFile(source, "before\n")).pipe(
+        return Effect.promise(() =>
+          Promise.all([
+            fs.writeFile(source, "before\n"),
+            fs.mkdir(path.join(outside.path, ".git"), { recursive: true }),
+          ]),
+        ).pipe(
           Effect.andThen(
             withTool(active.path, (registry) =>
               Effect.gen(function* () {
@@ -1113,13 +1203,12 @@ describe("PatchTool", () => {
                     metadata: { filepath: destination, parentDir: outside.path },
                   },
                   {
+                    action: "patch.update",
+                    resources: ["source.txt", destination.replaceAll("\\", "/")],
+                  },
+                  {
                     action: "edit",
-                    resources: [
-                      "source.txt",
-                      "update:source.txt",
-                      destination.replaceAll("\\", "/"),
-                      `update:${destination.replaceAll("\\", "/")}`,
-                    ],
+                    resources: ["source.txt", destination.replaceAll("\\", "/")],
                   },
                 ])
                 expect(yield* exists(source)).toBe(false)
@@ -1160,6 +1249,7 @@ describe("PatchTool", () => {
                 expect(assertions.map((input) => input.action)).toEqual([
                   "external_directory",
                   "external_directory",
+                  "patch.update",
                   "edit",
                 ])
                 expect(assertions[0]?.resources).toEqual([

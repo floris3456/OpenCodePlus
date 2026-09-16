@@ -821,11 +821,12 @@ path is skipped.
   `enabled`. Every perm item OFF for an agent installs one core deny per
   pattern (`{ action, resource: pattern, effect: "deny" }`) through the
   agent registration; because core permission evaluation is last-match-wins,
-  appending is always sufficient. The action prefers the tool's own
-  `options.permission` carried on the perm item by discovery (edit, write,
-  and patch all register `permission: "edit"`), falling back to
-  `actionForToolId`: `edit`/`write`/`patch` share core's `edit` action,
-  every other tool uses its own id.
+  appending is always sufficient. The action prefers the per-rule
+  `permAction` carried on the perm item by discovery (patch operation rules
+  carry `patch.add`/`patch.update`/`patch.delete`; other tools carry their
+  own `options.permission`, with edit and write registering
+  `permission: "edit"`), falling back to `actionForToolId`: `edit`/`write`
+  share core's `edit` action, every other tool uses its own id.
 - Patterns are CORE RESOURCE WILDCARDS over the tool's permission resource,
   NOT regex: `*` spans any run, `?` matches one character. For shell the
   resource is the parsed command text, so `git *` also matches a bare `git`
@@ -835,9 +836,12 @@ path is skipped.
   search pattern (PATH-scoped search restriction is NOT expressible: core
   authorizes `input.pattern`, so `grep({ pattern: "HEAD", path: ".git" })`
   evaluates resource `"HEAD"`), for subagent/skill the exact id, for patch
-  the typed `<type>:<resource>` core asserts alongside each bare path (three
-  curated rules: `Add file` → `add:*`, `Update file` → `update:*`,
-  `Delete file` → `delete:*`). User
+  the per-operation action with bare paths (core asserts `patch.add`/
+  `patch.update`/`patch.delete` with that type's bare paths before its
+  unchanged `edit` assert; three curated rules: `Add file` → action
+  `patch.add`, `Update file` → `patch.update`, `Delete file` →
+  `patch.delete`, each with pattern `*`). A wildcard-action `ask` can see
+  one extra prompt per patch. User
   patterns validate through `validateRuleInput` (at least one non-empty
   pattern; keywords default through `keywordsForPattern` when omitted).
   `commandHeads` (Plus's own head-depth table: `git: 2`, `docker: 2`,
@@ -848,10 +852,9 @@ path is skipped.
   (`src/services/process.ts:712.` → `src/services/process.ts`).
 - Keywords derive only through the single `keywordsForPattern`: head word
   plus subcommand words, stopping at the first wildcard or flag (`git push
-  *` → `["git push"]`); a single-token `:` pattern keeps the full typed
-  pattern (`add:*` → `["add:*"]`, never the bare word `add`); a pattern with
-  no literal leading word falls back to its first meaningful segment
-  (`*.git*` → `[".git"]`).
+  *` → `["git push"]`); a pattern with no literal leading word falls back
+  to its first meaningful segment (`*.git*` → `[".git"]`). A `*` pattern
+  yields no keyword, so the patch rows scrub nothing.
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
   description plus every system part, after the text plans), the

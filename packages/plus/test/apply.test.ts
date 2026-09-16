@@ -1247,6 +1247,46 @@ test("a perm rule off installs a core deny proved by Permission.evaluate (not a 
   expect(evaluate("shell", "git status", alphaRules).effect).not.toBe("deny")
 })
 
+test("patch operation rules off install per-action denies proved by Permission.evaluate", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const { match } = await import("../../core/src/util/wildcard.js")
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const patchText = "Apply file patches."
+  const addText = "Add file\n*"
+  const updateText = "Update file\n*"
+  const deleteText = "Delete file\n*"
+  const items = [
+    { id: "tool:patch", kind: "tool" as const, group: "native" as const, title: "patch", text: patchText, enabled: true, fingerprint: fingerprint(patchText) },
+    { id: "perm:patch:add-file", kind: "perm" as const, group: "none" as const, title: "Add file", text: addText, enabled: true, fingerprint: fingerprint(addText), permTool: "patch", ruleId: "add-file", patterns: ["*"], keywords: [] as string[], provenance: [] as string[], permAction: "patch.add" },
+    { id: "perm:patch:update-file", kind: "perm" as const, group: "none" as const, title: "Update file", text: updateText, enabled: true, fingerprint: fingerprint(updateText), permTool: "patch", ruleId: "update-file", patterns: ["*"], keywords: [] as string[], provenance: [] as string[], permAction: "patch.update" },
+    { id: "perm:patch:delete-file", kind: "perm" as const, group: "none" as const, title: "Delete file", text: deleteText, enabled: true, fingerprint: fingerprint(deleteText), permTool: "patch", ruleId: "delete-file", patterns: ["*"], keywords: [] as string[], provenance: [] as string[], permAction: "patch.delete" },
+  ]
+  const records = [
+    makeRecord({ item: "perm:patch:add-file", agent: "alpha", level: "project", state: "off" }),
+    makeRecord({ item: "perm:patch:update-file", agent: "alpha", level: "project", state: "off" }),
+    makeRecord({ item: "perm:patch:delete-file", agent: "alpha", level: "project", state: "off" }),
+  ]
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }))
+  expect(applied.registrations.length).toBeGreaterThan(0)
+  const alphaRules = agents.state.get("alpha")?.permissions ?? []
+  expect(alphaRules.slice(-3)).toEqual([
+    { action: "patch.add", resource: "*", effect: "deny" },
+    { action: "patch.update", resource: "*", effect: "deny" },
+    { action: "patch.delete", resource: "*", effect: "deny" },
+  ])
+  expect(agents.state.get("beta")?.permissions.some((rule) => String(rule.action).startsWith("patch."))).toBe(false)
+  expect(evaluate("patch.add", "src/a.ts", alphaRules).effect).toBe("deny")
+  expect(evaluate("patch.update", "src/a.ts", alphaRules).effect).toBe("deny")
+  expect(evaluate("patch.delete", "src/a.ts", alphaRules).effect).toBe("deny")
+  expect(evaluate("edit", "src/a.ts", alphaRules).effect).not.toBe("deny")
+  expect(evaluate("patch.add", "src/a.ts", alphaRules).effect).toBe("deny")
+  expect(match("src/a.ts", "*")).toBe(true)
+})
+
 test("a perm rule off scrubs whole-word lines, keeping head-only lines", async () => {
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({

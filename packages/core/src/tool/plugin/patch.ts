@@ -192,19 +192,33 @@ export const Plugin = {
                 change.target,
                 ...(change.type === "update" && change.moveTarget ? [change.moveTarget] : []),
               ])
+              for (const type of ["add", "update", "delete"] as const) {
+                const paths = [
+                  ...new Set(
+                    prepared.flatMap((change) =>
+                      change.type !== type
+                        ? []
+                        : [
+                            change.target.resource,
+                            ...(change.type === "update" && change.moveTarget ? [change.moveTarget.resource] : []),
+                          ],
+                    ),
+                  ),
+                ]
+                if (paths.length === 0) continue
+                yield* permission.assert({
+                  action: `patch.${type}`,
+                  resources: paths,
+                  save: ["*"],
+                  metadata: { filepath: paths.join(", ") },
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  source,
+                })
+              }
               yield* permission.assert({
                 action: "edit",
-                resources: [
-                  ...new Set(
-                    prepared.flatMap((change) => [
-                      change.target.resource,
-                      `${change.type}:${change.target.resource}`,
-                      ...(change.type === "update" && change.moveTarget
-                        ? [change.moveTarget.resource, `${change.type}:${change.moveTarget.resource}`]
-                        : []),
-                    ]),
-                  ),
-                ],
+                resources: [...new Set(targets.map((target) => target.resource))],
                 save: ["*"],
                 metadata: {
                   filepath: targets.map((target) => target.resource).join(", "),

@@ -295,9 +295,10 @@ function pushRule(editor: AgentEditor, rule: { agent: string; action: string; re
 // Tool-specific permission rules: every perm item OFF for an agent installs
 // one core deny per pattern through the existing agent registration. Because
 // Permission.evaluate is last-match-wins, appending is always sufficient.
-// The action prefers the tool's own `options.permission` carried on the perm
-// item by discovery, falling back to the tool id map (edit/write/patch share
-// core's `edit` action).
+// The action prefers the per-rule `permAction` carried on the perm item by
+// discovery (patch operation rules carry `patch.add`/`patch.update`/
+// `patch.delete`; other tools carry their own `options.permission`),
+// falling back to the tool id map (edit/write share core's `edit` action).
 function permDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
