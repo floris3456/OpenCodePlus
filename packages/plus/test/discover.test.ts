@@ -993,42 +993,6 @@ test("discovery mines perm candidates with provenance, merging curated labels fi
   expect([...perms.keys()].some((id) => id.startsWith("perm:mcp:"))).toBe(false)
 })
 
-test("discovery carries per-operation patch actions with bare path patterns", async () => {
-  const directory = await tempDir("plus-discover-")
-  const patchEntry = {
-    ...nativeTool("patch", "Apply file patches."),
-    options: { codemode: false, permission: "edit" },
-  }
-  const discovered = await discover({
-    ctx: fullContext({ directory, tools: [patchEntry] }),
-    records: [],
-    baseTemplates: noTemplates,
-    activeBase: noBase,
-  })
-  const perms = new Map(discovered.items.filter((item) => item.kind === "perm").map((item) => [item.id, item]))
-  expect(perms.get("perm:patch:add-file")).toMatchObject({
-    permTool: "patch",
-    ruleId: "add-file",
-    patterns: ["*"],
-    permAction: "patch.add",
-  })
-  expect(perms.get("perm:patch:update-file")).toMatchObject({
-    permTool: "patch",
-    ruleId: "update-file",
-    patterns: ["*"],
-    permAction: "patch.update",
-  })
-  expect(perms.get("perm:patch:delete-file")).toMatchObject({
-    permTool: "patch",
-    ruleId: "delete-file",
-    patterns: ["*"],
-    permAction: "patch.delete",
-  })
-  for (const id of ["perm:patch:add-file", "perm:patch:update-file", "perm:patch:delete-file"]) {
-    expect(perms.get(id)?.keywords).toEqual([])
-  }
-})
-
 test("a model-less project file falls through to the defining file and host models", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")

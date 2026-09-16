@@ -43,9 +43,6 @@ export const AssertInput = Schema.Struct({
   id: ID.pipe(Schema.optional),
   ...RequestFields,
   agent: Agent.ID.pipe(Schema.optional),
-  // Supplemental checks only, layered on an existing authorization. Never a
-  // substitute for ordinary authorization: skipped entirely when unconfigured.
-  targetedOnly: Schema.Boolean.pipe(Schema.optional),
 }).annotate({ identifier: "Permission.AssertInput" })
 export type AssertInput = typeof AssertInput.Type
 
@@ -214,32 +211,7 @@ const layer = Layer.effect(
         }),
       )
 
-    // Ask the matcher rather than inspecting pattern syntax: this matcher has
-    // non-obvious rules (a trailing " *" is optional), so "*", "**", "*?" and
-    // "* *" are all universal despite looking different. A pattern that matches
-    // these improbable probes matches anything, and matching everything is not a
-    // decision about this supplemental check.
-    // Probes carry a double space so space-sensitive catch-alls ("*  *",
-    // "**  **") still match them, contain spaces so no genuine action could
-    // equal them, and use distinct lengths (19, 32, 52) so a fixed-length "?"
-    // pattern cannot match all three.
-    const PROBES = [
-      "unlikely probe  eta",
-      "unlikely probe gamma delta  zeta",
-      "unlikely probe alpha beta gamma delta epsilon  theta",
-    ]
-    function universal(pattern: string) {
-      return PROBES.every((probe) => Wildcard.match(probe, pattern))
-    }
-
-    const isTargeted = Effect.fnUntraced(function* (input: AssertInput) {
-      const rules = yield* configured(input.sessionID, input.agent)
-      return rules.some((rule) => !universal(rule.action) && Wildcard.match(input.action, rule.action))
-    })
-
     const ask = Effect.fn("Permission.ask")(function* (input: AssertInput) {
-      if (input.targetedOnly && !(yield* isTargeted(input)))
-        return { id: input.id ?? ID.create(), effect: "allow" as const }
       const result = yield* evaluateInput(input)
       const value = request(input, result.message)
       if (result.effect === "ask") yield* create(value, input.agent)
@@ -248,7 +220,6 @@ const layer = Layer.effect(
 
     const assert = Effect.fn("Permission.assert")((input: AssertInput) =>
       Effect.gen(function* () {
-        if (input.targetedOnly && !(yield* isTargeted(input))) return
         const result = yield* evaluateInput(input)
         return yield* Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {

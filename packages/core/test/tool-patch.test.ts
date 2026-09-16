@@ -14,14 +14,6 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { Tool } from "@opencode/core/tool"
 import { PatchTool } from "@opencode/core/tool/plugin/patch"
-import { Agent } from "@opencode/core/agent"
-import { Database } from "@opencode/core/database/database"
-import { Bus } from "@opencode/core/bus"
-import { PermissionSaved } from "@opencode/core/permission/saved"
-import { Project } from "@opencode/core/project"
-import { ProjectTable } from "@opencode/core/project/sql"
-import { SessionStore } from "@opencode/core/session/store"
-import { SessionTable } from "@opencode/core/session/sql"
 import { transformEnvironmentFiles } from "./fixture/environment"
 import { location } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
@@ -221,16 +213,8 @@ describe("PatchTool", () => {
                     },
                   ],
                 })
-                expect(assertions.map((input) => input.action)).toEqual([
-                  "patch.add",
-                  "patch.update",
-                  "patch.delete",
-                  "edit",
-                ])
+                expect(assertions.map((input) => input.action)).toEqual(["edit"])
                 expect(assertions).toMatchObject([
-                  { action: "patch.add", resources: ["nested/new.txt"] },
-                  { action: "patch.update", resources: ["update.txt"] },
-                  { action: "patch.delete", resources: ["remove.txt"] },
                   {
                     sessionID,
                     action: "edit",
@@ -517,101 +501,10 @@ describe("PatchTool", () => {
         )
         expect(assertions).toMatchObject([
           {
-            action: "patch.update",
-            resources: ["old/name.txt", "renamed/dir/name.txt"],
-          },
-          {
             action: "edit",
             resources: ["old/name.txt", "renamed/dir/name.txt"],
           },
         ])
-      }),
-    ),
-  )
-
-  it.live("asserts per-operation actions with bare paths and keeps edit bare", () =>
-    withTempTool((directory, registry) =>
-      Effect.gen(function* () {
-        yield* Effect.promise(() =>
-          Promise.all([
-            fs.writeFile(path.join(directory, "update.txt"), "before\n"),
-            fs.writeFile(path.join(directory, "remove.txt"), "remove\n"),
-          ]),
-        )
-        const settled = yield* executeTool(
-          registry,
-          call(
-            "*** Begin Patch\n*** Add File: added.txt\n+created\n*** Update File: update.txt\n@@\n-before\n+after\n*** Delete File: remove.txt\n*** End Patch",
-          ),
-        )
-        expect(settled.status).toBe("completed")
-        expect(assertions.map((input) => input.action)).toEqual([
-          "patch.add",
-          "patch.update",
-          "patch.delete",
-          "edit",
-        ])
-        const byAction = new Map(assertions.map((input) => [input.action, input]))
-        expect(byAction.get("patch.add")?.resources).toEqual(["added.txt"])
-        expect(byAction.get("patch.update")?.resources).toEqual(["update.txt"])
-        expect(byAction.get("patch.delete")?.resources).toEqual(["remove.txt"])
-        const editResources = byAction.get("edit")?.resources ?? []
-        expect(editResources).toEqual(["added.txt", "update.txt", "remove.txt"])
-        for (const resource of editResources) expect(resource).not.toContain(":")
-        expect(byAction.get("edit")?.metadata?.filepath).toBe("added.txt, update.txt, remove.txt")
-        for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
-          for (const resource of byAction.get(action)?.resources ?? []) expect(resource).not.toContain(":")
-        }
-      }),
-    ),
-  )
-
-  it.live("edit-scoped path rules behave identically before and after (real Permission.evaluate)", () =>
-    withTempTool((directory, registry) =>
-      Effect.gen(function* () {
-        yield* Effect.promise(() => fs.writeFile(path.join(directory, "src-a.txt"), "before\n"))
-        const settled = yield* executeTool(
-          registry,
-          call("*** Begin Patch\n*** Update File: src-a.txt\n@@\n-before\n+after\n*** End Patch"),
-        )
-        expect(settled.status).toBe("completed")
-        const rules = [
-          { action: "edit", resource: "*", effect: "ask" as const },
-          { action: "edit", resource: "src-a.txt", effect: "allow" as const },
-        ]
-        const edit = assertions.find((input) => input.action === "edit")
-        if (edit === undefined) return yield* Effect.fail(new Error("missing edit assertion"))
-        expect(edit.resources).toEqual(["src-a.txt"])
-        for (const resource of edit.resources) {
-          expect(Permission.evaluate("edit", resource, rules).effect).toBe("allow")
-        }
-        const legacyTyped = `update:src-a.txt`
-        expect(Permission.evaluate("edit", legacyTyped, rules).effect).toBe("ask")
-        const typed = assertions.find((input) => input.action === "patch.update")
-        if (typed === undefined) return yield* Effect.fail(new Error("missing patch.update assertion"))
-        expect(typed.resources).toEqual(["src-a.txt"])
-      }),
-    ),
-  )
-
-  it.live("rename move destination keeps the update operation type", () =>
-    withTempTool((directory, registry) =>
-      Effect.gen(function* () {
-        const source = path.join(directory, "old.txt")
-        yield* Effect.promise(() => fs.writeFile(source, "before\n"))
-        const settled = yield* executeTool(
-          registry,
-          call(
-            "*** Begin Patch\n*** Update File: old.txt\n*** Move to: moved.txt\n@@\n-before\n+after\n*** End Patch",
-          ),
-        )
-        expect(settled.status).toBe("completed")
-        const byAction = new Map(assertions.map((input) => [input.action, input]))
-        expect(byAction.get("patch.update")?.resources).toEqual(["old.txt", "moved.txt"])
-        expect(byAction.get("edit")?.resources).toEqual(["old.txt", "moved.txt"])
-        expect([...(byAction.get("patch.update")?.resources ?? [])].every((resource) => !resource.includes(":"))).toBe(
-          true,
-        )
       }),
     ),
   )
@@ -642,10 +535,6 @@ describe("PatchTool", () => {
                     output: { applied: [{ resource: "moved.txt" }] },
                   })
                   expect(assertions).toMatchObject([
-                    {
-                      action: "patch.update",
-                      resources: ["old.txt", "moved.txt"],
-                    },
                     {
                       action: "edit",
                       resources: ["old.txt", "moved.txt"],
@@ -975,11 +864,7 @@ describe("PatchTool", () => {
                     call(`*** Begin Patch\n*** Update File: ${target}\n@@\n-before\n+after\n*** End Patch`),
                   ),
                 ).toMatchObject({ status: "completed" })
-                expect(assertions.map((input) => input.action)).toEqual([
-                  "external_directory",
-                  "patch.update",
-                  "edit",
-                ])
+                expect(assertions.map((input) => input.action)).toEqual(["external_directory", "edit"])
                 expect(assertions[0]).toMatchObject({
                   resources: [path.join(directory, "*").replaceAll("\\", "/")],
                   save: [path.join(repository, "*").replaceAll("\\", "/")],
@@ -989,7 +874,6 @@ describe("PatchTool", () => {
                   },
                 })
                 expect(assertions[1]?.resources).toEqual([target.replaceAll("\\", "/")])
-                expect(assertions[2]?.resources).toEqual([target.replaceAll("\\", "/")])
                 expect(readsBeforeEditApproval).toBe(1)
                 expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
               }),
@@ -1051,25 +935,7 @@ describe("PatchTool", () => {
             call("*** Begin Patch\n*** Update File: target.txt\n@@\n-before\n+after\n*** End Patch"),
           ),
         ).toMatchObject({ status: "error", error: { type: "permission.rejected" } })
-        expect(assertions.map((input) => input.action)).toEqual(["patch.update", "edit"])
-        expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("before\n")
-      }),
-    ),
-  )
-
-  it.live("preserves patch operation permission rejection", () =>
-    withTempTool((directory, registry) =>
-      Effect.gen(function* () {
-        const target = path.join(directory, "target.txt")
-        yield* Effect.promise(() => fs.writeFile(target, "before\n"))
-        denyAction = "patch.update"
-        expect(
-          yield* executeTool(
-            registry,
-            call("*** Begin Patch\n*** Update File: target.txt\n@@\n-before\n+after\n*** End Patch"),
-          ),
-        ).toMatchObject({ status: "error", error: { type: "permission.rejected" } })
-        expect(assertions.map((input) => input.action)).toEqual(["patch.update"])
+        expect(assertions.map((input) => input.action)).toEqual(["edit"])
         expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("before\n")
       }),
     ),
@@ -1094,9 +960,8 @@ describe("PatchTool", () => {
                       call("*** Begin Patch\n*** Update File: ../sibling.txt\n@@\n-before\n+after\n*** End Patch"),
                     ),
                   ).toMatchObject({ status: "completed" })
-                  expect(assertions.map((input) => input.action)).toEqual(["patch.update", "edit"])
+                  expect(assertions.map((input) => input.action)).toEqual(["edit"])
                   expect(assertions[0]?.resources).toEqual(["../sibling.txt"])
-                  expect(assertions[1]?.resources).toEqual(["../sibling.txt"])
                   expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
                 }),
               tmp.path,
@@ -1127,7 +992,7 @@ describe("PatchTool", () => {
                     call("*** Begin Patch\n*** Update File: link.txt\n@@\n-before\n+after\n*** End Patch"),
                   ),
                 ).toMatchObject({ status: "completed" })
-                expect(assertions.map((input) => input.action)).toEqual(["patch.update", "edit"])
+                expect(assertions.map((input) => input.action)).toEqual(["edit"])
                 expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
               }),
             ),
@@ -1158,11 +1023,7 @@ describe("PatchTool", () => {
                     call(`*** Begin Patch\n*** Update File: ${relative}\n@@\n-before\n+after\n*** End Patch`),
                   ),
                 ).toMatchObject({ status: "completed" })
-                expect(assertions.map((input) => input.action)).toEqual([
-                  "external_directory",
-                  "patch.update",
-                  "edit",
-                ])
+                expect(assertions.map((input) => input.action)).toEqual(["external_directory", "edit"])
                 expect(readsBeforeEditApproval).toBe(1)
                 expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("after\n")
               }),
@@ -1211,10 +1072,6 @@ describe("PatchTool", () => {
                     metadata: { filepath: destination, parentDir: outside.path },
                   },
                   {
-                    action: "patch.update",
-                    resources: ["source.txt", destination.replaceAll("\\", "/")],
-                  },
-                  {
                     action: "edit",
                     resources: ["source.txt", destination.replaceAll("\\", "/")],
                   },
@@ -1257,7 +1114,6 @@ describe("PatchTool", () => {
                 expect(assertions.map((input) => input.action)).toEqual([
                   "external_directory",
                   "external_directory",
-                  "patch.update",
                   "edit",
                 ])
                 expect(assertions[0]?.resources).toEqual([
@@ -1384,242 +1240,4 @@ describe("PatchTool", () => {
     ),
   )
 
-  it.live("marks per-operation asserts targetedOnly and leaves edit untouched", () =>
-    withTempTool((directory, registry) =>
-      Effect.gen(function* () {
-        yield* Effect.promise(() =>
-          Promise.all([
-            fs.writeFile(path.join(directory, "update.txt"), "before\n"),
-            fs.writeFile(path.join(directory, "remove.txt"), "remove\n"),
-          ]),
-        )
-        const settled = yield* executeTool(
-          registry,
-          call(
-            "*** Begin Patch\n*** Add File: added.txt\n+created\n*** Update File: update.txt\n@@\n-before\n+after\n*** Delete File: remove.txt\n*** End Patch",
-          ),
-        )
-        expect(settled.status).toBe("completed")
-        for (const input of assertions) {
-          if (input.action.startsWith("patch.")) expect(input.targetedOnly).toBe(true)
-          if (input.action === "edit") expect(input.targetedOnly).toBeUndefined()
-        }
-      }),
-    ),
-  )
-})
-
-const realLocation = Layer.succeed(
-  Location.Service,
-  Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
-)
-const itReal = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, PermissionSaved.node, Agent.node, Permission.node]),
-    [Location.node.replace(realLocation)],
-  ),
-)
-
-const realSessionID = Session.ID.make("ses_patch_real")
-
-function setupReal(rules: Permission.Ruleset) {
-  return Effect.gen(function* () {
-    const { db } = yield* Database.Service
-    yield* db
-      .insert(ProjectTable)
-      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-      .onConflictDoNothing()
-      .run()
-      .pipe(Effect.orDie)
-    yield* db
-      .insert(SessionTable)
-      .values({
-        id: realSessionID,
-        project_id: Project.ID.global,
-        slug: "test",
-        directory: "/project",
-        title: "test",
-        version: "test",
-        agent: "test",
-      })
-      .onConflictDoNothing()
-      .run()
-      .pipe(Effect.orDie)
-    const agents = yield* Agent.Service
-    yield* agents.transform((editor) =>
-      editor.update(Agent.ID.make("test"), (agent) => {
-        agent.permissions = [...rules]
-      }),
-    )
-  })
-}
-
-function patchSequence(input: {
-  action: string
-  resources: string[]
-  targetedOnly?: true
-}) {
-  return {
-    sessionID: realSessionID,
-    action: input.action,
-    resources: input.resources,
-    ...(input.targetedOnly ? { targetedOnly: true as const } : {}),
-  } satisfies Permission.AssertInput
-}
-
-describe("PatchTool permission decisions (real Permission.Service)", () => {
-  itReal.effect("reviewer counterexample stays allowed without a patch rule", () =>
-    Effect.gen(function* () {
-      yield* setupReal([
-        { action: "*", resource: "*", effect: "deny" },
-        { action: "edit", resource: "src/*", effect: "allow" },
-      ])
-      const service = yield* Permission.Service
-      // patch.ts order: typed assert first, then edit.
-      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
-      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("double-star catch-all does not opt in to patch checks", () =>
-    Effect.gen(function* () {
-      yield* setupReal([
-        { action: "**", resource: "*", effect: "deny" },
-        { action: "edit", resource: "src/*", effect: "allow" },
-      ])
-      const service = yield* Permission.Service
-      // patch.ts order: typed assert first, then edit.
-      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
-      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("double-star ask catch-all adds no prompt beyond upstream edit", () =>
-    Effect.gen(function* () {
-      yield* setupReal([
-        { action: "**", resource: "*", effect: "ask" },
-        { action: "edit", resource: "src/*", effect: "allow" },
-      ])
-      const service = yield* Permission.Service
-      expect(
-        yield* service.ask(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true })),
-      ).toMatchObject({ effect: "allow" })
-      expect(yield* service.list()).toEqual([])
-      expect(yield* service.ask(patchSequence({ action: "edit", resources: ["src/a.ts"] }))).toMatchObject({
-        effect: "allow",
-      })
-      // Upstream edit raises no request; the typed assert contributes none.
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("star-question catch-all does not opt in to patch checks", () =>
-    Effect.gen(function* () {
-      yield* setupReal([
-        { action: "*?", resource: "*", effect: "deny" },
-        { action: "edit", resource: "src/*", effect: "allow" },
-      ])
-      const service = yield* Permission.Service
-      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
-      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("space catch-all does not opt in to patch checks", () =>
-    Effect.gen(function* () {
-      yield* setupReal([
-        { action: "* *", resource: "*", effect: "deny" },
-        { action: "edit", resource: "src/*", effect: "allow" },
-      ])
-      const service = yield* Permission.Service
-      // patch.ts order: typed assert first, then edit.
-      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
-      yield* service.assert(patchSequence({ action: "edit", resources: ["src/a.ts"] }))
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("space ask catch-all adds no prompt beyond upstream edit", () =>
-    Effect.gen(function* () {
-      yield* setupReal([
-        { action: "* *", resource: "*", effect: "ask" },
-        { action: "edit", resource: "src/*", effect: "allow" },
-      ])
-      const service = yield* Permission.Service
-      expect(
-        yield* service.ask(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true })),
-      ).toMatchObject({ effect: "allow" })
-      expect(yield* service.list()).toEqual([])
-      expect(yield* service.ask(patchSequence({ action: "edit", resources: ["src/a.ts"] }))).toMatchObject({
-        effect: "allow",
-      })
-      // Upstream edit raises no request; the typed assert contributes none.
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("targeted patch.delete deny still blocks deletes", () =>
-    Effect.gen(function* () {
-      yield* setupReal([{ action: "patch.delete", resource: "*", effect: "deny" }])
-      const service = yield* Permission.Service
-      const blocked = yield* service
-        .assert(patchSequence({ action: "patch.delete", resources: ["src/a.ts"], targetedOnly: true }))
-        .pipe(Effect.flip)
-      expect(blocked).toBeInstanceOf(Permission.BlockedError)
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("no rules adds no prompt beyond upstream edit", () =>
-    Effect.gen(function* () {
-      yield* setupReal([])
-      const service = yield* Permission.Service
-      for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
-        expect(
-          yield* service.ask(patchSequence({ action, resources: ["src/a.ts"], targetedOnly: true })),
-        ).toMatchObject({ effect: "allow" })
-      }
-      expect(yield* service.list()).toEqual([])
-      expect(
-        yield* service.ask(patchSequence({ action: "edit", resources: ["src/a.ts"] })),
-      ).toMatchObject({ effect: "ask" })
-      // Upstream would raise exactly one request (edit); typed asserts add none.
-      expect(yield* service.list()).toHaveLength(1)
-      const pending = yield* service.list()
-      yield* service.reply({ requestID: pending[0]!.id, reply: "once" })
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("patch.delete deny blocks deletes while add and update pass", () =>
-    Effect.gen(function* () {
-      yield* setupReal([{ action: "patch.delete", resource: "*", effect: "deny" }])
-      const service = yield* Permission.Service
-      const blocked = yield* service
-        .assert(patchSequence({ action: "patch.delete", resources: ["src/a.ts"], targetedOnly: true }))
-        .pipe(Effect.flip)
-      expect(blocked).toBeInstanceOf(Permission.BlockedError)
-      expect(yield* service.list()).toEqual([])
-      yield* service.assert(patchSequence({ action: "patch.add", resources: ["src/a.ts"], targetedOnly: true }))
-      yield* service.assert(patchSequence({ action: "patch.update", resources: ["src/a.ts"], targetedOnly: true }))
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
-
-  itReal.effect("patch.* deny blocks all three operations", () =>
-    Effect.gen(function* () {
-      yield* setupReal([{ action: "patch.*", resource: "*", effect: "deny" }])
-      const service = yield* Permission.Service
-      for (const action of ["patch.add", "patch.update", "patch.delete"] as const) {
-        const blocked = yield* service
-          .assert(patchSequence({ action, resources: ["src/a.ts"], targetedOnly: true }))
-          .pipe(Effect.flip)
-        expect(blocked).toBeInstanceOf(Permission.BlockedError)
-      }
-      expect(yield* service.list()).toEqual([])
-    }),
-  )
 })
