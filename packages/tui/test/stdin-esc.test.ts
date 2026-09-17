@@ -375,3 +375,80 @@ test("a kitty answer after the downgrade re-pushes kitty, so parsing follows it 
     renderer.destroy()
   }
 })
+
+// ---------------------------------------------------------------------------
+// Legacy tolerant reader for the kitty Escape encoding. A terminal left in
+// kitty mode while the parser downgraded to legacy (the 300 ms query timeout
+// fired, but the pushed flags were never popped) keeps sending `CSI 27 u`.
+// Legacy parsing must still decode that Escape subset — and nothing else of
+// the CSI-u space — with press and repeat delivering an escape and release
+// delivering nothing, matching kitty mode. `CSI 27 u` has no legacy meaning,
+// so decoding it cannot regress legacy terminals.
+test("legacy decodes kitty CSI 27 u as one escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy decodes back-to-back kitty CSI 27 u as one escape each", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(
+      new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x75, 0x1b, 0x5b, 0x32, 0x37, 0x75]),
+    )
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape", "escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy decodes kitty escape with modifiers present as escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    // CSI 27 ; 5 u — ctrl modifier, press.
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x35, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy delivers kitty escape press (:1) as escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x31, 0x3a, 0x31, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy delivers kitty escape repeat (:2) as escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x31, 0x3a, 0x32, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy ignores kitty escape release (:3)", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x31, 0x3a, 0x33, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual([])
+  } finally {
+    parser.destroy()
+  }
+})
