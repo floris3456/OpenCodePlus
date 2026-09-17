@@ -136,7 +136,7 @@ test("off on team-query.diff denies that tool and drops it from the code-mode ca
       Image.node.replace(Layer.mock(Image.Service, { normalize: (_resource, content) => Effect.succeed(content) })),
     ],
   })
-  const snapshot = await Effect.runPromise(
+  const { control, snapshot } = await Effect.runPromise(
     Effect.gen(function* () {
       const registry = yield* CoreTool.Service
       yield* registry.transform((editor) => {
@@ -157,9 +157,15 @@ test("off on team-query.diff denies that tool and drops it from the code-mode ca
           execute: () => Effect.die("unused tool.execute"),
         })
       })
-      return yield* registry.snapshot(permissions)
+      const control = yield* registry.snapshot([])
+      const snapshot = yield* registry.snapshot(permissions)
+      return { control, snapshot }
     }).pipe(Effect.provide(toolLayer), Effect.scoped),
   )
+  if (!control.codeModeCatalog) throw new Error("expected codeModeCatalog in control snapshot")
+  const controlPaths = Object.keys(CodeModeCatalog.flattenToRecord(control.codeModeCatalog))
+  expect(controlPaths).toContain("team-query.status")
+  expect(controlPaths).toContain("team-query.diff")
   if (!snapshot.codeModeCatalog) throw new Error("expected codeModeCatalog in snapshot")
   const paths = Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog))
   expect(paths).toContain("team-query.status")
