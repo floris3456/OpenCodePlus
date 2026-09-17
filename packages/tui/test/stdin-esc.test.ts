@@ -452,3 +452,29 @@ test("legacy ignores kitty escape release (:3)", () => {
     parser.destroy()
   }
 })
+
+// Narrowness guard: the legacy safety net decodes Escape only. A non-Escape
+// CSI-u sequence must keep its pre-existing legacy behaviour (an unnamed
+// legacy fallthrough, never a named key), while kitty parsing still decodes
+// the same bytes — proving the input is real kitty traffic that legacy
+// deliberately leaves alone rather than a general legacy CSI-u decoder.
+test("legacy leaves non-escape CSI-u undecided while kitty decodes it", () => {
+  // CSI 99 ; 5 u — ctrl+c in the kitty encoding.
+  const bytes = new Uint8Array([0x1b, 0x5b, 0x39, 0x39, 0x3b, 0x35, 0x75])
+  const legacy = setup(false)
+  try {
+    legacy.parser.push(bytes)
+    drainKeyNames(legacy.parser, legacy.names)
+    expect(legacy.names).toEqual([""])
+  } finally {
+    legacy.parser.destroy()
+  }
+  const kitty = setup(true)
+  try {
+    kitty.parser.push(bytes)
+    drainKeyNames(kitty.parser, kitty.names)
+    expect(kitty.names).toEqual(["c"])
+  } finally {
+    kitty.parser.destroy()
+  }
+})
