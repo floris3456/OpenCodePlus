@@ -35,6 +35,136 @@ function setup(useKittyKeyboard: boolean, protocolContext?: { kittyKeyboardEnabl
   return { clock, names, parser }
 }
 
+// Production parity (`packages/tui/src/app.tsx`): 50 ms ESC timeout, kitty
+// parsing ON, armed timeouts, and the REAL clock. Nothing here calls
+// `flushTimeout()` or advances a manual clock by hand: the lone ESC must
+// arrive via the armed real timer, or the test fails.
+function setupRealClock(useKittyKeyboard: boolean, timeoutMs = 50) {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs,
+    armTimeouts: true,
+    useKittyKeyboard,
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  return { names, parser }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test("lone ESC flushes on the real timer with kitty parsing on", async () => {
+  const { names, parser } = setupRealClock(true)
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("lone ESC pending across pause/resume still flushes on the real timer", async () => {
+  const { names, parser } = setupRealClock(true)
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    parser.pausePendingTimeout()
+    parser.resumePendingTimeout()
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("pixel reply completing across pause/resume still lets a later lone ESC flush", async () => {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs: 50,
+    armTimeouts: true,
+    useKittyKeyboard: true,
+    protocolContext: { pixelResolutionQueryActive: true },
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  try {
+    // Partial pixel-resolution reply: the production entry condition for
+    // pausePendingTimeout() on the renderer's suspend/resume paths.
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x34, 0x3b, 0x31]))
+    drainKeyNames(parser, names)
+    expect(parser.hasPendingPixelResolutionResponse()).toBe(true)
+    expect(names).toEqual([])
+    parser.pausePendingTimeout()
+    // The reply completes while paused, then the user taps ESC: at resume
+    // the pixel response is gone but the lone ESC is still pending.
+    parser.push(new Uint8Array([0x3b, 0x32, 0x30, 0x30, 0x74]))
+    drainKeyNames(parser, names)
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual([])
+    parser.resumePendingTimeout()
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("lone ESC flushes on the real timer while a pixel query is active", async () => {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs: 50,
+    armTimeouts: true,
+    useKittyKeyboard: true,
+    protocolContext: { pixelResolutionQueryActive: true },
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("incomplete pixel prefix stays paused across resume instead of flushing", async () => {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs: 50,
+    armTimeouts: true,
+    useKittyKeyboard: true,
+    protocolContext: { pixelResolutionQueryActive: true },
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x34, 0x3b, 0x31]))
+    drainKeyNames(parser, names)
+    expect(parser.hasPendingPixelResolutionResponse()).toBe(true)
+    parser.pausePendingTimeout()
+    parser.resumePendingTimeout()
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual([])
+    expect(parser.hasPendingPixelResolutionResponse()).toBe(true)
+  } finally {
+    parser.destroy()
+  }
+})
+
 test("lone ESC inside the 20 ms window is swallowed by a following arrow", () => {
   const { clock, names, parser } = setup(false)
   try {
@@ -243,5 +373,108 @@ test("a kitty answer after the downgrade re-pushes kitty, so parsing follows it 
     expect(keys).toEqual(["c+ctrl"])
   } finally {
     renderer.destroy()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Legacy tolerant reader for the kitty Escape encoding. A terminal left in
+// kitty mode while the parser downgraded to legacy (the 300 ms query timeout
+// fired, but the pushed flags were never popped) keeps sending `CSI 27 u`.
+// Legacy parsing must still decode that Escape subset — and nothing else of
+// the CSI-u space — with press and repeat delivering an escape and release
+// delivering nothing, matching kitty mode. `CSI 27 u` has no legacy meaning,
+// so decoding it cannot regress legacy terminals.
+test("legacy decodes kitty CSI 27 u as one escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy decodes back-to-back kitty CSI 27 u as one escape each", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(
+      new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x75, 0x1b, 0x5b, 0x32, 0x37, 0x75]),
+    )
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape", "escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy decodes kitty escape with modifiers present as escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    // CSI 27 ; 5 u — ctrl modifier, press.
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x35, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy delivers kitty escape press (:1) as escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x31, 0x3a, 0x31, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy delivers kitty escape repeat (:2) as escape", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x31, 0x3a, 0x32, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("legacy ignores kitty escape release (:3)", () => {
+  const { names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x3b, 0x31, 0x3a, 0x33, 0x75]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual([])
+  } finally {
+    parser.destroy()
+  }
+})
+
+// Narrowness guard: the legacy safety net decodes Escape only. A non-Escape
+// CSI-u sequence must keep its pre-existing legacy behaviour (an unnamed
+// legacy fallthrough, never a named key), while kitty parsing still decodes
+// the same bytes — proving the input is real kitty traffic that legacy
+// deliberately leaves alone rather than a general legacy CSI-u decoder.
+test("legacy leaves non-escape CSI-u undecided while kitty decodes it", () => {
+  // CSI 99 ; 5 u — ctrl+c in the kitty encoding.
+  const bytes = new Uint8Array([0x1b, 0x5b, 0x39, 0x39, 0x3b, 0x35, 0x75])
+  const legacy = setup(false)
+  try {
+    legacy.parser.push(bytes)
+    drainKeyNames(legacy.parser, legacy.names)
+    expect(legacy.names).toEqual([""])
+  } finally {
+    legacy.parser.destroy()
+  }
+  const kitty = setup(true)
+  try {
+    kitty.parser.push(bytes)
+    drainKeyNames(kitty.parser, kitty.names)
+    expect(kitty.names).toEqual(["c"])
+  } finally {
+    kitty.parser.destroy()
   }
 })
