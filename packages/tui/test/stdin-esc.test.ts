@@ -35,6 +35,53 @@ function setup(useKittyKeyboard: boolean, protocolContext?: { kittyKeyboardEnabl
   return { clock, names, parser }
 }
 
+// Production parity (`packages/tui/src/app.tsx`): 50 ms ESC timeout, kitty
+// parsing ON, armed timeouts, and the REAL clock. Nothing here calls
+// `flushTimeout()` or advances a manual clock by hand: the lone ESC must
+// arrive via the armed real timer, or the test fails.
+function setupRealClock(useKittyKeyboard: boolean, timeoutMs = 50) {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs,
+    armTimeouts: true,
+    useKittyKeyboard,
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  return { names, parser }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test("lone ESC flushes on the real timer with kitty parsing on", async () => {
+  const { names, parser } = setupRealClock(true)
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("lone ESC pending across pause/resume still flushes on the real timer", async () => {
+  const { names, parser } = setupRealClock(true)
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    parser.pausePendingTimeout()
+    parser.resumePendingTimeout()
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
 test("lone ESC inside the 20 ms window is swallowed by a following arrow", () => {
   const { clock, names, parser } = setup(false)
   try {
