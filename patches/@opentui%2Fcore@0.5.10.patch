@@ -1,0 +1,358 @@
+diff --git a/node_modules/@opentui/core/.bun-tag-1db9d276e4d6a951 b/.bun-tag-1db9d276e4d6a951
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/chunk-bun-9gqvxy8c.js b/chunk-bun-9gqvxy8c.js
+index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f982867197a430c8 100644
+--- a/chunk-bun-9gqvxy8c.js
++++ b/chunk-bun-9gqvxy8c.js
+@@ -6208,7 +6208,7 @@ class ASCIIFontSelectionHelper {
+ }
+ // src/lib/stdin-parser.ts
+ import { Buffer as Buffer3 } from "buffer";
+-var DEFAULT_TIMEOUT_MS = 20;
++var DEFAULT_TIMEOUT_MS = 50;
+ var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
+ var INITIAL_PENDING_CAPACITY = 256;
+ var ESC = 27;
+@@ -6606,6 +6606,10 @@ class StdinParser {
+     this.reconcileDeferredStateWithProtocolContext();
+     this.reconcileTimeoutState();
+   }
++  setUseKittyKeyboard(enabled) {
++    this.ensureAlive();
++    this.useKittyKeyboard = !!enabled;
++  }
+   getAbortableStartupCursorCprState() {
+     if (this.pending.length === 0) {
+       return null;
+@@ -6703,7 +6707,11 @@ class StdinParser {
+       this.scanPending();
+       this.reconcileTimeoutState();
+     }
+-    return this.events.shift() ?? null;
++    const event = this.events.shift() ?? null;
++    if (event?.type === "key" && event.key.name === "escape") {
++      this.justFlushedEsc = false;
++    }
++    return event;
+   }
+   drain(onEvent) {
+     this.ensureAlive();
+@@ -6784,6 +6792,12 @@ class StdinParser {
+         return;
+       }
+       const byte = this.cursor < bytes.length ? bytes[this.cursor] : -1;
++      if (this.state.tag === "esc" && this.cursor === this.unitStart + 1 && bytes[this.unitStart] === ESC && byte === ESC) {
++        this.emitKeyOrResponse("unknown", decodeUtf8(bytes.subarray(this.unitStart, this.cursor)));
++        this.state = { tag: "ground" };
++        this.consumePrefix(1);
++        continue;
++      }
+       switch (this.state.tag) {
+         case "ground": {
+           this.unitStart = this.cursor;
+diff --git a/chunk-bun-bb3k0yt8.js b/chunk-bun-bb3k0yt8.js
+index 24a80812099c87952ae8ef910845c88617c9edbd..56c511c6828b33b69c04df4f91004e224ba20773 100644
+--- a/chunk-bun-bb3k0yt8.js
++++ b/chunk-bun-bb3k0yt8.js
+@@ -7040,6 +7040,8 @@ var MouseButton;
+   MouseButton2[MouseButton2["WHEEL_UP"] = 4] = "WHEEL_UP";
+   MouseButton2[MouseButton2["WHEEL_DOWN"] = 5] = "WHEEL_DOWN";
+ })(MouseButton ||= {});
++var DEFAULT_STDIN_PARSER_ESC_TIMEOUT_MS = 50;
++var KITTY_KEYBOARD_QUERY_TIMEOUT_MS = 300;
+ var rendererTracker = singleton("RendererTracker", () => ({
+   renderers: new Set,
+   streamOwners: new WeakMap
+@@ -7169,6 +7171,8 @@ class CliRenderer extends EventEmitter5 {
+   animationRequest = new Map;
+   resizeTimeoutId = null;
+   capabilityTimeoutId = null;
++  kittyQueryTimeoutId = null;
++  _kittyKeyboardRequested = false;
+   kittyTransportTimer = null;
+   kittyTransportMode;
+   terminalKeepAliveTimer = null;
+@@ -7445,6 +7449,7 @@ Captured external output:
+     process.on("uncaughtException", this.handleError);
+     process.on("unhandledRejection", this.handleError);
+     const useKittyForParsing = kittyConfig !== null;
++    this._kittyKeyboardRequested = useKittyForParsing;
+     this._keyHandler = new InternalKeyHandler;
+     this._keyHandler.on("keypress", (event) => {
+       if (this.exitOnCtrlC && matchesKeyBinding(event, { name: "c", ctrl: true })) {
+@@ -7457,7 +7462,7 @@ Captured external output:
+     this.addExitListeners();
+     const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES;
+     this.stdinParser = new StdinParser({
+-      timeoutMs: 20,
++      timeoutMs: config.stdinParserEscTimeoutMs ?? DEFAULT_STDIN_PARSER_ESC_TIMEOUT_MS,
+       maxPendingBytes: stdinParserMaxBufferBytes,
+       armTimeouts: true,
+       onTimeoutFlush: () => {
+@@ -8891,12 +8896,40 @@ Captured external output:
+   }
+   enableKittyKeyboard(flags = 3) {
+     this.lib.enableKittyKeyboard(this.rendererPtr, flags);
++    this.stdinParser?.setUseKittyKeyboard(true);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
+   }
+   disableKittyKeyboard() {
+     this.lib.disableKittyKeyboard(this.rendererPtr);
++    this.stdinParser?.setUseKittyKeyboard(false);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true);
+   }
++  // The terminal only sends CSI-u keys once kitty is pushed, and the native
++  // side pushes it (CSI > <flags> u) whenever an answer to the CSI ? u query
++  // arrives - including the CSI ? 0 u a fresh terminal sends, whose 0 reports
++  // the flags in effect BEFORE that push. So the answer, not its payload, is
++  // the capability signal: follow the native capability flag and never parse
++  // in a lower protocol than the one the terminal was just put in.
++  followKittyKeyboardPush() {
++    if (this._capabilities?.kitty_keyboard !== true)
++      return;
++    if (this.kittyQueryTimeoutId !== null) {
++      this.clock.clearTimeout(this.kittyQueryTimeoutId);
++      this.kittyQueryTimeoutId = null;
++    }
++    this.stdinParser?.setUseKittyKeyboard(true);
++    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
++  }
++  // Nothing answered the CSI ? u query, so the terminal has no kitty keyboard:
++  // drop to legacy parsing and clear the pushed flags, keeping what is pushed
++  // and what is parsed equal. A late answer re-pushes kitty and is followed
++  // back up by followKittyKeyboardPush.
++  downgradeKittyKeyboardAfterQueryTimeout() {
++    this.kittyQueryTimeoutId = null;
++    if (this._capabilities?.kitty_keyboard === true)
++      return;
++    this.disableKittyKeyboard();
++  }
+   set useThread(useThread) {
+     this._useThread = useThread;
+     this.lib.setUseThread(this.rendererPtr, useThread);
+@@ -8922,6 +8955,11 @@ Captured external output:
+         this.automaticMemorySnapshot = true;
+       }
+     }
++    if (this._kittyKeyboardRequested && this.kittyQueryTimeoutId === null) {
++      this.kittyQueryTimeoutId = this.clock.setTimeout(() => {
++        this.downgradeKittyKeyboardAfterQueryTimeout();
++      }, KITTY_KEYBOARD_QUERY_TIMEOUT_MS);
++    }
+     this.capabilityTimeoutId = this.clock.setTimeout(() => {
+       this.capabilityTimeoutId = null;
+       this.clearSplitStartupCursorSeed();
+@@ -9008,6 +9046,7 @@ Captured external output:
+     }
+     this.lib.processCapabilityResponse(this.rendererPtr, sequence);
+     this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr);
++    this.followKittyKeyboardPush();
+     if (this._capabilities?.terminal?.from_xtversion) {
+       this.resolveXtVersionWaiters();
+     }
+@@ -9765,6 +9804,10 @@ Captured external output:
+       this.clock.clearTimeout(this.capabilityTimeoutId);
+       this.capabilityTimeoutId = null;
+     }
++    if (this.kittyQueryTimeoutId !== null) {
++      this.clock.clearTimeout(this.kittyQueryTimeoutId);
++      this.kittyQueryTimeoutId = null;
++    }
+     this.clearSplitStartupCursorSeed();
+     if (this.memorySnapshotTimer) {
+       this.clock.clearInterval(this.memorySnapshotTimer);
+diff --git a/chunk-node-6bg8r2m7.js b/chunk-node-6bg8r2m7.js
+index db548a77a33608f7d57dc3d3d96443855bb61e95..a5061477a4505daaf04f3aad91a30727884b572d 100644
+--- a/chunk-node-6bg8r2m7.js
++++ b/chunk-node-6bg8r2m7.js
+@@ -7039,6 +7039,8 @@ var MouseButton;
+   MouseButton2[MouseButton2["WHEEL_UP"] = 4] = "WHEEL_UP";
+   MouseButton2[MouseButton2["WHEEL_DOWN"] = 5] = "WHEEL_DOWN";
+ })(MouseButton ||= {});
++var DEFAULT_STDIN_PARSER_ESC_TIMEOUT_MS = 50;
++var KITTY_KEYBOARD_QUERY_TIMEOUT_MS = 300;
+ var rendererTracker = singleton("RendererTracker", () => ({
+   renderers: new Set,
+   streamOwners: new WeakMap
+@@ -7168,6 +7170,8 @@ class CliRenderer extends EventEmitter5 {
+   animationRequest = new Map;
+   resizeTimeoutId = null;
+   capabilityTimeoutId = null;
++  kittyQueryTimeoutId = null;
++  _kittyKeyboardRequested = false;
+   kittyTransportTimer = null;
+   kittyTransportMode;
+   terminalKeepAliveTimer = null;
+@@ -7444,6 +7448,7 @@ Captured external output:
+     process.on("uncaughtException", this.handleError);
+     process.on("unhandledRejection", this.handleError);
+     const useKittyForParsing = kittyConfig !== null;
++    this._kittyKeyboardRequested = useKittyForParsing;
+     this._keyHandler = new InternalKeyHandler;
+     this._keyHandler.on("keypress", (event) => {
+       if (this.exitOnCtrlC && matchesKeyBinding(event, { name: "c", ctrl: true })) {
+@@ -7456,7 +7461,7 @@ Captured external output:
+     this.addExitListeners();
+     const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES;
+     this.stdinParser = new StdinParser({
+-      timeoutMs: 20,
++      timeoutMs: config.stdinParserEscTimeoutMs ?? DEFAULT_STDIN_PARSER_ESC_TIMEOUT_MS,
+       maxPendingBytes: stdinParserMaxBufferBytes,
+       armTimeouts: true,
+       onTimeoutFlush: () => {
+@@ -8890,12 +8895,40 @@ Captured external output:
+   }
+   enableKittyKeyboard(flags = 3) {
+     this.lib.enableKittyKeyboard(this.rendererPtr, flags);
++    this.stdinParser?.setUseKittyKeyboard(true);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
+   }
+   disableKittyKeyboard() {
+     this.lib.disableKittyKeyboard(this.rendererPtr);
++    this.stdinParser?.setUseKittyKeyboard(false);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true);
+   }
++  // The terminal only sends CSI-u keys once kitty is pushed, and the native
++  // side pushes it (CSI > <flags> u) whenever an answer to the CSI ? u query
++  // arrives - including the CSI ? 0 u a fresh terminal sends, whose 0 reports
++  // the flags in effect BEFORE that push. So the answer, not its payload, is
++  // the capability signal: follow the native capability flag and never parse
++  // in a lower protocol than the one the terminal was just put in.
++  followKittyKeyboardPush() {
++    if (this._capabilities?.kitty_keyboard !== true)
++      return;
++    if (this.kittyQueryTimeoutId !== null) {
++      this.clock.clearTimeout(this.kittyQueryTimeoutId);
++      this.kittyQueryTimeoutId = null;
++    }
++    this.stdinParser?.setUseKittyKeyboard(true);
++    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
++  }
++  // Nothing answered the CSI ? u query, so the terminal has no kitty keyboard:
++  // drop to legacy parsing and clear the pushed flags, keeping what is pushed
++  // and what is parsed equal. A late answer re-pushes kitty and is followed
++  // back up by followKittyKeyboardPush.
++  downgradeKittyKeyboardAfterQueryTimeout() {
++    this.kittyQueryTimeoutId = null;
++    if (this._capabilities?.kitty_keyboard === true)
++      return;
++    this.disableKittyKeyboard();
++  }
+   set useThread(useThread) {
+     this._useThread = useThread;
+     this.lib.setUseThread(this.rendererPtr, useThread);
+@@ -8921,6 +8954,11 @@ Captured external output:
+         this.automaticMemorySnapshot = true;
+       }
+     }
++    if (this._kittyKeyboardRequested && this.kittyQueryTimeoutId === null) {
++      this.kittyQueryTimeoutId = this.clock.setTimeout(() => {
++        this.downgradeKittyKeyboardAfterQueryTimeout();
++      }, KITTY_KEYBOARD_QUERY_TIMEOUT_MS);
++    }
+     this.capabilityTimeoutId = this.clock.setTimeout(() => {
+       this.capabilityTimeoutId = null;
+       this.clearSplitStartupCursorSeed();
+@@ -9007,6 +9045,7 @@ Captured external output:
+     }
+     this.lib.processCapabilityResponse(this.rendererPtr, sequence);
+     this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr);
++    this.followKittyKeyboardPush();
+     if (this._capabilities?.terminal?.from_xtversion) {
+       this.resolveXtVersionWaiters();
+     }
+@@ -9764,6 +9803,10 @@ Captured external output:
+       this.clock.clearTimeout(this.capabilityTimeoutId);
+       this.capabilityTimeoutId = null;
+     }
++    if (this.kittyQueryTimeoutId !== null) {
++      this.clock.clearTimeout(this.kittyQueryTimeoutId);
++      this.kittyQueryTimeoutId = null;
++    }
+     this.clearSplitStartupCursorSeed();
+     if (this.memorySnapshotTimer) {
+       this.clock.clearInterval(this.memorySnapshotTimer);
+diff --git a/chunk-node-f647ts9q.js b/chunk-node-f647ts9q.js
+index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e2730eb4b 100644
+--- a/chunk-node-f647ts9q.js
++++ b/chunk-node-f647ts9q.js
+@@ -6239,7 +6239,7 @@ class ASCIIFontSelectionHelper {
+ }
+ // src/lib/stdin-parser.ts
+ import { Buffer as Buffer3 } from "node:buffer";
+-var DEFAULT_TIMEOUT_MS = 20;
++var DEFAULT_TIMEOUT_MS = 50;
+ var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
+ var INITIAL_PENDING_CAPACITY = 256;
+ var ESC = 27;
+@@ -6637,6 +6637,10 @@ class StdinParser {
+     this.reconcileDeferredStateWithProtocolContext();
+     this.reconcileTimeoutState();
+   }
++  setUseKittyKeyboard(enabled) {
++    this.ensureAlive();
++    this.useKittyKeyboard = !!enabled;
++  }
+   getAbortableStartupCursorCprState() {
+     if (this.pending.length === 0) {
+       return null;
+@@ -6734,7 +6738,11 @@ class StdinParser {
+       this.scanPending();
+       this.reconcileTimeoutState();
+     }
+-    return this.events.shift() ?? null;
++    const event = this.events.shift() ?? null;
++    if (event?.type === "key" && event.key.name === "escape") {
++      this.justFlushedEsc = false;
++    }
++    return event;
+   }
+   drain(onEvent) {
+     this.ensureAlive();
+@@ -6815,6 +6823,12 @@ class StdinParser {
+         return;
+       }
+       const byte = this.cursor < bytes.length ? bytes[this.cursor] : -1;
++      if (this.state.tag === "esc" && this.cursor === this.unitStart + 1 && bytes[this.unitStart] === ESC && byte === ESC) {
++        this.emitKeyOrResponse("unknown", decodeUtf8(bytes.subarray(this.unitStart, this.cursor)));
++        this.state = { tag: "ground" };
++        this.consumePrefix(1);
++        continue;
++      }
+       switch (this.state.tag) {
+         case "ground": {
+           this.unitStart = this.cursor;
+diff --git a/lib/stdin-parser.d.ts b/lib/stdin-parser.d.ts
+index 9eac23a0a6726f6a9e089a8bc6e801b9ba29e2fc..28c758a943af8e4b374694a0e3ef8401bad4793b 100644
+--- a/lib/stdin-parser.d.ts
++++ b/lib/stdin-parser.d.ts
+@@ -45,7 +45,7 @@ export declare class StdinParser {
+     private readonly maxPendingBytes;
+     private readonly armTimeouts;
+     private readonly onTimeoutFlush;
+-    private readonly useKittyKeyboard;
++    private useKittyKeyboard;
+     private readonly mouseParser;
+     private readonly clock;
+     private protocolContext;
+@@ -63,6 +63,7 @@ export declare class StdinParser {
+     constructor(options?: StdinParserOptions);
+     get bufferCapacity(): number;
+     updateProtocolContext(patch: Partial<StdinParserProtocolContext>): void;
++    setUseKittyKeyboard(enabled: boolean): void;
+     private getAbortableStartupCursorCprState;
+     abortPendingStartupCursorCpr(): void;
+     push(data: Uint8Array): void;
+diff --git a/renderer.d.ts b/renderer.d.ts
+index ad85c26549b279ae248b960f1d64bae3c6261ad8..a24a098eaa31a7740bbd24d7ec5998b47b86ca49 100644
+--- a/renderer.d.ts
++++ b/renderer.d.ts
+@@ -54,6 +54,7 @@ export interface CliRendererConfig {
+     openConsoleOnError?: boolean;
+     prependInputHandlers?: ((sequence: string) => boolean)[];
+     stdinParserMaxBufferBytes?: number;
++    stdinParserEscTimeoutMs?: number;
+     clock?: Clock;
+     onDestroy?: () => void;
+ }
