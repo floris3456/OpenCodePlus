@@ -18,13 +18,14 @@ function drainKeyNames(parser: StdinParser, names: string[]) {
   })
 }
 
-function setup(useKittyKeyboard: boolean) {
+function setup(useKittyKeyboard: boolean, protocolContext?: { kittyKeyboardEnabled: boolean }) {
   const clock = new ManualClock()
   const names: string[] = []
   const parser = new StdinParser({
     timeoutMs: 20,
     armTimeouts: true,
     useKittyKeyboard,
+    ...(protocolContext === undefined ? {} : { protocolContext }),
     clock,
     onTimeoutFlush: () => {
       drainKeyNames(parser, names)
@@ -72,6 +73,45 @@ test("kitty CSI 27 u emits escape immediately", () => {
     parser.push(new Uint8Array([0x1b, 0x5b, 0x32, 0x37, 0x75]))
     drainKeyNames(parser, names)
     expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+// Contract from upstream anomalyco/opentui issue #818 (closed by PR #819):
+// a split escape sequence must not flush as lone ESC plus text.
+test("split arrow arrives as one up, never escape plus text", () => {
+  const { clock, names, parser } = setup(false)
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    clock.advance(2)
+    parser.push(new Uint8Array([0x5b, 0x41]))
+    drainKeyNames(parser, names)
+    clock.advance(60)
+    parser.flushTimeout()
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["up"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+// Contract from upstream anomalyco/opentui issue #818 (closed by PR #819):
+// a split CSI-u sequence must reassemble into one kitty event.
+test("split CSI-u arrives as one kitty event", () => {
+  const { clock, names, parser } = setup(true, { kittyKeyboardEnabled: true })
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x31, 0x31, 0x38]))
+    drainKeyNames(parser, names)
+    clock.advance(2)
+    parser.push(new Uint8Array([0x3b, 0x35, 0x75]))
+    drainKeyNames(parser, names)
+    clock.advance(60)
+    parser.flushTimeout()
+    drainKeyNames(parser, names)
+    expect(names).toHaveLength(1)
+    expect(names[0]!.length).toBeGreaterThan(0)
   } finally {
     parser.destroy()
   }
