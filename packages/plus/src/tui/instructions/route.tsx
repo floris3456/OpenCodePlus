@@ -67,10 +67,13 @@ export function extractAgentId(data: unknown): string | undefined {
   return undefined
 }
 
+export const INITIAL_AGENT_RETRY_MS = 5000
+
 export interface InstructionsRouteProps {
   readonly context: Plugin.Context
   readonly onClose: () => void
   readonly data?: unknown
+  readonly initialAgentTimeoutMs?: number
 }
 
 export function InstructionsRoute(props: InstructionsRouteProps) {
@@ -85,25 +88,63 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const [splitNode, setSplitNode] = createSignal<TreeNode | undefined>(undefined)
   const [detailEditing, setDetailEditing] = createSignal(false)
   const [detailDraft, setDetailDraft] = createSignal("")
-  onCleanup(() => {
-    state.dispose()
-    dialogs.dispose()
-  })
-
   const route = props.context.ui.router.current()
   const navigationData: unknown = props.data ?? (route.type === "plugin" ? route.data : undefined)
   const initialAgent = extractAgentId(navigationData)
 
-  let initialApplied = false
+  // Core's config watcher debounces reloads (~100 ms), so the first snapshot
+  // after agent.create often lacks the new agent. Retry until it appears.
+  let initialApplied = initialAgent === undefined
+  let baselineSelection: string | undefined
+  let baselineSet = false
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+  function clearRetryTimer() {
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer)
+      retryTimer = undefined
+    }
+  }
+
+  function giveUpWithToast() {
+    if (initialApplied) return
+    initialApplied = true
+    clearRetryTimer()
+    if (initialAgent !== undefined) {
+      props.context.ui.toast.show({ variant: "warning", message: `Agent ${initialAgent} not visible yet` })
+    }
+  }
+
+  if (initialAgent !== undefined) {
+    retryTimer = setTimeout(giveUpWithToast, props.initialAgentTimeoutMs ?? INITIAL_AGENT_RETRY_MS)
+  }
+
+  onCleanup(() => {
+    clearRetryTimer()
+    state.dispose()
+    dialogs.dispose()
+  })
+
   createEffect(() => {
     if (initialApplied) return
+    if (initialAgent === undefined) return
     const snap = state.snapshot()
     if (!snap) return
-    if (initialAgent === undefined) {
+    const current = state.selectedId()
+    if (!baselineSet) {
+      if (current === undefined) return
+      baselineSelection = current
+      baselineSet = true
+    } else if (current !== undefined && current !== baselineSelection) {
+      // The user moved the selection themselves: stop hijacking it silently.
       initialApplied = true
+      clearRetryTimer()
       return
     }
-    if (state.selectAgent(initialAgent)) initialApplied = true
+    if (state.selectAgent(initialAgent)) {
+      initialApplied = true
+      clearRetryTimer()
+    }
   })
 
   // Drafts belong to one node: leaving the node exits the detail editor.
