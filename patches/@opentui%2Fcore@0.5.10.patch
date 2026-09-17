@@ -38,6 +38,18 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
    }
    drain(onEvent) {
      this.ensureAlive();
+@@ -6749,9 +6757,9 @@ class StdinParser {
+     this.suspendedPixelResolutionPrefixLength = this.pending.length;
+     this.clearTimeout();
+   }
+   resumePendingTimeout() {
+     this.ensureAlive();
+-    if (this.pending.length === 0)
+-      this.pendingTimeoutPaused = false;
++    if (!this.hasPendingPixelResolutionResponse())
++      this.pendingTimeoutPaused = false;
+     this.reconcileTimeoutState();
+   }
 @@ -6784,6 +6792,12 @@ class StdinParser {
          return;
        }
@@ -310,6 +322,18 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
    }
    drain(onEvent) {
      this.ensureAlive();
+@@ -6780,9 +6788,9 @@ class StdinParser {
+     this.suspendedPixelResolutionPrefixLength = this.pending.length;
+     this.clearTimeout();
+   }
+   resumePendingTimeout() {
+     this.ensureAlive();
+-    if (this.pending.length === 0)
+-      this.pendingTimeoutPaused = false;
++    if (!this.hasPendingPixelResolutionResponse())
++      this.pendingTimeoutPaused = false;
+     this.reconcileTimeoutState();
+   }
 @@ -6815,6 +6823,12 @@ class StdinParser {
          return;
        }
