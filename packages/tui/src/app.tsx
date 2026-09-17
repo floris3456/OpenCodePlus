@@ -93,6 +93,7 @@ import { localPluginDirectories } from "./plugin/discovery"
 import { PluginRoute, Slot } from "./plugin/render"
 import { CommandPaletteDialog } from "./component/command-palette"
 import { COMMAND_PALETTE_COMMAND, Keymap, type KeymapCommand } from "./context/keymap"
+import { KeymapDebug } from "./component/keymap-debug"
 
 import { DialogVariant } from "./component/dialog-variant"
 import { destroyRenderer } from "./util/renderer"
@@ -174,6 +175,7 @@ const appBindingCommands = [
   "app.toggle.diffwrap",
   "app.toggle.paste_summary",
   "permission.mode",
+  "debug.keymap",
 ] as const
 
 export type TuiInput = {
@@ -236,6 +238,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         gatherStats: false,
         exitOnCtrlC: false,
         useKittyKeyboard: {},
+        stdinParserEscTimeoutMs: 50,
         autoFocus: false,
         openConsoleOnError: false,
         useMouse: config.mouse,
@@ -520,6 +523,7 @@ function App(props: { pair?: DialogPairCredentials }) {
     },
   })
   const [openSessions, setOpenSessions] = createSignal<SessionInfo[]>([])
+  const [showKeymapDebug, setShowKeymapDebug] = createSignal(false)
   // Toast once when an MCP server enters a failed or needs-auth state so the user knows to act,
   // without having to open the status panel. Tracking the last alerted status avoids re-toasting
   // the same problem on every refresh while still re-alerting if the state changes.
@@ -1073,6 +1077,16 @@ function App(props: { pair?: DialogPairCredentials }) {
         },
       },
       {
+        name: "debug.keymap",
+        title: "Toggle keymap debug overlay",
+        category: "System",
+        palette: undefined,
+        run: () => {
+          setShowKeymapDebug((prev) => !prev)
+          dialog.clear()
+        },
+      },
+      {
         name: "app.console",
         title: "Toggle console",
         category: "System",
@@ -1369,6 +1383,9 @@ function App(props: { pair?: DialogPairCredentials }) {
       </Show>
       <MigrationOverlay />
       <Toast />
+      <Show when={showKeymapDebug()}>
+        <KeymapDebug />
+      </Show>
     </box>
   )
 }

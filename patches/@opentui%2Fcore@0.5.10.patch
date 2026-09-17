@@ -1,0 +1,324 @@
+diff --git a/chunk-bun-9gqvxy8c.js b/chunk-bun-9gqvxy8c.js
+--- a/chunk-bun-9gqvxy8c.js
++++ b/chunk-bun-9gqvxy8c.js
+@@ -6208,7 +6208,7 @@
+ }
+ // src/lib/stdin-parser.ts
+ import { Buffer as Buffer3 } from "buffer";
+-var DEFAULT_TIMEOUT_MS = 20;
++var DEFAULT_TIMEOUT_MS = 50;
+ var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
+ var INITIAL_PENDING_CAPACITY = 256;
+ var ESC = 27;
+@@ -6597,13 +6597,17 @@
+   updateProtocolContext(patch) {
+     this.ensureAlive();
+     this.protocolContext = { ...this.protocolContext, ...patch };
+     if (!this.protocolContext.pixelResolutionQueryActive && this.suspendedPixelResolutionPrefixLength > 0) {
+       const prefixLength = this.suspendedPixelResolutionPrefixLength;
+       this.state = { tag: "ground" };
+       this.consumePrefix(prefixLength);
+       this.scanPending();
+     }
+     this.reconcileDeferredStateWithProtocolContext();
+     this.reconcileTimeoutState();
+   }
++  setUseKittyKeyboard(enabled) {
++    this.ensureAlive();
++    this.useKittyKeyboard = !!enabled;
++  }
+   getAbortableStartupCursorCprState() {
+@@ -6700,9 +6704,13 @@
+   read() {
+     this.ensureAlive();
+     if (this.events.length === 0 && this.forceFlush) {
+       this.scanPending();
+       this.reconcileTimeoutState();
+     }
+-    return this.events.shift() ?? null;
++    const event = this.events.shift() ?? null;
++    if (event?.type === "key" && event.key.name === "escape") {
++      this.justFlushedEsc = false;
++    }
++    return event;
+   }
+   drain(onEvent) {
+@@ -6775,13 +6783,19 @@
+   scanPending() {
+     while (!this.paste) {
+       const bytes = this.pending.view();
+       if (this.state.tag === "ground" && this.cursor >= bytes.length) {
+         this.pending.clear();
+         this.cursor = 0;
+         this.unitStart = 0;
+         this.pendingSinceMs = null;
+         this.forceFlush = false;
+         return;
+       }
+       const byte = this.cursor < bytes.length ? bytes[this.cursor] : -1;
++      if (this.state.tag === "esc" && this.cursor === this.unitStart + 1 && bytes[this.unitStart] === ESC && byte === ESC) {
++        this.emitKeyOrResponse("unknown", decodeUtf8(bytes.subarray(this.unitStart, this.cursor)));
++        this.state = { tag: "ground" };
++        this.consumePrefix(1);
++        continue;
++      }
+       switch (this.state.tag) {
+diff --git a/chunk-node-f647ts9q.js b/chunk-node-f647ts9q.js
+--- a/chunk-node-f647ts9q.js
++++ b/chunk-node-f647ts9q.js
+@@ -6240,6 +6240,6 @@
+ // src/lib/stdin-parser.ts
+ import { Buffer as Buffer3 } from "node:buffer";
+-var DEFAULT_TIMEOUT_MS = 20;
++var DEFAULT_TIMEOUT_MS = 50;
+ var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
+ var INITIAL_PENDING_CAPACITY = 256;
+ var ESC = 27;
+@@ -6628,13 +6628,17 @@
+   updateProtocolContext(patch) {
+     this.ensureAlive();
+     this.protocolContext = { ...this.protocolContext, ...patch };
+     if (!this.protocolContext.pixelResolutionQueryActive && this.suspendedPixelResolutionPrefixLength > 0) {
+       const prefixLength = this.suspendedPixelResolutionPrefixLength;
+       this.state = { tag: "ground" };
+       this.consumePrefix(prefixLength);
+       this.scanPending();
+     }
+     this.reconcileDeferredStateWithProtocolContext();
+     this.reconcileTimeoutState();
+   }
++  setUseKittyKeyboard(enabled) {
++    this.ensureAlive();
++    this.useKittyKeyboard = !!enabled;
++  }
+   getAbortableStartupCursorCprState() {
+@@ -6731,9 +6735,13 @@
+   read() {
+     this.ensureAlive();
+     if (this.events.length === 0 && this.forceFlush) {
+       this.scanPending();
+       this.reconcileTimeoutState();
+     }
+-    return this.events.shift() ?? null;
++    const event = this.events.shift() ?? null;
++    if (event?.type === "key" && event.key.name === "escape") {
++      this.justFlushedEsc = false;
++    }
++    return event;
+   }
+   drain(onEvent) {
+@@ -6806,13 +6814,19 @@
+   scanPending() {
+     while (!this.paste) {
+       const bytes = this.pending.view();
+       if (this.state.tag === "ground" && this.cursor >= bytes.length) {
+         this.pending.clear();
+         this.cursor = 0;
+         this.unitStart = 0;
+         this.pendingSinceMs = null;
+         this.forceFlush = false;
+         return;
+       }
+       const byte = this.cursor < bytes.length ? bytes[this.cursor] : -1;
++      if (this.state.tag === "esc" && this.cursor === this.unitStart + 1 && bytes[this.unitStart] === ESC && byte === ESC) {
++        this.emitKeyOrResponse("unknown", decodeUtf8(bytes.subarray(this.unitStart, this.cursor)));
++        this.state = { tag: "ground" };
++        this.consumePrefix(1);
++        continue;
++      }
+       switch (this.state.tag) {
+diff --git a/chunk-bun-bb3k0yt8.js b/chunk-bun-bb3k0yt8.js
+--- a/chunk-bun-bb3k0yt8.js
++++ b/chunk-bun-bb3k0yt8.js
+@@ -7359,6 +7359,8 @@
+     const kittyConfig = config.useKittyKeyboard ?? {};
+     const kittyFlags = buildKittyKeyboardFlags(kittyConfig);
+     lib.setKittyKeyboardFlags(rendererPtr, kittyFlags);
++    this._kittyRequested = config.useKittyKeyboard !== null;
++    this._kittyFlags = kittyFlags;
+     this._feed = feed;
+     if (feed) {
+       this._detachFeed = feed.onData((bytes) => {
+@@ -7457,19 +7459,20 @@
+     this.addExitListeners();
+     const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES;
++    const escTimeout = config.stdinParserEscTimeoutMs ?? 50;
+     this.stdinParser = new StdinParser({
+-      timeoutMs: 20,
++      timeoutMs: escTimeout,
+       maxPendingBytes: stdinParserMaxBufferBytes,
+       armTimeouts: true,
+       onTimeoutFlush: () => {
+         this.drainStdinParser();
+       },
+-      useKittyKeyboard: useKittyForParsing,
++      useKittyKeyboard: false,
+       protocolContext: {
+-        kittyKeyboardEnabled: useKittyForParsing,
++        kittyKeyboardEnabled: false,
+         privateCapabilityRepliesActive: false,
+         pixelResolutionQueryActive: false,
+         explicitWidthCprActive: false,
+         startupCursorCprActive: false
+       },
+       clock: this.clock
+     });
+@@ -8892,8 +8895,10 @@
+   enableKittyKeyboard(flags = 3) {
+     this.lib.enableKittyKeyboard(this.rendererPtr, flags);
++    this.stdinParser?.setUseKittyKeyboard(true);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
+   }
+   disableKittyKeyboard() {
+     this.lib.disableKittyKeyboard(this.rendererPtr);
++    this.stdinParser?.setUseKittyKeyboard(false);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true);
+   }
+@@ -9003,4 +9008,15 @@
+   processCapabilitySequence(sequence, hasCursorReport) {
++    const kittyMatch = sequence.match(/\x1b\[\?(\d+)(?:;\d+)?u/);
++    if (kittyMatch) {
++      const flags = Number(kittyMatch[1]);
++      if (this._kittyRequested && flags > 0) {
++        this.stdinParser?.setUseKittyKeyboard(true);
++        this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
++      } else {
++        this.stdinParser?.setUseKittyKeyboard(false);
++        this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true);
++      }
++    }
+     const hasStandardCapabilitySignature = isCapabilityResponse(sequence);
+     const shouldProcessAsCapability = hasStandardCapabilitySignature || hasCursorReport && this.capabilityTimeoutId !== null;
+     if (!shouldProcessAsCapability) {
+diff --git a/chunk-node-6bg8r2m7.js b/chunk-node-6bg8r2m7.js
+--- a/chunk-node-6bg8r2m7.js
++++ b/chunk-node-6bg8r2m7.js
+@@ -7358,6 +7358,8 @@
+     const kittyConfig = config.useKittyKeyboard ?? {};
+     const kittyFlags = buildKittyKeyboardFlags(kittyConfig);
+     lib.setKittyKeyboardFlags(rendererPtr, kittyFlags);
++    this._kittyRequested = config.useKittyKeyboard !== null;
++    this._kittyFlags = kittyFlags;
+     this._feed = feed;
+     if (feed) {
+       this._detachFeed = feed.onData((bytes) => {
+@@ -7457,19 +7459,20 @@
+     this.addExitListeners();
+     const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES;
++    const escTimeout = config.stdinParserEscTimeoutMs ?? 50;
+     this.stdinParser = new StdinParser({
+-      timeoutMs: 20,
++      timeoutMs: escTimeout,
+       maxPendingBytes: stdinParserMaxBufferBytes,
+       armTimeouts: true,
+       onTimeoutFlush: () => {
+         this.drainStdinParser();
+       },
+-      useKittyKeyboard: useKittyForParsing,
++      useKittyKeyboard: false,
+       protocolContext: {
+-        kittyKeyboardEnabled: useKittyForParsing,
++        kittyKeyboardEnabled: false,
+         privateCapabilityRepliesActive: false,
+         pixelResolutionQueryActive: false,
+         explicitWidthCprActive: false,
+         startupCursorCprActive: false
+       },
+       clock: this.clock
+     });
+@@ -8891,8 +8894,10 @@
+   enableKittyKeyboard(flags = 3) {
+     this.lib.enableKittyKeyboard(this.rendererPtr, flags);
++    this.stdinParser?.setUseKittyKeyboard(true);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
+   }
+   disableKittyKeyboard() {
+     this.lib.disableKittyKeyboard(this.rendererPtr);
++    this.stdinParser?.setUseKittyKeyboard(false);
+     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true);
+   }
+@@ -9002,4 +9007,15 @@
+   processCapabilitySequence(sequence, hasCursorReport) {
++    const kittyMatch = sequence.match(/\x1b\[\?(\d+)(?:;\d+)?u/);
++    if (kittyMatch) {
++      const flags = Number(kittyMatch[1]);
++      if (this._kittyRequested && flags > 0) {
++        this.stdinParser?.setUseKittyKeyboard(true);
++        this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true });
++      } else {
++        this.stdinParser?.setUseKittyKeyboard(false);
++        this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true);
++      }
++    }
+     const hasStandardCapabilitySignature = isCapabilityResponse(sequence);
+     const shouldProcessAsCapability = hasStandardCapabilitySignature || hasCursorReport && this.capabilityTimeoutId !== null;
+     if (!shouldProcessAsCapability) {
+diff --git a/lib/stdin-parser.d.ts b/lib/stdin-parser.d.ts
+--- a/lib/stdin-parser.d.ts
++++ b/lib/stdin-parser.d.ts
+@@ -46,6 +46,6 @@
+     private readonly armTimeouts;
+     private readonly onTimeoutFlush;
+-    private readonly useKittyKeyboard;
++    private useKittyKeyboard;
+     private readonly mouseParser;
+     private readonly clock;
+     private protocolContext;
+@@ -63,6 +63,7 @@
+     constructor(options?: StdinParserOptions);
+     get bufferCapacity(): number;
+     updateProtocolContext(patch: Partial<StdinParserProtocolContext>): void;
++    setUseKittyKeyboard(enabled: boolean): void;
+     private getAbortableStartupCursorCprState;
+     abortPendingStartupCursorCpr(): void;
+     push(data: Uint8Array): void;
+diff --git a/renderer.d.ts b/renderer.d.ts
+--- a/renderer.d.ts
++++ b/renderer.d.ts
+@@ -55,5 +55,6 @@
+     prependInputHandlers?: ((sequence: string) => boolean)[];
+     stdinParserMaxBufferBytes?: number;
++    stdinParserEscTimeoutMs?: number;
+     clock?: Clock;
+     onDestroy?: () => void;
+ }
+diff --git a/testing.js b/testing.js
+--- a/testing.js
++++ b/testing.js
+@@ -583,13 +583,16 @@
+ async function createTestRenderer(options) {
+   const useKittyKeyboard = options.kittyKeyboard ? { events: true } : options.useKittyKeyboard;
+   const renderer = await setupTestRenderer({
+     ...options,
+     useKittyKeyboard,
+     screenMode: options.screenMode ?? "main-screen",
+     footerHeight: options.footerHeight ?? 12,
+     consoleMode: options.consoleMode ?? "disabled",
+     externalOutputMode: options.externalOutputMode ?? "passthrough"
+   });
++  if (useKittyKeyboard) {
++    renderer.enableKittyKeyboard();
++  }
+   const externalOutput = new TestExternalOutputRecorder(renderer);
+   const mockInput = createMockKeys(renderer, {
+     kittyKeyboard: options.kittyKeyboard,
+diff --git a/testing.bun.js b/testing.bun.js
+--- a/testing.bun.js
++++ b/testing.bun.js
+@@ -584,13 +584,16 @@
+ async function createTestRenderer(options) {
+   const useKittyKeyboard = options.kittyKeyboard ? { events: true } : options.useKittyKeyboard;
+   const renderer = await setupTestRenderer({
+     ...options,
+     useKittyKeyboard,
+     screenMode: options.screenMode ?? "main-screen",
+     footerHeight: options.footerHeight ?? 12,
+     consoleMode: options.consoleMode ?? "disabled",
+     externalOutputMode: options.externalOutputMode ?? "passthrough"
+   });
++  if (useKittyKeyboard) {
++    renderer.enableKittyKeyboard();
++  }
+   const externalOutput = new TestExternalOutputRecorder(renderer);
+   const mockInput = createMockKeys(renderer, {
+     kittyKeyboard: options.kittyKeyboard,

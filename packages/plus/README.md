@@ -121,6 +121,7 @@ Every place core changed for this feature, and why the plugin API could not do i
 - `packages/core/test/tool-patch.test.ts` — test fixture only (a `.git` marker inside the fixture's own temp directory so `Project.root` resolves deterministically); no core source change.
 - `packages/plus/test/team2-contract.test.ts` — team2 agent-file contract: pins the agent-file format produced by an external repository's team2 agent writer.
 - Loading wiring only: `PlusPlugin` appended last in `post` (`packages/core/src/plugin/internal.ts`), `Plus` in the TUI `builtins`, workspace deps in `core`/`tui` `package.json`.
+- `patches/@opentui%2Fcore@0.5.10.patch` — stdin parser holds lone ESC for 50 ms, flushes ESC-ESC immediately, clears the ESC-recovery flag once escape dispatches, and gates kitty parsing off until the terminal confirms it via `CSI ? <flags> u`. Upstream is `https://github.com/anomalyco/opentui` with no specific upstream issue number. (`packages/tui/test/stdin-esc.test.ts`)
 
 ## Boundaries and known limits
 

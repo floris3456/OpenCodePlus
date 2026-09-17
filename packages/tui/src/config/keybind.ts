@@ -295,6 +295,7 @@ export const Definitions = {
   "which-key.page.down": keybind("ctrl+alt+pagedown", "Page which-key down"),
   "which-key.home": keybind("ctrl+alt+home", "Jump to first which-key binding"),
   "which-key.end": keybind("ctrl+alt+end", "Jump to last which-key binding"),
+  "debug.keymap": keybind("ctrl+alt+k", "Toggle keymap debug overlay"),
 } satisfies Record<string, Definition>
 
 type KeybindName = keyof typeof Definitions
