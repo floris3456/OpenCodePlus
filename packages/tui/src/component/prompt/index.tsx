@@ -503,14 +503,16 @@ export function Prompt(props: PromptProps) {
         palette: undefined,
         enabled: status() === "running",
         run: () => {
-          if (auto()?.visible) return
-          if (!input.focused) return
+          // Keymap treats `undefined` as handled: only `false` rejects and
+          // lets ESC reach a lower layer (back navigation, dialog close).
+          if (auto()?.visible) return false
+          if (!input.focused) return false
           // TODO: this should be its own command
           if (store.mode === "shell") {
             setStore("mode", "normal")
             return
           }
-          if (!props.sessionID) return
+          if (!props.sessionID) return false
 
           setStore("interrupt", store.interrupt + 1)
 
