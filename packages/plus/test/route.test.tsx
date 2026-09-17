@@ -2154,3 +2154,64 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
   expect(saved.logTotal).toBe(1)
   expect(saved.refreshCalls).toBe(1)
 })
+
+test("retries agent selection when the agent arrives in a later snapshot", async () => {
+  const without = createSnapshot({ agents: [] })
+  const withAgent = createSnapshot({ agents: [projectAgent("LateAgent")] })
+  const toasts: { variant?: string; message: string }[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [without, withAgent],
+    width: 120,
+    height: 40,
+    render: (context) => {
+      const original = context.ui.toast.show
+      context.ui.toast.show = ((toast: { variant?: string; message: string }) => {
+        toasts.push(toast)
+        return (original as (toast: unknown) => unknown)(toast)
+      }) as typeof original
+      return createComponent(InstructionsRoute, { context, onClose: () => {}, data: { agent: "LateAgent" } })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Project"))
+    expect(fixture.captureCharFrame()).not.toContain("LateAgent")
+    await fixture.emitChanged()
+    await fixture.waitForFrame((frame) => frame.includes("LateAgent") && selectedRow(frame).includes("LateAgent"))
+    expect(selectedRow(fixture.captureCharFrame())).toContain("LateAgent")
+    expect(toasts.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("gives up waiting for a missing agent and toasts once", async () => {
+  const toasts: { variant?: string; message: string }[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [createSnapshot({ agents: [] })],
+    width: 120,
+    height: 40,
+    render: (context) => {
+      const original = context.ui.toast.show
+      context.ui.toast.show = ((toast: { variant?: string; message: string }) => {
+        toasts.push(toast)
+        return (original as (toast: unknown) => unknown)(toast)
+      }) as typeof original
+      return createComponent(InstructionsRoute, {
+        context,
+        onClose: () => {},
+        data: { agent: "Missing" },
+        initialAgentTimeoutMs: 50,
+      })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    for (let i = 0; i < 20 && toasts.length === 0; i++) await sleep(20)
+    expect(toasts.length).toBe(1)
+    expect(toasts[0]).toMatchObject({ variant: "warning", message: "Agent Missing not visible yet" })
+    await sleep(100)
+    expect(toasts.length).toBe(1)
+  } finally {
+    fixture.destroy()
+  }
+})
