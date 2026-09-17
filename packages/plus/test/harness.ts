@@ -28,6 +28,10 @@ import { Provider } from "@opencode/schema/provider"
 import { Skill } from "@opencode/schema/skill"
 import type { Tool } from "@opencode/schema/tool"
 import { Effect, Schema, Stream, type Types } from "effect"
+import fs from "node:fs/promises"
+import path from "node:path"
+import { idFromPath, parseFrontmatter, resolveDirectory } from "../src/agents/files.js"
+import { agentBody } from "../src/instructions/discover.js"
 
 export type Overrides = Partial<Omit<Context, "options" | "session" | "catalog" | "prompt">> & {
   readonly session?: Partial<Context["session"]>
@@ -350,17 +354,25 @@ export interface AgentHarness {
 // from upstream plus the installed callbacks. While a callback overwrites a
 // prompt, host edits underneath stay invisible until the callback is disposed,
 // exactly as in core. Upstream itself changes only through setUpstream,
-// modeling a real host edit outside Plus.
+// modeling a real host edit outside Plus. Reload additionally rescans the
+// on-disk agent directories into the visible list, modeling core's rescan;
+// explicit initial entries win over same-id files.
 export function agentHarness(
   initial: Agent.Info[],
+  projectDirectory?: string,
 ): AgentHarness & { setUpstream(id: string, system: string): void; upstream(id: string): string | undefined } {
   const upstream = new Map(initial.map((agent) => [agent.id, structuredClone(agent)]))
+  const disk = new Map<string, Agent.Info>()
   const live = new Map<string, Types.DeepMutable<Agent.Info>>()
   const installed: Array<Parameters<AgentDomain["transform"]>[0]> = []
   const counts = { installs: 0, disposes: 0, reloads: 0 }
   function rebuild() {
     live.clear()
     for (const [id, agent] of upstream) live.set(id, structuredClone(agent) as Types.DeepMutable<Agent.Info>)
+    for (const [id, agent] of disk) {
+      if (live.has(id)) continue
+      live.set(id, structuredClone(agent) as Types.DeepMutable<Agent.Info>)
+    }
     const editor = {
       list: () => Array.from(live.values()),
       get: (id: string) => live.get(id),
@@ -410,8 +422,17 @@ export function agentHarness(
           }
         }),
       reload: () =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           counts.reloads++
+          // Core rescans the agent directories on reload, so the double does
+          // too; without a project directory there is nothing to scan.
+          if (projectDirectory === undefined) {
+            rebuild()
+            return
+          }
+          const found = yield* Effect.promise(() => scanDiskAgents(projectDirectory))
+          disk.clear()
+          for (const [id, agent] of found) disk.set(id, agent)
           rebuild()
         }),
     } satisfies AgentDomain,
@@ -433,6 +454,48 @@ export function agentHarness(
     },
     upstream: (id: string) => upstream.get(Agent.ID.make(id))?.system,
   }
+}
+
+async function scanDiskAgents(projectDirectory: string): Promise<Map<string, Agent.Info>> {
+  const found = new Map<string, Agent.Info>()
+  // The tests isolate the global scope through OPENCODE_CONFIG_DIR; without
+  // it the global base would be the real home directory, so skip it.
+  const scopes = process.env.OPENCODE_CONFIG_DIR === undefined ? (["project"] as const) : (["project", "global"] as const)
+  for (const scope of scopes) {
+    const directory = await resolveDirectory(scope, projectDirectory)
+    const files = await listMarkdown(directory)
+    for (const file of files) {
+      const id = Agent.ID.make(idFromPath(directory, file))
+      if (found.has(id)) continue
+      const text = await fs.readFile(file, "utf8").catch(() => undefined)
+      if (text === undefined) continue
+      found.set(id, fromMarkdown(id, text))
+    }
+  }
+  return found
+}
+
+function fromMarkdown(id: Agent.ID, text: string): Agent.Info {
+  const fields = parseFrontmatter(text)
+  return {
+    ...Agent.Info.default(id),
+    system: agentBody(text),
+    ...(fields?.description === undefined ? {} : { description: fields.description }),
+    ...(fields?.mode === undefined ? {} : { mode: fields.mode }),
+  }
+}
+
+async function listMarkdown(directory: string): Promise<string[]> {
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => undefined)
+  if (entries === undefined) return []
+  const nested = await Promise.all(
+    entries.map((entry) => {
+      if (entry.isDirectory()) return listMarkdown(path.join(directory, entry.name))
+      if (entry.isFile() && entry.name.endsWith(".md")) return Promise.resolve([path.join(directory, entry.name)])
+      return Promise.resolve([] as string[])
+    }),
+  )
+  return nested.flat().toSorted()
 }
 
 export function toolInfo(id: string, description: string, options?: Tool.Info["options"]): Tool.Info & { readonly id: string } {
@@ -665,7 +728,7 @@ export function fullContext(options: {
   const tools = toolHarness(entries)
   const mcp = mcpHarness(servers)
   const skillState = skillHarness(skills)
-  const agentState = agentHarness(agents)
+  const agentState = agentHarness(agents, options.directory)
   const skillDomain = {
     ...skillState.domain,
     list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
