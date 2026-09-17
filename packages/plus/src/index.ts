@@ -492,7 +492,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { path: created.path },
           },
         }
-      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -531,7 +532,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.exists" as const, message: `Agent ${to.id} already exists at ${renamed.path}`, data: { path: renamed.path } },
         }
-      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -563,7 +565,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { path: removed.path },
           },
         }
-      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -2467,10 +2470,11 @@ function refreshAfterFileChange(
   state: PlusState,
   directory: string,
   builtins: readonly BuiltinTeam[] = builtinTeams,
+  force = false,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     const stored = yield* Effect.promise(() => loadCurrent(directory))
-    yield* publishFresh(ctx, state, stored, builtins)
+    yield* publishFresh(ctx, state, stored, builtins, force)
   })
 }
 
@@ -2481,6 +2485,7 @@ function publishFresh(
   state: PlusState,
   stored: LoadedStores,
   builtins: readonly BuiltinTeam[] = builtinTeams,
+  force = false,
 ): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
@@ -2500,6 +2505,10 @@ function publishFresh(
         fingerprintPublish(discovered, stored.records, ctx.location.directory, builtins),
       )
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
+        if (!force) return discovered
+        // Core debounces its own reload, so a just-written agent file cannot
+        // move the fingerprint yet; the file mutation itself is the change.
+        yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
         return discovered
       }
       // Install the replacement before disposing the superseded registrations.
