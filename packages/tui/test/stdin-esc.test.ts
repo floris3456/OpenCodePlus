@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
-import { StdinParser } from "@opentui/core"
+import { createCliRenderer, StdinParser } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
+import { Readable, Writable } from "node:stream"
 
 // Red-test for the lone-ESC stdin parser ambiguity ("Cause 1") in the
 // unmodified @opentui/core 0.5.10 bundled parser
@@ -114,5 +115,133 @@ test("split CSI-u arrives as one kitty event", () => {
     expect(names[0]!.length).toBeGreaterThan(0)
   } finally {
     parser.destroy()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Renderer-level contract (F5.4). The parser above is only ever as correct as
+// the mode the renderer constructs it in. opentui pushes the kitty keyboard
+// protocol at the terminal from the native side: `setupTerminal()` writes the
+// kitty query `CSI ? u` inside its capability block, and when any answer comes
+// back it replies by pushing kitty on (`CSI > <flags> u`, measured: flags 5).
+// The answer reports the flags in effect BEFORE that push, so a freshly opened
+// kitty-capable terminal answers `CSI ? 0 u` — a positive capability signal
+// with a zero payload. A parser that reads the zero as "no kitty" and drops to
+// legacy while the terminal has just been switched to kitty decodes every
+// keypress (`CSI <code>;<mods> u`) into a key with an EMPTY name, no keybinding
+// matches, and the TUI takes no keyboard input at all — not even ctrl+c.
+// Rule: parse in the protocol that was pushed; downgrade only on a refusal or
+// a query timeout, and clear the pushed flags when downgrading.
+class FakeTerminal extends Writable {
+  isTTY = true
+  columns = 80
+  rows = 24
+  output = ""
+  override _write(chunk: Buffer | string, _encoding: BufferEncoding, done: (error?: Error | null) => void) {
+    this.output += Buffer.isBuffer(chunk) ? chunk.toString("latin1") : chunk
+    done()
+  }
+  getColorDepth() {
+    return 24
+  }
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 15))
+
+// The renderer options are the ones packages/tui/src/app.tsx passes to
+// createCliRenderer, with the two streams and the clock injected so the test
+// can drive the terminal side. Nothing here reaches into the parser: the
+// renderer constructs it exactly as it does in production.
+async function startRenderer() {
+  const clock = new ManualClock()
+  const stdin = new Readable({ read() {} })
+  const terminal = new FakeTerminal()
+  const renderer = await createCliRenderer({
+    externalOutputMode: "passthrough",
+    targetFps: 60,
+    gatherStats: false,
+    exitOnCtrlC: false,
+    useKittyKeyboard: {},
+    stdinParserEscTimeoutMs: 50,
+    autoFocus: false,
+    openConsoleOnError: false,
+    useMouse: false,
+    consoleMode: "disabled",
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: terminal as unknown as NodeJS.WriteStream,
+    clock,
+  })
+  const keys: string[] = []
+  renderer.keyInput.on("keypress", (key) => keys.push(`${key.name}${key.ctrl ? "+ctrl" : ""}`))
+  return {
+    renderer,
+    keys,
+    terminal,
+    async feed(bytes: number[] | string) {
+      stdin.push(typeof bytes === "string" ? Buffer.from(bytes, "latin1") : Buffer.from(bytes))
+      await settle()
+    },
+    async advance(ms: number) {
+      clock.advance(ms)
+      await settle()
+    },
+  }
+}
+
+test("kitty answered: the renderer that pushed kitty decodes CSI-u keys", async () => {
+  const { renderer, keys, terminal, feed } = await startRenderer()
+  try {
+    terminal.output = ""
+    await feed("\x1b[?0u")
+    expect(terminal.output).toMatch(/\x1b\[>\d+u/)
+    await feed([0x1b, 0x5b, 0x39, 0x39, 0x3b, 0x35, 0x75])
+    await feed([0x1b, 0x5b, 0x32, 0x37, 0x75])
+    await feed([0x1b, 0x5b, 0x39, 0x37, 0x75])
+    expect(keys).toEqual(["c+ctrl", "escape", "a"])
+  } finally {
+    renderer.destroy()
+  }
+})
+
+test("kitty query unanswered: CSI-u keys decode until the 300 ms downgrade, legacy after it", async () => {
+  const { renderer, keys, terminal, feed, advance } = await startRenderer()
+  try {
+    await feed([0x1b, 0x5b, 0x39, 0x39, 0x3b, 0x35, 0x75])
+    expect(keys).toEqual(["c+ctrl"])
+    // Parsing kitty while the terminal is still legacy costs nothing: legacy
+    // bytes decode either way. That asymmetry is why the downgrade may lag the
+    // answer but the upgrade may never lag the push.
+    keys.length = 0
+    await feed([0x1b, 0x5b, 0x41])
+    expect(keys).toEqual(["up"])
+    keys.length = 0
+    terminal.output = ""
+    await advance(300)
+    expect(terminal.output).not.toMatch(/\x1b\[>\d+u/)
+    keys.length = 0
+    await feed([0x03])
+    expect(keys).toEqual(["c+ctrl"])
+    keys.length = 0
+    await feed([0x1b])
+    await advance(30)
+    expect(keys).toEqual([])
+    await advance(30)
+    expect(keys).toEqual(["escape"])
+  } finally {
+    renderer.destroy()
+  }
+})
+
+test("a kitty answer after the downgrade re-pushes kitty, so parsing follows it back up", async () => {
+  const { renderer, keys, terminal, feed, advance } = await startRenderer()
+  try {
+    await advance(300)
+    terminal.output = ""
+    await feed("\x1b[?0u")
+    expect(terminal.output).toMatch(/\x1b\[>\d+u/)
+    await feed([0x1b, 0x5b, 0x39, 0x39, 0x3b, 0x35, 0x75])
+    expect(keys).toEqual(["c+ctrl"])
+  } finally {
+    renderer.destroy()
   }
 })
