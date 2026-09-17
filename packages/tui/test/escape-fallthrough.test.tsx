@@ -227,6 +227,10 @@ test("escape falls through when the session is idle", async () => {
 
 test("escape reaches a newer back layer instead of arming interrupt when running", async () => {
   await using harness = await renderEscapeHarness({ status: "running", spyLabel: "back" })
+  // Instructions-style overlay takes focus: the prompt blurs so `!input.focused`
+  // holds and session.interrupt must reject (return false) instead of swallowing.
+  harness.promptRef()?.blur()
+  await harness.app.waitFor(() => harness.promptRef()?.focused === false)
   harness.app.mockInput.pressEscape()
   await harness.app.waitFor(() => harness.spyCalls.length === 1)
   expect(harness.spyCalls).toEqual(["back"])
