@@ -3,14 +3,15 @@ import { Agent } from "@opencode/schema/agent"
 import type { Tool } from "@opencode/schema/tool"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
-import { Deferred, Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { fingerprint, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
 import { CodeModeCatalog } from "../../core/src/codemode/catalog.js"
 import { CodeModeInstructions } from "../../core/src/codemode/instructions.js"
-import { CodeModeTool } from "../../core/src/codemode/tool.js"
-import { Wildcard } from "../../core/src/util/wildcard.js"
+import { Tool as CoreTool } from "../../core/src/tool.js"
+import { Image } from "../../core/src/image.js"
+import { LayerNode } from "../../util/src/effect/layer-node.js"
 import { agentHarness, context } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -91,24 +92,6 @@ function makeInput(overrides: Partial<ApplyInput> & { items: ApplyInput["items"]
   }
 }
 
-function readTransformTools(ctx: Context): Effect.Effect<readonly (Tool.Info & { readonly id: string })[]> {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const deferred = yield* Deferred.make<readonly (Tool.Info & { readonly id: string })[], never>()
-      yield* ctx.tool.transform((editor) => {
-        Deferred.doneUnsafe(deferred, Effect.succeed(editor.list()))
-      })
-      return yield* Deferred.await(deferred)
-    }),
-  )
-}
-
-function whollyDenied(target: string, rules: readonly { action: string; resource: string; effect: string }[]): boolean {
-  const match = rules.findLast((rule) => Wildcard.match(target, rule.action))
-  if (match === undefined) return false
-  return match.resource === "*" && match.effect === "deny"
-}
-
 test("off on team-query.diff denies that tool and drops it from the code-mode catalog", async () => {
   const agents = agentHarness([agentInfo("opus-orchestrator", "upstream")])
   const status = mcpTool("team-query", "status", "team-query status checks current queue")
@@ -148,28 +131,41 @@ test("off on team-query.diff denies that tool and drops it from the code-mode ca
   expect(permissions).toContainEqual({ action: "team-query_diff", resource: "*", effect: "deny" })
   expect(permissions.some((rule) => rule.action === "team-query_status" && rule.effect === "deny")).toBe(false)
 
-  const live = await Effect.runPromise(readTransformTools(ctx))
-  const liveById = new Map(live.map((tool) => [tool.id, tool]))
-  expect(liveById.has("team-query_status")).toBe(true)
-  expect(liveById.has("team-query_diff")).toBe(true)
-
-  const visible = new Map(
-    [...liveById].filter(([id, tool]) => {
-      const permission = (tool as { options?: { permission?: string } }).options?.permission ?? id
-      if (whollyDenied(permission, permissions)) return false
-      if (whollyDenied(id, permissions)) return false
-      return true
-    }),
+  const toolLayer = LayerNode.compile(LayerNode.group([CoreTool.node]), {
+    replacements: [
+      Image.node.replace(Layer.mock(Image.Service, { normalize: (_resource, content) => Effect.succeed(content) })),
+    ],
+  })
+  const snapshot = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* CoreTool.Service
+      yield* registry.transform((editor) => {
+        editor.add({
+          name: status.name,
+          description: status.description,
+          input: status.input,
+          output: status.output,
+          options: status.options,
+          execute: () => Effect.die("unused tool.execute"),
+        })
+        editor.add({
+          name: diff.name,
+          description: diff.description,
+          input: diff.input,
+          output: diff.output,
+          options: diff.options,
+          execute: () => Effect.die("unused tool.execute"),
+        })
+      })
+      return yield* registry.snapshot(permissions)
+    }).pipe(Effect.provide(toolLayer), Effect.scoped),
   )
-  expect(visible.has("team-query_status")).toBe(true)
-  expect(visible.has("team-query_diff")).toBe(false)
-
-  const inventory = CodeModeTool.catalog({ tools: visible, namespaces: new Map() })
-  const paths = Object.keys(CodeModeCatalog.flattenToRecord(inventory))
+  if (!snapshot.codeModeCatalog) throw new Error("expected codeModeCatalog in snapshot")
+  const paths = Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog))
   expect(paths).toContain("team-query.status")
   expect(paths).not.toContain("team-query.diff")
 
-  const summary = CodeModeCatalog.summarize(inventory)
+  const summary = CodeModeCatalog.summarize(snapshot.codeModeCatalog)
   const rendered = CodeModeInstructions.render(summary)
   expect(rendered).toContain('tools["team-query"].status')
   expect(rendered).not.toContain('tools["team-query"].diff')
