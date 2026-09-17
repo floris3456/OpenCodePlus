@@ -82,6 +82,67 @@ test("lone ESC pending across pause/resume still flushes on the real timer", asy
   }
 })
 
+test("pixel reply completing across pause/resume still lets a later lone ESC flush", async () => {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs: 50,
+    armTimeouts: true,
+    useKittyKeyboard: true,
+    protocolContext: { pixelResolutionQueryActive: true },
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  try {
+    // Partial pixel-resolution reply: the production entry condition for
+    // pausePendingTimeout() on the renderer's suspend/resume paths.
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x34, 0x3b, 0x31]))
+    drainKeyNames(parser, names)
+    expect(parser.hasPendingPixelResolutionResponse()).toBe(true)
+    expect(names).toEqual([])
+    parser.pausePendingTimeout()
+    // The reply completes while paused, then the user taps ESC: at resume
+    // the pixel response is gone but the lone ESC is still pending.
+    parser.push(new Uint8Array([0x3b, 0x32, 0x30, 0x30, 0x74]))
+    drainKeyNames(parser, names)
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    expect(names).toEqual([])
+    parser.resumePendingTimeout()
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
+test("incomplete pixel prefix stays paused across resume instead of flushing", async () => {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs: 50,
+    armTimeouts: true,
+    useKittyKeyboard: true,
+    protocolContext: { pixelResolutionQueryActive: true },
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  try {
+    parser.push(new Uint8Array([0x1b, 0x5b, 0x34, 0x3b, 0x31]))
+    drainKeyNames(parser, names)
+    expect(parser.hasPendingPixelResolutionResponse()).toBe(true)
+    parser.pausePendingTimeout()
+    parser.resumePendingTimeout()
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual([])
+    expect(parser.hasPendingPixelResolutionResponse()).toBe(true)
+  } finally {
+    parser.destroy()
+  }
+})
+
 test("lone ESC inside the 20 ms window is swallowed by a following arrow", () => {
   const { clock, names, parser } = setup(false)
   try {
