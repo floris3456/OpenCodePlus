@@ -117,6 +117,28 @@ test("pixel reply completing across pause/resume still lets a later lone ESC flu
   }
 })
 
+test("lone ESC flushes on the real timer while a pixel query is active", async () => {
+  const names: string[] = []
+  const parser = new StdinParser({
+    timeoutMs: 50,
+    armTimeouts: true,
+    useKittyKeyboard: true,
+    protocolContext: { pixelResolutionQueryActive: true },
+    onTimeoutFlush: () => {
+      drainKeyNames(parser, names)
+    },
+  })
+  try {
+    parser.push(new Uint8Array([0x1b]))
+    drainKeyNames(parser, names)
+    await sleep(150)
+    drainKeyNames(parser, names)
+    expect(names).toEqual(["escape"])
+  } finally {
+    parser.destroy()
+  }
+})
+
 test("incomplete pixel prefix stays paused across resume instead of flushing", async () => {
   const names: string[] = []
   const parser = new StdinParser({
