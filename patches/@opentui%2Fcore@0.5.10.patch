@@ -5,7 +5,84 @@ diff --git a/chunk-bun-9gqvxy8c.js b/chunk-bun-9gqvxy8c.js
 index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f982867197a430c8 100644
 --- a/chunk-bun-9gqvxy8c.js
 +++ b/chunk-bun-9gqvxy8c.js
-@@ -6208,7 +6208,7 @@ class ASCIIFontSelectionHelper {
+@@ -5166,8 +5166,62 @@
+   if (codepoint === 0 && text === "") {
+     return null;
+   }
+   return key;
+ }
++// Legacy safety net: a terminal left in kitty mode while the parser
++// downgraded to legacy keeps sending the kitty Escape encoding, which has
++// no legacy meaning. Decode that narrow Escape subset here so Escape is
++// never silently lost: press and repeat deliver an escape, release (:3)
++// returns null so no key is delivered. Nothing else of the CSI-u space is
++// decoded in legacy mode.
++function parseLegacyKittyEscape(sequence) {
++  const match = /^\x1b\[([^\x1b]+)u$/.exec(sequence);
++  if (!match)
++    return undefined;
++  const fields = match[1].split(";");
++  const codepointParts = fields[0].split(":");
++  if (!/^\d+$/.test(codepointParts[0]) || parseInt(codepointParts[0], 10) !== 27)
++    return undefined;
++  const key = {
++    name: "escape",
++    ctrl: false,
++    meta: false,
++    shift: false,
++    option: false,
++    number: false,
++    sequence,
++    raw: sequence,
++    code: "[27u",
++    eventType: "press",
++    source: "kitty",
++    super: false,
++    hyper: false,
++    capsLock: false,
++    numLock: false
++  };
++  if (fields[1]) {
++    const field2 = fields[1].split(":");
++    if (field2[0]) {
++      const modifierMask = parseInt(field2[0], 10);
++      if (!isNaN(modifierMask) && modifierMask > 1) {
++        const mods = fromKittyMods(modifierMask - 1);
++        key.shift = mods.shift;
++        key.ctrl = mods.ctrl;
++        key.meta = mods.alt || mods.meta;
++        key.option = mods.alt;
++        key.super = mods.super;
++        key.hyper = mods.hyper;
++        key.capsLock = mods.capsLock;
++        key.numLock = mods.numLock;
++      }
++    }
++    if (field2[1] === "3")
++      return null;
++    if (field2[1] === "2")
++      key.repeated = true;
++  }
++  return key;
++}
+ 
+ // src/lib/parse.keypress.ts
+ var metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/;
+@@ -5379,7 +5433,13 @@
+   if (options.useKittyKeyboard) {
+     const kittyResult = parseKittyKeyboard(s);
+     if (kittyResult) {
+       return kittyResult;
+     }
+   }
++  if (!options.useKittyKeyboard) {
++    const legacyEscape = parseLegacyKittyEscape(s);
++    if (legacyEscape !== undefined) {
++      return legacyEscape;
++    }
++  }
+   const modifyOtherKeysMatch = modifyOtherKeysRe.exec(s);
+@@ -6208,7 +6268,7 @@ class ASCIIFontSelectionHelper {
  }
  // src/lib/stdin-parser.ts
  import { Buffer as Buffer3 } from "buffer";
@@ -14,7 +91,7 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
  var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
  var INITIAL_PENDING_CAPACITY = 256;
  var ESC = 27;
-@@ -6606,6 +6606,10 @@ class StdinParser {
+@@ -6606,6 +6666,10 @@ class StdinParser {
      this.reconcileDeferredStateWithProtocolContext();
      this.reconcileTimeoutState();
    }
@@ -25,7 +102,7 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
    getAbortableStartupCursorCprState() {
      if (this.pending.length === 0) {
        return null;
-@@ -6703,7 +6707,11 @@ class StdinParser {
+@@ -6703,7 +6767,11 @@ class StdinParser {
        this.scanPending();
        this.reconcileTimeoutState();
      }
@@ -38,7 +115,7 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
    }
    drain(onEvent) {
      this.ensureAlive();
-@@ -6749,9 +6757,9 @@ class StdinParser {
+@@ -6749,9 +6817,9 @@ class StdinParser {
      this.suspendedPixelResolutionPrefixLength = this.pending.length;
      this.clearTimeout();
    }
@@ -50,7 +127,7 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
 +      this.pendingTimeoutPaused = false;
      this.reconcileTimeoutState();
    }
-@@ -6784,6 +6792,12 @@ class StdinParser {
+@@ -6784,6 +6852,12 @@ class StdinParser {
          return;
        }
        const byte = this.cursor < bytes.length ? bytes[this.cursor] : -1;
@@ -289,7 +366,84 @@ diff --git a/chunk-node-f647ts9q.js b/chunk-node-f647ts9q.js
 index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e2730eb4b 100644
 --- a/chunk-node-f647ts9q.js
 +++ b/chunk-node-f647ts9q.js
-@@ -6239,7 +6239,7 @@ class ASCIIFontSelectionHelper {
+@@ -5197,8 +5197,62 @@
+   if (codepoint === 0 && text === "") {
+     return null;
+   }
+   return key;
+ }
++// Legacy safety net: a terminal left in kitty mode while the parser
++// downgraded to legacy keeps sending the kitty Escape encoding, which has
++// no legacy meaning. Decode that narrow Escape subset here so Escape is
++// never silently lost: press and repeat deliver an escape, release (:3)
++// returns null so no key is delivered. Nothing else of the CSI-u space is
++// decoded in legacy mode.
++function parseLegacyKittyEscape(sequence) {
++  const match = /^\x1b\[([^\x1b]+)u$/.exec(sequence);
++  if (!match)
++    return undefined;
++  const fields = match[1].split(";");
++  const codepointParts = fields[0].split(":");
++  if (!/^\d+$/.test(codepointParts[0]) || parseInt(codepointParts[0], 10) !== 27)
++    return undefined;
++  const key = {
++    name: "escape",
++    ctrl: false,
++    meta: false,
++    shift: false,
++    option: false,
++    number: false,
++    sequence,
++    raw: sequence,
++    code: "[27u",
++    eventType: "press",
++    source: "kitty",
++    super: false,
++    hyper: false,
++    capsLock: false,
++    numLock: false
++  };
++  if (fields[1]) {
++    const field2 = fields[1].split(":");
++    if (field2[0]) {
++      const modifierMask = parseInt(field2[0], 10);
++      if (!isNaN(modifierMask) && modifierMask > 1) {
++        const mods = fromKittyMods(modifierMask - 1);
++        key.shift = mods.shift;
++        key.ctrl = mods.ctrl;
++        key.meta = mods.alt || mods.meta;
++        key.option = mods.alt;
++        key.super = mods.super;
++        key.hyper = mods.hyper;
++        key.capsLock = mods.capsLock;
++        key.numLock = mods.numLock;
++      }
++    }
++    if (field2[1] === "3")
++      return null;
++    if (field2[1] === "2")
++      key.repeated = true;
++  }
++  return key;
++}
+ 
+ // src/lib/parse.keypress.ts
+ var metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/;
+@@ -5410,7 +5464,13 @@
+   if (options.useKittyKeyboard) {
+     const kittyResult = parseKittyKeyboard(s);
+     if (kittyResult) {
+       return kittyResult;
+     }
+   }
++  if (!options.useKittyKeyboard) {
++    const legacyEscape = parseLegacyKittyEscape(s);
++    if (legacyEscape !== undefined) {
++      return legacyEscape;
++    }
++  }
+   const modifyOtherKeysMatch = modifyOtherKeysRe.exec(s);
+@@ -6239,7 +6299,7 @@ class ASCIIFontSelectionHelper {
  }
  // src/lib/stdin-parser.ts
  import { Buffer as Buffer3 } from "node:buffer";
@@ -298,7 +452,7 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
  var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
  var INITIAL_PENDING_CAPACITY = 256;
  var ESC = 27;
-@@ -6637,6 +6637,10 @@ class StdinParser {
+@@ -6637,6 +6697,10 @@ class StdinParser {
      this.reconcileDeferredStateWithProtocolContext();
      this.reconcileTimeoutState();
    }
@@ -309,7 +463,7 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
    getAbortableStartupCursorCprState() {
      if (this.pending.length === 0) {
        return null;
-@@ -6734,7 +6738,11 @@ class StdinParser {
+@@ -6734,7 +6798,11 @@ class StdinParser {
        this.scanPending();
        this.reconcileTimeoutState();
      }
@@ -322,7 +476,7 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
    }
    drain(onEvent) {
      this.ensureAlive();
-@@ -6780,9 +6788,9 @@ class StdinParser {
+@@ -6780,9 +6848,9 @@ class StdinParser {
      this.suspendedPixelResolutionPrefixLength = this.pending.length;
      this.clearTimeout();
    }
@@ -334,7 +488,7 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
 +      this.pendingTimeoutPaused = false;
      this.reconcileTimeoutState();
    }
-@@ -6815,6 +6823,12 @@ class StdinParser {
+@@ -6815,6 +6883,12 @@ class StdinParser {
          return;
        }
        const byte = this.cursor < bytes.length ? bytes[this.cursor] : -1;
