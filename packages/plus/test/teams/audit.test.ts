@@ -78,4 +78,35 @@ describe("audit chain", () => {
     expect(await verify(dir)).toEqual({ ok: true, lines: 0 })
     expect(await exportChain(dir)).toBe("")
   })
+
+  test("verify stays ok across mixed tool.call and receipt.written kinds", async () => {
+    await append(dir, "tool.call", {
+      run: "w-aaaaaaaaaaaaaaaa",
+      actor: "muse-implementer",
+      sessionID: "ses_mixed_001",
+      tool: "team_status",
+      ok: true,
+      code: null,
+      durationMs: 3,
+    })
+    await append(dir, "receipt.written", {
+      run: "w-aaaaaaaaaaaaaaaa",
+      check: "audit-check",
+      head: "0123456789abcdef0123456789abcdef01234567",
+      dirty: false,
+      passed: true,
+    })
+    await append(dir, "tool.call", {
+      run: null,
+      actor: "muse-implementer",
+      sessionID: "ses_mixed_002",
+      tool: "team_status",
+      ok: false,
+      code: "E_NOT_ACTOR",
+      durationMs: 1,
+    })
+    const v = await verify(dir)
+    expect(v.ok).toBe(true)
+    expect(v.lines).toBe(3)
+  })
 })

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execute, lastReceipt, receiptsAt, run, stale } from "../../src/teams/checks.js"
+import { verify } from "../../src/teams/audit.js"
 import { git } from "../../src/teams/git.js"
 
 let scratch = ""
@@ -183,6 +184,27 @@ describe("check executor receipts", () => {
     expect(kinds).toEqual(["start", "end", "start", "end"])
     await rm(join(repoA, "marks.log"), { force: true })
     await rm(join(repoA, "mark.ts"), { force: true })
+  })
+
+  test("running a check writes receipt.written naming check and head, chain verifies", async () => {
+    const runID = "w-a9a9a9a9a9a9a9a9"
+    const check = { id: "audit-check", argv: ["bun", "run", "ok.ts"] }
+    const head = await git(repoA, ["rev-parse", "HEAD"])
+    const res = await execute(stateDir, { runID, check, worktree: repoA })
+    expect(res.passed).toBe(true)
+    const content = await readFile(join(stateDir, "audit.log"), "utf8")
+    const parsed = content
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const matches = parsed.filter((line) => line.kind === "receipt.written" && line.check === "audit-check" && line.run === runID)
+    expect(matches.length).toBeGreaterThan(0)
+    const line = matches[matches.length - 1] as Record<string, unknown>
+    expect(line.head).toBe(head)
+    expect(line.passed).toBe(true)
+    expect(typeof line.dirty).toBe("boolean")
+    const v = await verify(stateDir)
+    expect(v.ok).toBe(true)
   })
 })
 

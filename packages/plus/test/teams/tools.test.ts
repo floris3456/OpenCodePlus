@@ -13,6 +13,7 @@ import os from "node:os"
 import path from "node:path"
 import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
+import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
@@ -267,4 +268,76 @@ test("the instructions namespace still registers alongside team", async () => {
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
   expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
   expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(23)
+})
+
+async function auditLines(root: string): Promise<Array<Record<string, unknown>>> {
+  const content = await fs.readFile(path.join(root, "audit.log"), "utf8")
+  return content
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+}
+
+async function runSuccess(tool: Tool.Info & { readonly id: string }, input: unknown, ctx: Tool.Context): Promise<unknown> {
+  return Effect.runPromise(tool.execute(input, ctx).pipe(Effect.map((result) => result.output)))
+}
+
+test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const tools = await registeredTools()
+    const ctx = toolContext("ses_team_audit_refuse", "muse-implementer")
+    const message = await runMessage(need(tools, "team_status"), {}, ctx)
+    expect(message).toBe(notActor("unknown"))
+    const lines = await auditLines(root)
+    expect(lines).toHaveLength(1)
+    const line = lines[0] as Record<string, unknown>
+    expect(line.kind).toBe("tool.call")
+    expect(line.ok).toBe(false)
+    expect(line.code).toBe("E_NOT_ACTOR")
+    expect(line.run).toBeNull()
+    expect(line.actor).toBe("muse-implementer")
+    expect(line.sessionID).toBe("ses_team_audit_refuse")
+    expect(line.tool).toBe("team_status")
+    expect(typeof line.durationMs).toBe("number")
+    expect("input" in line).toBe(false)
+  })
+})
+
+test("successful gated call writes tool.call with run id and chain verifies across both", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const workDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-audit-ok-"))
+    try {
+      const runID = "w-aaaaaaaaaaaaaaaa"
+      const session = "ses_team_audit_ok"
+      await saveRun(root, { ...makeRun(runID, "muse-implementer", session), directory: workDir })
+      const tools = await registeredTools()
+      const refuseCtx = toolContext("ses_team_audit_none", "muse-implementer")
+      const refused = await runMessage(need(tools, "team_status"), {}, refuseCtx)
+      expect(refused).toBe(notActor("unknown"))
+      const okCtx = toolContext(session, "muse-implementer")
+      const output = await runSuccess(need(tools, "team_status"), {}, okCtx)
+      expect(output).toBeDefined()
+      const lines = await auditLines(root)
+      const calls = lines.filter((line) => line.kind === "tool.call")
+      expect(calls).toHaveLength(2)
+      const first = calls[0] as Record<string, unknown>
+      expect(first.ok).toBe(false)
+      expect(first.code).toBe("E_NOT_ACTOR")
+      expect(first.run).toBeNull()
+      expect("input" in first).toBe(false)
+      const second = calls[1] as Record<string, unknown>
+      expect(second.ok).toBe(true)
+      expect(second.code).toBeNull()
+      expect(second.run).toBe(runID)
+      expect(second.tool).toBe("team_status")
+      expect(second.actor).toBe("muse-implementer")
+      expect(second.sessionID).toBe(session)
+      expect(typeof second.durationMs).toBe("number")
+      expect("input" in second).toBe(false)
+      const v = await verify(root)
+      expect(v.ok).toBe(true)
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  })
 })

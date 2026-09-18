@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { Effect } from "effect"
+import { append } from "./audit.js"
 import { atomicJson, lock, readJson } from "./store.js"
 import { toolError } from "./schema.js"
 import type { Check } from "./schema.js"
@@ -266,6 +267,14 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         receipt.message = message ?? ""
       }
       await atomicJson(paths.json, receipt)
+      await Effect.runPromise(
+        Effect.ignore(
+          Effect.tryPromise({
+            try: () => append(root, "receipt.written", { run: opts.runID, check: opts.check.id, head, dirty, passed }),
+            catch: () => undefined,
+          }),
+        ),
+      )
       return { ...receipt, output: tailBytes(capped, MAX_OUTPUT_BYTES) }
     },
     { timeoutMs: Math.max(3_600_000, timeoutMs + 60_000), op: `check:${opts.check.id}` },
