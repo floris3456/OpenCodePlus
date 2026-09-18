@@ -121,7 +121,9 @@ export interface PolicyPermission {
 // Static agent permission rules. Edit scope is intentionally absent: assigned
 // paths are granted per run by a later permission hook, never here.
 export function nativePermissions(kind: Kind): readonly PolicyPermission[] {
-  const shell = kind === "orchestrator" ? "allow" : kind === "implementer" ? "ask" : "deny"
+  // Implementers are denied rather than asked because a headless ask never
+  // returns and the child blocks silently with no pending permission entry.
+  const shell = kind === "orchestrator" ? "allow" : "deny"
   const external = kind === "planner" || kind === "orchestrator" ? "allow" : "deny"
   const question = kind === "planner" ? "allow" : "deny"
   return [
