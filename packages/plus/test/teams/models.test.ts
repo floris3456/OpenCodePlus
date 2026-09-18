@@ -185,3 +185,32 @@ test("the built-in role description survives the model pin", async () => {
   if (agent === undefined) return
   expect(agent.description).toBe(IMPLEMENTER_DESCRIPTION)
 })
+
+test("pinned team roles carry their models on the agent surface itself", async () => {
+  // The pin must reach the AGENT, not just the session: before the applyModels
+  // upsert, team-only ids were absent from the host registry at apply time,
+  // so the model update was dropped and the host fell back to its own model
+  // on the next agent switch.
+  const { project } = await tempRoot()
+  await enable(project)
+  const { ctx } = await publishOnce(project, [
+    teamRecord(),
+    modelRecord("opus-orchestrator", ORCHESTRATOR),
+    modelRecord("muse-implementer", IMPLEMENTER),
+  ])
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const implementer = listed.data.find((entry) => String(entry.id) === "muse-implementer")
+  expect(implementer).toBeDefined()
+  if (implementer === undefined) return
+  expect(implementer.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect("variant" in (implementer.model ?? {})).toBe(false)
+  const orchestrator = listed.data.find((entry) => String(entry.id) === "opus-orchestrator")
+  expect(orchestrator).toBeDefined()
+  if (orchestrator === undefined) return
+  expect(orchestrator.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-opus-5" })
+  expect(String(orchestrator.model?.variant)).toBe("high")
+  const scout = listed.data.find((entry) => String(entry.id) === "scout")
+  expect(scout).toBeDefined()
+  if (scout === undefined) return
+  expect(scout.model).toBeUndefined()
+})

@@ -89,7 +89,10 @@ export async function applyModels(
   if (updates.length === 0) return undefined
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
-      if (!editor.get(update.agent)) continue
+      // Team-provided agents are not host upstream at apply time: core's
+      // update upserts, so a model for a team-only id creates the entry here
+      // and the team install overlays its body afterwards. Skipping a missing
+      // agent would drop every record-derived model for team members.
       editor.update(update.agent, (agent) => {
         agent.model = Model.Ref.make({
           providerID: Provider.ID.make(update.providerID),
