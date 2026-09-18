@@ -17,6 +17,7 @@ import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import type { PlusState } from "../index.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale } from "./checks.js"
+import { reconcile } from "./lifecycle.js"
 import { followupHandler } from "./api-followup.js"
 import { git, gitRaw } from "./git.js"
 import { peek } from "./inbox.js"
@@ -25,9 +26,9 @@ import { render } from "./report.js"
 import {
   attemptTransition,
   isAttemptTerminal,
-  isTerminal,
   loadRun,
   newRunID,
+  occupiesSlot,
   saveRun,
   startAttempt,
   transition,
@@ -281,7 +282,7 @@ async function delegateHandler(ctx: Context, input: unknown, caller: TeamCaller)
   }
 
   const records = await listRuns(root)
-  const live = records.filter((record) => !isTerminal(record.state))
+  const live = records.filter((record) => occupiesSlot(record))
   const inFlight = live
     .filter((record) => record.parent === parent.id)
     .map((record) => record.id)
@@ -671,6 +672,9 @@ async function waitHandler(ctx: Context, input: unknown, caller: TeamCaller): Pr
   }
   const settled = await settledIds(root, args.runs, until)
   if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until))
+  await Effect.runPromise(Effect.promise(() => reconcile(ctx, root)).pipe(Effect.ignore))
+  const resettled = await settledIds(root, args.runs, until)
+  if (resettled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, resettled, until))
   return succeeded({ settled: [], timedOut: true, stillOpen: [...args.runs], overBudget: await overBudgetIds(root, args.runs) })
 }
 

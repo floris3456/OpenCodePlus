@@ -210,6 +210,16 @@ export function isTerminal(state: RunState): boolean {
   return state === "superseded" || state === "reaped"
 }
 
+/** Bounds accounting (02 §6 invariant 4): a run occupies a slot only while it can still do work. */
+export function occupiesSlot(run: RunRecord): boolean {
+  if (run.state === "superseded" || run.state === "reaped" || run.state === "dead") return false
+  if (run.state === "idle") {
+    const last = run.attempts[run.attempts.length - 1]
+    if (last !== undefined && isAttemptTerminal(last.state)) return false
+  }
+  return true
+}
+
 export interface AttemptTransitionRow {
   from: AttemptState
   to: AttemptState
