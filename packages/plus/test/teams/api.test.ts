@@ -182,7 +182,8 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(sessions.prompted[0]?.sessionID).toBe(value.session)
       expect(sessions.prompted[0]?.text).toContain("Fix the agent filter in the query module")
       expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(true)
-      expect(await git(value.directory, ["status", "--porcelain"])).toBe("")
+      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
+      expect(await git(value.directory, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
     } finally {
       await removeRepo(repo.dir)
     }
@@ -926,6 +927,37 @@ test("delegate without a role pin never switches but still prompts", async () =>
       expect(sessions.prompted).toHaveLength(1)
       expect(sessions.prompted[0]?.sessionID).toBe(value.session)
       expect(typeof value.run).toBe("string")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish ignores Plus project.json but still reports real untracked files", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+      const child = childInRepo("w-3333333333333333", repo)
+      await saveRun(root, child)
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const value = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child))) as {
+        dirty: boolean
+        dirtyFiles: string[]
+      }
+      expect(value.dirty).toBe(false)
+      expect(value.dirtyFiles).toEqual([])
+      const entries = required(await api.status({ runs: [child.id] }, callerFor(child))) as Array<{ dirty: boolean }>
+      expect(entries).toHaveLength(1)
+      expect(entries[0]?.dirty).toBe(false)
+      const child2 = childInRepo("w-4444444444444444", repo)
+      await saveRun(root, child2)
+      await fs.writeFile(path.join(repo.dir, "real-untracked.txt"), "real\n")
+      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child2)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toContain("real-untracked.txt")
+      expect(error.message).not.toContain(".opencodeplus")
     } finally {
       await removeRepo(repo.dir)
     }

@@ -899,6 +899,8 @@ function parsePorcelain(out: string): string[] {
     const arrow = raw.indexOf(" -> ")
     const picked = arrow < 0 ? raw : raw.slice(arrow + 4).trim()
     if (picked === "") continue
+    // Plus's own runtime file is not the worker's change.
+    if (picked === ".opencodeplus/project.json" || picked.startsWith(".opencodeplus/")) continue
     files.push(picked.length >= 2 && picked.startsWith('"') && picked.endsWith('"') ? picked.slice(1, -1) : picked)
   }
   files.sort()
@@ -1010,6 +1012,7 @@ async function statusOf(root: string, id: string) {
   // current commit even when the child's record lags behind.
   const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
   const porcelain = await git(record.directory, ["status", "--porcelain"]).catch(() => "")
+  const dirtyFiles = parsePorcelain(porcelain)
   const checks = []
   for (const checkDef of assigned) {
     const receipt = await lastReceipt(root, id, checkDef.id)
@@ -1030,7 +1033,7 @@ async function statusOf(root: string, id: string) {
     taskState,
     head,
     base: record.base,
-    dirty: porcelain.trim().length > 0,
+    dirty: dirtyFiles.length > 0,
     branch: record.branch,
     checks,
     report:

@@ -235,3 +235,23 @@ test("the parent inbox got exactly one settled failed notify line", async () => 
     expect(items[0]?.text).toContain("next: supersede + delegate fresh")
   })
 })
+
+test("reconcile skips valid-JSON malformed runs and still settles later healthy runs", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = parentRun("main-0123456789abcdef", "ses_parent_alive_8")
+    await saveRun(root, parent)
+    const badID = "w-aaaaaaaaaaaaaaaa"
+    const badBase = workingChild(badID, parent.id, "ses_gone_bad_8")
+    await fs.mkdir(path.join(root, "runs", badID), { recursive: true })
+    await fs.writeFile(path.join(root, "runs", badID, "run.json"), JSON.stringify({ ...badBase, attempts: [null] }))
+    const good = workingChild("w-bbbbbbbbbbbbbbbb", parent.id, "ses_gone_008")
+    await saveRun(root, good)
+    const ids = await reconcile(context({ session: sessionHarness(new Set(["ses_parent_alive_8"])) }), root)
+    expect(ids).toEqual(["w-bbbbbbbbbbbbbbbb"])
+    const moved = await loadRun(root, good.id)
+    expect(moved?.state).toBe("dead")
+    expect(moved?.attempts[moved.attempts.length - 1]?.state).toBe("failed")
+    const raw = await fs.readFile(path.join(root, "runs", badID, "run.json"), "utf8")
+    expect(JSON.parse(raw).attempts).toEqual([null])
+  })
+})
