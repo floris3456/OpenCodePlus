@@ -422,9 +422,11 @@ the parent had two live children, so call C returned a run id rather than
 (A's finish is seq 24, after C's creation). The exact `E_BOUNDS` message that
 would have fired at the limit is
 `In-flight limit 4 reached (<ids>). Call wait first or raise bounds.inFlight in policy.`
-(packages/plus/src/teams/api.ts), and it is covered by the unit tests; it was
-not reachable live at the default bound without weakening it, which this round
-does not do.
+(packages/plus/src/teams/api.ts). **It was neither exercised live nor covered by
+a focused test**: this round put three children in flight against a bound of
+four, and no `E_BOUNDS` case exists under packages/plus/test. Reaching it live
+needs a fifth delegate at the unchanged default, which this round did not run.
+Recorded as an untested refusal, not as covered behaviour.
 
 No bleed between the three: each worktree's diff against the shared base is
 exactly its own file and each is clean.
@@ -620,8 +622,13 @@ child B ses_f4b563036ffenwEIGOhWrM6Jhv  run w-06ef241b418b0c13  scope ["src/fare
  "checks":[{"id":"bye","passed":false,"head":"c479c61f…"}],"dirty":false}
 ```
 
-2. **The parent saw it in both wait and status.** `team_wait` returned the
-settled report with its `needs`; `team_status` showed
+2. **The parent saw it in both wait and status — with different fields.**
+`team_wait` returned the settled entry
+`{"run":"w-3954ebd552e77c30","attemptState":"reported","report":{"status":"blocked","summary":"…","path":"…/report-1.json"}}`:
+wait carries **status, summary and the report path only**
+(`waitReport` in packages/plus/src/teams/api.ts builds exactly those three
+fields), so the parent reads `needs` from `team_status` or from the report
+file, not from wait. `team_status` showed
 `"report":{"status":"blocked","needs":[{"kind":"path",…}],"path":".../report-1.md"}`
 and `checks:[{"id":"bye","passed":false,"atHead":true}]`.
 
@@ -772,3 +779,35 @@ Step 8, cutover:
   are still missing and were deliberately left out of P1.
 - Fifteen handlers remain scaffolded; `integrate`, `review`, `set_checks`,
   `stop`, `supersede` and `list` are the ones an orchestrator hits first.
+
+## Independent review and corrections
+
+Astra-reviewer run `w-c661615d0d905bb5` (session `ses_ocpe7509e2ff7928848970d1d4f`)
+reviewed `a21f7d45f7184517c4b3f35decf68a192207ef5a` and returned **changes
+required** with three errors and two warnings. All five are addressed:
+
+1. *(error)* **Queued followups never delivered.** Valid. The `queue` path wrote
+   an inbox item and returned a predicted attempt number, but nothing in
+   packages/plus/src consumes the inbox, so an idle child never woke. 03
+   §followup requires "delivered when the child is `idle` (or immediately if
+   idle)". Fixed — see the followup delivery commit below.
+2. *(error)* **Failed immediate admission stranded the child.** Valid. The `now`
+   path saved `working` + a new attempt before awaiting the prompt. Fixed with
+   the same commit and a rejecting-prompt test.
+3. *(error)* **R8 overstated `needs` visibility through `team_wait`.** Valid.
+   `waitReport` returns `{status, summary, path}` only. The R8 section above is
+   corrected in place: wait carries status, summary and the report path, and
+   `needs` is read from `team_status` or the report file.
+4. *(warning)* **R5's E_BOUNDS coverage claim was unsupported.** Valid; there is
+   no `E_BOUNDS` test under packages/plus/test. The R5 section above is
+   corrected in place to say the refusal is neither exercised live nor covered.
+5. *(warning)* **03-tools.md is not in this worktree.** Correct: the contract
+   lives in the workspace at `/home/bliss/OpenCodePlus/docs/team-v2/03-tools.md`
+   (§followup at lines 133-155), outside the repository. Every comparison in
+   this log was made against that file; a reviewer confined to the worktree
+   must be given the excerpt.
+
+The reviewer also confirmed, by inspection: audit-append failures preserve the
+original tool success/error result, the permission change kept the deny
+decisions intact, and no credential, password or key content appears in the
+committed code or in this document.
