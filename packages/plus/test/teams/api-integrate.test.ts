@@ -9,6 +9,7 @@ import { context } from "../harness.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
+import { enqueue, pending, queue } from "../../src/teams/merge.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
 
@@ -507,3 +508,79 @@ test("non-child run is refused with E_NOT_CHILD", async () => {
     }
   })
 })
+
+test("integrate drains an older pending entry instead of stranding it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parentHead = repo.head
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: parentHead,
+        head: parentHead,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+        sessionID: "ses_parent_008",
+        children: ["w-aaaaaaaaaaaaaaaa", "w-bbbbbbbbbbbbbbbb"],
+      })
+      const oldWork = await makeChild(repo.scratch, repo.dir, "oldpending", parentHead, { "old.txt": "old\n" }, "feat: old work")
+      const newWork = await makeChild(repo.scratch, repo.dir, "newpending", parentHead, { "new.txt": "new\n" }, "feat: new work")
+      const now = new Date().toISOString()
+      const oldChild = baseRun({
+        id: "w-aaaaaaaaaaaaaaaa",
+        role: "muse-implementer",
+        directory: oldWork.dir,
+        branch: oldWork.branch,
+        base: parentHead,
+        head: oldWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_008a",
+        task: null,
+      })
+      const newChild = baseRun({
+        id: "w-bbbbbbbbbbbbbbbb",
+        role: "muse-implementer",
+        directory: newWork.dir,
+        branch: newWork.branch,
+        base: parentHead,
+        head: newWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_008b",
+        task: null,
+      })
+      await saveRun(root, parent)
+      await saveRun(root, oldChild)
+      await saveRun(root, newChild)
+      await writeReport(root, oldChild.id, 1, "done")
+      await writeReport(root, newChild.id, 1, "done")
+      await enqueue(root, {
+        parentRun: parent.id,
+        parentWorktree: parent.directory,
+        childRun: oldChild.id,
+        childBranch: oldChild.branch,
+        childHead: oldWork.head,
+        expectedParentHead: parentHead,
+      })
+      expect(await pending(root, parent.id)).toHaveLength(1)
+      const value = required(
+        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent)),
+      ) as { entry: string; state: string; head: string | null }
+      expect(value.state).toBe("landed")
+      expect(typeof value.head).toBe("string")
+      expect(await pending(root, parent.id)).toHaveLength(0)
+      expect((await queue(root, parent.id)).filter((entry) => entry.state === "landed")).toHaveLength(2)
+      expect(await fs.readFile(path.join(repo.dir, "old.txt"), "utf8")).toBe("old\n")
+      expect(await fs.readFile(path.join(repo.dir, "new.txt"), "utf8")).toBe("new\n")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)

@@ -10,7 +10,7 @@ import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, type RunRecord } from "./run.js"
-import { Brief, ChecksArray, FollowupBudget, Head, Report, RunID, RunState } from "./schema.js"
+import { Brief, FollowupBudget, Head, Report, RunID, RunState } from "./schema.js"
 
 const namespace = "team"
 const origin = { type: "plugin", name: "opencode.plus" } as const
@@ -69,7 +69,13 @@ const CheckpointInput = Schema.Struct({
 })
 
 const SetChecksInput = Schema.Struct({
-  checks: ChecksArray,
+  checks: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      argv: Schema.Array(Schema.String),
+      cwd: Schema.optional(Schema.String),
+    }),
+  ),
 })
 
 const SupersedeInput = Schema.Struct({

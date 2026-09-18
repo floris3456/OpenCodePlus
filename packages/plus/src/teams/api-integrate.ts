@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
-import { drain, enqueue, pending } from "./merge.js"
+import { drain, enqueue } from "./merge.js"
 import type { MergeContext } from "./merge.js"
 import { gitRaw } from "./git.js"
 import { loadRun } from "./run.js"
@@ -109,7 +109,6 @@ export async function integrateHandler(ctx: Context, input: unknown, caller: Tea
   }
   const live = await gitRaw(child.directory, ["rev-parse", "HEAD"])
   const childHead = live.code === 0 ? live.out : child.head
-  const before = await pending(root, parent.id)
   const enqueued = await enqueue(root, {
     parentRun: parent.id,
     parentWorktree: parent.directory,
@@ -123,7 +122,6 @@ export async function integrateHandler(ctx: Context, input: unknown, caller: Tea
   )
   if (!enqueued.ok) return { ok: false, error: enqueued.error }
   const entry = enqueued.entry
-  if (before.length > 0) return succeeded({ entry: entry.id, state: "pending", head: null })
   const drained = await drain(root, parent.id, mergeCtx).then(
     (result) => ({ ok: true as const, result }),
     (error) => ({ ok: false as const, error: thrownError(error) }),
