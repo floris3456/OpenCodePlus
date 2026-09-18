@@ -22,6 +22,8 @@ import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
+import { createTeamApi } from "./teams/api.js"
+import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
@@ -39,6 +41,7 @@ export interface PlusState {
   registration: RpcRegistration<typeof Definition> | undefined
   applied: Registration[]
   tooling: Registration[]
+  teamTooling: Registration[]
   installedTools: readonly ToolPlan[]
   fingerprint: string | undefined
   projectRevision: number | undefined
@@ -56,6 +59,7 @@ export function createState(): PlusState {
     registration: undefined,
     applied: [],
     tooling: [],
+    teamTooling: [],
     installedTools: [],
     fingerprint: undefined,
     projectRevision: undefined,
@@ -79,6 +83,10 @@ export default Plugin.define({
       yield* Effect.addFinalizer(() => deactivate(state))
       const registration = yield* ctx.rpc.register(Definition, createHandlers(ctx, state)).pipe(Effect.orDie)
       state.registration = registration
+      // Team tools exist in every Plus instance even with project mode off: a
+      // child worktree has no .opencodeplus/project.json and still needs them,
+      // so this stays out of activate/installTooling which require a project.
+      yield* ensureTeamTooling(ctx, state)
       yield* activate(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
@@ -2442,6 +2450,30 @@ function disposeTooling(state: PlusState): Effect.Effect<void> {
   })
 }
 
+function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
+  return Effect.gen(function* () {
+    if (state.teamTooling.length > 0) return
+    const installed = yield* Effect.promise(() => installTeamTooling(ctx, state)).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("plus team tooling install failed", { cause }).pipe(Effect.as([] as Registration[]))),
+    )
+    state.teamTooling = [...state.teamTooling, ...installed]
+  })
+}
+
+async function installTeamTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
+  const api = createTeamApi(ctx, state)
+  const tools = await registerTeamTools(ctx, api)
+  return [tools]
+}
+
+function disposeTeamTooling(state: PlusState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const registrations = state.teamTooling
+    state.teamTooling = []
+    yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
+  })
+}
+
 async function loadCurrent(directory: string): Promise<LoadedStores> {
   const config = await read(directory)
   const stored = await load(directory)
@@ -2453,6 +2485,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
     Effect.gen(function* () {
       yield* disposeApplied(state)
       yield* disposeTooling(state)
+      yield* disposeTeamTooling(state)
       state.fingerprint = undefined
       state.projectRevision = undefined
       state.globalRevision = undefined
