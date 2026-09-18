@@ -22,7 +22,7 @@ import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
-import { dedupeAgents, installTeamAgents } from "./instructions/teams-apply.js"
+import { applyTeamAgent, dedupeAgents, installTeamAgents, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
@@ -2736,7 +2736,8 @@ async function installBuiltinTeamAgents(
       if (agent.team === undefined) continue
       const body = builtinBody(builtins, agent.team, agent.id)
       if (body === undefined) continue
-      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body)))
+      const fields: TeamFields = builtins.find((entry) => entry.name === agent.team)?.members.find((member) => member.id === agent.id)?.fields ?? { permissions: [] }
+      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body), fields))
     }
     if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
     return { registrations: [...installed] }
@@ -2749,16 +2750,12 @@ async function installBuiltinTeamAgents(
   }
 }
 
-async function runBuiltinRegistration(ctx: Context, id: string, body: string): Promise<Registration> {
+async function runBuiltinRegistration(ctx: Context, id: string, body: string, fields: TeamFields): Promise<Registration> {
   return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() =>
-        ctx.agent.transform((editor: AgentEditor) => {
-          editor.update(id, (agent) => {
-            agent.system = body
-          })
-        }),
+        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields)),
       ).pipe(
         Effect.provideService(Scope.Scope, scope),
         Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),

@@ -66,18 +66,18 @@ export async function installTeamAgents(ctx: Context, agents: readonly AgentSour
 
 type Draft = Types.DeepMutable<Agent.Info>
 
-interface TeamPermission {
+export interface TeamPermission {
   readonly action: string
   readonly resource: string
   readonly effect: "allow" | "deny" | "ask"
 }
 
-interface TeamRequest {
+export interface TeamRequest {
   readonly headers?: Record<string, string>
   readonly body?: Record<string, unknown>
 }
 
-interface TeamFields {
+export interface TeamFields {
   readonly model?: string
   readonly variant?: string
   readonly description?: string
@@ -120,7 +120,7 @@ async function disposeRegistrations(registrations: readonly Registration[]): Pro
   }
 }
 
-function applyTeamAgent(editor: AgentEditor, id: string, body: string, fields: TeamFields): void {
+export function applyTeamAgent(editor: AgentEditor, id: string, body: string, fields: TeamFields): void {
   editor.update(id, (agent) => {
     const ref = parseModelRef(fields.model, fields.variant)
     if (ref !== undefined) agent.model = ref
