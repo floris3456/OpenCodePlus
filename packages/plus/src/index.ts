@@ -2593,6 +2593,7 @@ function publishFresh(
           splits,
           scopes: publishScopes,
           models: modelRecords,
+          teamAgents: view.teamAgents.map((agent) => agent.id),
         })
       })
       // Enabled teams become real core-visible agents: resolve the enabled
