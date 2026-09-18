@@ -557,3 +557,98 @@ orphaned check process also survived the restart, so a restart can leave a
 check running with no owner and no receipt. Step 6 needs: attempt-level
 recovery on startup (resume or fail the attempt), a dead/stale marker driven by
 the sweeper, and check-process reaping.
+
+## R6 — coexistence with Instructions — PASSED (re-run after the fix)
+
+Fix integrated first: muse-implementer run `w-3a500ac7f889f8e7`, commit
+`bec92e84e76cab8d547858d4970fca714c53c210`
+"fix(plus): apply team tool toggles to team-provided agents", integrated at
+`6ca628102f60758dd40d6e0759141e2c9210d3f0`.
+
+Root cause (the implementer's finding, suspect 1 of the three I listed):
+`publishFresh` in packages/plus/src/index.ts built the apply input from
+`discovered.agents` only, so team-only agent ids were missing on the first
+publish after enable or restart; and `pushRule` in apply.ts skipped agents that
+were not already present (`if (!current) return`), so record-derived denies were
+dropped while field-derived ceiling rules still landed. `resolve` and the
+`tool:team_diff` item were fine. Fix: `pushRule` upserts through
+`editor.update`, and `publishFresh` includes `view.teamAgents` in both the apply
+agents and the scopes. Checks: team-query-off 2 pass (the new case fails on the
+old source: 0 registrations, empty permissions), typecheck clean.
+
+R6 re-run from scratch on the fixed build, same TUI route:
+
+```
+parent ses_f4b5979d6ffexD9u1p2tGhzs8B  run main-94410aec3dae3fc3
+child  ses_f4b59465fffeajdDgEeXliUbsh  run w-4d2326bdb047c972  (finish done)
+```
+
+1. Nine roles under `opencodeplus-team [on]` in Defaults > Teams — unchanged.
+2. Team off → **0 of 9** roles in the live agent list; team on → **9 of 9**.
+3. `instructions_list` from a `build` agent session: 40 items.
+4. **Tool row toggle now reaches the session.** Child catalog before the toggle:
+
+```
+["check","diff","exa_code_search","get_context","status"]
+```
+
+`space` on Defaults > Agents > muse-implementer > Tools > OpenCodePlus >
+Code Mode > team > `diff` flipped it to `[off]`; the live ruleset went from 32
+to 33 rules with `{"action":"team_diff","resource":"*","effect":"deny"}`, and
+the child's catalog on the next turn was:
+
+```
+["check","exa_code_search","get_context","status"]
+```
+
+`diff` is gone from the running child's catalog with no restart. Toggling the
+row back on removed the rule (back to 32) and restored the tool.
+
+## R8 — blocked and needs — PASSED
+
+```
+parent  ses_f4b5b7973ffeuLQNpoAqajO0b1  run main-bb2a19a422392a5b
+child A ses_f4b5b558affeeaihWPkC12i0iW  run w-3954ebd552e77c30  scope ["src/greeting.ts"], check bye
+child B ses_f4b563036ffenwEIGOhWrM6Jhv  run w-06ef241b418b0c13  scope ["src/farewell.ts"], check bye
+```
+
+1. **Child A finished blocked with a path need.** Its report-1:
+
+```json
+{"status":"blocked",
+ "needs":[{"kind":"path","detail":"src/farewell.ts is outside scope; farewell() must return Goodbye, <name>! for the bye check"}],
+ "checks":[{"id":"bye","passed":false,"head":"c479c61f…"}],"dirty":false}
+```
+
+2. **The parent saw it in both wait and status.** `team_wait` returned the
+settled report with its `needs`; `team_status` showed
+`"report":{"status":"blocked","needs":[{"kind":"path",…}],"path":".../report-1.md"}`
+and `checks:[{"id":"bye","passed":false,"atHead":true}]`.
+
+3. **Route taken, and why.** `followup` was PORTED for this round (run
+`w-c3e499406b183d8c`, commit `f688a9b787703eb971a9f45e7acab204bd3f0819`) and
+then corrected to the documented refusal codes (run `w-e5ed3855114bae21`,
+commit `48adee58e1198e46096fe8fdef14064f5e982d08`: `E_NOT_CHILD` and
+`E_TERMINAL` per 03-tools.md §followup, replacing the invented
+`E_NOT_VISIBLE`/`E_UNKNOWN_RUN`). `set_checks` was NOT needed and stays
+scaffolded. **followup cannot widen scope** — 03 §followup's input is
+`{run, requestID, prompt, delivery, budget}` with no path field, and the
+permission hook reads `run.paths`, which no tool mutates. So the sane loop is
+both: followup to keep the same child working in its own worktree on a
+corrected instruction, and a redelegation for the work that needs a wider
+scope.
+
+   `team_followup{run:"w-3954ebd552e77c30", delivery:"now"}` returned
+   `{"attempt":2,"state":"admitted"}` and really restarted the child: its run
+   record now reads `attempts:["1:reported:delegate","2:reported:followup"]`
+   with a second report (`report-2.json`) in the same worktree.
+
+4. **Redelegation with the asked-for scope completed the work.** Child B on
+`scope.paths ["src/farewell.ts"]` committed `2f16e82dedc2c4dc5b115c7b3eff878d9f1e7cc8`,
+receipt `bye-2f16e82.json` `dirty:false passed:true`, finish `done`. The final
+`team_wait` returned both runs settled.
+
+audit.log: seq 9 (A's blocked finish, ok), 10 (wait), 23 (status), **24
+(team_followup ok)**, 26 (A's second finish, ok), 27–28 (B created and
+delegated), 32–36 (B's check, checkpoint, second check, finish). grep pattern:
+`grep '"tool":"team_followup"' audit.log`.
