@@ -4,7 +4,7 @@ import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
 import { runRegistration } from "../instructions/apply.js"
 import { teamsDataDir } from "../instructions/paths.js"
-import type { TeamApi, TeamApiResult } from "./api.js"
+import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
 import { bySession, type RunRecord } from "./run.js"
 import { Brief, ChecksArray, FollowupBudget, Head, Report, RunID, RunState } from "./schema.js"
@@ -181,7 +181,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("delegate", false),
       origin,
-      execute: (input, context) => runGated("delegate", input, context, (args) => api.delegate(args)),
+      execute: (input, context) => runGated("delegate", input, context, (args, caller) => api.delegate(args, caller)),
     })
     editor.add({
       name: "finish",
@@ -190,7 +190,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("finish", false),
       origin,
-      execute: (input, context) => runGated("finish", input, context, (args) => api.finish(args)),
+      execute: (input, context) => runGated("finish", input, context, (args, caller) => api.finish(args, caller)),
     })
     editor.add({
       name: "followup",
@@ -199,7 +199,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("followup", false),
       origin,
-      execute: (input, context) => runGated("followup", input, context, (args) => api.followup(args)),
+      execute: (input, context) => runGated("followup", input, context, (args, caller) => api.followup(args, caller)),
     })
     editor.add({
       name: "review",
@@ -208,7 +208,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("review", false),
       origin,
-      execute: (input, context) => runGated("review", input, context, (args) => api.review(args)),
+      execute: (input, context) => runGated("review", input, context, (args, caller) => api.review(args, caller)),
     })
     editor.add({
       name: "integrate",
@@ -217,7 +217,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("integrate", false),
       origin,
-      execute: (input, context) => runGated("integrate", input, context, (args) => api.integrate(args)),
+      execute: (input, context) => runGated("integrate", input, context, (args, caller) => api.integrate(args, caller)),
     })
     editor.add({
       name: "checkpoint",
@@ -226,7 +226,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("checkpoint", false),
       origin,
-      execute: (input, context) => runGated("checkpoint", input, context, (args) => api.checkpoint(args)),
+      execute: (input, context) => runGated("checkpoint", input, context, (args, caller) => api.checkpoint(args, caller)),
     })
     editor.add({
       name: "set_checks",
@@ -235,7 +235,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("set_checks", false),
       origin,
-      execute: (input, context) => runGated("set_checks", input, context, (args) => api.set_checks(args)),
+      execute: (input, context) => runGated("set_checks", input, context, (args, caller) => api.set_checks(args, caller)),
     })
     editor.add({
       name: "supersede",
@@ -244,7 +244,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("supersede", false),
       origin,
-      execute: (input, context) => runGated("supersede", input, context, (args) => api.supersede(args)),
+      execute: (input, context) => runGated("supersede", input, context, (args, caller) => api.supersede(args, caller)),
     })
     editor.add({
       name: "shutdown_request",
@@ -253,7 +253,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("shutdown_request", false),
       origin,
-      execute: (input, context) => runGated("shutdown_request", input, context, (args) => api.shutdown_request(args)),
+      execute: (input, context) => runGated("shutdown_request", input, context, (args, caller) => api.shutdown_request(args, caller)),
     })
     editor.add({
       name: "stop",
@@ -262,7 +262,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("stop", false),
       origin,
-      execute: (input, context) => runGated("stop", input, context, (args) => api.stop(args)),
+      execute: (input, context) => runGated("stop", input, context, (args, caller) => api.stop(args, caller)),
     })
     editor.add({
       name: "resume",
@@ -271,7 +271,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("resume", false),
       origin,
-      execute: (input, context) => runGated("resume", input, context, (args) => api.resume(args)),
+      execute: (input, context) => runGated("resume", input, context, (args, caller) => api.resume(args, caller)),
     })
     editor.add({
       name: "prepare",
@@ -280,7 +280,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("prepare", false),
       origin,
-      execute: (input, context) => runGated("prepare", input, context, (args) => api.prepare(args)),
+      execute: (input, context) => runGated("prepare", input, context, (args, caller) => api.prepare(args, caller)),
     })
     editor.add({
       name: "plan_handoff",
@@ -289,7 +289,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("plan_handoff", false),
       origin,
-      execute: (input, context) => runGated("plan_handoff", input, context, (args) => api.plan_handoff(args)),
+      execute: (input, context) => runGated("plan_handoff", input, context, (args, caller) => api.plan_handoff(args, caller)),
     })
     editor.add({
       name: "status",
@@ -298,7 +298,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("status", true),
       origin,
-      execute: (input, context) => runGated("status", input, context, (args) => api.status(args)),
+      execute: (input, context) => runGated("status", input, context, (args, caller) => api.status(args, caller)),
     })
     editor.add({
       name: "wait",
@@ -307,7 +307,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("wait", true),
       origin,
-      execute: (input, context) => runGated("wait", input, context, (args) => api.wait(args)),
+      execute: (input, context) => runGated("wait", input, context, (args, caller) => api.wait(args, caller)),
     })
     editor.add({
       name: "diff",
@@ -316,7 +316,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("diff", true),
       origin,
-      execute: (input, context) => runGated("diff", input, context, (args) => api.diff(args)),
+      execute: (input, context) => runGated("diff", input, context, (args, caller) => api.diff(args, caller)),
     })
     editor.add({
       name: "list",
@@ -325,7 +325,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("list", true),
       origin,
-      execute: (input, context) => runGated("list", input, context, (args) => api.list(args)),
+      execute: (input, context) => runGated("list", input, context, (args, caller) => api.list(args, caller)),
     })
     editor.add({
       name: "get_context",
@@ -334,7 +334,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("get_context", true),
       origin,
-      execute: (input, context) => runGated("get_context", input, context, (args) => api.get_context(args)),
+      execute: (input, context) => runGated("get_context", input, context, (args, caller) => api.get_context(args, caller)),
     })
     editor.add({
       name: "check",
@@ -343,7 +343,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("check", true),
       origin,
-      execute: (input, context) => runGated("check", input, context, (args) => api.check(args)),
+      execute: (input, context) => runGated("check", input, context, (args, caller) => api.check(args, caller)),
     })
     editor.add({
       name: "metrics",
@@ -352,7 +352,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("metrics", true),
       origin,
-      execute: (input, context) => runGated("metrics", input, context, (args) => api.metrics(args)),
+      execute: (input, context) => runGated("metrics", input, context, (args, caller) => api.metrics(args, caller)),
     })
     editor.add({
       name: "exa_code_search",
@@ -361,7 +361,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("exa_code_search", true),
       origin,
-      execute: (input, context) => runGated("exa_code_search", input, context, (args) => api.exa_code_search(args)),
+      execute: (input, context) => runGated("exa_code_search", input, context, (args, caller) => api.exa_code_search(args, caller)),
     })
     editor.add({
       name: "tavily_search",
@@ -370,7 +370,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("tavily_search", true),
       origin,
-      execute: (input, context) => runGated("tavily_search", input, context, (args) => api.tavily_search(args)),
+      execute: (input, context) => runGated("tavily_search", input, context, (args, caller) => api.tavily_search(args, caller)),
     })
     editor.add({
       name: "tavily_extract",
@@ -379,7 +379,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("tavily_extract", true),
       origin,
-      execute: (input, context) => runGated("tavily_extract", input, context, (args) => api.tavily_extract(args)),
+      execute: (input, context) => runGated("tavily_extract", input, context, (args, caller) => api.tavily_extract(args, caller)),
     })
   })
 }
@@ -392,14 +392,15 @@ function runGated(
   name: TeamTool,
   input: unknown,
   context: Tool.Context,
-  call: (args: unknown) => Promise<TeamApiResult>,
+  call: (args: unknown, caller: TeamCaller) => Promise<TeamApiResult>,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(context.agent)
     const run = yield* Effect.promise(() => bySession(teamsDataDir(), String(context.sessionID)))
     const owned = yield* requireActor(run, input, agent)
     yield* requireRole(owned, name)
-    const result = yield* Effect.promise(() => call(input))
+    const caller: TeamCaller = { sessionID: String(context.sessionID), agent, run: owned }
+    const result = yield* Effect.promise(() => call(input, caller))
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: result.value }
   })

@@ -84,6 +84,7 @@ function makeRun(id: string, role: string, sessionID: string): RunRecord {
     repo: "opencode",
     repoKey: "opencode",
     directory: "/tmp/wt-team-test",
+    paths: [],
     branch: "team/test/work",
     base: "0123456789abcdef0123456789abcdef01234567",
     head: "0123456789abcdef0123456789abcdef01234567",
@@ -176,7 +177,7 @@ test("a reviewer cannot delegate but reaches the finish handler", async () => {
     const delegateMessage = await runMessage(need(tools, "team_delegate"), {}, ctx)
     expect(delegateMessage.startsWith("E_ROLE:")).toBe(true)
     const finishMessage = await runMessage(need(tools, "team_finish"), {}, ctx)
-    expect(finishMessage.startsWith("E_NOT_IMPLEMENTED:")).toBe(true)
+    expect(finishMessage.startsWith("E_INPUT:")).toBe(true)
   })
 })
 
