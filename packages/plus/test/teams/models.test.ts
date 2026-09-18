@@ -214,3 +214,61 @@ test("pinned team roles carry their models on the agent surface itself", async (
   if (scout === undefined) return
   expect(scout.model).toBeUndefined()
 })
+
+test("disabling a pinned team removes its roles even with the model record retained", async () => {
+  // Enable opencodeplus-team, pin muse-implementer, then disable the team
+  // while leaving the model record in place. The second publish discovers the
+  // still-installed old role before disposing previous registrations; the
+  // retained pin must not recreate it from Agent.Info.default (allow '*').
+  const { project } = await tempRoot()
+  await enable(project)
+  const agents = agentHarness([])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const switches: Switch[] = []
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    catalog: catalogHarness([]),
+    prompt: promptHarness(defaultHostTemplates, { "nova-2": "general", "": "general" }),
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+    session: {
+      get: () => Effect.succeed({ model: { providerID: "stale", id: "stale" } } as never),
+      switchModel: (input: { sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }) =>
+        Effect.sync(() => {
+          switches.push({ sessionID: input.sessionID, model: input.model })
+        }),
+    },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const throwing = throwingContext({})
+  const stored0 = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored0.projectRevision,
+    expectedGlobalRevision: stored0.globalRevision,
+    records: [...stored0.records, teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)],
+  })
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwing))
+  const before = await Effect.runPromise(ctx.agent.list())
+  expect(before.data.some((entry) => String(entry.id) === "muse-implementer")).toBe(true)
+  const stored1 = await load(project)
+  const disabled: StoredRecord = { type: "team", level: "defaults", team: "opencodeplus-team", enabled: false, updated: UPDATED }
+  const nextRecords = [
+    ...stored1.records.filter((record) => !(record.type === "team" && record.team === "opencodeplus-team")),
+    disabled,
+  ]
+  await save(project, {
+    expectedProjectRevision: stored1.projectRevision,
+    expectedGlobalRevision: stored1.globalRevision,
+    records: nextRecords,
+  })
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwing))
+  const listed = await Effect.runPromise(ctx.agent.list())
+  expect(listed.data.find((entry) => String(entry.id) === "muse-implementer")).toBeUndefined()
+  expect(listed.data.some((entry) => String(entry.id) === "muse-implementer")).toBe(false)
+})
