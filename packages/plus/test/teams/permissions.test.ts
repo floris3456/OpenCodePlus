@@ -75,8 +75,11 @@ function evaluation(
   sessionID: Session.ID,
   resources: string[],
   effect: PermissionEvaluation["effect"],
+  message?: string,
 ): PermissionEvaluation {
-  return { sessionID, action: "edit", resources, effect }
+  return message === undefined
+    ? { sessionID, action: "edit", resources, effect }
+    : { sessionID, action: "edit", resources, effect, message }
 }
 
 describe("team run edit scope", () => {
@@ -146,6 +149,141 @@ describe("team run edit scope", () => {
     const event = evaluation(sessionID, [absolute], "ask")
     await Effect.runPromise(callback(event))
     expect(event.effect).toBe("allow")
+
+    await Effect.runPromise(registration.dispose)
+  })
+
+  test("out-of-scope denial names the path and every scope entry", async () => {
+    const sessionID = Session.ID.make("ses_teampolicy001")
+    const run = makeRun({ sessionID, paths: ["packages/plus/src/*", "packages/cli/src/*"] })
+    await saveRun(dir, run)
+    const harness = permissionHarness()
+    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
+    const registration = await registerTeamPermissions(ctx, dir)
+    const callback = harness.state.callback
+    expect(callback).toBeDefined()
+    if (callback === undefined) return
+
+    const event = evaluation(sessionID, ["packages/core/x.ts"], "ask")
+    await Effect.runPromise(callback(event))
+    expect(event.effect).toBe("deny")
+    expect(event.message).toBe(
+      `"packages/core/x.ts" is outside your scope.paths [packages/plus/src/*, packages/cli/src/*]. Report it in needs=[{kind:"path"...}].`,
+    )
+
+    await Effect.runPromise(registration.dispose)
+  })
+
+  test("forbidden denial uses version-control wording", async () => {
+    const sessionID = Session.ID.make("ses_teampolicy001")
+    const run = makeRun({ sessionID })
+    await saveRun(dir, run)
+    const harness = permissionHarness()
+    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
+    const registration = await registerTeamPermissions(ctx, dir)
+    const callback = harness.state.callback
+    expect(callback).toBeDefined()
+    if (callback === undefined) return
+
+    const event = evaluation(sessionID, [".git/HEAD"], "ask")
+    await Effect.runPromise(callback(event))
+    expect(event.effect).toBe("deny")
+    expect(event.message).toBe(
+      `".git/HEAD" is version-control or paused-tool state and is never editable, even inside scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`,
+    )
+
+    await Effect.runPromise(registration.dispose)
+  })
+
+  test("in-scope allow sets no message", async () => {
+    const sessionID = Session.ID.make("ses_teampolicy001")
+    const run = makeRun({ sessionID })
+    await saveRun(dir, run)
+    const harness = permissionHarness()
+    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
+    const registration = await registerTeamPermissions(ctx, dir)
+    const callback = harness.state.callback
+    expect(callback).toBeDefined()
+    if (callback === undefined) return
+
+    const event = evaluation(sessionID, ["packages/plus/src/x.ts"], "ask")
+    await Effect.runPromise(callback(event))
+    expect(event.effect).toBe("allow")
+    expect(event.message).toBeUndefined()
+
+    await Effect.runPromise(registration.dispose)
+  })
+
+  test("session with no run leaves effect and message untouched", async () => {
+    const sessionID = Session.ID.make("ses_teampolicy001")
+    const run = makeRun({ sessionID })
+    await saveRun(dir, run)
+    const harness = permissionHarness()
+    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
+    const registration = await registerTeamPermissions(ctx, dir)
+    const callback = harness.state.callback
+    expect(callback).toBeDefined()
+    if (callback === undefined) return
+
+    const missing = Session.ID.make("ses_teampolicymiss")
+    const keepAllow = evaluation(missing, ["packages/core/x.ts"], "allow")
+    await Effect.runPromise(callback(keepAllow))
+    expect(keepAllow.effect).toBe("allow")
+    expect(keepAllow.message).toBeUndefined()
+
+    const keepDeny = evaluation(missing, ["packages/core/x.ts"], "deny", "original")
+    await Effect.runPromise(callback(keepDeny))
+    expect(keepDeny.effect).toBe("deny")
+    expect(keepDeny.message).toBe("original")
+
+    await Effect.runPromise(registration.dispose)
+  })
+
+  test("empty resources denies with nothing-to-check message", async () => {
+    const sessionID = Session.ID.make("ses_teampolicy001")
+    const run = makeRun({ sessionID })
+    await saveRun(dir, run)
+    const harness = permissionHarness()
+    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
+    const registration = await registerTeamPermissions(ctx, dir)
+    const callback = harness.state.callback
+    expect(callback).toBeDefined()
+    if (callback === undefined) return
+
+    const event = evaluation(sessionID, [], "ask")
+    await Effect.runPromise(callback(event))
+    expect(event.effect).toBe("deny")
+    expect(event.message).toBe(
+      `Edit request named no file; nothing to check against scope.paths [packages/plus/src/*].`,
+    )
+
+    await Effect.runPromise(registration.dispose)
+  })
+
+  test("first offending resource wins with forbidden checked first", async () => {
+    const sessionID = Session.ID.make("ses_teampolicy001")
+    const run = makeRun({ sessionID })
+    await saveRun(dir, run)
+    const harness = permissionHarness()
+    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
+    const registration = await registerTeamPermissions(ctx, dir)
+    const callback = harness.state.callback
+    expect(callback).toBeDefined()
+    if (callback === undefined) return
+
+    const forbiddenSecond = evaluation(sessionID, ["packages/core/a.ts", ".git/HEAD"], "ask")
+    await Effect.runPromise(callback(forbiddenSecond))
+    expect(forbiddenSecond.effect).toBe("deny")
+    expect(forbiddenSecond.message).toBe(
+      `".git/HEAD" is version-control or paused-tool state and is never editable, even inside scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`,
+    )
+
+    const firstOutOfScope = evaluation(sessionID, ["packages/core/a.ts", "packages/other/b.ts"], "ask")
+    await Effect.runPromise(callback(firstOutOfScope))
+    expect(firstOutOfScope.effect).toBe("deny")
+    expect(firstOutOfScope.message).toBe(
+      `"packages/core/a.ts" is outside your scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`,
+    )
 
     await Effect.runPromise(registration.dispose)
   })

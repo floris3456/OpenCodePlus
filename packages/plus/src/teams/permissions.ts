@@ -26,20 +26,41 @@ function handleEvent(event: PermissionEvaluation, root?: string): Effect.Effect<
     if (run === undefined) return
     const paths = run.paths ?? []
     const directory = run.directory ?? ""
-    event.effect = decideEdit(directory, paths, event.resources)
+    const decision = decideEdit(directory, paths, event.resources)
+    event.effect = decision.effect
+    if (decision.effect === "deny" && decision.message !== undefined) event.message = decision.message
   })
 }
 
-function decideEdit(directory: string, paths: readonly string[], resources: ReadonlyArray<string>): "allow" | "deny" {
-  if (resources.length === 0) return "deny"
+interface EditDecision {
+  readonly effect: "allow" | "deny"
+  readonly message?: string
+}
+
+function decideEdit(
+  directory: string,
+  paths: readonly string[],
+  resources: ReadonlyArray<string>,
+): EditDecision {
+  const scope = paths.join(", ")
+  if (resources.length === 0)
+    return { effect: "deny", message: `Edit request named no file; nothing to check against scope.paths [${scope}].` }
   const relatives = resources.map((resource) => toRelative(directory, resource))
   for (const relative of relatives) {
-    if (isForbidden(relative)) return "deny"
+    if (isForbidden(relative))
+      return {
+        effect: "deny",
+        message: `"${relative}" is version-control or paused-tool state and is never editable, even inside scope.paths [${scope}]. Report it in needs=[{kind:"path"...}].`,
+      }
   }
   for (const relative of relatives) {
-    if (!matchesScope(relative, paths)) return "deny"
+    if (!matchesScope(relative, paths))
+      return {
+        effect: "deny",
+        message: `"${relative}" is outside your scope.paths [${scope}]. Report it in needs=[{kind:"path"...}].`,
+      }
   }
-  return "allow"
+  return { effect: "allow" }
 }
 
 // Absolute resources resolve against the run directory so a relative scope
