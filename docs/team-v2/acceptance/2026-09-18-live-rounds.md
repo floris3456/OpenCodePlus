@@ -652,3 +652,42 @@ audit.log: seq 9 (A's blocked finish, ok), 10 (wait), 23 (status), **24
 (team_followup ok)**, 26 (A's second finish, ok), 27–28 (B created and
 delegated), 32–36 (B's check, checkpoint, second check, finish). grep pattern:
 `grep '"tool":"team_followup"' audit.log`.
+
+## Close-out
+
+Gate server **stopped**; port **40931 free** (`/dev/tcp` probe refuses). Both
+pilotty TUI sessions killed (`list-sessions` empty). No orphaned check process
+remains.
+
+Audit chains verify over every round's archived state (`verify(root)`):
+
+```
+teams (R6 re-run + R8)  ok=true lines=36     teams-R2   ok=true lines=11
+teams-R3                ok=true lines=38     teams-R3-attempt1 ok=true lines=14
+teams-R4                ok=true lines=13     teams-R5   ok=true lines=28
+teams-R6a               ok=true lines=11     teams-R7   ok=true lines=8
+teams-smoke1            ok=true lines=8      teams-smoke2 ok=true lines=11
+```
+
+Checks at the final merged head `2ad325b921e4f55520258dffcfeef1c6b26f5a4c`
+(all from `packages/plus`, all exit 0):
+
+```
+teams-tools        bun test test/teams/tools.test.ts         10 pass
+teams-checks       bun test test/teams/checks.test.ts         9 pass
+teams-audit        bun test test/teams/audit.test.ts          5 pass
+teams-api          bun test test/teams/api.test.ts           22 pass
+teams-permissions  bun test test/teams/permissions.test.ts    9 pass
+teams-followup     bun test test/teams/api-followup.test.ts  10 pass
+teams-query-off    bun test test/team-query-off.test.ts       2 pass
+teams-apply        bun test test/apply.test.ts               44 pass
+typecheck          bun run typecheck                          clean
+```
+
+Handlers still scaffolded (`E_NOT_IMPLEMENTED`) after R8 — fifteen:
+`diff, exa_code_search, integrate, list, metrics, plan_handoff, prepare (cwd
+form), resume, review, set_checks, shutdown_request, stop, supersede,
+tavily_extract, tavily_search`. `followup` left the list in R8.
+
+Nothing was pushed and nothing was merged into `ocp-main`; all work is on
+`ocp-main61e6a3e478c900c4`.
