@@ -691,3 +691,84 @@ tavily_extract, tavily_search`. `followup` left the list in R8.
 
 Nothing was pushed and nothing was merged into `ocp-main`; all work is on
 `ocp-main61e6a3e478c900c4`.
+
+## Deviations from docs/team-v2/03-tools.md
+
+Carried forward from the previous phase, already accepted by the planner and
+unchanged by these rounds:
+
+1. `prepare` root form: a no-arg `prepare` from a planner or orchestrator
+   session with no run bootstraps the main run (`runs/main-<id>`).
+2. `delegate` advances the new attempt to `streaming` itself.
+3. `E_REPO` accepts any absolute git path, not only configured repo keys.
+4. `wait` does not mark a run dead on probe failure.
+5. There is no policy-file loader; bounds and effort budgets come from the
+   schema defaults (members 12, inFlight 4, maxDepth 3, brief 6000).
+6. `delegate` writes `checks.json` into the child's run directory.
+7. `ctx.session.create` accepts a location, so no `session.move` is needed
+   (proven again in every round: children are created directly in their
+   worktree).
+
+New, taken during these rounds:
+
+8. **Permission-hook refusal wording.** 03 specifies no message for the edit
+   permission hook, only `E_SCOPE` for `checkpoint` (line 219). The hook now
+   reuses that vocabulary verbatim for the out-of-scope case and adds a
+   parallel sentence for version-control state. Reference: 03 line 219.
+9. **followup `E_NOT_CHILD` also covers an unknown run id.** 03 §followup lists
+   `E_NOT_CHILD` for "owned direct child" and says nothing about an id that
+   does not exist; an unknown id is refused with `E_NOT_CHILD` and an empty
+   children list rather than a new code. Reference: 03 lines 150-154.
+10. **Gate environment: all nine roles ran on the gate's default model**
+    (`cliproxyapi/claude-fable-5-1#xhigh`). Defaults- and global-level Plus
+    model records did not surface as per-agent models, and pinning the model
+    through config `agents` entries erased the built-in role descriptions that
+    R6 has to show, so role identity is real in every round while the model
+    behind each role is the gate default. Not a product deviation; an
+    environment limitation of this acceptance run.
+11. **Children were instructed not to use the `shell` tool.** `nativePermissions`
+    gives implementers `shell:"ask"`, which never returns in a headless gate
+    (see the R3 attempt-1 record). Every round brief tells the child to use its
+    file-editing tool and `team_check`, which is the intended implementer
+    workflow.
+
+Not exercised live, with the reason (neither was weakened to force it):
+
+- `E_BOUNDS` (R5): the default `inFlight` is 4 and the round only put three
+  children in flight.
+- `E_ROLE` (R4): every above-ceiling tool is permission-denied and therefore
+  absent from the role's catalog, so a correctly configured agent can never
+  reach the role gate.
+
+## Step 6/7/8 handoff notes (observations only, nothing implemented)
+
+Step 6, lifecycle:
+- A restart leaves a child run in `starting/streaming` forever. Nothing resumes
+  the attempt, nothing marks it dead, and the parent only learns from
+  `team_wait`'s `timedOut`/`stillOpen`. Startup recovery and a sweeper-driven
+  dead/stale transition are the missing pieces (R7).
+- The check process spawned by `team_check` outlives the server; a restart can
+  leave an orphan running with no receipt and no owner (R7).
+- An implementer that calls `shell` blocks forever on an unanswered `ask`, with
+  no pending entry in `/api/permission` and no run-state change (R3 attempt 1).
+  Lifecycle needs a visible "waiting on permission" state or a timeout.
+- `finish` moves the run to `idle`, which `isTerminal` does not treat as
+  terminal, so finished children keep counting against `bounds.inFlight` and
+  `bounds.members`. Long-lived parents will hit the in-flight bound with only
+  completed children (observed while planning R5).
+
+Step 7, RPC and Runs TUI:
+- The Instructions tree shows every direct team tool row as `[on]` for roles
+  whose ceiling denies them; the row reflects registration, not the effective
+  per-agent permission (R6).
+- Selecting a team member or an agent node shows `No item details`; role
+  descriptions exist on `/api/agent` but are not surfaced in that pane (R6).
+- A Runs TUI would have made R5 and R7 far cheaper to observe: everything in
+  those rounds was read from `run.json`, receipts and `audit.log` by hand.
+
+Step 8, cutover:
+- `tool.call` and `receipt.written` now cover every team tool call and receipt,
+  so `team metrics` has a real source. `attempt.*` and run-transition events
+  are still missing and were deliberately left out of P1.
+- Fifteen handlers remain scaffolded; `integrate`, `review`, `set_checks`,
+  `stop`, `supersede` and `list` are the ones an orchestrator hits first.
