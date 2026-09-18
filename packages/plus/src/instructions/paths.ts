@@ -35,6 +35,14 @@ export function globalTeamsPath(configDir: string = globalConfigDir()): string {
   return path.join(configDir, "opencodeplus", "teams")
 }
 
+// Team-run state lives under the XDG data dir, never inside a worktree's
+// .opencodeplus/: runs hold locks, an audit key and live session bindings,
+// while .opencodeplus/ holds project-scoped instruction records only.
+export function teamsDataDir(): string {
+  const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share")
+  return path.join(base, "opencode", "opencodeplus", "teams")
+}
+
 // Only the path-confined delete types live here; creation result types stay
 // local to index.ts where createInstruction owns them.
 export interface InstructionSuccess {
