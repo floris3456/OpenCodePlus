@@ -868,10 +868,14 @@ function parsePorcelain(out: string): string[] {
   const files: string[] = []
   for (const line of trimmed.split("\n")) {
     if (line.trim() === "") continue
-    const file = line.length >= 3 ? line.slice(3).trim() : line.trim()
-    if (file === "") continue
-    const arrow = file.indexOf(" -> ")
-    files.push(arrow < 0 ? file : file.slice(arrow + 4).trim())
+    const match = /^(.{1,2}) (.+)$/.exec(line)
+    if (match === null) continue
+    const raw = match[2]?.trim() ?? ""
+    if (raw === "") continue
+    const arrow = raw.indexOf(" -> ")
+    const picked = arrow < 0 ? raw : raw.slice(arrow + 4).trim()
+    if (picked === "") continue
+    files.push(picked.length >= 2 && picked.startsWith('"') && picked.endsWith('"') ? picked.slice(1, -1) : picked)
   }
   files.sort()
   return files
