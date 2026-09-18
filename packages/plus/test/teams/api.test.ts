@@ -471,6 +471,72 @@ test("finish runs a stale check instead of refusing it", async () => {
   })
 }, 30000)
 
+test("finish re-runs a dirty-tree receipt at the commit and fails E_CHECKS_RED with the exact message", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = childInRepo("w-dddddddddddddddd", repo)
+      await saveRun(root, child)
+      await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "t", argv: ["bun", "test", "t.test.ts"] }])
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      // Edit without committing: the passing test is dirty, so the green
+      // receipt is dirty-tree proof and must never satisfy finish at HEAD.
+      await fs.writeFile(path.join(repo.dir, "t.test.ts"), PASSING_TEST)
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean; head: string }
+      expect(checked.passed).toBe(true)
+      // Commit a failing version, then finish: the stale check is re-run
+      // at the commit and the exact 03 E_CHECKS_RED message results.
+      await fs.writeFile(path.join(repo.dir, "t.test.ts"), FAILING_TEST)
+      await git(repo.dir, ["add", "t.test.ts"])
+      await git(repo.dir, ["commit", "-m", "test: add unit test"])
+      const head = await git(repo.dir, ["rev-parse", "HEAD"])
+      expect(head).not.toBe(checked.head)
+      const error = rejected(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child)))
+      expect(error.code).toBe("E_CHECKS_RED")
+      const receipt = await lastReceipt(root, child.id, "t")
+      if (receipt === undefined) throw new Error("missing receipt after finish re-run")
+      expect(receipt.head).toBe(head)
+      expect(receipt.passed).toBe(false)
+      const log = await fs.readFile(receipt.outputPath, "utf8")
+      const first = log.split("\n").find((line) => line.trim().length > 0) ?? ""
+      const line = first.trim() === "" ? "failed" : first.trim().slice(0, 300)
+      expect(error.message).toBe(
+        `Cannot report done: checks red at HEAD ${head}: [t]. Fix and finish again, or finish with status "blocked" and needs=[{kind:"check",detail:"t fails: ${line}"}].`,
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish done moves run.state to idle and status reports it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await finishChild(root, repo, PASSING_TEST)
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const value = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child))) as {
+        head: string
+      }
+      expect(value.head).toBeDefined()
+      const moved = await loadRun(root, child.id)
+      expect(moved?.attempts[moved.attempts.length - 1]?.state).toBe("succeeded")
+      expect(moved?.state).toBe("idle")
+      const entries = required(await api.status({ runs: [child.id] }, callerFor(child))) as Array<{
+        run: string
+        state: string
+        attemptState: string
+      }>
+      expect(entries).toHaveLength(1)
+      expect(entries[0]?.run).toBe(child.id)
+      expect(entries[0]?.state).toBe("idle")
+      expect(entries[0]?.attemptState).toBe("succeeded")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
 test("finish blocked without needs fails E_NEEDS", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()

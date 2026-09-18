@@ -33,6 +33,10 @@ beforeAll(async () => {
     join(repoA, "loud.ts"),
     `for (let i = 0; i < 3000; i++) console.log(\`line \${String(i).padStart(5, "0")} \` + "x".repeat(20));\n`,
   )
+  // Commit fixtures so the tree is clean: clean-tree receipts are the only
+  // ones receiptsAt/stale accept, and the passing-check test asserts that.
+  await git(repoA, ["add", "ok.ts", "fail.ts", "loud.ts"])
+  await git(repoA, ["commit", "-m", "chore: check fixtures"])
   await writeFile(
     join(repoMut, "commit.ts"),
     `import { execSync } from "node:child_process";\n` +
@@ -103,6 +107,58 @@ describe("check executor receipts", () => {
 
     expect(await stale(stateDir, [check], runID, head)).toEqual([])
     expect(await stale(stateDir, [check], runID, "f".repeat(40))).toEqual([check])
+  })
+
+  test("a check run on a dirty tree writes a receipt that receiptsAt/stale do not accept", async () => {
+    const dir = join(scratch, "repoDirty")
+    await initRepo(dir)
+    await writeFile(join(dir, "pass.ts"), `console.log("hi");\n`)
+    await git(dir, ["add", "pass.ts"])
+    await git(dir, ["commit", "-m", "chore: pass fixture"])
+    const runID = "w-bbbbbbbbbbbbbbbb"
+    const check = { id: "pass", argv: ["bun", "run", "pass.ts"] }
+    const head = await git(dir, ["rev-parse", "HEAD"])
+    const clean = await execute(stateDir, { runID, check, worktree: dir })
+    expect(clean.passed).toBe(true)
+    expect(clean.dirty).toBe(false)
+    expect(typeof clean.tree).toBe("string")
+    expect((await receiptsAt(stateDir, runID, head)).map((r) => r.id)).toContain("pass")
+    expect(await stale(stateDir, [check], runID, head)).toEqual([])
+
+    await writeFile(join(dir, "uncommitted.txt"), "dirty\n")
+    const res = await execute(stateDir, { runID, check, worktree: dir })
+    expect(res.passed).toBe(true)
+    expect(res.dirty).toBe(true)
+    expect(res.porcelain?.length ?? 0).toBeGreaterThan(0)
+    // The dirty receipt overwrote the same HEAD file but must never read
+    // as present at HEAD, so finish re-runs instead of trusting it.
+    expect(await receiptsAt(stateDir, runID, head)).toEqual([])
+    expect(await stale(stateDir, [check], runID, head)).toEqual([check])
+  })
+
+  test("old receipts without the dirty flag fail closed", async () => {
+    const runID = "w-c001c001c001c001"
+    const head = await git(repoA, ["rev-parse", "HEAD"])
+    const check = { id: "oldcheck", argv: ["bun", "run", "ok.ts"] }
+    const dir = join(stateDir, "runs", runID, "receipts")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, `oldcheck-${head.slice(0, 7)}.json`),
+      JSON.stringify({
+        id: "oldcheck",
+        argv: ["bun", "run", "ok.ts"],
+        cwd: "",
+        head,
+        exitCode: 0,
+        passed: true,
+        at: Date.now(),
+        durationMs: 1,
+        outputPath: join(dir, `oldcheck-${head.slice(0, 7)}.log`),
+      }),
+      "utf8",
+    )
+    expect(await receiptsAt(stateDir, runID, head)).toEqual([])
+    expect(await stale(stateDir, [check], runID, head)).toEqual([check])
   })
 
   test("same-worktree checks serialize through the wt lock", async () => {

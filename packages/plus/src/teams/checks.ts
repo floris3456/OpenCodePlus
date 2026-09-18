@@ -31,6 +31,12 @@ export interface Receipt {
   outputPath: string
   code?: string
   message?: string
+  // Tree measured at check time plus whether the tree was dirty. A receipt
+  // proves the committed HEAD only when dirty === false with a recorded
+  // tree; dirty-tree (or pre-flag) receipts never satisfy "green at HEAD".
+  tree?: string
+  dirty?: boolean
+  porcelain?: string[]
 }
 
 export interface ExecuteOptions {
@@ -196,6 +202,14 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       const started = Date.now()
       const headBefore = await git(opts.worktree, ["rev-parse", "HEAD"])
       const statusBefore = await git(opts.worktree, ["status", "--porcelain"])
+      // Provenance for the measured tree: the committed HEAD tree plus
+      // whether the tree was dirty. Dirty status is captured up front (the
+      // tree the check actually measured); the mutation gate below still
+      // fails checks that dirty the tree themselves. Recording porcelain is
+      // cheaper than a temporary-index write-tree and sufficient to refuse
+      // the receipt as HEAD proof later.
+      const tree = await git(opts.worktree, ["rev-parse", "HEAD^{tree}"])
+      const dirty = statusBefore.trim() !== ""
       const cwd = opts.check.cwd ? join(opts.worktree, opts.check.cwd) : opts.worktree
       const env: Record<string, string> = { PATH: systemPath() }
       if (process.env.HOME !== undefined) env.HOME = process.env.HOME
@@ -238,6 +252,14 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         at,
         durationMs,
         outputPath: paths.log,
+        tree,
+        dirty,
+      }
+      if (dirty) {
+        receipt.porcelain = statusBefore
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0)
       }
       if (code !== undefined) {
         receipt.code = code
@@ -273,6 +295,16 @@ export async function lastReceipt(root: string, runID: string, id: string, head?
   return best
 }
 
+// A receipt counts as proof for its HEAD only when it was recorded with a
+// clean tree at that HEAD. Dirty-tree receipts are never "present at HEAD",
+// and old receipts without the flag fail closed (treated as not clean) so
+// they can never satisfy finish's "checks green at HEAD" gate.
+export function isCleanReceipt(receipt: Receipt): boolean {
+  if (receipt.dirty !== false) return false
+  if (typeof receipt.tree !== "string" || receipt.tree.length === 0) return false
+  return true
+}
+
 /** All receipts recorded at exactly `head`. */
 export async function receiptsAt(root: string, runID: string, head: string): Promise<Receipt[]> {
   const entries = await listReceiptFiles(root, runID)
@@ -282,7 +314,7 @@ export async function receiptsAt(root: string, runID: string, head: string): Pro
   for (const e of entries) {
     if (!e.endsWith(suffix)) continue
     const r = await readJson<Receipt>(join(root, "runs", runID, "receipts", e))
-    if (r && r.head === head) out.push(r)
+    if (r && r.head === head && isCleanReceipt(r)) out.push(r)
   }
   return out
 }
@@ -292,7 +324,7 @@ export async function stale(root: string, assigned: Check[], runID: string, head
   const out: Check[] = []
   for (const c of assigned) {
     const r = await readJson<Receipt>(receiptPaths(root, runID, c.id, head).json)
-    if (!r || r.head !== head || r.passed !== true) out.push(c)
+    if (!r || r.head !== head || !isCleanReceipt(r) || r.passed !== true) out.push(c)
   }
   return out
 }

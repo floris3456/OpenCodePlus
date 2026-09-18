@@ -2,11 +2,13 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
+import path from "node:path"
 import { runRegistration } from "../instructions/apply.js"
 import { teamsDataDir } from "../instructions/paths.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
+import { gitRaw } from "./git.js"
 import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
-import { bySession, type RunRecord } from "./run.js"
+import { attemptTransition, bySession, newRunID, saveRun, startAttempt, type RunRecord } from "./run.js"
 import { Brief, ChecksArray, FollowupBudget, Head, Report, RunID, RunState } from "./schema.js"
 
 const namespace = "team"
@@ -181,7 +183,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("delegate", false),
       origin,
-      execute: (input, context) => runGated("delegate", input, context, (args, caller) => api.delegate(args, caller)),
+      execute: (input, context) => runGated("delegate", input, context, ctx, (args, caller) => api.delegate(args, caller)),
     })
     editor.add({
       name: "finish",
@@ -190,7 +192,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("finish", false),
       origin,
-      execute: (input, context) => runGated("finish", input, context, (args, caller) => api.finish(args, caller)),
+      execute: (input, context) => runGated("finish", input, context, ctx, (args, caller) => api.finish(args, caller)),
     })
     editor.add({
       name: "followup",
@@ -199,7 +201,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("followup", false),
       origin,
-      execute: (input, context) => runGated("followup", input, context, (args, caller) => api.followup(args, caller)),
+      execute: (input, context) => runGated("followup", input, context, ctx, (args, caller) => api.followup(args, caller)),
     })
     editor.add({
       name: "review",
@@ -208,7 +210,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("review", false),
       origin,
-      execute: (input, context) => runGated("review", input, context, (args, caller) => api.review(args, caller)),
+      execute: (input, context) => runGated("review", input, context, ctx, (args, caller) => api.review(args, caller)),
     })
     editor.add({
       name: "integrate",
@@ -217,7 +219,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("integrate", false),
       origin,
-      execute: (input, context) => runGated("integrate", input, context, (args, caller) => api.integrate(args, caller)),
+      execute: (input, context) => runGated("integrate", input, context, ctx, (args, caller) => api.integrate(args, caller)),
     })
     editor.add({
       name: "checkpoint",
@@ -226,7 +228,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("checkpoint", false),
       origin,
-      execute: (input, context) => runGated("checkpoint", input, context, (args, caller) => api.checkpoint(args, caller)),
+      execute: (input, context) => runGated("checkpoint", input, context, ctx, (args, caller) => api.checkpoint(args, caller)),
     })
     editor.add({
       name: "set_checks",
@@ -235,7 +237,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("set_checks", false),
       origin,
-      execute: (input, context) => runGated("set_checks", input, context, (args, caller) => api.set_checks(args, caller)),
+      execute: (input, context) => runGated("set_checks", input, context, ctx, (args, caller) => api.set_checks(args, caller)),
     })
     editor.add({
       name: "supersede",
@@ -244,7 +246,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("supersede", false),
       origin,
-      execute: (input, context) => runGated("supersede", input, context, (args, caller) => api.supersede(args, caller)),
+      execute: (input, context) => runGated("supersede", input, context, ctx, (args, caller) => api.supersede(args, caller)),
     })
     editor.add({
       name: "shutdown_request",
@@ -253,7 +255,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("shutdown_request", false),
       origin,
-      execute: (input, context) => runGated("shutdown_request", input, context, (args, caller) => api.shutdown_request(args, caller)),
+      execute: (input, context) => runGated("shutdown_request", input, context, ctx, (args, caller) => api.shutdown_request(args, caller)),
     })
     editor.add({
       name: "stop",
@@ -262,7 +264,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("stop", false),
       origin,
-      execute: (input, context) => runGated("stop", input, context, (args, caller) => api.stop(args, caller)),
+      execute: (input, context) => runGated("stop", input, context, ctx, (args, caller) => api.stop(args, caller)),
     })
     editor.add({
       name: "resume",
@@ -271,7 +273,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("resume", false),
       origin,
-      execute: (input, context) => runGated("resume", input, context, (args, caller) => api.resume(args, caller)),
+      execute: (input, context) => runGated("resume", input, context, ctx, (args, caller) => api.resume(args, caller)),
     })
     editor.add({
       name: "prepare",
@@ -280,7 +282,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("prepare", false),
       origin,
-      execute: (input, context) => runGated("prepare", input, context, (args, caller) => api.prepare(args, caller)),
+      execute: (input, context) => runGated("prepare", input, context, ctx, (args, caller) => api.prepare(args, caller)),
     })
     editor.add({
       name: "plan_handoff",
@@ -289,7 +291,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("plan_handoff", false),
       origin,
-      execute: (input, context) => runGated("plan_handoff", input, context, (args, caller) => api.plan_handoff(args, caller)),
+      execute: (input, context) => runGated("plan_handoff", input, context, ctx, (args, caller) => api.plan_handoff(args, caller)),
     })
     editor.add({
       name: "status",
@@ -298,7 +300,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("status", true),
       origin,
-      execute: (input, context) => runGated("status", input, context, (args, caller) => api.status(args, caller)),
+      execute: (input, context) => runGated("status", input, context, ctx, (args, caller) => api.status(args, caller)),
     })
     editor.add({
       name: "wait",
@@ -307,7 +309,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("wait", true),
       origin,
-      execute: (input, context) => runGated("wait", input, context, (args, caller) => api.wait(args, caller)),
+      execute: (input, context) => runGated("wait", input, context, ctx, (args, caller) => api.wait(args, caller)),
     })
     editor.add({
       name: "diff",
@@ -316,7 +318,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("diff", true),
       origin,
-      execute: (input, context) => runGated("diff", input, context, (args, caller) => api.diff(args, caller)),
+      execute: (input, context) => runGated("diff", input, context, ctx, (args, caller) => api.diff(args, caller)),
     })
     editor.add({
       name: "list",
@@ -325,7 +327,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("list", true),
       origin,
-      execute: (input, context) => runGated("list", input, context, (args, caller) => api.list(args, caller)),
+      execute: (input, context) => runGated("list", input, context, ctx, (args, caller) => api.list(args, caller)),
     })
     editor.add({
       name: "get_context",
@@ -334,7 +336,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("get_context", true),
       origin,
-      execute: (input, context) => runGated("get_context", input, context, (args, caller) => api.get_context(args, caller)),
+      execute: (input, context) => runGated("get_context", input, context, ctx, (args, caller) => api.get_context(args, caller)),
     })
     editor.add({
       name: "check",
@@ -343,7 +345,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("check", true),
       origin,
-      execute: (input, context) => runGated("check", input, context, (args, caller) => api.check(args, caller)),
+      execute: (input, context) => runGated("check", input, context, ctx, (args, caller) => api.check(args, caller)),
     })
     editor.add({
       name: "metrics",
@@ -352,7 +354,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("metrics", true),
       origin,
-      execute: (input, context) => runGated("metrics", input, context, (args, caller) => api.metrics(args, caller)),
+      execute: (input, context) => runGated("metrics", input, context, ctx, (args, caller) => api.metrics(args, caller)),
     })
     editor.add({
       name: "exa_code_search",
@@ -361,7 +363,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("exa_code_search", true),
       origin,
-      execute: (input, context) => runGated("exa_code_search", input, context, (args, caller) => api.exa_code_search(args, caller)),
+      execute: (input, context) => runGated("exa_code_search", input, context, ctx, (args, caller) => api.exa_code_search(args, caller)),
     })
     editor.add({
       name: "tavily_search",
@@ -370,7 +372,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("tavily_search", true),
       origin,
-      execute: (input, context) => runGated("tavily_search", input, context, (args, caller) => api.tavily_search(args, caller)),
+      execute: (input, context) => runGated("tavily_search", input, context, ctx, (args, caller) => api.tavily_search(args, caller)),
     })
     editor.add({
       name: "tavily_extract",
@@ -379,7 +381,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("tavily_extract", true),
       origin,
-      execute: (input, context) => runGated("tavily_extract", input, context, (args, caller) => api.tavily_extract(args, caller)),
+      execute: (input, context) => runGated("tavily_extract", input, context, ctx, (args, caller) => api.tavily_extract(args, caller)),
     })
   })
 }
@@ -391,19 +393,101 @@ function teamOptions(name: TeamTool, codemode: boolean) {
 function runGated(
   name: TeamTool,
   input: unknown,
-  context: Tool.Context,
+  toolCtx: Tool.Context,
+  pluginCtx: Context,
   call: (args: unknown, caller: TeamCaller) => Promise<TeamApiResult>,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const agent = String(context.agent)
-    const run = yield* Effect.promise(() => bySession(teamsDataDir(), String(context.sessionID)))
+    const agent = String(toolCtx.agent)
+    const sessionID = String(toolCtx.sessionID)
+    const run = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
+    if (run === undefined && name === "prepare") {
+      const kind = kindOf(agent)
+      // Root-run bootstrap, the single no-run exception: a planner or
+      // orchestrator session calling prepare becomes the main run. All
+      // other no-run calls fall through to requireActor and keep the
+      // byte-exact E_NOT_ACTOR message.
+      if (kind.ok && (kind.kind === "planner" || kind.kind === "orchestrator")) {
+        const directory = String(pluginCtx.location.directory)
+        const top = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "--show-toplevel"]))
+        if (top.code !== 0)
+          return yield* Effect.fail(
+            new Tool.Error({ message: `E_INTERNAL: Cannot resolve repository from ${directory}: ${top.err || top.out || "unknown error"}` }),
+          )
+        const headOut = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "HEAD"]))
+        if (headOut.code !== 0)
+          return yield* Effect.fail(
+            new Tool.Error({ message: `E_INTERNAL: Cannot read HEAD from ${directory}: ${headOut.err || headOut.out || "unknown error"}` }),
+          )
+        const branchOut = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "--abbrev-ref", "HEAD"]))
+        const branch = branchOut.code === 0 && branchOut.out.length > 0 ? branchOut.out : "HEAD"
+        const now = new Date().toISOString()
+        const repoKey = path.basename(top.out) || top.out
+        const base = startAttempt(
+          {
+            id: newRunID("main"),
+            role: agent,
+            kind: "main",
+            repo: repoKey,
+            repoKey,
+            directory,
+            paths: [],
+            branch,
+            base: headOut.out,
+            head: headOut.out,
+            state: "working",
+            attempts: [],
+            task: null,
+            parent: null,
+            children: [],
+            briefSha: "",
+            bundle: "root",
+            budget: {},
+            createdAt: now,
+            lastUsed: now,
+            sessionID,
+            configDigest: null,
+            history: [],
+          },
+          { trigger: "prepare" },
+        )
+        const admitted = attemptTransition(base, "admitted", "admit")
+        const streaming = attemptTransition(admitted, "streaming", "first_event")
+        yield* Effect.promise(() => saveRun(teamsDataDir(), streaming))
+        return { output: rootPrepareOutput(streaming) }
+      }
+    }
+    if (run !== undefined && name === "prepare" && run.kind === "main" && isRootPrepareInput(input)) {
+      // Idempotent root form: a repeat no-arg prepare from the bound session
+      // returns the existing main run instead of creating another. This
+      // precedes the role gate so planners (whose ceiling lacks prepare)
+      // still bootstrap idempotently; prepare with cwd keeps the full gate.
+      return { output: rootPrepareOutput(run) }
+    }
     const owned = yield* requireActor(run, input, agent)
     yield* requireRole(owned, name)
-    const caller: TeamCaller = { sessionID: String(context.sessionID), agent, run: owned }
+    const caller: TeamCaller = { sessionID, agent, run: owned }
     const result = yield* Effect.promise(() => call(input, caller))
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: result.value }
   })
+}
+
+function isRootPrepareInput(input: unknown): boolean {
+  if (typeof input !== "object" || input === null) return true
+  return (input as Record<string, unknown>).cwd === undefined
+}
+
+function rootPrepareOutput(run: RunRecord): Record<string, unknown> {
+  return {
+    run: run.id,
+    session: run.sessionID,
+    directory: run.directory,
+    role: run.role,
+    state: run.state,
+    base: run.base,
+    head: run.head,
+  }
 }
 
 function requireActor(

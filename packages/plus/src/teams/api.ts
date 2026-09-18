@@ -16,7 +16,7 @@ import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import type { PlusState } from "../index.js"
-import { execute, lastReceipt, receiptsAt, run, stale } from "./checks.js"
+import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale } from "./checks.js"
 import { git, gitRaw } from "./git.js"
 import { peek } from "./inbox.js"
 import { kindOf } from "./policy.js"
@@ -29,6 +29,7 @@ import {
   newRunID,
   saveRun,
   startAttempt,
+  transition,
   type RunRecord,
 } from "./run.js"
 import {
@@ -539,7 +540,15 @@ async function finishHandler(input: unknown, caller: TeamCaller): Promise<TeamAp
   const fresh = (await loadRun(root, stored.id)) ?? stored
   const terminal = args.status === "done" || args.status === "done_with_concerns" ? "succeeded" : "reported"
   const moved = attemptTransition(finishAttempt(fresh), terminal, "validated")
-  await saveRun(root, { ...moved, head, lastUsed: now })
+  // The finished attempt means the session turn ended, so the run is idle
+  // again (02 §1 working → idle on turn_ended). Runs still in starting
+  // reach the same idle via connected; already-idle runs need no move.
+  const settled = { ...moved, head, lastUsed: now }
+  const idle =
+    settled.state === "working" || settled.state === "starting"
+      ? transition(settled, "idle", settled.state === "working" ? "turn_ended" : "connected")
+      : settled
+  await saveRun(root, idle)
   return succeeded(body)
 }
 
@@ -683,11 +692,14 @@ async function getContextHandler(input: unknown, caller: TeamCaller): Promise<Te
   const checks = await Promise.all(
     assigned.map(async (checkDef) => {
       const receipt = await lastReceipt(root, record.id, checkDef.id)
+      // Only a clean receipt proves its HEAD; dirty-tree (or pre-flag)
+      // receipts never count as the last passed HEAD.
+      const clean = receipt !== undefined && isCleanReceipt(receipt)
       return {
         id: checkDef.id,
         argv: [...checkDef.argv],
         cwd: checkDef.cwd ?? "",
-        lastPassedHead: receipt !== undefined && receipt.passed ? receipt.head : null,
+        lastPassedHead: clean && receipt.passed ? receipt.head : null,
       }
     }),
   )
@@ -972,7 +984,9 @@ async function statusOf(root: string, id: string) {
   const checks = []
   for (const checkDef of assigned) {
     const receipt = await lastReceipt(root, id, checkDef.id)
-    checks.push({ id: checkDef.id, passed: receipt?.passed ?? null, atHead: receipt !== undefined && receipt.head === head })
+    // Dirty-tree (or pre-flag) receipts never read as present at HEAD.
+    const atHead = receipt !== undefined && receipt.head === head && isCleanReceipt(receipt)
+    checks.push({ id: checkDef.id, passed: receipt?.passed ?? null, atHead })
   }
   const stored = await latestReport(root, id)
   const taskState = record.task === null ? null : await taskStateOf(root, record.task)
