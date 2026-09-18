@@ -293,3 +293,104 @@ audit.log for attempt 2 (kind/tool/ok/code), the refusal lines are seq 7, 13, 18
 ```
 
 grep pattern: `grep '"tool":"team_finish"' audit.log`.
+
+## R3 — finish gates — PASSED (re-run after the fix)
+
+Fix integrated first: muse-implementer run `w-136ce133e84de801`, commit
+`2348933ee6c612978b9aa8b1ab37278b03d9b5bf`
+"fix(plus): keep porcelain paths intact in the E_DIRTY list", integrated at
+`e7f21907e810b237cf951a0f1df81ec49ee280b6`. `parsePorcelain` now matches
+`^(.{1,2}) (.+)$` instead of slicing three characters, and strips git's quoting
+for paths with spaces. Checks: teams-api 22 pass (three new E_DIRTY cases:
+modified, untracked, spaced path), typecheck clean. Gate restarted on it.
+
+R3 re-run from scratch on the fixed build:
+
+```
+parent ses_f4b716b58ffeSw0R0e38xeNduK  opus-orchestrator  run main-2705f458a8a213ac
+child  ses_f4b712e4dffexGozumaH8Hpc0B  muse-implementer   run w-2cca7327b3a8247f
+base b237c684e009206cca85a7186a2f31f027ca022a
+commits 8a6aaa2bf83f342caf32a42f3d1cfe5f66f30b9a feat(greeting): return "Hello, <name>!" greeting
+        fb771dad9e690810538b25d7d8820fb30adfe225 chore(greeting): add finish-gate probe marker comment
+receipts greet-b237c68.json dirty:false passed:false  (the red one that produced E_CHECKS_RED)
+         greet-8a6aaa2.json dirty:false passed:true
+         greet-fb771da.json dirty:false passed:true   (finish accepted at this one)
+report   status done, dirty:false, dirtyFiles []
+```
+
+The three refusals, verbatim from the child's tool parts:
+
+```
+E_CHECKS_RED: Cannot report done: checks red at HEAD b237c684e009206cca85a7186a2f31f027ca022a: [greet].
+  Fix and finish again, or finish with status "blocked" and needs=[{kind:"check",detail:"greet fails: bun test v1.4.2 (744846f84)"}].
+E_DIRTY: Worktree has uncommitted changes in [src/greeting.ts]. Call team_checkpoint first,
+  or list them in deferred with a reason and use done_with_concerns.
+E_FINISH_TWICE: Report already recorded for attempt 1. Corrections arrive as a new attempt; just stop.
+```
+
+All three match docs/team-v2/03-tools.md §finish, and `E_DIRTY` now names the
+full path. audit.log seq 20–38 of the shared chain; refusals at seq 26
+(E_CHECKS_RED), 32 (E_DIRTY), 37 (E_FINISH_TWICE), acceptance at seq 36.
+grep pattern: `grep '"run":"w-2cca7327b3a8247f"' audit.log | grep team_finish`.
+State archived as `teams-R3` (attempt 1 as `teams-R3-attempt1`).
+
+## R4 — actor and role gates — PASSED
+
+Substrate child (normal delegate round):
+
+```
+parent ses_f4b6fc710ffe46U0Na7SGoKDjo  opus-orchestrator  run main-ea441d566151c0dd
+child  ses_f4b6fa358ffeC1Xk7Ri5t57ZtF  muse-implementer   run w-89f908e96ca0cd6a
+child commit a741df6 (greeting fix), check greet green, finish done
+```
+
+1. **No run → E_NOT_ACTOR.** A fresh `opus-orchestrator` session
+(`ses_f4b6efcd1ffeVqq178jAM6exJA`) that never called prepare ran
+`tools.team.status({})` and got, verbatim:
+
+```
+E_NOT_ACTOR: This session is not the owner of run unknown. Call team tools from the run's own chat; do not session_move.
+```
+
+2. **A second session cannot act as the child.** A separate
+`muse-implementer` session in the same project (`ses_f4b6efcbeffegSAUH4TJ1E05z2`),
+not bound to any run, ran `tools.team.status({ runs: ["w-89f908e96ca0cd6a"] })`
+and got, verbatim, with the run named:
+
+```
+E_NOT_ACTOR: This session is not the owner of run w-89f908e96ca0cd6a. Call team tools from the run's own chat; do not session_move.
+```
+
+3. **Above-ceiling tools are ABSENT, not gated (DELEGATE_ABSENT confirmed).**
+From inside the child's own session, `Object.keys(tools.team)` returned exactly
+
+```
+["check","diff","exa_code_search","get_context","status"]
+```
+
+— the implementer code ceiling — and `await tools.team.wait(...)` returned
+`Error: Unknown tool 'team.wait'.` The live agent ruleset for
+`muse-implementer` (GET /api/agent/muse-implementer) denies exactly the fifteen
+above-ceiling team tools:
+
+```
+team.delegate, team.followup, team.review, team.integrate, team.set_checks,
+team.supersede, team.shutdown_request, team.stop, team.resume,
+team.plan_handoff, team.wait, team.list, team.metrics,
+team.tavily_search, team.tavily_extract  ->  deny
+```
+
+Consequence, recorded as the round's finding: with the built-in team's
+permissions in force, **E_ROLE cannot be exercised live at all** — every tool
+above a role's ceiling is permission-denied and therefore absent from that
+role's catalog, so `runGated`'s `requireRole` is defence in depth that a
+correctly configured agent can never reach. There is no above-ceiling team tool
+that is present for an implementer, so the "pick another present one" branch of
+the round has no candidate. The role gate itself stays covered by
+packages/plus/test/teams/tools.test.ts ("a reviewer cannot delegate but reaches
+the finish handler"). `typeof tools.team.delegate` answers `"function"` even
+for absent tools (the code-mode namespace is a proxy), so `Object.keys` plus a
+real call is the only sound catalog probe — noted for later rounds.
+
+Both E_NOT_ACTOR texts match docs/team-v2/03-tools.md §Actor gate exactly.
+grep pattern: `grep '"code":"E_NOT_ACTOR"' audit.log`.
