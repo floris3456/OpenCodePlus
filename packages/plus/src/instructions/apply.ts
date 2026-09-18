@@ -281,12 +281,15 @@ async function applySkills(
 }
 
 function pushRule(editor: AgentEditor, rule: { agent: string; action: string; resource: string; effect: "deny" | "allow" }) {
-  const current = editor.get(rule.agent)
-  if (!current) return
   // Core evaluates permissions last-match-wins, so appending is always
   // sufficient and always correct, whereas deciding a rule is redundant
   // requires reimplementing core's wildcard semantics and still cannot
   // reason about concrete resources covered by a wildcard.
+  // Team-provided agents are not host upstream: core's update upserts, so a
+  // deny for a team-only id creates the entry here and the team install
+  // overlays its body and ceiling afterwards. Skipping a missing agent would
+  // drop every record-derived rule for team members while keeping the
+  // field-derived ceiling.
   editor.update(rule.agent, (agent) => {
     agent.permissions.push({ action: rule.action, resource: rule.resource, effect: rule.effect })
   })
