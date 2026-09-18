@@ -5,6 +5,7 @@ import { Effect, Schema } from "effect"
 import path from "node:path"
 import { runRegistration } from "../instructions/apply.js"
 import { teamsDataDir } from "../instructions/paths.js"
+import { append } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
@@ -400,7 +401,48 @@ function runGated(
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
+    const start = Date.now()
+    const auditState: { run: string | null } = { run: null }
+    const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState).pipe(
+      Effect.map((result) => ({ ok: true as const, output: result.output })),
+      Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
+    )
+    const durationMs = Date.now() - start
+    const ok = settled.ok
+    const code = settled.ok ? null : codeOf(settled.message)
+    yield* Effect.ignore(
+      Effect.tryPromise({
+        try: () =>
+          append(teamsDataDir(), "tool.call", {
+            run: auditState.run,
+            actor: agent,
+            sessionID,
+            tool: `team_${name}`,
+            ok,
+            code,
+            durationMs,
+          }),
+        catch: () => undefined,
+      }),
+    )
+    if (!settled.ok) return yield* Effect.fail(new Tool.Error({ message: settled.message }))
+    return { output: settled.output }
+  })
+}
+
+function runGatedInner(
+  name: TeamTool,
+  input: unknown,
+  toolCtx: Tool.Context,
+  pluginCtx: Context,
+  call: (args: unknown, caller: TeamCaller) => Promise<TeamApiResult>,
+  auditState: { run: string | null },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const agent = String(toolCtx.agent)
+    const sessionID = String(toolCtx.sessionID)
     const run = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
+    auditState.run = run?.id ?? null
     if (run === undefined && name === "prepare") {
       const kind = kindOf(agent)
       // Root-run bootstrap, the single no-run exception: a planner or
@@ -454,6 +496,7 @@ function runGated(
         const admitted = attemptTransition(base, "admitted", "admit")
         const streaming = attemptTransition(admitted, "streaming", "first_event")
         yield* Effect.promise(() => saveRun(teamsDataDir(), streaming))
+        auditState.run = streaming.id
         return { output: rootPrepareOutput(streaming) }
       }
     }
@@ -513,6 +556,18 @@ function notActorError(id: string): Tool.Error {
   return new Tool.Error({
     message: `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`,
   })
+}
+
+function codeOf(message: string): string | null {
+  const idx = message.indexOf(":")
+  if (idx <= 0) {
+    const trimmed = message.trim()
+    if (trimmed.length === 0) return null
+    return trimmed
+  }
+  const code = message.slice(0, idx).trim()
+  if (code.length === 0) return null
+  return code
 }
 
 function roleError(role: string, name: TeamTool): Tool.Error {
