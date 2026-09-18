@@ -7,7 +7,7 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { gitRaw } from "./git.js"
 import { put } from "./inbox.js"
 import { io } from "./io.js"
-import { loadRun, saveRun, transition, type RunRecord } from "./run.js"
+import { attemptTransition, isAttemptTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
 import { RunID } from "./schema.js"
 import { readJson } from "./store.js"
 import { setState } from "./tasks.js"
@@ -130,7 +130,9 @@ export async function supersedeHandler(ctx: Context, input: unknown, caller: Tea
     return succeeded({ run: child.id, state: child.state, hadUncommitted: info.hadUncommitted, head: info.head })
   }
   let base = child
-  if (child.state === "working") {
+  const lastAtStart = child.attempts[child.attempts.length - 1]
+  const mayBeExecuting = lastAtStart !== undefined && !isAttemptTerminal(lastAtStart.state)
+  if (mayBeExecuting) {
     await put(root, child.id, { kind: "shutdown", from: parent.id, text: `Shutdown requested: ${reason}` })
     const settled = await waitForNotWorking(root, child.id, waitMs)
     const current = settled ?? child
@@ -140,8 +142,26 @@ export async function supersedeHandler(ctx: Context, input: unknown, caller: Tea
       const stopped = transition(stopping, "stopped", "exited")
       base = stopped
     } else {
-      base = current
+      // A non-terminal attempt means the child may still be executing even
+      // when the run state is not working (starting with a streaming attempt
+      // is the normal delegated child). Interrupt the session; states without
+      // a documented row to stopping go straight to superseded below.
+      await interruptSession(ctx, current.sessionID)
+      if (current.state === "idle") {
+        const stopping = transition(current, "stopping", "shutdown")
+        base = transition(stopping, "stopped", "exited")
+      } else if (current.state === "stopping") {
+        base = transition(current, "stopped", "exited")
+      } else if (current.state === "stopped") {
+        base = current
+      } else {
+        base = current
+      }
     }
+  }
+  const lastAfter = base.attempts[base.attempts.length - 1]
+  if (lastAfter !== undefined && !isAttemptTerminal(lastAfter.state)) {
+    base = attemptTransition(base, "interrupted", "interrupt")
   }
   let stoppedBase: RunRecord | undefined
   if (base.state === "idle") {

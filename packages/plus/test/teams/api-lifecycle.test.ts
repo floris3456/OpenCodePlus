@@ -8,7 +8,7 @@ import path from "node:path"
 import { context } from "../harness.js"
 import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
-import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { loadRun, saveRun, isAttemptTerminal, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
 import { stopHandler, supersedeHandler } from "../../src/teams/api-lifecycle.js"
 import type { TeamCaller } from "../../src/teams/api.js"
@@ -449,6 +449,74 @@ test("supersede notifies the parent inbox with the reason", async () => {
       expect(items[0]?.from).toBe(child.id)
       expect(items[0]?.text).toContain(child.id)
       expect(items[0]?.text).toContain(REASON)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
+test("supersede on a starting child with streaming attempt interrupts and settles the attempt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const now = new Date().toISOString()
+      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-7777777777777777", {
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        state: "starting",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_child_starting_001",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      const sessions = recordSession()
+      const value = required(
+        await supersedeHandler(
+          context({ session: sessions.domain }),
+          { run: child.id, reason: REASON, waitMs: 0 },
+          callerFor(parent),
+        ),
+      ) as { run: string; state: string; hadUncommitted: boolean; head: string }
+      expect(value.state).toBe("superseded")
+      expect(sessions.interrupted).toHaveLength(1)
+      const stored = await loadRun(root, child.id)
+      expect(stored?.state).toBe("superseded")
+      const last = stored?.attempts[stored.attempts.length - 1]
+      expect(last !== undefined && isAttemptTerminal(last.state)).toBe(true)
+      expect(last?.state).toBe("interrupted")
+      const shutdown = await peek(root, child.id)
+      expect(shutdown.some((item) => item.kind === "shutdown")).toBe(true)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
+test("supersede on an idle child with terminal attempt does not interrupt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const now = new Date().toISOString()
+      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-8888888888888888", {
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        sessionID: "ses_child_idle_001",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      const sessions = recordSession()
+      const value = required(
+        await supersedeHandler(context({ session: sessions.domain }), { run: child.id, reason: REASON }, callerFor(parent)),
+      ) as { run: string; state: string }
+      expect(value.state).toBe("superseded")
+      expect(sessions.interrupted).toHaveLength(0)
+      const stored = await loadRun(root, child.id)
+      expect(stored?.state).toBe("superseded")
+      expect(stored?.attempts[stored.attempts.length - 1]?.state).toBe("succeeded")
     } finally {
       await removeRepo(repo.dir)
     }

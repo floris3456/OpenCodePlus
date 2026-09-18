@@ -7,7 +7,7 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Effect } from "effect"
+import { Effect, Option, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -377,6 +377,25 @@ test("integrate, set_checks, supersede, stop and list reach real handlers while 
 
     const listResult = (await runSuccess(need(tools, "team_list"), { parent: "w-0000000000000000" }, ctx)) as unknown[]
     expect(listResult).toEqual([])
+  })
+})
+
+test("registered set_checks returns E_CHECKS for an invalid check through the tool seam", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    await saveRun(root, makeRun("w-eeeeeeeeeeeeeeee", "sol-orchestrator", "ses_team_checks_invalid"))
+    const tools = await registeredTools()
+    const tool = need(tools, "team_set_checks")
+    const invalid = { checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] }
+    const inputSchema = tool.input
+    expect(Schema.isSchema(inputSchema)).toBe(true)
+    if (Schema.isSchema(inputSchema)) {
+      const decoded = Schema.decodeUnknownOption(inputSchema)(invalid)
+      expect(Option.isSome(decoded)).toBe(true)
+    }
+    const ctx = toolContext("ses_team_checks_invalid", "sol-orchestrator")
+    const message = await runMessage(tool, invalid, ctx)
+    expect(message.startsWith("E_CHECKS:")).toBe(true)
+    expect(message).toContain("Checks need distinct short IDs.")
   })
 })
 
