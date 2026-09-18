@@ -151,6 +151,13 @@ function parseModelRef(model: string | undefined, variant: string | undefined): 
   }
 }
 
+// Exported so the publish fingerprint can compare the host back against the
+// file-applied fields: while the host still shows exactly what the team file
+// installed, discovery must report upstream (absent) instead of Plus output.
+export function parseTeamFields(markdown: string): TeamFields {
+  return parseFrontmatter(markdown)
+}
+
 function parseFrontmatter(markdown: string): TeamFields {
   const fields = readFrontmatter(markdown)
   if (fields === undefined) return { permissions: [] }
