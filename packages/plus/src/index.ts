@@ -23,6 +23,7 @@ import { apply, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
+import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
@@ -2463,7 +2464,8 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
 async function installTeamTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
   const api = createTeamApi(ctx, state)
   const tools = await registerTeamTools(ctx, api)
-  return [tools]
+  const permissions = await registerTeamPermissions(ctx)
+  return [tools, permissions]
 }
 
 function disposeTeamTooling(state: PlusState): Effect.Effect<void> {
