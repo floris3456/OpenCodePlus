@@ -71,3 +71,83 @@ Models: parent **opus-orchestrator** on `cliproxyapi/claude-opus-5#high`,
 child **muse-implementer** on `cliproxyapi/muse-spark-1.3-contributor#high`.
 gemini-implementer is used only if muse is unavailable; any such substitution
 is recorded in the round that used it.
+
+---
+
+## P1 — tool.call / receipt.written audit emission (prerequisite, PASSED)
+
+Delegated to **muse-implementer** run `w-96797492566e5fd7`
+(session `ses_ocpe572d5c5e8d092792664c67d`), commit
+`c8d0c0710eabd468e58411c075bf5688ab421ac5`
+"feat(plus): emit tool.call and receipt.written audit events", integrated into
+the task branch at `d30932bdb50585a2ce1b9a793b9cf5a78bbb6d55`.
+
+`runGated` now appends one `tool.call` per team tool call — success, handler
+failure and both gate refusals — with `{run, actor, sessionID, tool, ok, code,
+durationMs}` and never the input. `checks.execute()` appends `receipt.written`
+with `{run, check, head, dirty, passed}` right after `atomicJson(receipt)`.
+Audit failures are ignored so they can never break a tool call.
+
+Checks at the child head: teams-tools 10 pass, teams-checks 9 pass,
+teams-audit 5 pass, typecheck clean.
+
+## Gate smoke (R1 re-verification, PASSED)
+
+First smoke attempt (`teams-smoke1`, archived beside the live state) reached
+`team_prepare` → `team_delegate` but the child session failed instantly with
+zero messages. Cause was runtime state in the long-lived server process after
+several live config reloads, not the team code: after a server restart the same
+agent/location combination started normally. Recorded as a step-7 observation;
+the gate is restarted between rounds where config changes.
+
+Second smoke, clean state, real models throughout:
+
+```
+parent  ses_f4b8bc377ffe5PMPHNxaCT1w6a  opus-orchestrator  run main-12fb8b0778d002bc
+child   ses_f4b8ba108ffebn6zNAwFr8Ra3z  muse-implementer   run w-6cd740f9c200f109
+child worktree  <teams>/worktrees/greeter/implementer/t16cd7-20260918-1418
+base b237c684e009206cca85a7186a2f31f027ca022a -> head ba0356d9aeb6483b4e7726ff67f8f20ec60f019a
+commit ba0356d9 fix(greeting): return "Hello, {name}!" instead of bare name
+receipts runs/w-6cd740f9c200f109/receipts/greet-b237c68.json (dirty:true, passed)
+         runs/w-6cd740f9c200f109/receipts/greet-ba0356d.json (dirty:false, tree e3e4868a, passed)
+finish   status done, accepted at the clean receipt
+```
+
+audit.log seq 1–11 (kind/tool/ok/code):
+
+```
+1  run.created        main-12fb8b0778d002bc
+2  tool.call team_prepare      ok        (opus-orchestrator)
+3  run.created        w-6cd740f9c200f109
+4  tool.call team_delegate     ok        (opus-orchestrator)
+5  tool.call team_get_context  ok        (muse-implementer)
+6  receipt.written greet head b237c68 dirty:true passed:true
+7  tool.call team_check        ok        (muse-implementer)
+8  tool.call team_checkpoint   ok        (muse-implementer)
+9  receipt.written greet head ba0356d dirty:false passed:true
+10 tool.call team_finish       ok        (muse-implementer)
+11 tool.call team_wait         ok  30301ms (opus-orchestrator)
+```
+
+Note recorded from the first smoke and kept: `team_prepare`, `team_delegate`,
+`team_check`, `team_checkpoint`, `team_finish` arrive as DIRECT tool calls,
+while `team_wait` and `team_get_context` arrive through code mode
+(`execute` with `metadata.toolCalls = [{tool:"team.wait"}]`). That split is the
+`codemode` flag in `teamOptions` and matters for R4.
+
+## R2 — scope enforcement (what it must prove, written before the run)
+
+1. The child tries to edit a file OUTSIDE `run.paths` (`test/greeting.test.ts`,
+   scope is `src/greeting.ts`) and is refused by the Plus permission hook.
+2. The child then tries to edit `.git/HEAD` and is refused.
+3. Both refusals are readable by the child: the message names the path and the
+   allowed scope, so the child can act on it rather than retrying blindly.
+4. The child still finishes cleanly inside scope: edits `src/greeting.ts`,
+   check green, `team_checkpoint`, `team_finish` done.
+5. Evidence: the child's tool parts (the refusal text it actually saw), the
+   audit `tool.call` lines, the receipt at the committed HEAD, and the report.
+
+Prerequisite fix identified before the round: `decideEdit` in
+`packages/plus/src/teams/permissions.ts` returned a bare `"deny"` and never set
+`event.message`, so the refusal reached the child with no reason. Delegated to
+muse-implementer run `w-deea83b65c067ab8`.
