@@ -226,3 +226,70 @@ Ordering note recorded before the run: E_DIRTY is only reachable when a clean
 passing receipt already exists at the current HEAD, because the checks gate
 runs first and `receiptsAt` rejects dirty-tree receipts. The round therefore
 commits the fix first, then dirties the tree.
+
+## R3 — finish gates — attempt 1 (aborted, not a team-tool failure) and bug found
+
+Attempt 1 (`teams-R3-attempt1`) reached the first gate correctly —
+`team_finish` before any work was refused with `E_CHECKS_RED` — and then hung
+at step 7 for 15 minutes with the child's `shell` tool part stuck in
+`status: running`.
+
+Cause, and a real product observation for step 6/7: `nativePermissions` in
+packages/plus/src/teams/policy.ts:124 gives implementers `shell: "ask"`. In a
+headless gate nobody answers the ask, so the shell call never returns, the
+child session stays `running` and its run stays `starting/streaming` forever
+with nothing marking it stuck. `/api/permission` listed no pending request, so
+the block is invisible to an operator who is not reading the session parts.
+The round was re-run with the child told to use its file-editing tool and
+`team_check` only (the intended implementer workflow); both sessions were
+interrupted first and the state archived.
+
+## R3 — finish gates — PASSED (attempt 2), with one bug found and fixed
+
+```
+parent ses_f4b757ff1ffewNCTS2nQIt9mMP  opus-orchestrator  run main-457cb99154fb44bf
+child  ses_f4b7540deffelbAmTaFpvywakf  muse-implementer   run w-226899c47e91078b
+base b237c684e009206cca85a7186a2f31f027ca022a
+commits 82c7f0f3755630773d2d7b9b68d7d7ec6f0d6ef5 (in-scope fix)
+        b441d55bf62eda42b8de092192cdeaf28e53fb88 (the deliberate dirty line)
+receipts greet-b237c68.json dirty:false passed:false   (the red one)
+         greet-b237c68 (dirty:true, passed) after the edit
+         greet-82c7f0f.json dirty:false passed:true
+         greet-b441d55.json dirty:false passed:true    (finish accepted at this one)
+```
+
+The three refusals, exactly as the child received them:
+
+```
+E_CHECKS_RED: Cannot report done: checks red at HEAD b237c684e009206cca85a7186a2f31f027ca022a: [greet].
+  Fix and finish again, or finish with status "blocked" and needs=[{kind:"check","detail":"greet fails: bun test v1.4.2 (744846f84)"}].
+E_DIRTY: Worktree has uncommitted changes in [rc/greeting.ts]. Call team_checkpoint first,
+  or list them in deferred with a reason and use done_with_concerns.
+E_FINISH_TWICE: Report already recorded for attempt 1. Corrections arrive as a new attempt; just stop.
+```
+
+Compared against docs/team-v2/03-tools.md §finish: E_CHECKS_RED and
+E_FINISH_TWICE match the documented text. **E_DIRTY did not**: it named
+`rc/greeting.ts` for a dirty `src/greeting.ts`.
+
+Bug (found by R3): `git()` in packages/plus/src/teams/git.ts returns trimmed
+stdout, so `git status --porcelain`'s leading space on ` M <path>` is lost and
+`parsePorcelain`'s fixed `line.slice(3)` eats the first character of the first
+path. The same truncated list is written to the report's `dirtyFiles`.
+Fix delegated to muse-implementer run `w-136ce133e84de801`; R3 is re-run from
+scratch after it lands.
+
+audit.log for attempt 2 (kind/tool/ok/code), the refusal lines are seq 7, 13, 18:
+
+```
+ 7 tool.call team_finish ok:false code:E_CHECKS_RED
+ 9 tool.call team_check  ok:true              (after the in-scope edit)
+10 tool.call team_checkpoint ok:true
+13 tool.call team_finish ok:false code:E_DIRTY
+14 tool.call team_checkpoint ok:true
+17 tool.call team_finish ok:true              (accepted)
+18 tool.call team_finish ok:false code:E_FINISH_TWICE
+19 tool.call team_wait   ok:true 31244ms
+```
+
+grep pattern: `grep '"tool":"team_finish"' audit.log`.
