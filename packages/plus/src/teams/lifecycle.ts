@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { put } from "./inbox.js"
 import { io } from "./io.js"
 import { attemptTransition, isAttemptTerminal, isTerminal, saveRun, transition, type RunRecord } from "./run.js"
@@ -25,6 +25,17 @@ function deadTrigger(state: RunRecord["state"]): string | undefined {
   return undefined
 }
 
+const AttemptBoundary = Schema.Struct({
+  state: Schema.String,
+  n: Schema.Number,
+})
+
+const RecordBoundary = Schema.Struct({
+  id: Schema.String,
+  state: Schema.String,
+  attempts: Schema.Array(AttemptBoundary),
+})
+
 async function loadRecordSafe(root: string, entry: string): Promise<RunRecord | undefined> {
   const maybe = await Effect.runPromise(
     io(() => readJson<RunRecord>(path.join(root, "runs", entry, "run.json"))).pipe(Effect.option),
@@ -32,7 +43,7 @@ async function loadRecordSafe(root: string, entry: string): Promise<RunRecord | 
   if (Option.isNone(maybe)) return undefined
   const record = maybe.value
   if (record === undefined || record === null) return undefined
-  if (typeof record.id !== "string") return undefined
+  if (Option.isNone(Schema.decodeUnknownOption(RecordBoundary)(record))) return undefined
   return record
 }
 
@@ -117,7 +128,11 @@ export async function reconcile(ctx: Context, root: string): Promise<string[]> {
   )
   const dead: string[] = []
   for (const entry of entries) {
-    const id = await reconcileOne(ctx, root, entry)
+    const id = await Effect.runPromise(
+      Effect.promise(() => reconcileOne(ctx, root, entry)).pipe(
+        Effect.catchCause(() => Effect.succeed(undefined)),
+      ),
+    )
     if (id !== undefined) dead.push(id)
   }
   return dead.toSorted()

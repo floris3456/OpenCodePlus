@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, isAbsolute, join } from "node:path"
+import { basename, join } from "node:path"
 import { create, list, orphans, remove, slug, stamp } from "../../src/teams/worktree.js"
-import { git } from "../../src/teams/git.js"
+import { git, gitRaw } from "../../src/teams/git.js"
 
 let scratch = ""
 let stateDir = ""
@@ -184,7 +184,8 @@ describe("worktree plus project", () => {
       const raw = await Bun.file(join(c.dir, ".opencodeplus", "project.json")).text()
       const parsed = JSON.parse(raw) as { version: number; protectedAgents: string[] }
       expect(parsed).toEqual({ version: 1, protectedAgents })
-      expect(await git(c.dir, ["status", "--porcelain"])).toBe("")
+      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
+      expect(await git(c.dir, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }
@@ -215,7 +216,8 @@ describe("worktree plus project", () => {
       })
       const raw = await Bun.file(join(c.dir, ".opencodeplus", "project.json")).text()
       expect(JSON.parse(raw)).toEqual({ version: 1, protectedAgents: [] })
-      expect(await git(c.dir, ["status", "--porcelain"])).toBe("")
+      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
+      expect(await git(c.dir, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }
@@ -255,8 +257,8 @@ describe("worktree plus project", () => {
     }
   })
 
-  test("per-worktree exclude line is written once across two worktrees", async () => {
-    const tmp = await mkdtemp(join(tmpdir(), "teams-wt-excl-"))
+  test("create leaves repository config untouched and keeps inherited ignores", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "teams-wt-cfg-"))
     try {
       const repo = join(tmp, "repo")
       const ws = join(tmp, "ws")
@@ -269,44 +271,29 @@ describe("worktree plus project", () => {
       await git(repo, ["add", "README.md"])
       await git(repo, ["commit", "-m", "chore: fixture commit"])
       const head = await git(repo, ["rev-parse", "HEAD"])
-      const a = await create(st, {
+      const excludeFile = join(tmp, "custom-exclude")
+      await writeFile(excludeFile, "ignored.log\n")
+      await git(repo, ["config", "core.excludesFile", excludeFile])
+      await writeFile(join(repo, "ignored.log"), "ignored\n")
+      const beforeExcludes = await git(repo, ["config", "--get", "core.excludesFile"])
+      const beforeWorktree = await gitRaw(repo, ["config", "--get", "extensions.worktreeConfig"])
+      expect(beforeWorktree.code).not.toBe(0)
+      const c = await create(st, {
         repoRoot: repo,
         repoKey: "opencode",
         role: "implementer",
-        name: slug("excla", "w-dddd4444"),
+        name: slug("cfg", "w-ffff6666"),
         base: head,
         workspaceRoot: ws,
         projectDirectory: repo,
       })
-      const b = await create(st, {
-        repoRoot: repo,
-        repoKey: "opencode",
-        role: "implementer",
-        name: slug("exclb", "w-eeee5555"),
-        base: head,
-        workspaceRoot: ws,
-        projectDirectory: repo,
-      })
-      const countIn = async (dir: string): Promise<number> => {
-        const gitDirRaw = await git(dir, ["rev-parse", "--git-dir"])
-        const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : join(dir, gitDirRaw)
-        const text = await Bun.file(join(gitDir, "info", "exclude")).text()
-        return text.split("\n").filter((line) => line === "/.opencodeplus/").length
-      }
-      expect(await countIn(a.dir)).toBe(1)
-      expect(await countIn(b.dir)).toBe(1)
-      const mainGitDirRaw = await git(repo, ["rev-parse", "--git-dir"])
-      const mainGitDir = isAbsolute(mainGitDirRaw) ? mainGitDirRaw : join(repo, mainGitDirRaw)
-      const mainExcludeExists = await Bun.file(join(mainGitDir, "info", "exclude")).exists()
-      if (mainExcludeExists) {
-        const mainText = await Bun.file(join(mainGitDir, "info", "exclude")).text()
-        expect(mainText.split("\n").filter((line) => line === "/.opencodeplus/")).toEqual([])
-      }
-      const gitignoreExists = await Bun.file(join(repo, ".gitignore")).exists()
-      if (gitignoreExists) {
-        const ignored = await Bun.file(join(repo, ".gitignore")).text()
-        expect(ignored).not.toContain(".opencodeplus")
-      }
+      const afterWorktree = await gitRaw(repo, ["config", "--get", "extensions.worktreeConfig"])
+      expect(afterWorktree.code).not.toBe(0)
+      expect(await git(repo, ["config", "--get", "core.excludesFile"])).toBe(beforeExcludes)
+      await writeFile(join(c.dir, "ignored.log"), "ignored\n")
+      const check = await gitRaw(c.dir, ["check-ignore", "-q", "ignored.log"])
+      expect(check.code).toBe(0)
+      expect(await git(c.dir, ["status", "--porcelain"])).not.toContain("ignored.log")
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }

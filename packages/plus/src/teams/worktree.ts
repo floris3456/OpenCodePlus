@@ -1,11 +1,11 @@
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
-import { isAbsolute, join } from "node:path"
+import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises"
+import { join } from "node:path"
 import { Effect } from "effect"
 import { read, type ProjectConfig } from "../project.js"
 import { git, gitRaw } from "./git.js"
 import { toolError } from "./schema.js"
 import { lock } from "./store.js"
-import { errCode, io } from "./io.js"
+import { io } from "./io.js"
 
 function exists(p: string): Promise<boolean> {
   return Effect.runPromise(
@@ -54,8 +54,6 @@ export interface Created {
   head: string
 }
 
-const EXCLUDE_LINE = "/.opencodeplus/"
-
 function messageOf(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error) {
     const message = (error as { message: unknown }).message
@@ -94,47 +92,6 @@ function ensureProjectConfig(dir: string, projectDirectory: string): Promise<voi
   )
 }
 
-// Keep the copied project.json invisible to git in that worktree, or every
-// implementer's `team_finish` with status `done` fails `E_DIRTY` on the
-// untracked file. The per-worktree exclude file lives under the linked
-// worktree's own git dir (`<repo>/.git/worktrees/<name>/info/exclude`), never
-// the repository `.gitignore` nor the main checkout's exclude. Failures are
-// ignored: the worktree is still returned.
-//
-// git 2.47 reads `info/exclude` from the common dir (`rev-parse --git-path
-// info/exclude` resolves to `<repo>/.git/info/exclude`) and ignores the
-// per-worktree file, so the per-worktree file alone leaves `git status`
-// dirty. Pointing the worktree's own `core.excludesFile` at it (via
-// `extensions.worktreeConfig`) makes the same file effective without touching
-// the shared exclude.
-function ensureExclude(dir: string): Promise<void> {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const gitDirRaw = yield* io(() => git(dir, ["rev-parse", "--git-dir"]))
-      const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : join(dir, gitDirRaw)
-      const infoDir = join(gitDir, "info")
-      const excludePath = join(infoDir, "exclude")
-      yield* io(() => mkdir(infoDir, { recursive: true }))
-      const existing = yield* io(() => readFile(excludePath, "utf8")).pipe(
-        Effect.catchIf((error) => errCode(error) === "ENOENT", () => Effect.succeed("")),
-      )
-      const lines = existing === "" ? [] : existing.split("\n")
-      const present = lines.some((line) => line === EXCLUDE_LINE)
-      if (!present) {
-        const next =
-          existing === ""
-            ? `${EXCLUDE_LINE}\n`
-            : existing.endsWith("\n")
-              ? `${existing}${EXCLUDE_LINE}\n`
-              : `${existing}\n${EXCLUDE_LINE}\n`
-        yield* io(() => writeFile(excludePath, next, "utf8"))
-      }
-      yield* io(() => gitRaw(dir, ["config", "extensions.worktreeConfig", "true"])).pipe(Effect.asVoid)
-      yield* io(() => gitRaw(dir, ["config", "--worktree", "core.excludesFile", excludePath])).pipe(Effect.asVoid)
-    }).pipe(Effect.ignore),
-  )
-}
-
 export async function create(root: string, opts: CreateOptions): Promise<Created> {
   const ts = stamp()
   const dir = join(opts.workspaceRoot, "worktrees", opts.repoKey, opts.role, `${opts.name}-${ts}`)
@@ -147,7 +104,6 @@ export async function create(root: string, opts: CreateOptions): Promise<Created
     await git(opts.repoRoot, ["worktree", "add", "-b", branch, dir, verify.out])
     const head = await git(dir, ["rev-parse", "HEAD"])
     await ensureProjectConfig(dir, opts.projectDirectory)
-    await ensureExclude(dir)
     return { dir, branch, head }
   })
 }
@@ -162,9 +118,24 @@ export async function remove(root: string, dir: string, opts: RemoveOptions): Pr
   if (!(await exists(dir))) return
   await lock(root, "repo", opts.repoKey, async () => {
     if (!(await exists(dir))) return
+    await removeUntrackedPlusConfig(dir)
     const extra = opts.force === true ? ["--force"] : []
     await git(opts.repoRoot, ["worktree", "remove", ...extra, dir])
   })
+}
+
+// The Plus-written `.opencodeplus/project.json` is untracked and outside the
+// worker's scope, so it would block a non-force `git worktree remove`.
+// Delete it when untracked (a tracked copy is left alone) before removing.
+function removeUntrackedPlusConfig(dir: string): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const tracked = yield* io(() => gitRaw(dir, ["ls-files", "--error-unmatch", "--", ".opencodeplus/project.json"]))
+      if (tracked.code === 0) return
+      yield* io(() => rm(join(dir, ".opencodeplus", "project.json"), { force: true })).pipe(Effect.ignore)
+      yield* io(() => rm(join(dir, ".opencodeplus"), { recursive: false })).pipe(Effect.ignore)
+    }).pipe(Effect.ignore),
+  )
 }
 
 export interface WorktreeEntry {
