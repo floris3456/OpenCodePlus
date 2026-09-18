@@ -336,10 +336,17 @@ grep '"tool":"team_delegate"' $TEAMS/audit.log | tail -2
 
 ## Close out
 
-Stop only your own gate's processes, then confirm the audit chain verifies:
+Quitting the TUI is the normal way to finish. This step exists only because the gate deliberately runs its own background server under an isolated home.
+
+Never use a pattern kill such as `pkill -f` here — it would also stop other people's servers and any unrelated worker runtime on this machine. Stop only your own gate's processes, then confirm the audit chain verifies:
 
 ```sh
-pkill -f 'packages/cli/src/index.ts'
+# Stop only the server this gate started: its pid is recorded in the gate's
+# own service registration, under the gate's isolated XDG_STATE_HOME.
+PID=$(bun -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pid)' \
+  "$XDG_STATE_HOME/opencode/service-local.json")
+ps -o pid,args -p "$PID" | grep -q "$GATE" && kill "$PID"
+
 cd $REPO/packages/plus && TEAMS=$TEAMS bun -e '
   const { verify } = await import("./src/teams/audit.ts")
   console.log(await verify(process.env.TEAMS))
@@ -365,6 +372,21 @@ cd $REPO/packages/plus && TEAMS=$TEAMS bun -e '
 - **Implementers have no shell.** They edit files and run `team_check`; a
   `shell` call is refused immediately rather than hanging on a permission
   prompt nobody can answer.
+
+## Choices where the contract is silent
+
+- **`list` visibility.** 03 §list defines the input and output but no visibility rule. Planners see
+  every run in the namespace; every other role sees its own run plus its direct children.
+- **`list` `runtime` field.** 03 §list's output does not include it; it is carried so a human can see
+  whether a run is alive, derived from the run state: `running` for a non-terminal, non-stopped,
+  non-dead run with a session, `stopped` for stopped/dead/superseded/reaped, otherwise `pending`.
+- **`stop` outside `idle`/`stopped`/`dead`.** 03 §stop says it "requires idle, stopped or dead" and
+  gives a message only for `working`. `ready`, `created`, `preparing`, `starting`, `blocked_input`
+  and `stopping` are refused with the same `E_BUSY` text, because the child is not in a stoppable
+  state and the human's next move is the same.
+- **`E_NOT_CHILD` on `integrate`.** 03 §integrate does not list it, but lists it for every other
+  parent-to-child tool; integrate refuses a run that is not the caller's direct child with the same
+  wording rather than inventing a new code.
 
 ## Executed live on 2026-09-18
 
