@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Agent } from "@opencode/schema/agent"
+import { Location } from "@opencode/schema/location"
+import { Project } from "@opencode/schema/project"
+import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
@@ -11,7 +14,8 @@ import path from "node:path"
 import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { createTeamApi } from "../../src/teams/api.js"
-import { saveRun, type RunRecord } from "../../src/teams/run.js"
+import { git } from "../../src/teams/git.js"
+import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { registerTeamTools } from "../../src/teams/tools.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { context, toolHarness } from "../harness.js"
@@ -188,6 +192,68 @@ test("a run whose role does not match the calling agent fails E_NOT_ACTOR", asyn
     const ctx = toolContext("ses_team_mismatch", "sol-orchestrator")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
     expect(message).toBe(notActor("w-cccccccccccccccc"))
+  })
+})
+
+test("team_prepare from a no-run orchestrator session creates a main run and is idempotent", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# root\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const head = await git(repoDir, ["rev-parse", "HEAD"])
+      const harness = toolHarness()
+      const directory = AbsolutePath.make(repoDir)
+      const location = new Location.Info({
+        directory,
+        project: { id: Project.ID.global, directory, canonical: directory },
+      })
+      const pluginCtx = context({ tool: harness.domain, location })
+      const api = createTeamApi(pluginCtx, createState())
+      await registerTeamTools(pluginCtx, api)
+      const tool = need(harness.tools, "team_prepare")
+      const toolCtx = toolContext("ses_team_root_001", "sol-orchestrator")
+      const first = (await Effect.runPromise(tool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
+        string,
+        unknown
+      >
+      expect(typeof first.run).toBe("string")
+      expect(String(first.run).startsWith("main-")).toBe(true)
+      const second = (await Effect.runPromise(tool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
+        string,
+        unknown
+      >
+      expect(second.run).toBe(first.run)
+      const stored = await loadRun(root, String(first.run))
+      expect(stored?.kind).toBe("main")
+      expect(stored?.role).toBe("sol-orchestrator")
+      expect(stored?.directory).toBe(repoDir)
+      expect(stored?.sessionID).toBe("ses_team_root_001")
+      expect(stored?.base).toBe(head)
+      expect(stored?.head).toBe(head)
+      expect(stored?.paths).toEqual([])
+      expect(stored?.state).toBe("working")
+      expect(stored?.attempts).toHaveLength(1)
+      expect(stored?.attempts[0]?.state).toBe("streaming")
+      const entries = await fs.readdir(path.join(root, "runs"))
+      const mains = entries.filter((entry) => entry.startsWith("main-"))
+      expect(mains).toEqual([String(first.run)])
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
+test("team_prepare from a no-run implementer session still fails E_NOT_ACTOR", async () => {
+  await withIsolatedTeamsRoot(async () => {
+    const tools = await registeredTools()
+    const ctx = toolContext("ses_team_prep_impl", "muse-implementer")
+    const message = await runMessage(need(tools, "team_prepare"), {}, ctx)
+    expect(message).toBe(notActor("unknown"))
   })
 })
 
