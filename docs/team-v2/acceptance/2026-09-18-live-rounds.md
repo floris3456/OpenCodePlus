@@ -869,3 +869,22 @@ typecheck          bun run typecheck                          clean
 
 Gate server stopped, port 40931 free, no pilotty sessions, no orphaned check
 processes. Nothing pushed; nothing merged into `ocp-main`.
+
+## Re-review attempt (not completed by the tool)
+
+All five findings were fixed or corrected and every check was re-run at
+`578d29f03f3de80a98c04913a8789a07b2627bca`, but a targeted re-review could not
+be submitted: `team_review` with `previous: "w-c661615d0d905bb5"`, the changed
+head and the five per-finding resolutions was refused twice with
+
+```
+Re-review needs completed findings, their previous review ID, and a changed commit
+```
+
+both before and after stopping the reviewer run. The tool exposes no way for
+this orchestrator to mark the previous findings completed, so the second
+verification pass is unavailable here rather than skipped. What stands on its
+own: each finding has a fix commit or an evidence correction named above, the
+followup fixes are covered by four new tests that fail on the old source, the
+queued-delivery fix was additionally verified live against the running gate,
+and all nine focused checks are green at this head.
