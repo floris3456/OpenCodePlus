@@ -341,3 +341,42 @@ test("successful gated call writes tool.call with run id and chain verifies acro
     }
   })
 })
+
+test("integrate, set_checks, supersede, stop and list reach real handlers while review remains not implemented", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    await saveRun(root, makeRun("w-dddddddddddddddd", "sol-orchestrator", "ses_team_orch"))
+    const tools = await registeredTools()
+    const ctx = toolContext("ses_team_orch", "sol-orchestrator")
+
+    const reviewMessage = await runMessage(need(tools, "team_review"), {}, ctx)
+    expect(reviewMessage.startsWith("E_NOT_IMPLEMENTED:")).toBe(true)
+
+    const integrateMessage = await runMessage(
+      need(tools, "team_integrate"),
+      { run: "w-0000000000000000", expectedParentHead: "0123456789abcdef0123456789abcdef01234567" },
+      ctx,
+    )
+    expect(integrateMessage.startsWith("E_NOT_CHILD:")).toBe(true)
+    expect(integrateMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
+
+    const stopMessage = await runMessage(need(tools, "team_stop"), { run: "w-0000000000000000" }, ctx)
+    expect(stopMessage.startsWith("E_NOT_CHILD:")).toBe(true)
+    expect(stopMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
+
+    const supersedeMessage = await runMessage(
+      need(tools, "team_supersede"),
+      { run: "w-0000000000000000", reason: "superseded child run in test" },
+      ctx,
+    )
+    expect(supersedeMessage.startsWith("E_NOT_CHILD:")).toBe(true)
+    expect(supersedeMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
+
+    const setChecksMessage = await runMessage(need(tools, "team_set_checks"), {}, ctx)
+    expect(setChecksMessage.startsWith("E_INPUT:")).toBe(true)
+    expect(setChecksMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
+
+    const listResult = (await runSuccess(need(tools, "team_list"), { parent: "w-0000000000000000" }, ctx)) as unknown[]
+    expect(listResult).toEqual([])
+  })
+})
+

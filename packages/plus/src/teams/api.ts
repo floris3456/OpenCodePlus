@@ -1,6 +1,7 @@
 // Team tool handlers: delegate, finish, checkpoint, status, get_context,
-// wait and check are real implementations. The other sixteen methods stay
-// as E_NOT_IMPLEMENTED scaffolding for a later task.
+// wait, check, followup, integrate, set_checks, supersede, stop and list
+// are real implementations. The other ten methods stay as E_NOT_IMPLEMENTED
+// scaffolding for a later task.
 //
 // Every handler returns a result object and never throws: runGated in
 // tools.ts turns `{ ok: false, error }` into the model-visible Tool.Error,
@@ -19,6 +20,10 @@ import type { PlusState } from "../index.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale } from "./checks.js"
 import { reconcile } from "./lifecycle.js"
 import { followupHandler } from "./api-followup.js"
+import { setChecksHandler } from "./api-git-ops.js"
+import { integrateHandler } from "./api-integrate.js"
+import { stopHandler, supersedeHandler } from "./api-lifecycle.js"
+import { listHandler } from "./api-query.js"
 import { git, gitRaw } from "./git.js"
 import { peek } from "./inbox.js"
 import { kindOf } from "./policy.js"
@@ -168,19 +173,19 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     finish: (input, caller) => guarded(() => finishHandler(input, caller)),
     followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller)),
     review: async () => notImplemented("review"),
-    integrate: async () => notImplemented("integrate"),
+    integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller)),
-    set_checks: async () => notImplemented("set_checks"),
-    supersede: async () => notImplemented("supersede"),
+    set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
+    supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller)),
     shutdown_request: async () => notImplemented("shutdown_request"),
-    stop: async () => notImplemented("stop"),
+    stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller)),
     resume: async () => notImplemented("resume"),
     prepare: async () => notImplemented("prepare"),
     plan_handoff: async () => notImplemented("plan_handoff"),
     status: (input, caller) => guarded(() => statusHandler(input, caller)),
     wait: (input, caller) => guarded(() => waitHandler(ctx, input, caller)),
     diff: async () => notImplemented("diff"),
-    list: async () => notImplemented("list"),
+    list: (input, caller) => guarded(() => listHandler(input, caller)),
     get_context: (input, caller) => guarded(() => getContextHandler(input, caller)),
     check: (input, caller) => guarded(() => checkHandler(input, caller)),
     metrics: async () => notImplemented("metrics"),
