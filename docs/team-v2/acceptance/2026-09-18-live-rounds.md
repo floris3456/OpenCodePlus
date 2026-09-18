@@ -811,3 +811,41 @@ The reviewer also confirmed, by inspection: audit-append failures preserve the
 original tool success/error result, the permission change kept the deny
 decisions intact, and no credential, password or key content appears in the
 committed code or in this document.
+
+## Post-review fix and live re-verification of followup
+
+muse-implementer run `w-76243918b1a3053e`, commit
+`127835528777ddef76eaabcb3bd52c902a3210b9`
+"fix(plus): deliver queued followups to idle children and recover failed
+admission", integrated at `585ccc626bfff105a5bea2b82c6dd56ae8f9193d`.
+
+- A shared `admitIdleChild` helper now serves both paths. `delivery:"queue"`
+  (the default) on an **idle** child writes the inbox item AND admits it —
+  start attempt, `idle -> working` on `prompt`, prompt the session — returning
+  the attempt number that actually exists on the saved record with
+  `state:"admitted"`, exactly as 03 requires ("delivered when the child is
+  idle (or immediately if idle)").
+- On a **working** child it still returns `state:"queued"`, now with the
+  child's CURRENT attempt number instead of an invented future one, and a
+  comment recording that the idle-boundary handoff needs the step-6 sweeper.
+- A rejected `ctx.session.prompt` now restores the previously saved record
+  through `Effect.onError`, so a failed admission no longer strands the child
+  as `working` and the same requestID can be retried.
+- Checks: teams-followup **14 pass** (four new cases, each failing before the
+  fix), typecheck clean.
+
+Live re-verification on the fixed build, gate restarted, same R8 parent
+`ses_f4b5b7973ffeuLQNpoAqajO0b1` and child B `w-06ef241b418b0c13` (idle after
+finishing):
+
+```
+team_followup{run:"w-06ef241b418b0c13", requestID:"r8-queue-idle"}   (no delivery field)
+  -> {"attempt":2,"state":"admitted"}
+child run record afterwards: attempts ["1:succeeded:delegate","2:succeeded:followup"]
+                             report-2.json written in the same worktree
+audit.log seq 37 tool.call team_followup ok:true 365ms   (opus-orchestrator)
+          seq 38 tool.call team_finish   ok:true         (muse-implementer, attempt 2)
+```
+
+The default-delivery followup therefore really wakes an idle child end to end,
+not only in the unit test.
