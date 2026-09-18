@@ -696,3 +696,77 @@ test("wait rejects an unknown run with E_NOT_VISIBLE", async () => {
     }
   })
 })
+
+async function dirtyChild(root: string, repo: { dir: string; head: string }, id: string): Promise<RunRecord> {
+  await fs.mkdir(path.join(repo.dir, "src"), { recursive: true })
+  await fs.writeFile(path.join(repo.dir, "src", "greeting.ts"), "export const greeting = 'hi'\n")
+  await fs.writeFile(path.join(repo.dir, "t.test.ts"), PASSING_TEST)
+  await git(repo.dir, ["add", "src/greeting.ts", "t.test.ts"])
+  await git(repo.dir, ["commit", "-m", "test: add greeting and unit test"])
+  const head = await git(repo.dir, ["rev-parse", "HEAD"])
+  const child = childInRepo(id, { dir: repo.dir, head })
+  const record: RunRecord = { ...child, base: repo.head, paths: ["src/*"] }
+  await saveRun(root, record)
+  await atomicJson(path.join(root, "runs", record.id, "checks.json"), [{ id: "t", argv: ["bun", "test", "t.test.ts"] }])
+  return record
+}
+
+test("finish done with an unstaged modification names the full path in E_DIRTY", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await dirtyChild(root, repo, "w-eeeeeeeeeeeeeeee")
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
+      expect(checked.passed).toBe(true)
+      await fs.writeFile(path.join(repo.dir, "src", "greeting.ts"), "export const greeting = 'hello'\n")
+      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toBe(
+        "Worktree has uncommitted changes in [src/greeting.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish done with an untracked file names the full path in E_DIRTY", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await dirtyChild(root, repo, "w-ffffffffffffffff")
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
+      expect(checked.passed).toBe(true)
+      await fs.writeFile(path.join(repo.dir, "src", "untracked.ts"), "export const extra = 1\n")
+      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toBe(
+        "Worktree has uncommitted changes in [src/untracked.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish done with a spaced path names the full path in E_DIRTY", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await dirtyChild(root, repo, "w-1111111111111111")
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
+      expect(checked.passed).toBe(true)
+      await fs.writeFile(path.join(repo.dir, "src", "with space.ts"), "export const spaced = 1\n")
+      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toBe(
+        "Worktree has uncommitted changes in [src/with space.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
