@@ -49,6 +49,18 @@ function recordSession() {
   return { created, prompted, waited, domain }
 }
 
+function recordRejectingSession(message = "prompt blew up") {
+  const prompted: Array<{ sessionID: unknown; text: unknown }> = []
+  const domain = {
+    prompt: (input: { sessionID: unknown; text: unknown }) => {
+      prompted.push({ sessionID: input.sessionID, text: input.text })
+      return Effect.fail(new Error(message))
+    },
+    wait: (input: unknown) => Effect.succeed(undefined),
+  } as unknown as SessionDomain
+  return { prompted, domain }
+}
+
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
@@ -157,7 +169,7 @@ test("queued followup lands in the child inbox and get_context sees it", async (
     const value = required(
       await api.followup(followupInput(), callerFor(parent)),
     ) as { attempt: number; state: string }
-    expect(value).toEqual({ attempt: 2, state: "queued" })
+    expect(value).toEqual({ attempt: 2, state: "admitted" })
     const items = await peek(root, child.id)
     expect(items).toHaveLength(1)
     expect(items[0]?.kind).toBe("followup")
@@ -300,7 +312,7 @@ test("same requestID twice is idempotent, different args fail E_REQUEST_ID", asy
     const first = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
     ) as { attempt: number; state: string }
-    expect(first).toEqual({ attempt: 2, state: "queued" })
+    expect(first).toEqual({ attempt: 2, state: "admitted" })
     expect(await peek(root, child.id)).toHaveLength(1)
     const second = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
@@ -329,7 +341,7 @@ test("budget in the call replaces the child budget outright", async () => {
     const value = required(
       await api.followup(followupInput({ run: child.id, requestID: "bud-1", budget: { turns: 10 } }), callerFor(parent)),
     )
-    expect(value).toEqual({ attempt: 2, state: "queued" })
+    expect(value).toEqual({ attempt: 2, state: "admitted" })
     expect((await loadRun(root, child.id))?.budget).toEqual({ turns: 10 })
   })
 })
@@ -353,6 +365,119 @@ test("delivery now on an idle child prompts, moves to working and returns admitt
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("working")
     expect(moved?.attempts[moved.attempts.length - 1]?.state).toBe("admitted")
+    expect(moved?.attempts[moved.attempts.length - 1]?.n).toBe(2)
+  })
+})
+
+test("queue default on an idle child prompts and returns admitted with the real attempt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-2222222222222222")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const value = required(
+      await api.followup(
+        followupInput({ run: child.id, requestID: "queue-idle-1", prompt: "Continue in place: cover the idle handoff now." }),
+        callerFor(parent),
+      ),
+    ) as { attempt: number; state: string }
+    expect(value.state).toBe("admitted")
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.text).toContain("idle handoff")
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("working")
+    const last = moved?.attempts[moved.attempts.length - 1]
+    expect(last?.state).toBe("admitted")
+    expect(last?.n).toBe(value.attempt)
+    expect(await peek(root, child.id)).toHaveLength(1)
+  })
+})
+
+test("queue on a working child returns the current attempt and does not prompt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-3333333333333333", {
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const value = required(
+      await api.followup(
+        followupInput({ run: child.id, requestID: "queue-busy-1", prompt: "Continue in place: queue while working now." }),
+        callerFor(parent),
+      ),
+    ) as { attempt: number; state: string }
+    expect(value).toEqual({ attempt: 1, state: "queued" })
+    expect(sessions.prompted).toHaveLength(0)
+    const kept = await loadRun(root, child.id)
+    expect(kept?.state).toBe("working")
+    expect(kept?.attempts).toHaveLength(1)
+    expect(kept?.attempts[0]?.n).toBe(1)
+    expect(await peek(root, child.id)).toHaveLength(1)
+  })
+})
+
+test("two queued followups to a working child keep the current attempt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-4444444444444444", {
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const first = required(
+      await api.followup(
+        followupInput({ run: child.id, requestID: "queue-twice-1", prompt: "First queued followup while working here." }),
+        callerFor(parent),
+      ),
+    ) as { attempt: number; state: string }
+    const second = required(
+      await api.followup(
+        followupInput({ run: child.id, requestID: "queue-twice-2", prompt: "Second queued followup while working here." }),
+        callerFor(parent),
+      ),
+    ) as { attempt: number; state: string }
+    expect(first).toEqual({ attempt: 1, state: "queued" })
+    expect(second).toEqual({ attempt: 1, state: "queued" })
+    expect(sessions.prompted).toHaveLength(0)
+    const kept = await loadRun(root, child.id)
+    expect(kept?.attempts).toHaveLength(1)
+    expect(await peek(root, child.id)).toHaveLength(2)
+  })
+})
+
+test("now whose prompt rejects restores the run and allows a same-requestID retry", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-5555555555555555")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const failing = recordRejectingSession()
+    const failingApi = createTeamApi(context({ session: failing.domain }), createState())
+    const input = followupInput({ run: child.id, requestID: "now-fail-1", delivery: "now", prompt: "Continue in place: retry the failed admit now." })
+    const result = await failingApi.followup(input, callerFor(parent))
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected prompt failure")
+    expect(result.error.code).not.toBe("E_BUSY")
+    expect(failing.prompted).toHaveLength(1)
+    const restored = await loadRun(root, child.id)
+    expect(restored?.state).toBe("idle")
+    expect(restored?.attempts).toHaveLength(1)
+    expect(restored?.attempts[0]?.state).toBe("succeeded")
+    expect(restored?.attempts[0]?.n).toBe(1)
+    const sessions = recordSession()
+    const retryApi = createTeamApi(context({ session: sessions.domain }), createState())
+    const retried = required(await retryApi.followup(input, callerFor(parent))) as { attempt: number; state: string }
+    expect(retried).toEqual({ attempt: 2, state: "admitted" })
+    expect(sessions.prompted).toHaveLength(1)
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("working")
     expect(moved?.attempts[moved.attempts.length - 1]?.n).toBe(2)
   })
 })
