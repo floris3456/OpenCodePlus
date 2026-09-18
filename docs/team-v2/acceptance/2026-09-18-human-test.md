@@ -16,6 +16,12 @@ You need:
   test you can name as a focused check. This run used a copy of the
   repository's own `packages/util` as a standalone project: real source, real
   tests, and the check we pick needs no `node_modules`.
+
+  Your project does **not** need to commit `.opencodeplus/project.json`. Enabling project mode in
+  step 1 writes it into your working copy, and `team_delegate` writes a copy into every worktree it
+  creates (inheriting your `protectedAgents`) so the child's Location is a Plus project too — without
+  it the child cannot resolve its own role agent. Plus keeps that copy out of `git status` with a
+  worktree-local `core.excludesFile`, so it can never dirty a child's tree or reach your `.gitignore`.
 - a **models config** — `opencode.json` with your provider and models. Running
   the product normally this is your own `~/.config/opencode`; this acceptance
   run used an isolated one so it could never touch the human's.
@@ -103,17 +109,18 @@ grep '"type":"team"' \
 and the live agent surface gains nine agents:
 
 ```sh
-curl -s -u "opencode:$PW" "$SERVER/api/agent?directory=$PROJ" \
-  | jq -r '.[].id' | sort
+curl -s -u "opencode:$PW" -H "x-opencode-directory: $PROJ" "$SERVER/api/agent" \
+  | jq -r '.data[].id' | sort
 ```
 
 ## 3. Pin a model per role
 
 This is how you get two roles on two different models in one run.
 
-Still in Instructions: **Defaults → Agents → opus-orchestrator → Model**, put
-the cursor on the model you want and press `space` to activate it. Repeat for
-**muse-implementer** with a *different* model.
+Still in Instructions: **Defaults → Agents → opus-orchestrator → Model**. The group is empty until
+you add a candidate: press `a` (Add), pick the provider, type to filter and pick the model, then
+pick the reasoning variant. The new row appears under Model; press `space` on it to make it
+`[active]`. Repeat for **muse-implementer** with a *different* model.
 
 **Expect:** each agent's Model section shows one active row.
 
@@ -133,8 +140,8 @@ header `revision`; the TUI and the plugin read the same file.
 Confirm the pins really reached the sessions once the run is going:
 
 ```sh
-curl -s -u "opencode:$PW" "$SERVER/api/session/<parent session id>" | jq .model
-curl -s -u "opencode:$PW" "$SERVER/api/session/<child  session id>" | jq .model
+curl -s -u "opencode:$PW" -H "x-opencode-directory: $PROJ" "$SERVER/api/session/<parent session id>" | jq .data.model
+curl -s -u "opencode:$PW" -H "x-opencode-directory: $PROJ" "$SERVER/api/session/<child  session id>" | jq .data.model
 ```
 
 ## 4. Open a session as `opus-orchestrator` and bootstrap the run
@@ -285,19 +292,25 @@ Quit the TUI and stop the background server it started, then launch again:
 sh $GATE/start-tui.sh
 ```
 
-On start the plugin runs **reconcile**: every non-terminal run whose host
-session no longer exists moves to `dead` (`probe_failed` from `idle`/`working`,
-`start_failed` from `starting`), its open attempt is marked `failed`, and one
-line lands in the parent's inbox.
+A restart does **not** abandon a child that was working: core's startup recovery resumes its
+session, and `team_list` shows it still `running`. That is the good case and needs no action.
 
-Open a session as `opus-orchestrator` in the same project, `team_prepare` (this
-returns a *new* main run — the old chat's run belonged to the old session),
-then:
+A run only goes `dead` when its host session is genuinely gone. On start, and again inside
+`team_wait` just before it would report a timeout, the plugin runs **reconcile**: every
+non-terminal run whose session no longer resolves moves to `dead` (`probe_failed` from
+`idle`/`working`, `start_failed` from `starting`), its open attempt is marked `failed`, and one
+line lands in the parent's inbox. To see it, delete a working child's session and wait once:
 
-> team_list {all:true}
+```sh
+curl -s -u "opencode:$PW" -H "x-opencode-directory: $PROJ" \
+  -X DELETE "$SERVER/api/session/<child session id>"
+```
 
-**Expect:** the child from the interrupted run shows `state: "dead"` and
-`runtime: "stopped"`.
+then, from the parent chat, `team_wait {runs:["w-…"], timeoutMs:10000}`.
+
+**Expect:** the wait returns after about one timeout with that run in `settled`,
+`attemptState:"failed"` and `report:null` — not a bare `timedOut`. `team_list {all:true}` then
+shows `state:"dead"`, `runtime:"stopped"`, and the parent inbox holds the settled line.
 
 A parent still holding the old run learns the same thing from a single
 `team_wait`: wait reconciles before it reports `timedOut`, so a child whose
@@ -352,3 +365,37 @@ cd $REPO/packages/plus && TEAMS=$TEAMS bun -e '
 - **Implementers have no shell.** They edit files and run `team_check`; a
   `shell` call is refused immediately rather than hanging on a permission
   prompt nobody can answer.
+
+## Executed live on 2026-09-18
+
+Every numbered step above was executed by the orchestrator through
+`packages/plus/bin/opencodeplus <project>` with an isolated XDG home, against a copy of this
+repository's `packages/util` as a standalone git project, on task branch head
+`6d2319d69e74daa38512f66e77b5e011852e5c88`. Two product bugs were found by running it and fixed
+before the final pass.
+
+| Step | What proved it |
+|---|---|
+| 1 | Palette → Toggle project mode → Confirm; `.opencodeplus/project.json` written with `{"version":1,"protectedAgents":[]}` |
+| 2 | Defaults → Teams → `space`; store gained `{"type":"team","level":"defaults","team":"opencodeplus-team","enabled":true}`; `/api/agent` listed **9 of 9** roles with their built-in descriptions |
+| 3 | Two model records written from the TUI; `/api/agent` showed `opus-orchestrator -> cliproxyapi/claude-opus-5#high`, `muse-implementer -> cliproxyapi/muse-spark-1.3-contributor#high`, `scout -> (none)`, `build -> cliproxyapi/claude-fable-5-1#xhigh` |
+| 4 | `team_prepare` → `main-df4ce07a771b0a6d` (and later `main-…e486c8b94248efdb`); audit `run.created` + `tool.call team_prepare ok` at seq 1–2 |
+| 5 | `team_delegate` → `w-bfe87425ced4d2a9`, branch `team/implementer/t2bfe8-20260918-1655`, brief.md and checks.json written |
+| 6 | `team_wait` → `settled[0].attemptState "succeeded"` with the report path; `team_status` and `team_list` returned the documented fields including `runtime` |
+| 7 | `team_set_checks` → `{"checks":["path"]}`; `team_integrate` → `{"entry":"01M2TGAVGGG09XE2ENMT12ZRNP","state":"landed","head":"570c36d2…"}`; the project's `git log` really carries `570c36d fix(path): return empty directory for separator-less paths` |
+| 8 | `team_stop` on a working child → `E_BUSY: Child is working; call shutdown_request then wait, or supersede.` (03 verbatim); `team_supersede` → `{"state":"superseded","hadUncommitted":true,…}` with the worktree kept; `team_stop` on the finished child → `{"state":"stopped"}` |
+| 9 | Restart resumed a live child (`/api/session/active` showed it `running`); a deleted session produced `w-cc30a94f33600d50` → `state "dead"`, attempt `1:failed`, history `starting → dead (start_failed)`, the parent inbox settled line, and audit seq 44 `team_wait ok durationMs 10017`; the parent then delegated again (`w-7bc772217540dac4`) |
+| models | Parent ran on `claude-opus-5 · high` while its child's first assistant message reads `muse-implementer -> cliproxyapi/muse-spark-1.3-contributor#high` — two roles, two real models, one run |
+
+Two bugs the procedure found, both fixed and covered by focused tests:
+
+1. **A delegated child could not resolve its own role agent.** Its worktree was not a Plus project,
+   so the plugin never activated in that Location and core answered
+   `Session.AgentNotFoundError: Agent not found: "muse-implementer"`; the child session died with
+   zero messages and the run sat in `starting` forever. `worktree.create` now writes the project
+   config into the new worktree and hides it with a worktree-local `core.excludesFile`.
+2. **A per-role model pin never reached the model that ran.** `applyModels` skipped agent ids that
+   were not yet in the host registry, which is exactly every team-only role, so the agent carried no
+   model and the host reset the session to the default right after Plus switched it. `applyModels`
+   now upserts, and `team_delegate` additionally switches the child session to the role's pinned
+   model before prompting it.
