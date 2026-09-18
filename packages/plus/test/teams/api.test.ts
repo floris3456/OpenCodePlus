@@ -963,3 +963,73 @@ test("finish ignores Plus project.json but still reports real untracked files", 
     }
   })
 }, 30000)
+
+test("finish done succeeds with an untracked Plus project.json and passing assigned check", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await finishChild(root, repo, PASSING_TEST)
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const value = required(await api.finish({ status: "done", summary: "Completed task with passing check." }, callerFor(child))) as {
+        head: string
+        reportPath: string
+        dirty: boolean
+        dirtyFiles: string[]
+        checks: Array<{ id: string; passed: boolean; head: string; at: number }>
+      }
+      expect(value.dirty).toBe(false)
+      expect(value.dirtyFiles).toEqual([])
+      expect(value.checks).toEqual([{ id: "t", passed: true, head: value.head, at: expect.any(Number) }])
+      expect(await Bun.file(value.reportPath).exists()).toBe(true)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish reports modified tracked project.json as dirty", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+      await git(repo.dir, ["add", ".opencodeplus/project.json"])
+      await git(repo.dir, ["commit", "-m", "chore: track project.json"])
+      const head = await git(repo.dir, ["rev-parse", "HEAD"])
+      const child = childInRepo("w-5555555555555555", { dir: repo.dir, head })
+      await saveRun(root, child)
+
+      // Modify the tracked project.json
+      await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":2,"protectedAgents":["new"]}\n`)
+
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const error = rejected(await api.finish({ status: "done", summary: "Modified tracked project." }, callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toContain(".opencodeplus/project.json")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish reports new untracked file under .opencodeplus as dirty", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+      await fs.writeFile(path.join(repo.dir, ".opencodeplus", "agent.json"), `{"agent":"custom"}\n`)
+      const child = childInRepo("w-6666666666666666", repo)
+      await saveRun(root, child)
+
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const error = rejected(await api.finish({ status: "done", summary: "Added untracked config." }, callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toContain(".opencodeplus/agent.json")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)

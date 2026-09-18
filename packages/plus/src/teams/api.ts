@@ -26,7 +26,7 @@ import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
 import { stopHandler, supersedeHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
-import { git, gitRaw } from "./git.js"
+import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
 import { kindOf } from "./policy.js"
 import { render } from "./report.js"
@@ -54,7 +54,7 @@ import {
 } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
-import { create as createWorktree, slug } from "./worktree.js"
+import { create, slug } from "./worktree.js"
 
 export interface TeamApiError {
   readonly code: string
@@ -373,7 +373,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: unknown, c
   const rendered = briefModule.render(brief, { budget, ...(attached === undefined ? {} : { attached }) })
   const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")
 
-  const created = await createWorktree(root, {
+  const created = await create(root, {
     repoRoot: repo.root,
     repoKey: repo.key,
     role: targetKind.kind,
@@ -475,7 +475,7 @@ async function finishHandler(input: unknown, caller: TeamCaller): Promise<TeamAp
   const worktree = stored.directory
   const assigned = await readChecks(root, stored.id)
   const head = await git(worktree, ["rev-parse", "HEAD"])
-  const porcelain = await git(worktree, ["status", "--porcelain"])
+  const porcelain = await git(worktree, ["status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
 
   // Compound behaviour: assigned checks with no receipt at HEAD run now,
@@ -886,27 +886,6 @@ async function readChecks(root: string, runID: string): Promise<Check[]> {
   return data ?? []
 }
 
-function parsePorcelain(out: string): string[] {
-  const trimmed = out.trim()
-  if (trimmed === "") return []
-  const files: string[] = []
-  for (const line of trimmed.split("\n")) {
-    if (line.trim() === "") continue
-    const match = /^(.{1,2}) (.+)$/.exec(line)
-    if (match === null) continue
-    const raw = match[2]?.trim() ?? ""
-    if (raw === "") continue
-    const arrow = raw.indexOf(" -> ")
-    const picked = arrow < 0 ? raw : raw.slice(arrow + 4).trim()
-    if (picked === "") continue
-    // Plus's own runtime file is not the worker's change.
-    if (picked === ".opencodeplus/project.json" || picked.startsWith(".opencodeplus/")) continue
-    files.push(picked.length >= 2 && picked.startsWith('"') && picked.endsWith('"') ? picked.slice(1, -1) : picked)
-  }
-  files.sort()
-  return files
-}
-
 async function firstLogLine(outputPath: string | undefined): Promise<string> {
   if (outputPath === undefined) return "failed"
   const log = await readFile(outputPath, "utf8").catch(() => "")
@@ -1011,7 +990,7 @@ async function statusOf(root: string, id: string) {
   // Live worktree reads with stored fallbacks, so a parent sees the child's
   // current commit even when the child's record lags behind.
   const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
-  const porcelain = await git(record.directory, ["status", "--porcelain"]).catch(() => "")
+  const porcelain = await git(record.directory, ["status", "--porcelain", "-uall"]).catch(() => "")
   const dirtyFiles = parsePorcelain(porcelain)
   const checks = []
   for (const checkDef of assigned) {

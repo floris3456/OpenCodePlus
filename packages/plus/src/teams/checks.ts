@@ -7,7 +7,7 @@ import { append } from "./audit.js"
 import { atomicJson, lock, readJson } from "./store.js"
 import { toolError } from "./schema.js"
 import type { Check } from "./schema.js"
-import { git, systemPath } from "./git.js"
+import { git, parsePorcelain, PLUS_PROJECT_FILE, systemPath } from "./git.js"
 import { errCode, io } from "./io.js"
 
 // Check executor (docs/team-v2/07-code-mode.md §check serialization,
@@ -202,7 +202,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
     async () => {
       const started = Date.now()
       const headBefore = await git(opts.worktree, ["rev-parse", "HEAD"])
-      const statusBefore = await git(opts.worktree, ["status", "--porcelain"])
+      const statusBefore = await git(opts.worktree, ["status", "--porcelain", "-uall"])
       // Provenance for the measured tree: the committed HEAD tree plus
       // whether the tree was dirty. Dirty status is captured up front (the
       // tree the check actually measured); the mutation gate below still
@@ -210,7 +210,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       // cheaper than a temporary-index write-tree and sufficient to refuse
       // the receipt as HEAD proof later.
       const tree = await git(opts.worktree, ["rev-parse", "HEAD^{tree}"])
-      const dirty = statusBefore.trim() !== ""
+      const dirty = parsePorcelain(statusBefore).length > 0
       const cwd = opts.check.cwd ? join(opts.worktree, opts.check.cwd) : opts.worktree
       const env: Record<string, string> = { PATH: systemPath() }
       if (process.env.HOME !== undefined) env.HOME = process.env.HOME
@@ -228,7 +228,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       }
 
       const headAfter = await git(opts.worktree, ["rev-parse", "HEAD"])
-      const statusAfter = await git(opts.worktree, ["status", "--porcelain"])
+      const statusAfter = await git(opts.worktree, ["status", "--porcelain", "-uall"])
       if (headAfter !== headBefore || statusAfter !== statusBefore) {
         // Post-condition failure overrides even a zero exit code.
         code = "E_CHECK_MUTATED"
@@ -260,7 +260,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         receipt.porcelain = statusBefore
           .split("\n")
           .map((line) => line.trim())
-          .filter((line) => line.length > 0)
+          .filter((line) => line.length > 0 && line !== `?? ${PLUS_PROJECT_FILE}`)
       }
       if (code !== undefined) {
         receipt.code = code
