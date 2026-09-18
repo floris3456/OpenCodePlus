@@ -151,3 +151,78 @@ Prerequisite fix identified before the round: `decideEdit` in
 `packages/plus/src/teams/permissions.ts` returned a bare `"deny"` and never set
 `event.message`, so the refusal reached the child with no reason. Delegated to
 muse-implementer run `w-deea83b65c067ab8`.
+
+## R2 — scope enforcement — PASSED
+
+Prerequisite fix landed first: muse-implementer run `w-deea83b65c067ab8`,
+commit `c63cf4b4d52e8a28dec4362f97f492bc87d5a33e`
+"fix(plus): explain team scope denials to the agent", integrated at
+`2636aab7cc296ecc90511fcb9c2aaa465d060e36`. `decideEdit` now returns
+`{effect, message}` and `handleEvent` sets `event.message` on every deny.
+Checks: teams-permissions 9 pass, typecheck clean. Gate server restarted on
+that code before the round.
+
+```
+parent ses_f4b86d13affeJJiAmCLRTm0Fkk  opus-orchestrator  run main-1922a097e464836c
+child  ses_f4b869caaffek5JGLtwNWJ2kTG  muse-implementer   run w-dd8610814dbc4cce
+worktree <teams>/worktrees/greeter/implementer/…  scope.paths ["src/greeting.ts"]
+base b237c684e009206cca85a7186a2f31f027ca022a -> head 65cbd6def04a0cb852402fbf35c0251f202e4062
+commit 65cbd6de fix(greeting): return "Hello, <name>!" instead of echoing the name
+receipt runs/w-dd8610814dbc4cce/receipts/greet-65cbd6d.json  dirty:false passed:true (finish accepted)
+        runs/w-dd8610814dbc4cce/receipts/greet-b237c68.json  dirty:true  passed:true (pre-commit, not HEAD proof)
+```
+
+Refusal 1 — out of scope. The child's `edit` tool part, verbatim:
+
+```
+edit {"path":"test/greeting.test.ts"} -> status=error
+{"type":"permission.rejected","message":"\"test/greeting.test.ts\" is outside your
+scope.paths [src/greeting.ts]. Report it in needs=[{kind:\"path\"...}]."}
+```
+
+Refusal 2 — version-control state. The child's `write` tool part, verbatim:
+
+```
+write {"path":".git/HEAD"} -> status=error
+{"type":"permission.rejected","message":"\".git/HEAD\" is version-control or
+paused-tool state and is never editable, even inside scope.paths
+[src/greeting.ts]. Report it in needs=[{kind:\"path\"...}]."}
+```
+
+Both messages name the path and the allowed scope, and both reached the model
+as tool errors it could read and act on — it quoted them back verbatim in its
+report. Compared against docs/team-v2/03-tools.md line 219, the wording reuses
+the documented `E_SCOPE` vocabulary (`"x" is outside your scope.paths [..].
+Report it in needs=[{kind:"path"...}].`); 03 does not specify a permission-hook
+message, so the E_SCOPE text is the contract this follows.
+
+Child still finished cleanly inside scope: `git status --porcelain` empty,
+`git diff --stat b237c68 HEAD` = `src/greeting.ts | 2 +-` only, report status
+`done`.
+
+audit.log (this round's chain, seq 1–11): prepare ok, delegate ok,
+get_context ok, receipt.written greet dirty:true, check ok, checkpoint ok,
+receipt.written greet dirty:false, finish ok, wait ok 23437ms. Permission
+denials are enforced in the host permission hook, not a team tool, so they
+correctly produce no `tool.call` line; their evidence is the tool part above.
+grep pattern for this round: `grep '"run":"w-dd8610814dbc4cce"' audit.log`.
+State archived as `home/data/opencode/opencodeplus/teams-R2`.
+
+## R3 — finish gates (what it must prove, written before the run)
+
+One child, in one attempt, must be refused three times and then succeed:
+
+1. `team_finish{status:"done"}` with the assigned check red at HEAD →
+   `E_CHECKS_RED` with the exact 03 message, including the `needs=[{kind:
+   "check",…}]` accepted shape.
+2. After committing a green fix, dirty the worktree again (edit the in-scope
+   file without committing) and call finish again → `E_DIRTY` naming the file.
+3. Finish correctly → accepted.
+4. Call finish once more → `E_FINISH_TWICE`.
+5. All three refusals must appear in audit.log as `tool.call` lines with
+   `tool:"team_finish"`, `ok:false` and those codes.
+
+Ordering note recorded before the run: E_DIRTY is only reachable when a clean
+passing receipt already exists at the current HEAD, because the checks gate
+runs first and `receiptsAt` rejects dirty-tree receipts. The round therefore
+commits the fix first, then dirties the tree.
