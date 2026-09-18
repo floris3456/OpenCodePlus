@@ -394,3 +394,57 @@ real call is the only sound catalog probe — noted for later rounds.
 
 Both E_NOT_ACTOR texts match docs/team-v2/03-tools.md §Actor gate exactly.
 grep pattern: `grep '"code":"E_NOT_ACTOR"' audit.log`.
+
+## R5 — two (then three) children in parallel — PASSED
+
+Scratch project first gained two more disjoint fixtures
+(`src/farewell.ts` + `test/farewell.test.ts`, `src/shout.ts` +
+`test/shout.test.ts`, both failing at base), committed as
+`1f36439358d3929f64010ee9296ae9c90521929b`.
+
+```
+parent ses_f4b6bef53ffenS5k2Z2bwEuRfZ  opus-orchestrator  run main-1c86385464966e9b
+A ses_f4b6b9f4dffeyBJUKwB3D1acSh  w-f8032e472cb34712  src/greeting.ts  check greet  head acea7dbb
+B ses_f4b6b9245ffeQcYF3qWaJvsQJC  w-d2ca217af366a62d  src/farewell.ts  check bye    head 2db7f2b7
+C ses_f4b6b5dd0ffe9R85K4P0S72FSF  w-6ce8884f2a37abd3  src/shout.ts     check shout  head b6fd5edd
+all three based on 1f36439358d3929f64010ee9296ae9c90521929b
+worktrees .../implementer/t1f803-20260918-1453, t2d2ca-20260918-1453, t36ce8-20260918-1453
+```
+
+A and B were issued in the same turn (audit seq 4 and 6, 361 ms and 404 ms,
+no wait between them) and both children were live at the same time
+(`/api/session/active` showed the parent plus two child sessions at 60 s).
+
+**Third delegate while two were in flight: ACCEPTED.** `bounds.inFlight` is the
+schema default **4** (no policy file loader exists, see the deviation list), and
+the parent had two live children, so call C returned a run id rather than
+`E_BOUNDS`. Audit seq 12–13 records C's creation while A was still working
+(A's finish is seq 24, after C's creation). The exact `E_BOUNDS` message that
+would have fired at the limit is
+`In-flight limit 4 reached (<ids>). Call wait first or raise bounds.inFlight in policy.`
+(packages/plus/src/teams/api.ts), and it is covered by the unit tests; it was
+not reachable live at the default bound without weakening it, which this round
+does not do.
+
+No bleed between the three: each worktree's diff against the shared base is
+exactly its own file and each is clean.
+
+```
+w-6ce8884f2a37abd3 scope src/shout.ts    :: src/shout.ts | 2 +-     :: status[]
+w-d2ca217af366a62d scope src/farewell.ts :: src/farewell.ts | 2 +-  :: status[]
+w-f8032e472cb34712 scope src/greeting.ts :: src/greeting.ts | 2 +-  :: status[]
+```
+
+Run records stayed separate (distinct ids, sessions, branches, heads; same
+parent, same base) and receipts are per run: `bye` at 2db7f2b7, `greet` at
+acea7dbb, `shout` at b6fd5edd, all `dirty:false passed:true`.
+
+`team_wait` behaviour, worth recording: the first wait (audit seq 20) returned
+after **18 ms** with `settled:[w-d2ca…]` and the other two in `stillOpen` —
+that is the documented contract (it returns as soon as anything has settled),
+not a timeout. A second `team_wait` on all three then returned all three
+`succeeded` with their reports. An orchestrator must therefore loop on
+`stillOpen`, which is worth stating in the orchestrator instructions.
+
+grep pattern: `grep '"run":"main-1c86385464966e9b"' audit.log` for the three
+delegates and both waits. State archived as `teams-R5`.
