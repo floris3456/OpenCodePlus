@@ -1,10 +1,11 @@
-import { realpath, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
+import { isAbsolute, join } from "node:path"
 import { Effect } from "effect"
+import { read, type ProjectConfig } from "../project.js"
 import { git, gitRaw } from "./git.js"
 import { toolError } from "./schema.js"
 import { lock } from "./store.js"
-import { io } from "./io.js"
+import { errCode, io } from "./io.js"
 
 function exists(p: string): Promise<boolean> {
   return Effect.runPromise(
@@ -44,12 +45,94 @@ export interface CreateOptions {
   name: string
   base: string
   workspaceRoot: string
+  projectDirectory: string
 }
 
 export interface Created {
   dir: string
   branch: string
   head: string
+}
+
+const EXCLUDE_LINE = "/.opencodeplus/"
+
+function messageOf(error: unknown): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message: unknown }).message
+    if (typeof message === "string" && message.length > 0) return message
+  }
+  return String(error)
+}
+
+// The child's worktree must be a Plus project or Plus never activates there
+// and core cannot resolve the child's own role agent. When the checkout
+// already carries `.opencodeplus/project.json` (the repository tracks it)
+// the file is left alone; otherwise the parent's config is copied so the
+// child inherits the user-controlled `protectedAgents` list verbatim,
+// falling back to the default when the parent has none.
+function ensureProjectConfig(dir: string, projectDirectory: string): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const target = join(dir, ".opencodeplus", "project.json")
+      const present = yield* io(() => stat(target)).pipe(
+        Effect.as(true),
+        Effect.catchIf(() => true, () => Effect.succeed(false)),
+      )
+      if (present) return
+      const parent = yield* io(() => read(projectDirectory)).pipe(
+        Effect.catchIf(() => true, () => Effect.succeed(undefined)),
+      )
+      const config: ProjectConfig = parent ?? { version: 1, protectedAgents: [] }
+      const payload = `${JSON.stringify(config, null, 2)}\n`
+      yield* io(() => mkdir(join(dir, ".opencodeplus"), { recursive: true })).pipe(
+        Effect.mapError((error) => toolError("E_PROJECT", `Cannot write Plus project config: ${messageOf(error)}`)),
+      )
+      yield* io(() => writeFile(target, payload, "utf8")).pipe(
+        Effect.mapError((error) => toolError("E_PROJECT", `Cannot write Plus project config: ${messageOf(error)}`)),
+      )
+    }),
+  )
+}
+
+// Keep the copied project.json invisible to git in that worktree, or every
+// implementer's `team_finish` with status `done` fails `E_DIRTY` on the
+// untracked file. The per-worktree exclude file lives under the linked
+// worktree's own git dir (`<repo>/.git/worktrees/<name>/info/exclude`), never
+// the repository `.gitignore` nor the main checkout's exclude. Failures are
+// ignored: the worktree is still returned.
+//
+// git 2.47 reads `info/exclude` from the common dir (`rev-parse --git-path
+// info/exclude` resolves to `<repo>/.git/info/exclude`) and ignores the
+// per-worktree file, so the per-worktree file alone leaves `git status`
+// dirty. Pointing the worktree's own `core.excludesFile` at it (via
+// `extensions.worktreeConfig`) makes the same file effective without touching
+// the shared exclude.
+function ensureExclude(dir: string): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const gitDirRaw = yield* io(() => git(dir, ["rev-parse", "--git-dir"]))
+      const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : join(dir, gitDirRaw)
+      const infoDir = join(gitDir, "info")
+      const excludePath = join(infoDir, "exclude")
+      yield* io(() => mkdir(infoDir, { recursive: true }))
+      const existing = yield* io(() => readFile(excludePath, "utf8")).pipe(
+        Effect.catchIf((error) => errCode(error) === "ENOENT", () => Effect.succeed("")),
+      )
+      const lines = existing === "" ? [] : existing.split("\n")
+      const present = lines.some((line) => line === EXCLUDE_LINE)
+      if (!present) {
+        const next =
+          existing === ""
+            ? `${EXCLUDE_LINE}\n`
+            : existing.endsWith("\n")
+              ? `${existing}${EXCLUDE_LINE}\n`
+              : `${existing}\n${EXCLUDE_LINE}\n`
+        yield* io(() => writeFile(excludePath, next, "utf8"))
+      }
+      yield* io(() => gitRaw(dir, ["config", "extensions.worktreeConfig", "true"])).pipe(Effect.asVoid)
+      yield* io(() => gitRaw(dir, ["config", "--worktree", "core.excludesFile", excludePath])).pipe(Effect.asVoid)
+    }).pipe(Effect.ignore),
+  )
 }
 
 export async function create(root: string, opts: CreateOptions): Promise<Created> {
@@ -63,6 +146,8 @@ export async function create(root: string, opts: CreateOptions): Promise<Created
     if (await exists(dir)) throw toolError("E_WT_EXISTS", `Worktree directory already exists: ${dir}`)
     await git(opts.repoRoot, ["worktree", "add", "-b", branch, dir, verify.out])
     const head = await git(dir, ["rev-parse", "HEAD"])
+    await ensureProjectConfig(dir, opts.projectDirectory)
+    await ensureExclude(dir)
     return { dir, branch, head }
   })
 }

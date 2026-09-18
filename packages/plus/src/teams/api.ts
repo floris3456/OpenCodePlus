@@ -371,6 +371,7 @@ async function delegateHandler(ctx: Context, input: unknown, caller: TeamCaller)
     name: slug(taskID ?? brief.requestID, childID),
     base: baseSha,
     workspaceRoot: root,
+    projectDirectory: parent.directory,
   })
 
   // The child run is a session in this same process, created directly in its

@@ -173,6 +173,8 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(sessions.prompted).toHaveLength(1)
       expect(sessions.prompted[0]?.sessionID).toBe(value.session)
       expect(sessions.prompted[0]?.text).toContain("Fix the agent filter in the query module")
+      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(true)
+      expect(await git(value.directory, ["status", "--porcelain"])).toBe("")
     } finally {
       await removeRepo(repo.dir)
     }
