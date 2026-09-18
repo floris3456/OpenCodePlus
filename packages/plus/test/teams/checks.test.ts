@@ -137,6 +137,82 @@ describe("check executor receipts", () => {
     expect(await stale(stateDir, [check], runID, head)).toEqual([check])
   })
 
+  test("a passing check in a worktree whose only untracked content is .opencodeplus/project.json writes a receipt with dirty: false", async () => {
+    const dir = join(scratch, "repoPlusOnly")
+    await initRepo(dir)
+    await writeFile(join(dir, "pass.ts"), `console.log("ok");\n`)
+    await git(dir, ["add", "pass.ts"])
+    await git(dir, ["commit", "-m", "chore: pass fixture"])
+    await mkdir(join(dir, ".opencodeplus"), { recursive: true })
+    await writeFile(join(dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+
+    const runID = "w-1111222233334444"
+    const check = { id: "pass", argv: ["bun", "run", "pass.ts"] }
+    const head = await git(dir, ["rev-parse", "HEAD"])
+    const res = await execute(stateDir, { runID, check, worktree: dir })
+
+    expect(res.passed).toBe(true)
+    expect(res.dirty).toBe(false)
+    expect(res.porcelain).toBeUndefined()
+    expect(typeof res.tree).toBe("string")
+    expect((await receiptsAt(stateDir, runID, head)).map((r) => r.id)).toContain("pass")
+    expect(await stale(stateDir, [check], runID, head)).toEqual([])
+  })
+
+  test("a passing check in a worktree that also has an unrelated untracked or modified file writes dirty: true", async () => {
+    const dir = join(scratch, "repoPlusDirty")
+    await initRepo(dir)
+    await writeFile(join(dir, "pass.ts"), `console.log("ok");\n`)
+    await git(dir, ["add", "pass.ts"])
+    await git(dir, ["commit", "-m", "chore: pass fixture"])
+    await mkdir(join(dir, ".opencodeplus"), { recursive: true })
+    await writeFile(join(dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+
+    // Unrelated untracked file
+    await writeFile(join(dir, "extra.txt"), "hello\n")
+    const runID = "w-5555666677778888"
+    const check = { id: "pass", argv: ["bun", "run", "pass.ts"] }
+    const head = await git(dir, ["rev-parse", "HEAD"])
+    const resUntracked = await execute(stateDir, { runID, check, worktree: dir })
+
+    expect(resUntracked.passed).toBe(true)
+    expect(resUntracked.dirty).toBe(true)
+    expect(resUntracked.porcelain?.length ?? 0).toBeGreaterThan(0)
+    expect(await receiptsAt(stateDir, runID, head)).toEqual([])
+    expect(await stale(stateDir, [check], runID, head)).toEqual([check])
+
+    // Clean up untracked file, now modify a tracked file
+    await rm(join(dir, "extra.txt"))
+    await writeFile(join(dir, "pass.ts"), `console.log("modified");\n`)
+    const resModified = await execute(stateDir, { runID, check, worktree: dir })
+    expect(resModified.passed).toBe(true)
+    expect(resModified.dirty).toBe(true)
+    expect(resModified.porcelain?.length ?? 0).toBeGreaterThan(0)
+    expect(await receiptsAt(stateDir, runID, head)).toEqual([])
+    expect(await stale(stateDir, [check], runID, head)).toEqual([check])
+  })
+
+  test("a mutating check yields E_CHECK_MUTATED when untracked .opencodeplus/project.json is present", async () => {
+    const dir = join(scratch, "repoPlusMut")
+    await initRepo(dir)
+    await writeFile(
+      join(dir, "mut.ts"),
+      `import { writeFileSync } from "node:fs";\nwriteFileSync("created.txt", "mutation\\n");\n`,
+    )
+    await git(dir, ["add", "mut.ts"])
+    await git(dir, ["commit", "-m", "chore: mut fixture"])
+    await mkdir(join(dir, ".opencodeplus"), { recursive: true })
+    await writeFile(join(dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
+
+    const runID = "w-9999888877776666"
+    const check = { id: "mut", argv: ["bun", "run", "mut.ts"] }
+    const res = await execute(stateDir, { runID, check, worktree: dir })
+
+    expect(res.passed).toBe(false)
+    expect(res.code).toBe("E_CHECK_MUTATED")
+    expect(res.message).toContain("git status changed")
+  })
+
   test("old receipts without the dirty flag fail closed", async () => {
     const runID = "w-c001c001c001c001"
     const head = await git(repoA, ["rev-parse", "HEAD"])

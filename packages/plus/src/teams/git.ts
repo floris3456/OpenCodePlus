@@ -38,3 +38,26 @@ export async function git(dir: string, args: string[]): Promise<string> {
   if (r.code !== 0) throw new Error(r.err || r.out || `git ${args.join(" ")} exited ${r.code}`)
   return r.out
 }
+
+export const PLUS_PROJECT_FILE = ".opencodeplus/project.json"
+
+export function parsePorcelain(out: string): string[] {
+  const trimmed = out.trim()
+  if (trimmed === "") return []
+  const files: string[] = []
+  for (const line of trimmed.split("\n")) {
+    if (line.trim() === "") continue
+    const match = /^(.{1,2}) (.+)$/.exec(line)
+    if (match === null) continue
+    const raw = match[2]?.trim() ?? ""
+    if (raw === "") continue
+    const arrow = raw.indexOf(" -> ")
+    const picked = arrow < 0 ? raw : raw.slice(arrow + 4).trim()
+    if (picked === "") continue
+    const file = picked.length >= 2 && picked.startsWith('"') && picked.endsWith('"') ? picked.slice(1, -1) : picked
+    if (match[1]?.trim() === "??" && file === PLUS_PROJECT_FILE) continue
+    files.push(file)
+  }
+  files.sort()
+  return files
+}
