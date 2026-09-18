@@ -49,7 +49,7 @@ const NINE = [
 
 interface Expectation {
   readonly description: string
-  readonly shell: "allow" | "deny" | "ask"
+  readonly shell: "allow" | "deny"
   readonly external: "allow" | "deny"
   readonly question: "allow" | "deny"
   readonly deniedTeamTool: string
@@ -75,7 +75,23 @@ const EXPECTED: Record<string, Expectation> = {
   },
   "muse-implementer": {
     description: "Muse implementer: executes the brief inside scope and finishes",
-    shell: "ask",
+    shell: "deny",
+    external: "deny",
+    question: "deny",
+    deniedTeamTool: "delegate",
+    allowedTeamTool: "checkpoint",
+  },
+  "gemini-implementer": {
+    description: "Gemini implementer: executes bounded work inside scope and finishes",
+    shell: "deny",
+    external: "deny",
+    question: "deny",
+    deniedTeamTool: "delegate",
+    allowedTeamTool: "checkpoint",
+  },
+  "spark-implementer": {
+    description: "Spark implementer: rapid edit and check loops for a small piece",
+    shell: "deny",
     external: "deny",
     question: "deny",
     deniedTeamTool: "delegate",
@@ -127,5 +143,27 @@ test("enabling opencodeplus-team installs all nine roles with mode, description,
     expect(has("read", "*/auth.json", "deny")).toBe(true)
     expect(has(`team.${expected.deniedTeamTool}`, "*", "deny")).toBe(true)
     expect(has(`team.${expected.allowedTeamTool}`, "*", "deny")).toBe(false)
+  }
+})
+
+test("built-in roles allow shell only for orchestrators and deny shell for all others", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})))
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
+  const orchestrators = new Set(["sol-orchestrator", "opus-orchestrator"])
+  for (const id of NINE) {
+    const agent = byId.get(id)
+    expect(agent).toBeDefined()
+    if (agent === undefined) continue
+    const permissions = agent.permissions ?? []
+    const has = (action: string, resource: string, effect: string) =>
+      permissions.some((rule) => rule.action === action && rule.resource === resource && rule.effect === effect)
+    const expectedShell = orchestrators.has(id) ? "allow" : "deny"
+    expect(has("shell", "*", expectedShell)).toBe(true)
+    expect(has("shell", "*", "ask")).toBe(false)
   }
 })
