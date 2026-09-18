@@ -104,6 +104,25 @@ function fixtureBuiltins() {
   return [{ name: "ship", members: [{ id: "shared", body: "ship body" }] }]
 }
 
+function fixtureWithFields() {
+  return [
+    {
+      name: "ship",
+      members: [
+        {
+          id: "fielded",
+          body: "fielded body",
+          fields: {
+            description: "Fielded agent",
+            mode: "subagent" as const,
+            permissions: [{ action: "team.delegate", resource: "*", effect: "deny" as const }],
+          },
+        },
+      ],
+    },
+  ]
+}
+
 test("a built-in member loses to a project team with the same id", async () => {
   const { project } = await tempRoot()
   await enable(project)
@@ -237,4 +256,20 @@ test("one agent id at two scopes applies once with the project text", async () =
   expect(await hostSystem(ctx, "alpha")).toBe("project text")
   expect(roleRuns.length).toBeGreaterThan(0)
   for (const run of roleRuns) expect(run).toEqual(["project text"])
+})
+
+test("a built-in member with fields installs through the shared applyTeamAgent surface", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: fixtureWithFields() })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "fielded")).toBe("fielded body")
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const agent = listed.data.find((entry) => String(entry.id) === "fielded")
+  expect(agent?.description).toBe("Fielded agent")
+  expect(agent?.mode).toBe("subagent")
+  expect(
+    agent?.permissions.some((rule) => rule.action === "team.delegate" && rule.resource === "*" && rule.effect === "deny"),
+  ).toBe(true)
 })
