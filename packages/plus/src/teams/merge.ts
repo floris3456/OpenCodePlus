@@ -3,8 +3,9 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { atomicJson, lock, readJson, ulid } from "./store.js"
 import { git, gitRaw } from "./git.js"
-import { execute as executeCheck } from "./checks.js"
+import { execute } from "./checks.js"
 import { reworkTask } from "./tasks.js"
+import { loadRun } from "./run.js"
 import { toolError } from "./schema.js"
 import type { Check, MergeState } from "./schema.js"
 import { errCode, io } from "./io.js"
@@ -37,15 +38,13 @@ export interface EnqueueInput {
 // Typed seam for the tools layer: the merge queue never spawns sessions or
 // reaches for a host/MCP client. Check verification runs through checks.ts
 // and rework creation through tasks.ts; the caller supplies repo placement
-// plus the parent task identity here.
+// here.
 export interface MergeContext {
   repoRoot: string
   repoKey: string
   workspaceRoot: string
   parentWorktree: string
   checks: Check[]
-  planRun: string
-  taskID: string
 }
 
 export interface DrainResult {
@@ -234,6 +233,32 @@ function redEntry(cur: MergeEntry, redIds: string[], reworkId: string): MergeEnt
   return { ...cur, state: "red", redChecks: redIds, reworkTask: reworkId, updatedAt: nowIso() }
 }
 
+async function findPlanForTask(root: string, taskID: string): Promise<string | undefined> {
+  const dir = join(root, "tasks")
+  const entries = await readdir(dir).catch(() => [] as string[])
+  for (const name of entries) {
+    if (!name.endsWith(".json") || name.startsWith(".")) continue
+    const graph = await readJson<{ tasks?: Record<string, unknown> }>(join(dir, name))
+    if (graph?.tasks !== undefined && Object.hasOwn(graph.tasks, taskID)) return name.slice(0, -5)
+  }
+  return undefined
+}
+
+async function resolveTaskIdentity(
+  root: string,
+  childRunID: string,
+): Promise<{ planRun: string; taskID: string }> {
+  const child = await loadRun(root, childRunID).catch(() => undefined)
+  if (child === undefined || child.task === null) {
+    return { planRun: childRunID, taskID: childRunID }
+  }
+  const found = await findPlanForTask(root, child.task)
+  return {
+    planRun: found ?? childRunID,
+    taskID: child.task,
+  }
+}
+
 /**
  * Walk 02 §4 for a single entry. Never touches the parent worktree on the
  * conflict or red paths; only the landing step runs `merge --ff-only` there.
@@ -242,6 +267,7 @@ function redEntry(cur: MergeEntry, redIds: string[], reworkId: string): MergeEnt
 export async function process(root: string, entry: MergeEntry, ctx: MergeContext): Promise<MergeEntry> {
   return Effect.runPromise(
     Effect.gen(function* () {
+      const taskIdentity = yield* io(() => resolveTaskIdentity(root, entry.childRun))
       const rebaseBase = yield* io(() => getHead(ctx.parentWorktree))
       let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso() }
       yield* io(() => saveEntry(root, cur))
@@ -257,7 +283,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
             .map((s) => s.trim())
             .filter((s) => s !== "")
           yield* io(() => gitRaw(tempDir, ["rebase", "--abort"]).then(() => undefined))
-          const reworkId = yield* io(() => reworkTask(root, ctx.planRun, ctx.taskID, conflictFiles, ctx.checks))
+          const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, conflictFiles, ctx.checks))
           cur = conflictEntry(cur, conflictFiles, reworkId)
           yield* io(() => saveEntry(root, cur))
           return cur
@@ -268,14 +294,14 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         const redIds: string[] = []
         const redChecks: Check[] = []
         for (const c of ctx.checks) {
-          const res = yield* io(() => executeCheck(root, { runID: entry.parentRun, check: c, worktree: tempDir }))
+          const res = yield* io(() => execute(root, { runID: entry.parentRun, check: c, worktree: tempDir }))
           if (!res.passed) {
             redIds.push(c.id)
             redChecks.push(c)
           }
         }
         if (redIds.length > 0) {
-          const reworkId = yield* io(() => reworkTask(root, ctx.planRun, ctx.taskID, [], redChecks))
+          const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, [], redChecks))
           cur = redEntry(cur, redIds, reworkId)
           yield* io(() => saveEntry(root, cur))
           return cur

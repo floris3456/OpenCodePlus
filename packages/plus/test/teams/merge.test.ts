@@ -4,9 +4,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { drain, enqueue, pending, queue } from "../../src/teams/merge.js"
 import type { MergeContext } from "../../src/teams/merge.js"
-import { create as createTasks, load as loadTasks } from "../../src/teams/tasks.js"
+import { create, load } from "../../src/teams/tasks.js"
 import { git } from "../../src/teams/git.js"
 import { list as listWorktrees } from "../../src/teams/worktree.js"
+import { saveRun, type RunRecord } from "../../src/teams/run.js"
 
 let scratch = ""
 let stateDir = ""
@@ -52,7 +53,7 @@ async function makeChild(
 }
 
 async function createPlan(planRun: string): Promise<void> {
-  await createTasks(stateDir, planRun, [
+  await create(stateDir, planRun, [
     {
       id: "T1",
       title: "Task T1",
@@ -66,8 +67,37 @@ async function createPlan(planRun: string): Promise<void> {
   ])
 }
 
-function ctxFor(parentDir: string, planRun: string, checks: MergeContext["checks"] = []): MergeContext {
-  return { repoRoot, repoKey: "opencode", workspaceRoot: wsRoot, parentWorktree: parentDir, checks, planRun, taskID: "T1" }
+function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
+  const now = new Date().toISOString()
+  return {
+    role: "muse-implementer",
+    kind: "w",
+    repo: "opencode",
+    repoKey: "opencode",
+    directory: scratch,
+    paths: [],
+    branch: "test",
+    base: mainHead,
+    head: mainHead,
+    state: "idle",
+    attempts: [],
+    task: null,
+    parent: null,
+    children: [],
+    briefSha: "abc",
+    bundle: "test",
+    budget: {},
+    createdAt: now,
+    lastUsed: now,
+    sessionID: null,
+    configDigest: null,
+    history: [],
+    ...overrides,
+  }
+}
+
+function ctxFor(parentDir: string, checks: MergeContext["checks"] = []): MergeContext {
+  return { repoRoot, repoKey: "opencode", workspaceRoot: wsRoot, parentWorktree: parentDir, checks }
 }
 
 function asErr(e: unknown): { code?: unknown; message?: unknown } {
@@ -100,8 +130,6 @@ describe("merge queue", () => {
   test("a clean child lands and the temp worktree is gone", async () => {
     const parentRun = "w-0000000000000001"
     const childRun = "w-0000000000000002"
-    const planRun = "plan-clean"
-    await createPlan(planRun)
     const parent = await makeParent("clean")
     const child = await makeChild("clean-1", parent.head, { "child.txt": "hello\n" }, "feat: add child file")
     const entry = await enqueue(stateDir, {
@@ -115,7 +143,7 @@ describe("merge queue", () => {
     expect(entry.state).toBe("pending")
     expect((await pending(stateDir, parentRun)).map((e) => e.id)).toContain(entry.id)
     const before = await listWorktrees(repoRoot)
-    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, planRun))
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
     expect(result.paused).toBe(false)
     expect(result.processed.length).toBe(1)
     expect(result.processed[0].state).toBe("landed")
@@ -146,13 +174,25 @@ describe("merge queue", () => {
       childHead: child.head,
       expectedParentHead: p1,
     })
+    await saveRun(
+      stateDir,
+      baseRun({
+        id: childRun,
+        parent: parentRun,
+        directory: child.dir,
+        branch: child.branch,
+        base: p0,
+        head: child.head,
+        task: "T1",
+      }),
+    )
     const before = await listWorktrees(repoRoot)
-    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, planRun))
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
     expect(result.processed[0].state).toBe("conflict")
     const all = await queue(stateDir, parentRun)
     expect(all[0].conflictFiles ?? []).toContain("base.txt")
     expect(all[0].reworkTask).toBe("T1.rework.1")
-    const graph = await loadTasks(stateDir, planRun)
+    const graph = await load(stateDir, planRun)
     expect(graph.tasks["T1.rework.1"].paths).toContain("base.txt")
     expect(graph.tasks["T1"].state).toBe("rework")
     expect(await headOf(parent.dir)).toBe(p1)
