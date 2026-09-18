@@ -39,6 +39,7 @@ export interface RunRecord {
   repo: string
   repoKey: string
   directory: string
+  paths: string[]
   branch: string
   base: string
   head: string
