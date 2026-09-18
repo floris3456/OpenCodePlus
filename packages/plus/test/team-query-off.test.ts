@@ -230,6 +230,7 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
       agents: [{ id: "muse-implementer", level: "defaults" as Level }],
       scopes: scopesOf(teamAgents),
       records,
+      teamAgents: ["muse-implementer"],
     }),
   )
   expect(applied.registrations).toHaveLength(1)
