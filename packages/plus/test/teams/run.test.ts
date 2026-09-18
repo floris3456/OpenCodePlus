@@ -44,6 +44,7 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
     repo: "opencode",
     repoKey: "opencode",
     directory: `/tmp/wt-${seq}`,
+    paths: [],
     branch: `team/implementer/t-${seq}`,
     base: "ocp-main",
     head: "0123456789abcdef0123456789abcdef01234567",
