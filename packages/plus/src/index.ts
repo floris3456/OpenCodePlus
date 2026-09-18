@@ -2532,13 +2532,21 @@ function publishFresh(
       const customizations = customizationsOf(stored.records)
       const splits = splitsOf(stored.records)
       const modelRecords = modelsOf(stored.records)
-      const scopes = scopesOf(discovered.agents)
-      state.activeModels = buildActiveModels(discovered.agents, modelRecords, scopes)
-      state.cachedAgents = discovered.agents.map((agent) => ({ ...agent }))
-      state.cachedScopes = { global: new Set(scopes.global), defaults: new Set(scopes.defaults) }
       const view = yield* Effect.promise(() =>
         stablePublishView(discovered, stored.records, ctx.location.directory, builtins),
       )
+      // Team-provided agents are not host upstream on the first publish
+      // after enable or restart: discovered.agents lacks team-only ids, so
+      // the model cache and apply would never see them. Include the
+      // resolved team winners alongside the host agents; dedupe keeps the
+      // host effective entry first, and pushRule upserts team-only ids so
+      // the deny survives the team install that follows.
+      const mergedAgents = [...discovered.agents, ...view.teamAgents]
+      const publishAgents = dedupeAgents(mergedAgents)
+      const publishScopes = scopesOf(mergedAgents)
+      state.activeModels = buildActiveModels(publishAgents, modelRecords, publishScopes)
+      state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
+      state.cachedScopes = { global: new Set(publishScopes.global), defaults: new Set(publishScopes.defaults) }
       const fingerprint = JSON.stringify({
         items: view.items.filter((item) => item.kind !== "perm"),
         agents: view.agents,
@@ -2564,13 +2572,6 @@ function publishFresh(
       // rules with a presence check, session tools by agent), so the briefly
       // doubled callback ends with the new value.
       const applied = yield* Effect.promise(() => {
-        // Team-provided agents are not host upstream on the first publish
-        // after enable or restart: discovered.agents lacks team-only ids, so
-        // apply would never see their record-derived rules. Include the
-        // resolved team winners alongside the host agents; dedupe keeps the
-        // host effective entry first, and pushRule upserts team-only ids so
-        // the deny survives the team install that follows.
-        const publishAgents = dedupeAgents([...discovered.agents, ...view.teamAgents])
         return apply(ctx, {
           items: discovered.items,
           // First entry per id wins downstream: discover returns the effective
@@ -2585,7 +2586,7 @@ function publishFresh(
           })),
           records: customizations,
           splits,
-          scopes: scopesOf([...discovered.agents, ...view.teamAgents]),
+          scopes: publishScopes,
           models: modelRecords,
         })
       })
