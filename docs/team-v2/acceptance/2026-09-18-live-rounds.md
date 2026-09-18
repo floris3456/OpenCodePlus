@@ -849,3 +849,23 @@ audit.log seq 37 tool.call team_followup ok:true 365ms   (opus-orchestrator)
 
 The default-delivery followup therefore really wakes an idle child end to end,
 not only in the unit test.
+
+## Final state
+
+Checks at the final head `4d10729e641d077fd483e18e1ae69a793aa09ee5`, all from
+`packages/plus`, all exit 0:
+
+```
+teams-tools        bun test test/teams/tools.test.ts         10 pass
+teams-checks       bun test test/teams/checks.test.ts         9 pass
+teams-audit        bun test test/teams/audit.test.ts          5 pass
+teams-api          bun test test/teams/api.test.ts           22 pass
+teams-permissions  bun test test/teams/permissions.test.ts    9 pass
+teams-followup     bun test test/teams/api-followup.test.ts  14 pass
+teams-query-off    bun test test/team-query-off.test.ts       2 pass
+teams-apply        bun test test/apply.test.ts               44 pass
+typecheck          bun run typecheck                          clean
+```
+
+Gate server stopped, port 40931 free, no pilotty sessions, no orphaned check
+processes. Nothing pushed; nothing merged into `ocp-main`.
