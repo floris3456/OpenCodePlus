@@ -448,3 +448,112 @@ not a timeout. A second `team_wait` on all three then returned all three
 
 grep pattern: `grep '"run":"main-1c86385464966e9b"' audit.log` for the three
 delegates and both waits. State archived as `teams-R5`.
+
+## R6 — coexistence with Instructions — driven live with pilotty
+
+TUI attached to the same gate server from source:
+`bun --preload packages/plus/bin/restore-cwd.ts --cwd packages/cli packages/cli/src/index.ts --server http://127.0.0.1:40931 <PROJ>`
+(`$GATE/start-tui.sh`), driven through pilotty session `r6tui` at 160x48.
+Substrate child for the catalog checks: parent `ses_f4b68b547ffeqjJnqJMI00hrLI`
+(run `main-9a8fd7e5b690cc68`), child `ses_f4b6887ccffezewJI6LTQphEoT`
+(run `w-fa0b09d52803d92a`, head e578aa3d, finish done).
+
+1. **The nine roles show under the built-in team.** `Ctrl+P` → `instruct` →
+Instructions opens the three-tier tree. Defaults > Teams shows
+`opencodeplus-team [on]`, `review [off]`, `starter [off]`; expanding the team
+lists exactly the nine roles:
+
+```
+- opencodeplus-team [on]
+    + astra-planner      + astra-reviewer     + fable-planner
+    + gemini-implementer + muse-implementer   + opus-orchestrator
+    + scout              + sol-orchestrator   + spark-implementer
+```
+
+Their descriptions are live on the product's agent surface
+(`GET /api/agent?directory=<project>`), e.g.
+`muse-implementer: Muse implementer: executes the brief inside scope and finishes`,
+`opus-orchestrator: Opus orchestrator: owns work, delegates by task, verifies and integrates`
+(all nine captured, all non-empty). **UI gap recorded:** selecting a team
+member (or the agent node) in the Instructions tree shows `No item details` in
+the detail pane — the roster is there, the description is not surfaced in that
+pane. Not a blocker; noted for the Runs/Instructions TUI work in step 7.
+
+2. **Toggle the team off and on — works live.** With the cursor on
+`opencodeplus-team`, `space` flipped the row to `[off]`, and the live agent
+list went from **9 of 9** team roles to **0 of 9** within seconds, with no
+restart. `space` again restored `[on]` and **9 of 9** came back.
+
+3. **instructions_list still works from an agent session.** A `build` session
+(`ses_f4b610389ffe6EhmAhp4zU5Lb6`) called the instructions list tool and got
+`{"count":40,"firstFive":["root:project","group:project:agents","group:project:teams","root:global","group:global:agents"]}`.
+
+4. **Turning a team tool row OFF did NOT reach the role's session — bug.**
+Defaults > Agents > muse-implementer > Tools > OpenCodePlus > Code Mode > team >
+`diff`, `space` → the row shows `[off]` and the store gains exactly:
+
+```json
+{"type":"customization","level":"defaults","agent":"muse-implementer","item":"tool:team_diff",
+ "section":null,"state":"off","basedOn":"68e47647…","updated":"2026-09-18T13:00:08.181Z"}
+```
+
+but the child's live catalog was unchanged — `Object.keys(tools.team)` still
+returned `["check","diff","exa_code_search","get_context","status"]` on two
+probes, and `GET /api/agent/muse-implementer` showed no deny rule mentioning
+`diff` (32 rules, the same 32 as before), **before and after a full server
+restart**. The fifteen ceiling denies that come from the built-in team member
+fields are present, so team agents do receive field-derived rules; only the
+record-derived customization is missing. Fix delegated to muse-implementer run
+`w-3a500ac7f889f8e7`; R6's toggle step is re-run on the fixed build.
+
+Also recorded from this round's tree: the OpenCodePlus tool rows for
+`muse-implementer` show every DIRECT team tool as `[on]` (delegate, followup,
+integrate, plan_handoff, resume, review, set_checks, shutdown_request, stop,
+supersede) even though the role ceiling denies all of them and they are absent
+from that role's real catalog (R4). The row state reflects registration, not
+the effective per-agent permission — a second UI-truth gap for step 7.
+
+## R7 — restart mid-child-run — PASSED
+
+Fixture added first: `src/slow.ts` + `test/slow.test.ts` whose test sleeps 25 s
+(commit `c479c61f59870b108b80ae641510ec95cf727498`).
+
+```
+parent ses_f4b5ff122ffegHP34N3sDCwFFw  run main-1768ed76e7dfc655
+child  ses_f4b5fcfedffeBf7DWOos9qRjyw  run w-e181f444c489f631
+child worktree <teams>/worktrees/greeter/implementer/t1e181-20260918-1506
+```
+
+The server was killed (`pkill` on the serve command line) while the child was
+genuinely working: `pgrep -f slow.test.ts` showed the check process running, no
+receipt had been written yet, and both runs were `working` / `starting` with
+attempt `streaming`. The spawned check process outlived the server (orphaned).
+
+After restarting from the recipe above:
+
+- **Run records intact.** Both `run.json` files reload with the same ids,
+  session ids, states (`working`, `starting`), attempt states and scope paths.
+- **Worktree intact.** `t1e181-20260918-1506` still at `c479c61`, with the
+  child's uncommitted work preserved: `git status --porcelain` = ` M src/slow.ts`
+  and the file already contains `return n * 2`.
+- **team_status still reports the child.** From the parent, after the restart:
+
+```json
+[{"run":"main-1768ed76e7dfc655","role":"opus-orchestrator","state":"working","attempt":1,"attemptState":"streaming","children":["w-e181f444c489f631"],…},
+ {"run":"w-e181f444c489f631","role":"muse-implementer","state":"starting","attempt":1,"attemptState":"streaming","task":"T1","taskState":"open","dirty":true,
+  "branch":"team/implementer/t1e181-20260918-1506","checks":[{"id":"slow","passed":null,"atHead":false}],"report":null,"parent":"main-1768ed76e7dfc655",
+  "budget":{"turnsUsed":1,"turns":25,"tokens":400000,"exhausted":false}}]
+```
+
+- **The parent can team_wait again.** `{"settled":[],"timedOut":true,"stillOpen":["w-e181f444c489f631"],"overBudget":[]}`.
+
+Record/worktree integrity is the pass/fail here and it passes. The child
+session state after restart, as **input to the lifecycle task, not pass/fail**:
+the child session exists, carries no `outcome`, is not in
+`/api/session/active`, and was **not resumed** — its turn simply ended with the
+process. Nothing marks the run dead or stale: it stays `starting/streaming`
+forever and only `team_wait`'s `timedOut` + `stillOpen` hints at it. The
+orphaned check process also survived the restart, so a restart can leave a
+check running with no owner and no receipt. Step 6 needs: attempt-level
+recovery on startup (resume or fail the attempt), a dead/stale marker driven by
+the sweeper, and check-process reaping.
