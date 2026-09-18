@@ -17,6 +17,7 @@ import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import type { PlusState } from "../index.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale } from "./checks.js"
+import { followupHandler } from "./api-followup.js"
 import { git, gitRaw } from "./git.js"
 import { peek } from "./inbox.js"
 import { kindOf } from "./policy.js"
@@ -164,7 +165,7 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
   return {
     delegate: (input, caller) => guarded(() => delegateHandler(ctx, input, caller)),
     finish: (input, caller) => guarded(() => finishHandler(input, caller)),
-    followup: async () => notImplemented("followup"),
+    followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller)),
     review: async () => notImplemented("review"),
     integrate: async () => notImplemented("integrate"),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller)),
