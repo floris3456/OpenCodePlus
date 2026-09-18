@@ -96,9 +96,16 @@ function required<T>(result: { ok: true; value: T } | { ok: false; error: unknow
   return result.value
 }
 
-function rejected(result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }): {
+function rejected(result: {
+  ok: true
+  value: unknown
+} | {
+  ok: false
+  error: { code: string; message: string; accepted?: unknown }
+}): {
   code: string
   message: string
+  accepted?: unknown
 } {
   if (result.ok) throw new Error(`expected failure, got ${JSON.stringify(result.value)}`)
   return result.error
@@ -113,6 +120,7 @@ function parentChild(parentID: string, childID: string, childOverrides?: Partial
     state: "working",
     attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
     sessionID: "ses_parent_001",
+    children: [childID],
   })
   const child = baseRun({
     id: childID,
@@ -199,7 +207,7 @@ test("reviewer child fails E_REVIEWER with the exact message", async () => {
   })
 })
 
-test("non-child run is refused with E_NOT_VISIBLE", async () => {
+test("non-child run is refused with E_NOT_CHILD", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({
       id: "main-0123456789abcdef",
@@ -207,6 +215,7 @@ test("non-child run is refused with E_NOT_VISIBLE", async () => {
       kind: "main",
       state: "working",
       sessionID: "ses_parent_002",
+      children: ["w-knownchild1", "w-knownchild2"],
     })
     const stranger = baseRun({
       id: "w-dddddddddddddddd",
@@ -218,9 +227,67 @@ test("non-child run is refused with E_NOT_VISIBLE", async () => {
     await saveRun(root, parent)
     await saveRun(root, stranger)
     const api = createTeamApi(context({ session: recordSession().domain }), createState())
-    const error = rejected(await api.followup(followupInput({ run: stranger.id, requestID: "nc-1" }), callerFor(parent)))
-    expect(error.code).toBe("E_NOT_VISIBLE")
-    expect(error.message).toBe(`Run ${stranger.id} is not in this namespace.`)
+    const result = await api.followup(followupInput({ run: stranger.id, requestID: "nc-1" }), callerFor(parent))
+    const error = rejected(result)
+    expect(error.code).toBe("E_NOT_CHILD")
+    expect(error.message).toBe(
+      `Run ${stranger.id} is not your direct child. Your children: [w-knownchild1, w-knownchild2]. Use status to read others.`,
+    )
+    expect(error.accepted).toEqual(["w-knownchild1", "w-knownchild2"])
+  })
+})
+
+test("unknown run id is refused with E_NOT_CHILD and empty children list", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      role: "opus-orchestrator",
+      kind: "main",
+      state: "working",
+      sessionID: "ses_parent_002",
+      children: [],
+    })
+    await saveRun(root, parent)
+    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const result = await api.followup(followupInput({ run: "w-0000000000000000", requestID: "unk-1" }), callerFor(parent))
+    const error = rejected(result)
+    expect(error.code).toBe("E_NOT_CHILD")
+    expect(error.message).toBe(
+      "Run w-0000000000000000 is not your direct child. Your children: []. Use status to read others.",
+    )
+    expect(error.accepted).toEqual([])
+  })
+})
+
+test("terminal superseded child fails E_TERMINAL with the exact message", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", {
+      state: "superseded",
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const result = await api.followup(followupInput({ run: child.id, requestID: "term-1" }), callerFor(parent))
+    const error = rejected(result)
+    expect(error.code).toBe("E_TERMINAL")
+    expect(error.message).toBe(`Run ${child.id} is superseded/reaped; delegate a fresh run.`)
+    expect(error.accepted).toBe("delegate a fresh run")
+  })
+})
+
+test("terminal reaped child fails E_TERMINAL with the exact message", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", {
+      state: "reaped",
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const result = await api.followup(followupInput({ run: child.id, requestID: "term-reap-1" }), callerFor(parent))
+    const error = rejected(result)
+    expect(error.code).toBe("E_TERMINAL")
+    expect(error.message).toBe(`Run ${child.id} is superseded/reaped; delegate a fresh run.`)
+    expect(error.accepted).toBe("delegate a fresh run")
   })
 })
 

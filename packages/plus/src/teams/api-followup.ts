@@ -14,6 +14,7 @@ import {
   saveRun,
   startAttempt,
   transition,
+  type RunRecord,
 } from "./run.js"
 import { FollowupBudget, RunID } from "./schema.js"
 import { atomicJson, readJson, sanitizeLockKey } from "./store.js"
@@ -63,12 +64,18 @@ export async function followupHandler(ctx: Context, input: unknown, caller: Team
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const child = await loadRun(root, args.run)
-  if (child === undefined)
-    return fail("E_UNKNOWN_RUN", `Run ${args.run} not found in this namespace.`, "a run id from list{}")
-  if (child.parent !== parent.id)
-    return fail("E_NOT_VISIBLE", `Run ${args.run} is not in this namespace.`, "a run id from list{}")
+  if (child === undefined || child.parent !== parent.id)
+    return fail(
+      "E_NOT_CHILD",
+      `Run ${args.run} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
+      parent.children,
+    )
   if (isTerminal(child.state))
-    return fail("E_NOT_VISIBLE", `Run ${args.run} is terminal (${child.state}).`, "a run id from list{}")
+    return fail(
+      "E_TERMINAL",
+      `Run ${args.run} is superseded/reaped; delegate a fresh run.`,
+      "delegate a fresh run",
+    )
 
   const childKind = kindOf(child.role)
   if (childKind.ok && childKind.kind === "reviewer")
@@ -92,25 +99,35 @@ export async function followupHandler(ctx: Context, input: unknown, caller: Team
   }
 
   const delivery = args.delivery ?? "queue"
-  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent.id, child.id, args.prompt, args.budget)
-  return followupQueue(root, requestPath, signature, parent.id, child.id, args.prompt, args.budget)
+  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget)
+  return followupQueue(root, requestPath, signature, parent, child.id, args.prompt, args.budget)
 }
 
 async function followupQueue(
   root: string,
   requestPath: string,
   signature: string,
-  parentID: string,
+  parent: RunRecord,
   childID: string,
   text: string,
   budget: { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined } | undefined,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
-  if (current === undefined)
-    return fail("E_UNKNOWN_RUN", `Run ${childID} not found in this namespace.`, "a run id from list{}")
+  if (current === undefined || current.parent !== parent.id)
+    return fail(
+      "E_NOT_CHILD",
+      `Run ${childID} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
+      parent.children,
+    )
+  if (isTerminal(current.state))
+    return fail(
+      "E_TERMINAL",
+      `Run ${childID} is superseded/reaped; delegate a fresh run.`,
+      "delegate a fresh run",
+    )
   const record = budget === undefined ? current : { ...current, budget: { ...budget } }
   if (budget !== undefined) await saveRun(root, record)
-  await put(root, childID, { kind: "followup", from: parentID, text })
+  await put(root, childID, { kind: "followup", from: parent.id, text })
   const last = record.attempts[record.attempts.length - 1]
   const output = { attempt: (last?.n ?? 0) + 1, state: "queued" }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -122,14 +139,24 @@ async function followupNow(
   root: string,
   requestPath: string,
   signature: string,
-  parentID: string,
+  parent: RunRecord,
   childID: string,
   text: string,
   budget: { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined } | undefined,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
-  if (current === undefined)
-    return fail("E_UNKNOWN_RUN", `Run ${childID} not found in this namespace.`, "a run id from list{}")
+  if (current === undefined || current.parent !== parent.id)
+    return fail(
+      "E_NOT_CHILD",
+      `Run ${childID} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
+      parent.children,
+    )
+  if (isTerminal(current.state))
+    return fail(
+      "E_TERMINAL",
+      `Run ${childID} is superseded/reaped; delegate a fresh run.`,
+      "delegate a fresh run",
+    )
   const last = current.attempts[current.attempts.length - 1]
   if (current.state !== "idle")
     return fail(
@@ -137,7 +164,6 @@ async function followupNow(
       `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default) or wait first.`,
       { delivery: "queue" },
     )
-  void parentID
   let record = current
   const open = record.attempts[record.attempts.length - 1]
   if (open === undefined || isAttemptTerminal(open.state)) record = startAttempt(record, { trigger: "followup", prompt: text })
