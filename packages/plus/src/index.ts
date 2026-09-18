@@ -23,13 +23,14 @@ import { apply, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
+import { reconcile } from "./teams/lifecycle.js"
 import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
-import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
+import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
 import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -2458,6 +2459,10 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
       Effect.catchCause((cause) => Effect.logWarning("plus team tooling install failed", { cause }).pipe(Effect.as([] as Registration[]))),
     )
     state.teamTooling = [...state.teamTooling, ...installed]
+    yield* Effect.promise(() => reconcile(ctx, teamsDataDir())).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("plus team reconcile failed", { cause }).pipe(Effect.as([] as string[]))),
+      Effect.asVoid,
+    )
   })
 }
 

@@ -770,3 +770,89 @@ test("finish done with a spaced path names the full path in E_DIRTY", async () =
     }
   })
 }, 30000)
+
+function finishedChild(id: string, repo: { dir: string; head: string }): RunRecord {
+  const now = new Date().toISOString()
+  return baseRun({
+    id,
+    role: "muse-implementer",
+    directory: repo.dir,
+    paths: ["docs/*"],
+    base: repo.head,
+    head: repo.head,
+    state: "idle",
+    attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+    parent: "main-0123456789abcdef",
+    sessionID: `ses_finished_${id.slice(2, 6)}`,
+  })
+}
+
+function workingChild(id: string, repo: { dir: string; head: string }): RunRecord {
+  const now = new Date().toISOString()
+  return baseRun({
+    id,
+    role: "muse-implementer",
+    directory: repo.dir,
+    paths: ["docs/*"],
+    base: repo.head,
+    head: repo.head,
+    state: "working",
+    attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    parent: "main-0123456789abcdef",
+    sessionID: `ses_working_${id.slice(2, 6)}`,
+  })
+}
+
+test("delegate succeeds after four finished children free their slots", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_bounds_free",
+      })
+      await saveRun(root, parent)
+      const ids = ["w-aaaaaaaaaaaaaaaa", "w-bbbbbbbbbbbbbbbb", "w-cccccccccccccccc", "w-dddddddddddddddd"]
+      for (const id of ids) await saveRun(root, finishedChild(id, repo))
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "bounds-free-1" }), callerFor(parent))) as {
+        run: string
+      }
+      expect(typeof value.run).toBe("string")
+      expect(value.run.startsWith("w-")).toBe(true)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("delegate refuses a fifth working child with E_BOUNDS", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_bounds_full",
+      })
+      await saveRun(root, parent)
+      const ids = ["w-aaaaaaaaaaaaaaaa", "w-bbbbbbbbbbbbbbbb", "w-cccccccccccccccc", "w-dddddddddddddddd"]
+      for (const id of ids) await saveRun(root, workingChild(id, repo))
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const error = rejected(await api.delegate(delegateInput({ requestID: "bounds-full-1" }), callerFor(parent)))
+      expect(error.code).toBe("E_BOUNDS")
+      expect(error.message).toBe(
+        "In-flight limit 4 reached (w-aaaaaaaaaaaaaaaa, w-bbbbbbbbbbbbbbbb, w-cccccccccccccccc, w-dddddddddddddddd). Call wait first or raise bounds.inFlight in policy.",
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
