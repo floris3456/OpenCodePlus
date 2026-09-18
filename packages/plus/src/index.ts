@@ -25,16 +25,16 @@ import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
 import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
-import { applyTeamAgent, dedupeAgents, installTeamAgents, type TeamFields } from "./instructions/teams-apply.js"
+import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
+import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
-import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamRecord } from "./instructions/teams.js"
+import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
-import { sameModelRef } from "./instructions/inventory.js"
+import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
 
@@ -2536,9 +2536,17 @@ function publishFresh(
       state.activeModels = buildActiveModels(discovered.agents, modelRecords, scopes)
       state.cachedAgents = discovered.agents.map((agent) => ({ ...agent }))
       state.cachedScopes = { global: new Set(scopes.global), defaults: new Set(scopes.defaults) }
-      const fingerprint = yield* Effect.promise(() =>
-        fingerprintPublish(discovered, stored.records, ctx.location.directory, builtins),
+      const view = yield* Effect.promise(() =>
+        stablePublishView(discovered, stored.records, ctx.location.directory, builtins),
       )
+      const fingerprint = JSON.stringify({
+        items: view.items.filter((item) => item.kind !== "perm"),
+        agents: view.agents,
+        servers: discovered.servers,
+        records: stored.records,
+        teamBodies: view.teamBodies,
+        scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
+      })
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
         if (!force) return discovered
         // Core debounces its own reload, so a just-written agent file cannot
@@ -2576,15 +2584,14 @@ function publishFresh(
       )
       // Enabled teams become real core-visible agents: resolve the enabled
       // teams (on-disk project/global plus built-in defaults) against the
-      // discovered regular sources (resolveTeams already favours an
+      // unmasked regular sources (Plus team output never feeds back as a
+      // regular to shadow its own team; resolveTeams already favours an
       // established same-level regular, so losing team copies never reach the
       // installer) and register each winner's markdown body with the host.
       // Built-in members install from the source registry with no filesystem
       // path. Team registrations install after apply's own and dispose with
       // the same superseded set when the next publish replaces them.
-      const teamAgents = yield* Effect.promise(() =>
-        resolveAllTeamAgents(ctx.location.directory, stored.records.filter(isTeamRecord), discovered.agents, builtins),
-      )
+      const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
       const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents))
@@ -2709,14 +2716,100 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
 // would unmask Plus's own scrubbed output into a dispose/reinstall loop.
 // Only user-toggled (CustomizationRecord off) or user-added (RuleRecord)
 // rules enter the fingerprint via `records`.
-async function fingerprintPublish(
+//
+// Team output needs the same unmask: discovery reads the host AFTER Plus's
+// team transforms are installed, so a team member's own description/mode/
+// permissions would otherwise report Plus output as upstream and flip the
+// fingerprint every pass. Prompt/model baselines do not cover those fields,
+// so the fingerprint narrows to exactly the Plus-applied team fields here:
+// while a defaults host entry still shows the enabled member's body plus
+// every defined field (permissions as a superset), it reports upstream
+// (absent) — its agent, role, and model rows are filtered and it never feeds
+// back as a regular to shadow its own team. Any divergence is a genuine
+// upstream edit and flows through, so the team correctly loses to it.
+interface TeamApplied {
+  readonly team: string
+  readonly level: TeamLevel
+  readonly body: string
+  readonly fields: TeamFields
+}
+
+async function enabledTeamApplied(
+  directory: string,
+  teamRecords: readonly TeamRecord[],
+  builtins: readonly BuiltinTeam[],
+): Promise<Map<string, TeamApplied>> {
+  const applied = new Map<string, TeamApplied>()
+  for (const team of builtins) {
+    if (!isTeamEnabled(teamRecords, "defaults", team.name)) continue
+    for (const member of team.members) {
+      if (applied.has(member.id)) continue
+      applied.set(member.id, { team: team.name, level: "defaults", body: agentBody(member.body), fields: member.fields ?? { permissions: [] } })
+    }
+  }
+  const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
+  for (const discovered of [...disk[0], ...disk[1]]) {
+    if (!isTeamEnabled(teamRecords, discovered.level, discovered.team)) continue
+    for (const member of discovered.agents) {
+      if (member.path === undefined) continue
+      if (applied.has(member.id)) continue
+      const text = await readTeamBody(member.path)
+      if (text === undefined) continue
+      applied.set(member.id, { team: discovered.team, level: discovered.level, body: agentBody(text), fields: parseTeamFields(text) })
+    }
+  }
+  return applied
+}
+
+function plusTeamOutputIds(discovered: Discovered, applied: ReadonlyMap<string, TeamApplied>): Set<string> {
+  const output = new Set<string>()
+  for (const [id, entry] of applied) {
+    const sources = discovered.agents.filter((agent) => agent.id === id)
+    if (sources.length > 0 && sources.some((agent) => agent.path !== undefined)) continue
+    const unbacked = sources.filter((agent) => agent.scope === "defaults" && agent.path === undefined)
+    if (unbacked.length === 0) continue
+    const host = discovered.hosts.find((agent) => String(agent.id) === id)
+    if (host === undefined) continue
+    if (!matchesTeamApplied(host, entry.body, entry.fields)) continue
+    output.add(id)
+  }
+  return output
+}
+
+function filteredPublishAgents(agents: readonly AgentSource[], outputIds: ReadonlySet<string>): AgentSource[] {
+  return agents.filter((agent) => !(outputIds.has(agent.id) && agent.scope === "defaults" && agent.path === undefined))
+}
+
+function filteredPublishItems(items: readonly Item[], outputIds: ReadonlySet<string>): Item[] {
+  return items.flatMap((item): Item[] => {
+    if (item.id === "system:role") {
+      const owner = item.agents?.[0]
+      if (owner !== undefined && outputIds.has(owner)) return []
+      return [item]
+    }
+    if (item.kind === "model" && item.agents !== undefined) {
+      const kept = item.agents.filter((id) => !outputIds.has(id))
+      if (kept.length === 0) return []
+      if (kept.length !== item.agents.length) return [{ ...item, agents: kept }]
+      return [item]
+    }
+    return [item]
+  })
+}
+
+async function stablePublishView(
   discovered: Discovered,
   records: readonly StoredRecord[],
   directory: string,
-  builtins: readonly BuiltinTeam[] = builtinTeams,
-): Promise<string> {
-  const scopes = scopesOf(discovered.agents)
-  const teamAgents = await resolveAllTeamAgents(directory, records.filter(isTeamRecord), discovered.agents, builtins)
+  builtins: readonly BuiltinTeam[],
+): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string> }> {
+  const teamRecords = records.filter(isTeamRecord)
+  const applied = await enabledTeamApplied(directory, teamRecords, builtins)
+  const outputIds = plusTeamOutputIds(discovered, applied)
+  const agents = filteredPublishAgents(discovered.agents, outputIds)
+  const items = filteredPublishItems(discovered.items, outputIds)
+  const scopes = scopesOf(agents)
+  const teamAgents = await resolveAllTeamAgents(directory, teamRecords, agents, builtins)
   const teamBodies = await Promise.all(
     teamAgents.map(async (agent) => ({
       id: agent.id,
@@ -2729,13 +2822,23 @@ async function fingerprintPublish(
             : builtinBody(builtins, agent.team, agent.id),
     })),
   )
+  return { agents, items, scopes, teamAgents, teamBodies, outputIds }
+}
+
+async function fingerprintPublish(
+  discovered: Discovered,
+  records: readonly StoredRecord[],
+  directory: string,
+  builtins: readonly BuiltinTeam[] = builtinTeams,
+): Promise<string> {
+  const view = await stablePublishView(discovered, records, directory, builtins)
   return JSON.stringify({
-    items: discovered.items.filter((item) => item.kind !== "perm"),
-    agents: discovered.agents,
+    items: view.items.filter((item) => item.kind !== "perm"),
+    agents: view.agents,
     servers: discovered.servers,
     records,
-    teamBodies,
-    scopes: { global: [...scopes.global].toSorted(), defaults: [...scopes.defaults].toSorted() },
+    teamBodies: view.teamBodies,
+    scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
   })
 }
 
