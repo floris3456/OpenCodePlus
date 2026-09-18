@@ -2563,25 +2563,32 @@ function publishFresh(
       // transform overwrites the same key (agent.system, disabled = true, skill
       // rules with a presence check, session tools by agent), so the briefly
       // doubled callback ends with the new value.
-      const applied = yield* Effect.promise(() =>
-        apply(ctx, {
+      const applied = yield* Effect.promise(() => {
+        // Team-provided agents are not host upstream on the first publish
+        // after enable or restart: discovered.agents lacks team-only ids, so
+        // apply would never see their record-derived rules. Include the
+        // resolved team winners alongside the host agents; dedupe keeps the
+        // host effective entry first, and pushRule upserts team-only ids so
+        // the deny survives the team install that follows.
+        const publishAgents = dedupeAgents([...discovered.agents, ...view.teamAgents])
+        return apply(ctx, {
           items: discovered.items,
           // First entry per id wins downstream: discover returns the effective
           // agent followed by its shadowed scope identities, and apply loops
           // iterate agents in order with last write winning — applying every
           // identity would let the shadowed copy overwrite the effective one.
           // Discovery keeps the shadows for scope resolution and the UI.
-          agents: dedupeAgents(discovered.agents).map((agent) => ({
+          agents: publishAgents.map((agent) => ({
             id: agent.id,
             level: scopeLevel(agent.scope),
             base: agent.base,
           })),
           records: customizations,
           splits,
-          scopes: scopesOf(discovered.agents),
+          scopes: scopesOf([...discovered.agents, ...view.teamAgents]),
           models: modelRecords,
-        }),
-      )
+        })
+      })
       // Enabled teams become real core-visible agents: resolve the enabled
       // teams (on-disk project/global plus built-in defaults) against the
       // unmasked regular sources (Plus team output never feeds back as a
