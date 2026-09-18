@@ -51,6 +51,8 @@ async function removeRepo(dir: string): Promise<void> {
 function recordSession() {
   const created: unknown[] = []
   const prompted: Array<{ sessionID: unknown; text: unknown }> = []
+  const switched: Array<{ sessionID: unknown; model: unknown }> = []
+  const order: string[] = []
   const waited: unknown[] = []
   let seq = 0
   // Narrow host doubles: the handlers only read child.id and pass plain
@@ -63,6 +65,12 @@ function recordSession() {
     },
     prompt: (input: { sessionID: unknown; text: unknown }) => {
       prompted.push({ sessionID: input.sessionID, text: input.text })
+      order.push("prompt")
+      return Effect.succeed(undefined as never)
+    },
+    switchModel: (input: { sessionID: unknown; model: unknown }) => {
+      switched.push({ sessionID: input.sessionID, model: input.model })
+      order.push("switchModel")
       return Effect.succeed(undefined as never)
     },
     wait: (input: unknown) => {
@@ -70,7 +78,7 @@ function recordSession() {
       return Effect.succeed(undefined)
     },
   } as unknown as SessionDomain
-  return { created, prompted, waited, domain }
+  return { created, prompted, switched, order, waited, domain }
 }
 
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
@@ -858,3 +866,68 @@ test("delegate refuses a fifth working child with E_BOUNDS", async () => {
     }
   })
 })
+
+test("delegate switches the child to the role pin before prompting", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_pin_switch",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const state = createState()
+      state.activeModels.set("muse-implementer", { providerID: "cliproxyapi", modelID: "muse-spark-1.3-contributor", variant: "high" })
+      const api = createTeamApi(context({ session: sessions.domain }), state)
+      const value = required(await api.delegate(delegateInput({ requestID: "pin-switch-1" }), callerFor(parent))) as {
+        run: string
+        session: string
+      }
+      expect(sessions.switched).toHaveLength(1)
+      expect(sessions.switched[0]?.sessionID).toBe(value.session)
+      const model = sessions.switched[0]?.model as { providerID: unknown; id: unknown; variant?: unknown }
+      expect(model.providerID).toBe("cliproxyapi")
+      expect(model.id).toBe("muse-spark-1.3-contributor")
+      expect(model.variant).toBe("high")
+      expect(sessions.order).toEqual(["switchModel", "prompt"])
+      expect(sessions.prompted).toHaveLength(1)
+      expect(sessions.prompted[0]?.sessionID).toBe(value.session)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("delegate without a role pin never switches but still prompts", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_pin_missing",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "pin-missing-1" }), callerFor(parent))) as {
+        run: string
+        session: string
+      }
+      expect(sessions.switched).toHaveLength(0)
+      expect(sessions.prompted).toHaveLength(1)
+      expect(sessions.prompted[0]?.sessionID).toBe(value.session)
+      expect(typeof value.run).toBe("string")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)

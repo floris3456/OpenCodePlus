@@ -12,6 +12,8 @@ import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
@@ -167,9 +169,8 @@ async function guarded(work: () => Promise<TeamApiResult>): Promise<TeamApiResul
 }
 
 export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
-  void state
   return {
-    delegate: (input, caller) => guarded(() => delegateHandler(ctx, input, caller)),
+    delegate: (input, caller) => guarded(() => delegateHandler(ctx, state, input, caller)),
     finish: (input, caller) => guarded(() => finishHandler(input, caller)),
     followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller)),
     review: async () => notImplemented("review"),
@@ -195,7 +196,15 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
   }
 }
 
-async function delegateHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+function toDelegateModelRef(wanted: { readonly providerID: string; readonly modelID: string; readonly variant?: string }): Model.Ref {
+  return Model.Ref.make({
+    providerID: Provider.ID.make(wanted.providerID),
+    id: Model.ID.make(wanted.modelID),
+    ...(wanted.variant === undefined ? {} : { variant: Model.VariantID.make(wanted.variant) }),
+  })
+}
+
+async function delegateHandler(ctx: Context, state: PlusState, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const decoded = Schema.decodeUnknownOption(Brief)(input)
   if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid delegate input.")
@@ -426,6 +435,11 @@ async function delegateHandler(ctx: Context, input: unknown, caller: TeamCaller)
   await writeFile(path.join(runDir, "brief.md"), rendered, "utf8")
   await atomicJson(path.join(runDir, "brief.json"), brief)
   await atomicJson(path.join(runDir, "checks.json"), [...brief.checks])
+
+  const wanted = state.activeModels.get(brief.role)
+  if (wanted !== undefined) {
+    await Effect.runPromise(sessions.switchModel({ sessionID: child.id, model: toDelegateModelRef(wanted) }).pipe(Effect.ignore))
+  }
 
   await Effect.runPromise(sessions.prompt({ sessionID: child.id, text: rendered }))
 
