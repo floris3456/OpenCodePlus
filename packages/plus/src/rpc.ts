@@ -470,6 +470,20 @@ export const CreateTeamInput = Schema.Struct({
   template: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.CreateTeamInput" })
 
+// Adding an agent to a team writes `<teamdir>/<id>.md` (project/global) or
+// the Defaults overlay `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
+// An optional `template` names a Defaults agent seeding fields and prompt;
+// unknown names fail with `agent.invalid`. Existing member ids fail with
+// `agent.exists`, invalid ids with `agent.invalid`.
+export interface TeamAddAgentInput extends Schema.Schema.Type<typeof TeamAddAgentInput> {}
+export const TeamAddAgentInput = Schema.Struct({
+  level: TeamLevel,
+  team: Schema.String,
+  id: Schema.String,
+  template: Schema.optionalKey(Schema.String),
+  prompt: Schema.String,
+}).annotate({ identifier: "Plus.TeamAddAgentInput" })
+
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
 export const ProjectDisabled = Schema.Struct({
   directory: Schema.String,
@@ -787,6 +801,9 @@ const PortableTeamRef = Schema.toStandardSchemaV1(TeamRef.annotate({ identifier:
 const PortableCreateTeamInput = Schema.toStandardSchemaV1(
   CreateTeamInput.annotate({ identifier: "Plus.CreateTeamInput" }),
 )
+const PortableTeamAddAgentInput = Schema.toStandardSchemaV1(
+  TeamAddAgentInput.annotate({ identifier: "Plus.TeamAddAgentInput" }),
+)
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -1019,6 +1036,17 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
+      },
+    },
+    "team.addAgent": {
+      input: PortableTeamAddAgentInput,
+      output: PortableAgentRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "team.unknown": PortableTeamUnknown,
+        "team.invalid": PortableTeamInvalid,
+        "agent.exists": PortableAgentExists,
+        "agent.invalid": PortableAgentInvalid,
       },
     },
     "model.add": {

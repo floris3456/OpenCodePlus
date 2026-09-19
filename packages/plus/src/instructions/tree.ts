@@ -334,6 +334,7 @@ function lazyTeam(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput):
     kind: "team",
     label: team.team,
     depth: 2,
+    add: "agent",
     actions: { ...noActions(), toggle: true },
     selfReview: () => false,
     partial: () => ({ state: team.enabled ? ("on" as const) : ("off" as const) }),

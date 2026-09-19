@@ -260,6 +260,17 @@ test("member rows are informational: no address, no actions, depth 3", () => {
   }
 })
 
+test("team rows carry add agent while member rows carry no add", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
+  })
+  expect(nodes.find((node) => node.id === "team:project:crew")?.add).toBe("agent")
+  expect(nodes.find((node) => node.id === "team:project:crew:alpha")?.add).toBeUndefined()
+})
+
 test("team member rows expand to full agent subtrees with team-prefixed groups", () => {
   const nodes = expandAll({
     items: items(),

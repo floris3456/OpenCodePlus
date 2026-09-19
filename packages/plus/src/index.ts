@@ -32,7 +32,7 @@ import { resolve, resolveActiveModel, scopesOf, type AgentSource, type Customiza
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
-import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
+import { builtinBody, defaultsOverlayTeamDir, discoverBuiltinTeams, discoverTeams, globalDefaultsTeamsPath, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
@@ -253,6 +253,18 @@ export type CreateTeamResult =
         | { code: "team.create"; message: string; data: Plus.TeamCreate }
     }
 
+export type AddTeamAgentResult =
+  | { ok: true; value: Plus.AgentRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+        | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+        | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+    }
+
 export type AddModelResult =
   | { ok: true; value: Plus.ModelRef }
   | {
@@ -327,6 +339,7 @@ export interface PlusApi {
   readonly removeMcp: (input: Plus.McpRef & { readonly actor?: Plus.Actor }) => Promise<RemoveMcpResult>
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
+  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
@@ -939,6 +952,83 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
     },
+    addTeamAgent: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validatedTeam = validateTeamName(input.team)
+      if (!validatedTeam.ok)
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: validatedTeam.reason, data: { team: input.team, reason: validatedTeam.reason } },
+        }
+      const validated = validateAgentId(input.id)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+        }
+      const known = await discoverTeams(input.level, directory, builtins)
+      const found = known.find((team) => team.team === validatedTeam.team)
+      if (found === undefined)
+        return {
+          ok: false as const,
+          error: { code: "team.unknown" as const, message: `Unknown team ${validatedTeam.team}`, data: { level: input.level, team: validatedTeam.team } },
+        }
+      const teamDir =
+        input.level === "project"
+          ? path.join(projectTeamsPath(directory), validatedTeam.team)
+          : input.level === "global"
+            ? path.join(globalTeamsPath(), validatedTeam.team)
+            : defaultsOverlayTeamDir(validatedTeam.team)
+      const target = teamMemberPath(teamDir, validated.id)
+      if (target === undefined)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: `Invalid agent id "${input.id}"`, data: { id: input.id, reason: `Invalid agent id "${input.id}"` } },
+        }
+      const existing = found.agents.find((agent) => agent.id === validated.id)
+      if (existing !== undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.exists" as const,
+            message: `Agent ${validated.id} already exists at ${existing.path ?? target}`,
+            data: { path: existing.path ?? target },
+          },
+        }
+      if (await Bun.file(target).exists())
+        return {
+          ok: false as const,
+          error: { code: "agent.exists" as const, message: `Agent ${validated.id} already exists at ${target}`, data: { path: target } },
+        }
+      const templateName = input.template === undefined || input.template === "" ? undefined : input.template
+      const seed = templateName === undefined ? undefined : await readTemplate(ctx, directory, templateName)
+      if (templateName !== undefined && seed === undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.invalid" as const,
+            message: `Unknown template ${templateName}`,
+            data: { id: input.id, reason: `Unknown template ${templateName}` },
+          },
+        }
+      const content = formatMarkdown(seed?.fields, seed?.prompt ?? input.prompt)
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      await fs.writeFile(target, content)
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: input.level === "project" ? "project" : "global",
+        op: "team.addAgent",
+        target,
+        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})`,
+      })
+      return { ok: true as const, value: { id: validated.id, path: target } }
+    },
     catalogModels: async () => {
       const directory = ctx.location.directory
       const config = await read(directory)
@@ -1519,6 +1609,22 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
           if (result.error.code === "team.invalid")
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "team.addAgent": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.addTeamAgent(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "team.unknown")
+            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "team.invalid")
+            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+          if (result.error.code === "agent.exists")
+            return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
       }),
@@ -2799,6 +2905,18 @@ async function enabledTeamApplied(
       applied.set(member.id, { team: team.name, level: "defaults", body: agentBody(member.body), fields: member.fields ?? { permissions: [] } })
     }
   }
+  const builtinDiscovered = discoverBuiltinTeams(builtins)
+  for (const team of builtinDiscovered) {
+    if (!isTeamEnabled(teamRecords, "defaults", team.team)) continue
+    for (const member of team.agents) {
+      if (member.path === undefined) continue
+      const text = await readTeamBody(member.path)
+      if (text === undefined) continue
+      const existing = applied.get(member.id)
+      if (existing !== undefined && existing.team !== team.team) continue
+      applied.set(member.id, { team: team.team, level: "defaults", body: agentBody(text), fields: parseTeamFields(text) })
+    }
+  }
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
   for (const discovered of [...disk[0], ...disk[1]]) {
     if (!isTeamEnabled(teamRecords, discovered.level, discovered.team)) continue
@@ -3271,4 +3389,13 @@ function toSeedFields(fields: TeamFields | undefined): AgentFields | undefined {
     ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
     permissions: [...fields.permissions],
   }
+}
+
+// Confined member path inside a team directory: validated ids can never
+// escape, so unvalidated input fails closed with undefined.
+function teamMemberPath(teamDir: string, id: string): string | undefined {
+  const base = path.resolve(teamDir)
+  const resolved = path.resolve(base, `${id}.md`)
+  if (resolved === base || !resolved.startsWith(`${base}${path.sep}`)) return undefined
+  return resolved
 }
