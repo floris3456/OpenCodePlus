@@ -388,6 +388,71 @@ test("ancestor scan skips symlinked agent directory and symlinked opencode direc
   ])
 })
 
+test("ancestor scan skips symlinked agent directory pointing inside ancestor", async () => {
+  const root = await tempDir("plus-discover-confinement-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+
+  const ancestor = path.join(root, "ancestor")
+  const unrelated = path.join(ancestor, "unrelated")
+  await fs.mkdir(unrelated, { recursive: true })
+  await Bun.write(path.join(unrelated, "demo.md"), "# demo\n")
+
+  const ancOpencode = path.join(ancestor, ".opencode")
+  await fs.mkdir(ancOpencode, { recursive: true })
+  await fs.symlink(unrelated, path.join(ancOpencode, "agent"))
+  const siblingDir = path.join(ancOpencode, "agents")
+  await fs.mkdir(siblingDir, { recursive: true })
+  const siblingPath = path.join(siblingDir, "legitimate.md")
+  await Bun.write(siblingPath, "# legitimate\n")
+
+  const directory = path.join(ancestor, "project")
+  await fs.mkdir(directory, { recursive: true })
+
+  const agents = [agent("demo", "custom"), agent("legitimate", "custom")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+
+  const projectAgents = discovered.agents.filter((a) => a.scope === "project")
+  expect(projectAgents.find((a) => a.id === "demo")).toBeUndefined()
+  expect(projectAgents).toEqual([
+    { id: "legitimate", scope: "project", path: siblingPath, origin: "user", ancestor: true },
+  ])
+})
+
+test("ancestor scan skips symlinked opencode directory pointing inside ancestor", async () => {
+  const root = await tempDir("plus-discover-confinement-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+
+  const ancestor = path.join(root, "ancestor")
+  const other = path.join(ancestor, "other")
+  await fs.mkdir(path.join(other, "agent"), { recursive: true })
+  await Bun.write(path.join(other, "agent", "symlinked-opencode.md"), "# symlinked opencode\n")
+
+  const ancOpencode = path.join(ancestor, ".opencode")
+  await fs.symlink(other, ancOpencode)
+
+  const directory = path.join(ancestor, "project")
+  await fs.mkdir(directory, { recursive: true })
+
+  const agents = [agent("symlinked-opencode", "custom")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+
+  const projectAgents = discovered.agents.filter((a) => a.scope === "project")
+  expect(projectAgents.find((a) => a.id === "symlinked-opencode")).toBeUndefined()
+  expect(projectAgents).toEqual([])
+})
+
 test("tools group by origin without inferring the server from the namespace", async () => {
   const directory = await tempDir("plus-discover-")
   const server = "my.server:name"

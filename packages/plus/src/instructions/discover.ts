@@ -330,9 +330,9 @@ async function scanProjectAgentFiles(directory: string): Promise<{ files: Map<st
         realOpencode !== undefined &&
         realOpencode !== realGlobalDir &&
         !contains(realGlobalDir, realOpencode) &&
-        contains(realCurrent, realOpencode)
+        realOpencode === path.join(realCurrent, ".opencode")
       ) {
-        const found = await scanAgentFiles(opencodeDir, realCurrent, realGlobalDir)
+        const found = await scanAgentFiles(opencodeDir, realOpencode, realGlobalDir)
         const isAncestor = current !== path.resolve(directory)
         for (const [id, file] of found) {
           if (!files.has(id)) {
@@ -429,17 +429,17 @@ function sourceFor(
 
 async function scanAgentFiles(
   root: string,
-  ancestorDir?: string,
+  realOpencodeDir?: string,
   realGlobalDir?: string,
 ): Promise<Map<string, string>> {
   const found = new Map<string, string>()
   for (const name of ["agent", "agents"]) {
     const directory = path.join(root, name)
-    if (ancestorDir !== undefined) {
+    if (realOpencodeDir !== undefined) {
       const realDir = await fs.realpath(directory).catch(() => undefined)
       if (realDir === undefined) continue
       if (realGlobalDir !== undefined && (realDir === realGlobalDir || contains(realGlobalDir, realDir))) continue
-      if (!contains(ancestorDir, realDir)) continue
+      if (realDir !== path.join(realOpencodeDir, name)) continue
     }
     const entries = await scanMarkdown(directory)
     for (const file of entries) {
