@@ -484,6 +484,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
 | `team.create` | `{ level, team, template? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
+| `team.addAgent` | `{ level, team, id, template?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
@@ -649,7 +650,11 @@ global team is one directory `<root>/<team>/`; agent files are
 `sub/agent`). Defaults teams are shipped source data
 (`builtin-teams.ts` exports the registry: name plus member agents with id
 and markdown body, kept separate from the logic so what is shipped is
-obvious); they have no filesystem path and are never written.
+obvious) plus an editable on-disk overlay
+(`teams.ts` `globalDefaultsTeamsPath()` →
+`<globalConfigDir()>/opencodeplus/teams-defaults`, one directory
+`<root>/<team>/` with `<team>/<agentId>.md` member files in the same
+format); they have no team-level filesystem path, only member overlay files.
 
 Validation (`validateTeamName`, same confinement style as
 `validateAgentId`/`resolveInstructionPath`): rejects empty names, NUL,
@@ -660,10 +665,12 @@ Discovery: project and global tiers list one entry per immediate
 subdirectory, sorted by name; a team directory with no agent files is still
 a team; a missing teams directory means no teams, not an error. Only `*.md`
 files are members (other files are ignored), listed as `{ id, path }`
-sorted by id. The defaults tier never touches the filesystem: it comes only
-from the built-in registry, listed as `{ id, body }` with no `path`, sorted
-by team name and member id. The registry is injectable so behaviour tests
-supply fixtures instead of coupling to the shipped roster.
+sorted by id. The defaults tier merges the built-in registry with the
+overlay: a member file with the same id REPLACES the built-in member, a new
+id is APPENDED, still `level: "defaults"` with `body` read from the file and
+`path` set so the installer reads it, sorted by team name and member id.
+The registry is injectable so behaviour tests supply fixtures instead of
+coupling to the shipped roster.
 
 Membership: `isTeamEnabled` returns the matching record's `enabled`, and a
 team with no record at all is DISABLED. `resolveTeams` reports each team's
@@ -731,12 +738,27 @@ RPC surface (`rpc.ts`, `index.ts`):
   customization and split records undisturbed; toggling to an unchanged state
   stays a no-op without moving revisions. Retries once on concurrent conflict
   before raising `team.unknown`.
+- `team.addAgent` (`TeamAddAgentInput` → `AgentRef`): adds one agent to a team
+  at any tier. Project/global writes `<teamdir>/<id>.md`; defaults writes the
+  overlay `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
+  Reuses `validateAgentId`, `readTemplate`, and `formatMarkdown` (never the
+  regular-agent `create()`); an optional `template` names a Defaults agent
+  seeding fields and prompt, unknown names fail with `agent.invalid`. Refuses
+  an existing member id with `agent.exists` (path in data) and invalid ids
+  with `agent.invalid`. After the write calls `refreshAfterFileChange(...,
+  true)` exactly as `createAgent` does, so an enabled team's new member
+  installs without a restart. The team row carries `add: "agent"` (member rows
+  carry none); `a` on `team:<level>:<team>` opens only the Agent template →
+  id → prompt flow with the team's level as scope, never the generic picker.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
 with `[a: add team]` (the Defaults group lists real built-in rows with
 working toggles and informational member rows; `add` there still creates at
-project or global scope, never defaults), and TUI wiring (`state.ts`
+project or global scope, never defaults). Each team row carries
+`add: "agent"` (member rows carry none), so `a` on a team row adds an agent
+to that team through `team.addAgent` with the Defaults overlay for
+`level: "defaults"`, and TUI wiring (`state.ts`
 `space` → real `team.setEnabled` + snapshot refresh, `a` → real
 `team.create` + snapshot refresh; `tree-pane.tsx` on/off badge). A created
 team starts disabled. Built-in teams cannot be created or deleted. Store

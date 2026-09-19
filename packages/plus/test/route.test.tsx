@@ -2254,3 +2254,70 @@ test("gives up waiting for a missing agent and toasts once", async () => {
     fixture.destroy()
   }
 })
+
+test("a on a team row adds through the real team.addAgent without the generic picker", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-add-agent-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwing))
+  const teamAdds: { level: string; team: string; id: string; template?: string; prompt: string }[] = []
+  const wrappedTeamAddAgent = async (input: { level: "project"; team: string; id: string; template?: string; prompt: string }) => {
+    teamAdds.push({ ...input })
+    return Effect.runPromise(handlers["team.addAgent"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: [] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: [""], prompts: ["newbie", "newbie role"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.addAgent": wrappedTeamAddAgent,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamAdds.length === 1)
+    expect(teamAdds[0]).toMatchObject({ level: "project", team: "crew", id: "newbie", prompt: "newbie role" })
+    expect("template" in (teamAdds[0] as Record<string, unknown>)).toBe(false)
+    await fixture.waitForFrame(() =>
+      (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents ?? []).includes("newbie"),
+    )
+    expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")).toEqual({
+      level: "project",
+      team: "crew",
+      enabled: false,
+      agents: ["newbie"],
+    })
+    await expand(fixture)
+    await moveTo(fixture, "newbie")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("newbie")
+    const titles = fixture.fake.dialogSelects.map(([title]) => title)
+    expect(titles).toContain("Agent template")
+    expect(titles.some((title) => title === "Add")).toBe(false)
+  } finally {
+    fixture.destroy()
+  }
+})

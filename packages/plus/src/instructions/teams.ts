@@ -1,18 +1,19 @@
 import fs from "node:fs/promises"
+import fsSync from "node:fs"
 import path from "node:path"
 import { idFromPath } from "../agents/files.js"
 import type { AgentSource } from "./model.js"
 import { builtinTeams, type BuiltinTeam } from "./builtin-teams.js"
-import { globalTeamsPath, projectTeamsPath } from "./paths.js"
+import { globalConfigDir, globalTeamsPath, projectTeamsPath } from "./paths.js"
+import { agentBody } from "./discover.js"
 
-// Teams are named sets of agents toggled as a unit. Project teams live under
-// <projectDir>/.opencodeplus/teams/<team>/, global teams under
-// <globalConfigDir()>/opencodeplus/teams/<team/>; agent files are
-// <team>/<agentId>.md in the same frontmatter+body format files.ts writes.
-// Defaults teams are shipped source data from `builtin-teams.ts`: no
-// filesystem path, never written, never created or deleted. Their enablement
-// is a `TeamRecord` at level `defaults` routed to the global store, and their
-// members resolve below project and global in the precedence chain.
+// Defaults teams are shipped source data from `builtin-teams.ts`, editable
+// through an on-disk overlay: `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
+// `discoverBuiltinTeams` merges the overlay (same id REPLACES, new id is
+// APPENDED, still `level: "defaults"` with `body` from the file and `path`
+// set). Their enablement is a `TeamRecord` at level `defaults` routed to the
+// global store, and their members resolve below project and global in the
+// precedence chain.
 export type TeamLevel = "project" | "global" | "defaults"
 
 // The `type` discriminator is not in the brief's shorthand; the store's v2
@@ -76,10 +77,20 @@ export function validateTeamName(raw: string): { ok: true; team: string } | { ok
   return { ok: true, team }
 }
 
+// On-disk overlay root for editable Defaults teams:
+// `<globalConfigDir>/opencodeplus/teams-defaults`. One subdirectory per team.
+export function globalDefaultsTeamsPath(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "opencodeplus", "teams-defaults")
+}
+
+export function defaultsOverlayTeamDir(team: string, configDir: string = globalConfigDir()): string {
+  return path.join(globalDefaultsTeamsPath(configDir), team)
+}
+
 // Every immediate subdirectory is a team, including one with no agent files.
 // A missing teams directory means no teams, not an error. The `defaults`
-// tier never touches the filesystem: it comes only from the built-in
-// registry. The registry is injectable so behaviour tests supply fixtures
+// tier comes from the built-in registry merged with the on-disk overlay.
+// The registry is injectable so behaviour tests supply fixtures
 // instead of coupling to the shipped roster.
 export async function discoverTeams(
   level: TeamLevel,
@@ -95,19 +106,82 @@ export async function discoverTeams(
 }
 
 // Built-ins as defaults-tier teams, sorted by name with members sorted by
-// id. No filesystem access; members carry `body` with no `path`.
+// id. Merges the on-disk overlay synchronously so the signature stays sync
+// for existing callers: a member file with the same id REPLACES the built-in
+// member, a new id is APPENDED. Overlay members stay `level: "defaults"`
+// with `body` read from the file and `path` set so the installer reads it.
 export function discoverBuiltinTeams(registry: readonly BuiltinTeam[] = builtinTeams): DiscoveredTeam[] {
-  return registry
+  const base = new Map<string, { members: Map<string, TeamAgent>; order: number }>()
+  registry.forEach((team, index) => {
+    const members = new Map<string, TeamAgent>()
+    for (const member of team.members) members.set(member.id, { id: member.id, body: member.body })
+    base.set(team.name, { members, order: index })
+  })
+  const overlayRoot = globalDefaultsTeamsPath()
+  const overlayNames = listDirectoriesSync(overlayRoot)
+  for (const name of overlayNames) {
+    const teamDir = path.join(overlayRoot, name)
+    const files = scanMarkdownSync(teamDir)
+    const entry = base.get(name) ?? { members: new Map<string, TeamAgent>(), order: Number.MAX_SAFE_INTEGER }
+    if (!base.has(name)) base.set(name, entry)
+    for (const file of files) {
+      const id = idFromPath(teamDir, file)
+      if (id.length === 0) continue
+      const text = readFileSync(file)
+      if (text === undefined) continue
+      entry.members.set(id, { id, body: agentBody(text), path: file })
+    }
+  }
+  return [...base.entries()]
     .map(
-      (team): DiscoveredTeam => ({
+      ([name]): DiscoveredTeam => ({
         level: "defaults",
-        team: team.name,
-        agents: team.members
-          .map((member): TeamAgent => ({ id: member.id, body: member.body }))
-          .toSorted(compareAgentIds),
+        team: name,
+        agents: [...base.get(name)!.members.values()].toSorted(compareAgentIds),
       }),
     )
     .toSorted((left, right) => (left.team < right.team ? -1 : left.team > right.team ? 1 : 0))
+}
+
+function listDirectoriesSync(root: string): string[] {
+  let entries: fsSync.Dirent[]
+  try {
+    entries = fsSync.readdirSync(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .toSorted()
+}
+
+function scanMarkdownSync(directory: string): string[] {
+  const entries = readDirectorySync(directory)
+  return entries.flatMap((entry) => (entry.directory ? scanMarkdownSync(entry.path) : [entry.path])).toSorted()
+}
+
+function readDirectorySync(directory: string): DirectoryEntry[] {
+  let entries: fsSync.Dirent[]
+  try {
+    entries = fsSync.readdirSync(directory, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries.flatMap((entry): DirectoryEntry[] => {
+    if (entry.isDirectory()) return [{ path: path.join(directory, entry.name), directory: true }]
+    if (entry.isFile() && entry.name.endsWith(".md"))
+      return [{ path: path.join(directory, entry.name), directory: false }]
+    return []
+  })
+}
+
+function readFileSync(file: string): string | undefined {
+  try {
+    return fsSync.readFileSync(file, "utf8")
+  } catch {
+    return undefined
+  }
 }
 
 // All three tiers merged: on-disk project and global plus built-in defaults.

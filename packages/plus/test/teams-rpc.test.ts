@@ -9,6 +9,7 @@ import { parseTeamFields } from "../src/instructions/teams-apply.js"
 import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
+import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructions/teams.js"
 import { load, type StoredRecord } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
@@ -511,4 +512,74 @@ test("team.create with a Defaults template seeds member files from the registry"
     "team.invalid",
   )
   expect(unknown.current?.data).toEqual({ team: "other", reason: "Unknown team template ghost" })
+})
+
+test("team.addAgent on a project team writes the member file and the next snapshot lists it", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+  const added = await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "newbie", prompt: "newbie role" }, throwingContext({})),
+  )
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  expect(added).toEqual({ id: "newbie", path: path.join(teamDir, "newbie.md") })
+  expectRpcBody(added)
+  expect(await Bun.file(path.join(teamDir, "newbie.md")).text()).toContain("newbie role")
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "crew")).toEqual({
+    level: "project",
+    team: "crew",
+    enabled: true,
+    agents: ["newbie"],
+  })
+  const listed = await Effect.runPromise(ctx.agent.list())
+  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe("newbie role")
+})
+
+test("team.addAgent on a fixture defaults team writes the overlay and discover lists it with path", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  const added = await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "defaults", team: "ship", id: "rookie", prompt: "rookie role" }, throwingContext({})),
+  )
+  const overlayDir = path.join(globalDefaultsTeamsPath(), "ship")
+  expect(added).toEqual({ id: "rookie", path: path.join(overlayDir, "rookie.md") })
+  expectRpcBody(added)
+  expect(await Bun.file(path.join(overlayDir, "rookie.md")).text()).toContain("rookie role")
+  const discovered = discoverBuiltinTeams(registry)
+  const ship = discovered.find((team) => team.team === "ship")
+  expect(ship?.level).toBe("defaults")
+  expect(ship?.agents.map((agent) => agent.id).toSorted()).toEqual(["mate", "rookie"])
+  expect(ship?.agents.find((agent) => agent.id === "rookie")?.path).toBe(path.join(overlayDir, "rookie.md"))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "ship")).toEqual({
+    level: "defaults",
+    team: "ship",
+    enabled: false,
+    agents: ["mate", "rookie"],
+  })
+})
+
+test("team.addAgent refuses a duplicate member id with agent.exists", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwingContext({})),
+  )
+  const duplicate: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "again" }, throwingContext(duplicate)),
+    duplicate,
+    "agent.exists",
+  )
+  expect(typeof (duplicate.current?.data as { path?: unknown } | undefined)?.path).toBe("string")
 })
