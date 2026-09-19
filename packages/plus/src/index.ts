@@ -2755,22 +2755,14 @@ function publishFresh(
       // path. Team registrations install after apply's own and dispose with
       // the same superseded set when the next publish replaces them.
       // A Plus customization of a member's role wins over the shipped body:
-      // resolve the winners at their team levels (the team subtree addresses
-      // records at the team level) and let the team install carry the edited
-      // text instead of clobbering it. Uncustomized members still receive
-      // their team body exactly as before.
+      // the shared override map (computed before output filtering from the
+      // unmasked discovery at team levels) carries the edited text instead of
+      // clobbering it. Uncustomized members still receive their team body
+      // exactly as before.
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
-      const teamRoleOverrides = new Map(
-        roleUpdates({
-          items: discovered.items,
-          agents: teamAgents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
-          records: customizations,
-          splits,
-          scopes: publishScopes,
-        }).map((entry) => [entry.agent, entry.text] as const),
-      )
+      const teamRoleOverrides = view.overrides
       const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides))
       const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins, teamRoleOverrides))
       const previous = state.applied
@@ -2779,7 +2771,7 @@ function publishFresh(
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
-      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords)
+      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords, teamAgents)
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       return discovered
@@ -2808,17 +2800,25 @@ export function captureBaselines(
   records: readonly CustomizationRecord[],
   splits: readonly SplitRecord[],
   modelRecords?: readonly ModelRecord[],
+  teamAgents?: readonly AgentSource[],
 ): void {
   void ctx
   void splits
   const next = new Map<string, PromptBaseline>()
   const scopes = scopesOf(discovered.agents)
+  const winnerScope = new Map((teamAgents ?? []).map((agent) => [agent.id, agent.scope] as const))
   for (const item of discovered.items) {
     const key = baselineKey(item)
     if (item.id === "system:role") {
       const owner = item.agents?.[0]
       if (owner === undefined) continue
-      const level = scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
+      // Team-only host agents surface at `defaults` while their role records
+      // live at the team winner's level. Resolving at the discovered scope
+      // misses project/global edits, so the next discovery mistakes the
+      // installed edit for upstream and the override silently reverts. Resolve
+      // at the winner's scope so the existing unmask path reports upstream.
+      const winner = winnerScope.get(owner)
+      const level = winner !== undefined ? scopeLevel(winner) : scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
       const resolved = resolve({ upstream: item, records, splits, scopes, address: { level, agent: owner, item: item.id, section: null } })
       if (resolved.assembled === item.text) continue
       const source = discovered.agents.find((agent) => agent.id === owner)
@@ -2950,20 +2950,35 @@ async function enabledTeamApplied(
   return applied
 }
 
-function isRoleCustomized(records: readonly StoredRecord[], id: string): boolean {
-  return records.some((record) => {
-    if (record.type !== "customization") return false
-    if (record.item !== "system:role") return false
-    if (record.text === undefined) return false
-    if (record.agent === null) return true
-    return record.agent === id
-  })
+// One override map for classification, fingerprinting, and installation:
+// resolve every enabled member at its team level (the team subtree addresses
+// records at the team level) against the unmasked discovery. The same values
+// feed plusTeamOutputIds (expected = override ?? shipped) and the team
+// installer, so the two can never disagree. Inputs are the unfiltered
+// discovery plus records, splits, and scopes, none of which depend on the
+// filtered publish view, so this runs before output filtering.
+function teamRoleOverrides(
+  discovered: Discovered,
+  applied: ReadonlyMap<string, TeamApplied>,
+  records: readonly CustomizationRecord[],
+  splits: readonly SplitRecord[],
+  scopes: Scopes,
+): Map<string, string> {
+  return new Map(
+    roleUpdates({
+      items: discovered.items,
+      agents: [...applied].map(([id, entry]) => ({ id, level: scopeLevel(entry.level) })),
+      records,
+      splits,
+      scopes,
+    }).map((entry) => [entry.agent, entry.text] as const),
+  )
 }
 
 function plusTeamOutputIds(
   discovered: Discovered,
   applied: ReadonlyMap<string, TeamApplied>,
-  records?: readonly StoredRecord[],
+  overrides: ReadonlyMap<string, string>,
 ): Set<string> {
   const output = new Set<string>()
   for (const [id, entry] of applied) {
@@ -2973,13 +2988,20 @@ function plusTeamOutputIds(
     if (unbacked.length === 0) continue
     const host = discovered.hosts.find((agent) => String(agent.id) === id)
     if (host === undefined) continue
-    // A customized member still counts as Plus output once the team install
-    // carries the edited text: compare the other team fields while letting
-    // the system check pass, so the host showing either the shipped body or
-    // the edited text keeps an identical fingerprint instead of storming, and
-    // the winner keeps beating its own shadowed defaults entry.
-    const body = records !== undefined && isRoleCustomized(records, id) ? (host.system ?? "") : entry.body
-    if (!matchesTeamApplied(host, body, entry.fields)) continue
+    // Plus output while the host still shows the shipped body (the transition
+    // publish before the new override installs) as well as once it shows the
+    // exact expected body (override ?? shipped). A state-only section
+    // exclusion shortens the role with no `text` record, so only the resolved
+    // override recognizes the shortened output; a genuine authored agent with
+    // a different body matches neither and keeps its identity.
+    if (matchesTeamApplied(host, entry.body, entry.fields)) {
+      output.add(id)
+      continue
+    }
+    const expected = overrides.get(id)
+    if (expected === undefined) continue
+    if (expected === entry.body) continue
+    if (!matchesTeamApplied(host, expected, entry.fields)) continue
     output.add(id)
   }
   return output
@@ -3011,10 +3033,13 @@ async function stablePublishView(
   records: readonly StoredRecord[],
   directory: string,
   builtins: readonly BuiltinTeam[],
-): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string> }> {
+): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string>; overrides: Map<string, string> }> {
   const teamRecords = records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
-  const outputIds = plusTeamOutputIds(discovered, applied, records)
+  const customizations = customizationsOf(records)
+  const splits = splitsOf(records)
+  const overrides = teamRoleOverrides(discovered, applied, customizations, splits, scopesOf(discovered.agents))
+  const outputIds = plusTeamOutputIds(discovered, applied, overrides)
   const agents = filteredPublishAgents(discovered.agents, outputIds)
   const items = filteredPublishItems(discovered.items, outputIds)
   const scopes = scopesOf(agents)
@@ -3031,7 +3056,7 @@ async function stablePublishView(
             : builtinBody(builtins, agent.team, agent.id),
     })),
   )
-  return { agents, items, scopes, teamAgents, teamBodies, outputIds }
+  return { agents, items, scopes, teamAgents, teamBodies, outputIds, overrides }
 }
 
 async function fingerprintPublish(
@@ -3403,7 +3428,14 @@ async function snapshotOutputIds(
 ): Promise<Set<string>> {
   const teamRecords = loaded.records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
-  return plusTeamOutputIds(discovered, applied, loaded.records)
+  const overrides = teamRoleOverrides(
+    discovered,
+    applied,
+    customizationsOf(loaded.records),
+    splitsOf(loaded.records),
+    scopesOf(discovered.agents),
+  )
+  return plusTeamOutputIds(discovered, applied, overrides)
 }
 
 async function snapshotTeams(
