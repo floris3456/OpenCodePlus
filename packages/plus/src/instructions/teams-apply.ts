@@ -22,6 +22,7 @@ import { discoverTeams, resolveTeams, type TeamRecord } from "./teams.js"
 // be read fails the pass and unwinds the members installed earlier in it.
 export interface TeamApplied {
   readonly registrations: Registration[]
+  readonly installedIds: string[]
 }
 
 export async function resolveTeamAgents(
@@ -49,6 +50,7 @@ export async function installTeamAgents(
   overrides?: ReadonlyMap<string, string>,
 ): Promise<TeamApplied> {
   const installed: Registration[] = []
+  const installedIds: string[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
     for (const agent of agents) {
@@ -59,9 +61,10 @@ export async function installTeamAgents(
       // rather than installs, so there is nothing to register for it.
       if (fields.disabled === true) continue
       installed.push(await runTeamRegistration(ctx, agent.id, agentBody(text), fields, overrides?.get(agent.id)))
+      installedIds.push(agent.id)
     }
     if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
-    return { registrations: [...installed] }
+    return { registrations: [...installed], installedIds: [...installedIds] }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
