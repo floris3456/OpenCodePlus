@@ -1199,6 +1199,85 @@ test("native and special built-ins appear under every root and cannot be removed
   }
 })
 
+test("project-level file-backed build override replaces native projection at project level while preserving others", () => {
+  const builtins: AgentSource[] = [
+    { id: "build", scope: "defaults", origin: "native" },
+    { id: "plan", scope: "defaults", origin: "native" },
+    { id: "general", scope: "defaults", origin: "special" },
+    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "compaction", scope: "defaults", origin: "special" },
+    { id: "title", scope: "defaults", origin: "special" },
+    { id: "summary", scope: "defaults", origin: "special" },
+  ]
+  const agents: AgentSource[] = [
+    ...builtins,
+    { id: "build", scope: "project", path: "/project/.opencode/agent/build.md", origin: "user" },
+  ]
+  const nodes = expandAll({ items: [], records: [], agents })
+
+  const projectBuildNodes = nodes.filter((node) => node.id === "agent:project:build")
+  expect(projectBuildNodes.length).toBe(1)
+  const projectBuild = projectBuildNodes[0]
+
+  expect(childrenOf(nodes, "group:project:agents:user").map((node) => node.id)).toContain("agent:project:build")
+  expect(projectBuild.actions?.remove).toBe(true)
+
+  const projectNativeChildren = childrenOf(nodes, "group:project:agents:native").map((node) => node.id)
+  expect(projectNativeChildren).toContain("agent:project:plan")
+  expect(projectNativeChildren).not.toContain("agent:project:build")
+
+  expect(childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)).toEqual([
+    "agent:project:general",
+    "agent:project:explore",
+    "agent:project:compaction",
+    "agent:project:title",
+    "agent:project:summary",
+  ])
+
+  expect(childrenOf(nodes, "group:global:agents:native").map((node) => node.id)).toContain("agent:global:build")
+  expect(childrenOf(nodes, "group:defaults:agents:native").map((node) => node.id)).toContain("agent:defaults:build")
+})
+
+test("project-level file-backed explore override replaces special projection at project level while preserving others", () => {
+  const builtins: AgentSource[] = [
+    { id: "build", scope: "defaults", origin: "native" },
+    { id: "plan", scope: "defaults", origin: "native" },
+    { id: "general", scope: "defaults", origin: "special" },
+    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "compaction", scope: "defaults", origin: "special" },
+    { id: "title", scope: "defaults", origin: "special" },
+    { id: "summary", scope: "defaults", origin: "special" },
+  ]
+  const agents: AgentSource[] = [
+    ...builtins,
+    { id: "explore", scope: "project", path: "/project/.opencode/agent/explore.md", origin: "user" },
+  ]
+  const nodes = expandAll({ items: [], records: [], agents })
+
+  const projectExploreNodes = nodes.filter((node) => node.id === "agent:project:explore")
+  expect(projectExploreNodes.length).toBe(1)
+  const projectExplore = projectExploreNodes[0]
+
+  expect(childrenOf(nodes, "group:project:agents:user").map((node) => node.id)).toContain("agent:project:explore")
+  expect(projectExplore.actions?.remove).toBe(true)
+
+  const projectNativeChildren = childrenOf(nodes, "group:project:agents:native").map((node) => node.id)
+  expect(projectNativeChildren).toContain("agent:project:build")
+  expect(projectNativeChildren).toContain("agent:project:plan")
+
+  const projectSpecialChildren = childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)
+  expect(projectSpecialChildren).not.toContain("agent:project:explore")
+  expect(projectSpecialChildren).toEqual([
+    "agent:project:general",
+    "agent:project:compaction",
+    "agent:project:title",
+    "agent:project:summary",
+  ])
+
+  expect(childrenOf(nodes, "group:global:agents:native:special").map((node) => node.id)).toContain("agent:global:explore")
+  expect(childrenOf(nodes, "group:defaults:agents:native:special").map((node) => node.id)).toContain("agent:defaults:explore")
+})
+
 test("empty rule sets emit no perm rows but the tool still offers the add choice", () => {
   const nodes = expandAll({
     items: [makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "shell tool" })],

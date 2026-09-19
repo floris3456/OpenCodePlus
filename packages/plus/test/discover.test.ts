@@ -346,6 +346,48 @@ test("nearest agent file wins over ancestor file", async () => {
   ])
 })
 
+test("ancestor scan skips symlinked agent directory and symlinked opencode directory escaping ancestor", async () => {
+  const root = await tempDir("plus-discover-confinement-")
+  const outside = await tempDir("plus-discover-outside-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+
+  await Bun.write(path.join(outside, "escapee.md"), "# escapee\n")
+  await fs.mkdir(path.join(global, "agent"), { recursive: true })
+  await Bun.write(path.join(global, "agent", "global-escapee.md"), "# global escapee\n")
+
+  const ancestor1 = path.join(root, "ancestor1")
+  const anc1Opencode = path.join(ancestor1, ".opencode")
+  await fs.mkdir(anc1Opencode, { recursive: true })
+  await fs.symlink(outside, path.join(anc1Opencode, "agent"))
+  const siblingDir = path.join(anc1Opencode, "agents")
+  await fs.mkdir(siblingDir, { recursive: true })
+  const siblingPath = path.join(siblingDir, "sibling.md")
+  await Bun.write(siblingPath, "# sibling\n")
+
+  const ancestor2 = path.join(ancestor1, "ancestor2")
+  await fs.mkdir(ancestor2, { recursive: true })
+  await fs.symlink(global, path.join(ancestor2, ".opencode"))
+
+  const directory = path.join(ancestor2, "project")
+  await fs.mkdir(directory, { recursive: true })
+
+  const agents = [agent("escapee", "custom"), agent("global-escapee", "custom"), agent("sibling", "custom")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+
+  const projectAgents = discovered.agents.filter((a) => a.scope === "project")
+  expect(projectAgents.find((a) => a.id === "escapee")).toBeUndefined()
+  expect(projectAgents.find((a) => a.id === "global-escapee")).toBeUndefined()
+  expect(projectAgents).toEqual([
+    { id: "sibling", scope: "project", path: siblingPath, origin: "user", ancestor: true },
+  ])
+})
+
 test("tools group by origin without inferring the server from the namespace", async () => {
   const directory = await tempDir("plus-discover-")
   const server = "my.server:name"

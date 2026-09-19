@@ -519,6 +519,23 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
     }
   }
   if (node.kind === "team") {
+    const teams = ((input.teams ?? memo.ctx.teams) as readonly TeamInput[])
+    const match = node.id.match(/^team:(project|global|defaults):(.+)$/s)
+    const level = match?.[1]
+    if (level) {
+      const levelTeams = teams.filter((candidate) => candidate.level === level)
+      const exactTeam = levelTeams.find((candidate) => node.id === `team:${level}:${candidate.team}`)
+      const memberTeam = levelTeams.find(
+        (candidate) =>
+          candidate.team !== exactTeam?.team &&
+          candidate.agents.some((member) => node.id === `team:${level}:${candidate.team}:${member}`),
+      )
+      if (exactTeam !== undefined && memberTeam !== undefined) {
+        return {
+          refusal: `"${exactTeam.team}" is ambiguous: it matches both a team and a member of team "${memberTeam.team}". Rename one to continue.`,
+        }
+      }
+    }
     const entry = memo.ctx.teams.find((candidate) => node.id === `team:${candidate.level}:${candidate.team}`)
     if (entry !== undefined) {
       if ((entry.level as string) === "defaults")

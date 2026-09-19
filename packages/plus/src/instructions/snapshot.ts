@@ -123,6 +123,7 @@ export function teamOf(team: Plus.TeamEntry): TeamInput {
     team: team.team,
     enabled: team.enabled,
     agents: [...team.agents],
+    ...(team.overlay !== undefined ? { overlay: [...team.overlay] } : {}),
   }
 }
 

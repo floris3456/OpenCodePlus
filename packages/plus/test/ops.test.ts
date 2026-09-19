@@ -675,3 +675,16 @@ test("removalPlan on team member row returns team.removeAgent or refusal for shi
   expect(ovlPlan.team).toBe("starter")
   expect(ovlPlan.id).toBe("ovl")
 })
+
+test("removalPlan on ambiguous team and member row id returns refusal", () => {
+  const input = baseInput({
+    teams: [
+      { level: "project", team: "crew:alpha", enabled: false, agents: ["firstmate"] },
+      { level: "project", team: "crew", enabled: false, agents: ["alpha"] },
+    ],
+  })
+  const plan = removalPlan(input, "team:project:crew:alpha")
+  expect(plan).toEqual({
+    refusal: '"crew:alpha" is ambiguous: it matches both a team and a member of team "crew". Rename one to continue.',
+  })
+})

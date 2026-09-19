@@ -182,6 +182,19 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     const teams = (state.snapshot()?.teams ?? [])
       .filter((entry) => entry.level === level)
       .toSorted((left, right) => right.team.length - left.team.length)
+    const exactTeam = teams.find((entry) => node.id === `team:${level}:${entry.team}`)
+    const memberTeam = teams.find(
+      (entry) =>
+        entry.team !== exactTeam?.team &&
+        entry.agents.some((member) => node.id === `team:${level}:${entry.team}:${member}`),
+    )
+    if (exactTeam !== undefined && memberTeam !== undefined) {
+      context.ui.toast.show({
+        variant: "error",
+        message: `"${exactTeam.team}" is ambiguous: it matches both a team and a member of team "${memberTeam.team}". Rename one to continue.`,
+      })
+      return
+    }
     const matchEntry = teams.find(
       (entry) =>
         node.id === `team:${level}:${entry.team}` ||

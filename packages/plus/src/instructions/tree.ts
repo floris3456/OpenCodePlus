@@ -298,10 +298,17 @@ function nativeAgentsForLevel(ctx: BuildContext, level: Level): AgentSource[] {
   const defaults = ctx.agents.filter((agent) => agent.scope === "defaults" && agentOriginOf(agent) === "native")
   if (level === "defaults") return defaults
   const scoped = ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "native")
+  const sameLevelIds = new Set(ctx.agents.filter((agent) => agent.scope === level).map((agent) => agent.id))
   const seen = new Set<string>()
   const result: AgentSource[] = []
-  for (const agent of [...scoped, ...defaults]) {
+  for (const agent of scoped) {
     if (!seen.has(agent.id)) {
+      seen.add(agent.id)
+      result.push(agent)
+    }
+  }
+  for (const agent of defaults) {
+    if (!sameLevelIds.has(agent.id) && !seen.has(agent.id)) {
       seen.add(agent.id)
       result.push(agent)
     }
@@ -313,10 +320,17 @@ function specialAgentsForLevel(ctx: BuildContext, level: Level): AgentSource[] {
   const defaults = ctx.agents.filter((agent) => agent.scope === "defaults" && agentOriginOf(agent) === "special")
   if (level === "defaults") return defaults
   const scoped = ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "special")
+  const sameLevelIds = new Set(ctx.agents.filter((agent) => agent.scope === level).map((agent) => agent.id))
   const seen = new Set<string>()
   const result: AgentSource[] = []
-  for (const agent of [...scoped, ...defaults]) {
+  for (const agent of scoped) {
     if (!seen.has(agent.id)) {
+      seen.add(agent.id)
+      result.push(agent)
+    }
+  }
+  for (const agent of defaults) {
+    if (!sameLevelIds.has(agent.id) && !seen.has(agent.id)) {
       seen.add(agent.id)
       result.push(agent)
     }

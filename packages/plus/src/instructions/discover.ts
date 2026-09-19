@@ -317,18 +317,28 @@ async function scanProjectAgentFiles(directory: string): Promise<{ files: Map<st
   const files = new Map<string, string>()
   const ancestors = new Set<string>()
   const globalDir = path.resolve(globalConfigDir())
+  const realGlobalDir = await fs.realpath(globalDir).catch(() => globalDir)
   const globalParent = path.dirname(globalDir)
   let current = path.resolve(directory)
   while (true) {
     if (current === globalDir || current === globalParent) break
+    const realCurrent = await fs.realpath(current).catch(() => current)
     const opencodeDir = path.resolve(current, ".opencode")
     if (opencodeDir !== globalDir) {
-      const found = await scanAgentFiles(opencodeDir)
-      const isAncestor = current !== path.resolve(directory)
-      for (const [id, file] of found) {
-        if (!files.has(id)) {
-          files.set(id, file)
-          if (isAncestor) ancestors.add(id)
+      const realOpencode = await fs.realpath(opencodeDir).catch(() => undefined)
+      if (
+        realOpencode !== undefined &&
+        realOpencode !== realGlobalDir &&
+        !contains(realGlobalDir, realOpencode) &&
+        contains(realCurrent, realOpencode)
+      ) {
+        const found = await scanAgentFiles(opencodeDir, realCurrent, realGlobalDir)
+        const isAncestor = current !== path.resolve(directory)
+        for (const [id, file] of found) {
+          if (!files.has(id)) {
+            files.set(id, file)
+            if (isAncestor) ancestors.add(id)
+          }
         }
       }
     }
@@ -417,10 +427,20 @@ function sourceFor(
   return { id, scope: "defaults", origin: originForId(id) }
 }
 
-async function scanAgentFiles(root: string): Promise<Map<string, string>> {
+async function scanAgentFiles(
+  root: string,
+  ancestorDir?: string,
+  realGlobalDir?: string,
+): Promise<Map<string, string>> {
   const found = new Map<string, string>()
   for (const name of ["agent", "agents"]) {
     const directory = path.join(root, name)
+    if (ancestorDir !== undefined) {
+      const realDir = await fs.realpath(directory).catch(() => undefined)
+      if (realDir === undefined) continue
+      if (realGlobalDir !== undefined && (realDir === realGlobalDir || contains(realGlobalDir, realDir))) continue
+      if (!contains(ancestorDir, realDir)) continue
+    }
     const entries = await scanMarkdown(directory)
     for (const file of entries) {
       const id = idFromPath(directory, file)

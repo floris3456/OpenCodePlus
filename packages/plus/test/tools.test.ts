@@ -182,6 +182,7 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       team: team.team,
       enabled: team.enabled,
       agents: [...team.agents],
+      ...(team.overlay !== undefined ? { overlay: [...team.overlay] } : {}),
     })),
   }
 }
@@ -640,6 +641,42 @@ test("delete shipped defaults team member is refused with shipped member wording
   if (!logged.ok) throw new Error("log failed")
   const entry = logged.value.entries.find((candidate) => candidate.op === "team.removeAgent")
   expect(entry).toBeUndefined()
+})
+
+test("delete overlay defaults team member through instructions_delete unlinks file and updates snapshot", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project)
+  const registry = [{ name: "starter", members: [{ id: "planner", body: "planner body" }] }]
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: registry })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  const added = (await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "defaults", team: "starter", id: "helper", prompt: "helper role" }, throwing),
+  )) as { id: string; path: string }
+  expect(await Bun.file(added.path).exists()).toBe(true)
+
+  const api = createPlusApi(ctx, state, { builtins: registry })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const memo = memoFromSnapshot(snapshot)
+  const overlayRow = expandedTree(memo).find((node) => node.id === "team:defaults:starter:helper")
+  if (overlayRow === undefined) throw new Error("missing overlay team member row")
+  const plan = removalPlan(memo, overlayRow.id)
+  if ("refusal" in plan) throw new Error(`expected team.removeAgent plan: ${plan.refusal}`)
+  expect(plan.kind).toBe("team.removeAgent")
+
+  const deleted = (await runOk(need(tools, "instructions_delete"), { id: overlayRow.id, confirm: true })) as {
+    status: string
+  }
+  expect(deleted.status).toBe(plan.successStatus)
+  expect(await Bun.file(added.path).exists()).toBe(false)
+
+  const nextSnapshot = await snapshotOf(api)
+  const starterTeam = nextSnapshot.teams?.find((team) => team.team === "starter" && team.level === "defaults")
+  expect(starterTeam?.agents).not.toContain("helper")
+  expect(starterTeam?.overlay ?? []).not.toContain("helper")
+  expect(starterTeam?.agents).toEqual(["planner"])
 })
 
 test("team toggle through set matches teamPlan", async () => {

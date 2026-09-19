@@ -2755,6 +2755,73 @@ test("a on a colon team member row calls team.addAgent with the full team name",
   }
 })
 
+test("a on ambiguous team member row surfaces error toast and calls no team.addAgent", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-ambiguous-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwing))
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew:alpha" }, throwing))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwing),
+  )
+  const teamAdds: { level: string; team: string; id: string; template?: string; prompt: string }[] = []
+  const wrappedTeamAddAgent = async (input: { level: "project"; team: string; id: string; template?: string; prompt: string }) => {
+    teamAdds.push({ ...input })
+    return Effect.runPromise(handlers["team.addAgent"](input, throwing))
+  }
+  const toasts: { variant?: string; message: string }[] = []
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: [""], prompts: ["secondmate", "secondmate role"] },
+    render: (context) => {
+      const originalToastShow = context.ui.toast.show
+      context.ui.toast.show = ((toast: { variant?: string; message: string }) => {
+        toasts.push(toast)
+        return (originalToastShow as (t: unknown) => unknown)(toast)
+      }) as unknown as typeof context.ui.toast.show
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.addAgent": wrappedTeamAddAgent,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    await expand(fixture)
+    await moveTo(fixture, "alpha")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("alpha")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => toasts.length >= 1)
+    expect(toasts).toContainEqual({
+      variant: "error",
+      message: '"crew:alpha" is ambiguous: it matches both a team and a member of team "crew". Rename one to continue.',
+    })
+    expect(teamAdds.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("d on a member row with the real handler wired removes the row", async () => {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-route-team-member-remove-"))
