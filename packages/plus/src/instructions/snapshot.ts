@@ -33,6 +33,7 @@ export function agentOf(agent: Plus.AgentEntry): AgentSource {
   return {
     id: agent.id,
     scope: agent.scope,
+    ...(agent.origin === undefined ? {} : { origin: agent.origin }),
     ...(agent.path === undefined ? {} : { path: agent.path }),
     ...(agent.base === undefined ? {} : { base: agent.base }),
     ...(agent.model === undefined

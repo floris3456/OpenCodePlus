@@ -270,8 +270,72 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     depth: 1,
     add: "agent",
     actions: noActions(),
+    children: () => [lazyNativeAgents(ctx, memo, level), lazyPlusAgents(ctx, memo, level), lazyUserAgents(ctx, memo, level)],
+  })
+}
+
+// Origin subgroups: server-side origin carried on AgentSource, never inferred
+// here from ids or paths. Native holds native agents plus the nested Special
+// subgroup; Plus and User hold their own agents. All four ids are always
+// emitted even when empty; agent rows keep `agent:<level>:<id>`.
+function agentOriginOf(agent: AgentSource): "native" | "special" | "plus" | "user" {
+  if (agent.origin === "native" || agent.origin === "special" || agent.origin === "plus" || agent.origin === "user")
+    return agent.origin
+  return "user"
+}
+
+function lazyNativeAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:native`,
+    label: "Native",
+    depth: 2,
+    actions: noActions(),
+    children: () => [
+      ...ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "native")
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      lazySpecialAgents(ctx, memo, level),
+    ],
+  })
+}
+
+function lazySpecialAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:native:special`,
+    label: "Special",
+    depth: 3,
+    actions: noActions(),
     children: () =>
-      ctx.agents.filter((agent) => agent.scope === level).map((agent) => lazyAgent(ctx, memo, level, agent, 2)),
+      ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "special")
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 4)),
+  })
+}
+
+function lazyPlusAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:plus`,
+    label: "Plus",
+    depth: 2,
+    actions: noActions(),
+    children: () =>
+      ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "plus").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+  })
+}
+
+function lazyUserAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:user`,
+    label: "User",
+    depth: 2,
+    add: "agent",
+    actions: noActions(),
+    children: () =>
+      ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "user").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
   })
 }
 

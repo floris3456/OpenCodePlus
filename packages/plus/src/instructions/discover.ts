@@ -337,11 +337,11 @@ function shadowedSources(
     const globalPath = global.get(agent.id)
     const shadowed: AgentSource[] = []
     if (projectPath !== undefined && globalPath !== undefined && !present(agent.id, "global"))
-      shadowed.push(withBase({ id: agent.id, scope: "global", path: globalPath }, agent, activeBase))
+      shadowed.push(withBase({ id: agent.id, scope: "global", path: globalPath, origin: "user" }, agent, activeBase))
     if (present(agent.id, "defaults")) return shadowed
     if (projectPath === undefined && globalPath === undefined) return shadowed
     if (!builtinAgentIds.includes(agent.id)) return shadowed
-    return [...shadowed, withBase({ id: agent.id, scope: "defaults" }, agent, activeBase)]
+    return [...shadowed, withBase({ id: agent.id, scope: "defaults", origin: originForId(agent.id) }, agent, activeBase)]
   })
 }
 
@@ -352,12 +352,24 @@ function shadowedSources(
 // own entry here. Keep in sync with core.
 const builtinAgentIds = ["build", "general", "explore", "compaction", "title", "summary", "plan"]
 
+// Server-side origin classification: file-backed agents are always user;
+// unbacked built-ins split into native (build, plan) and special
+// (explore, title, summary, compaction, general); everything else is user.
+const specialAgentIds = ["explore", "title", "summary", "compaction", "general"]
+const nativeAgentIds = ["build", "plan"]
+
+function originForId(id: string): AgentSource["origin"] {
+  if ((specialAgentIds as readonly string[]).includes(id)) return "special"
+  if ((nativeAgentIds as readonly string[]).includes(id)) return "native"
+  return "user"
+}
+
 function sourceFor(id: string, project: Map<string, string>, global: Map<string, string>): AgentSource {
   const projectPath = project.get(id)
-  if (projectPath !== undefined) return { id, scope: "project", path: projectPath }
+  if (projectPath !== undefined) return { id, scope: "project", path: projectPath, origin: "user" }
   const globalPath = global.get(id)
-  if (globalPath !== undefined) return { id, scope: "global", path: globalPath }
-  return { id, scope: "defaults" }
+  if (globalPath !== undefined) return { id, scope: "global", path: globalPath, origin: "user" }
+  return { id, scope: "defaults", origin: originForId(id) }
 }
 
 async function scanAgentFiles(root: string): Promise<Map<string, string>> {

@@ -9,9 +9,15 @@ migration (`src/instructions/store.ts`, `src/instructions/paths.ts`).
 
 Three top-level roots in this order: `Project`, `Global`, `Defaults`.
 `Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose
-children are that level's agents with the identical subtree, plus a `Teams`
+children are origin subgroups (`Native`, `Plus`, `User`, with `Special`
+nested under `Native`: `group:<level>:agents:native`,
+`group:<level>:agents:native:special`, `group:<level>:agents:plus`,
+`group:<level>:agents:user`, all always emitted even when empty; agent rows
+keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the
+`User` subgroup, never on `Native`/`Special`/`Plus`) holding that level's
+agents with the identical subtree, plus a `Teams`
 group (`[a: add team]`) holding that level's on-disk teams. `Defaults` holds
-`Agents` (template agents, each with the full subtree, `[a: add agent template]`),
+`Agents` (template agents in the same origin subgroups, each with the full subtree, `[a: add agent template]`),
 `Teams` (built-in shipped teams with working toggles and member rows that
 expand to full agent subtrees, `[a: add team]` still creates at project or
 global, never
@@ -126,9 +132,11 @@ Agent sources and scopes (`model.ts`)
 
 ```ts
 export type AgentScope = "project" | "global" | "defaults"
+export type AgentOrigin = "native" | "special" | "plus" | "user"
 export interface AgentSource {
   readonly id: string
   readonly scope: AgentScope
+  readonly origin?: AgentOrigin
   readonly path?: string
   /** id of the base prompt template active for this agent's model, e.g. "gpt" */
   readonly base?: string
@@ -136,6 +144,15 @@ export interface AgentSource {
 /** { global: ids with scope "global", defaults: ids with scope "defaults" } */
 export function scopesOf(agents: readonly AgentSource[]): Scopes
 ```
+
+Origin is computed server-side in `discover.ts` (`special` for
+`explore|title|summary|compaction|general`, `native` for `build|plan`, else
+`user`; file-backed agents are always `user`) and upgraded to `plus` in
+`index.ts` `toSnapshot` when the id is in `plusTeamOutputIds` or the source
+carries `team`. It crosses the RPC boundary on `AgentEntry.origin` and is
+carried through `snapshot.ts` `agentOf` into `tree.ts` `lazyAgentsGroup`,
+which groups by that carried value (never by hardcoded ids or path/team
+heuristics in the tree layer).
 
 ## Sections engine (`sections.ts`)
 
@@ -519,7 +536,8 @@ of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,
 `SnapshotModelRecord` (`{ type: "model", level, agent, providerID, modelID,
 variant?, active?: true, updated }`), and `SnapshotRuleRecord`
 (`{ type: "rule", level, agent, tool, id, label, patterns, keywords,
-updated }`). `AgentEntry` carries `model?` (`{ providerID, modelID,
+updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
+"user"`, computed server-side), `model?` (`{ providerID, modelID,
 variant? }`) and `fileBacked`. Optional keys are omitted
 when unset: never send an optional key whose value is `undefined` across
 the RPC boundary, because results are validated as JSON and the whole call

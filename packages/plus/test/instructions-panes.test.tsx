@@ -21,8 +21,8 @@ const ROLE_TEXT = "# Purpose\n\na\n\n# Usage\n\nb\n"
 
 function agents(): AgentSource[] {
   return [
-    { id: "Implementer", scope: "project", base: "gpt" },
-    { id: "Helper", scope: "global", base: "claude" },
+    { id: "Implementer", scope: "project", base: "gpt", origin: "user" },
+    { id: "Helper", scope: "global", base: "claude", origin: "user" },
   ]
 }
 
@@ -184,10 +184,10 @@ test("full subtree rows carry indentation order, markers, and addressable badges
   expect(agentsGroup?.depth).toBe(1)
   expect(agentsGroup?.label).toBe("Agents")
   const agent = nodes.find((node) => node.id === "agent:project:Implementer")
-  expect(agent?.depth).toBe(2)
-  // Agent children shifted one deeper: category groups sit at depth 3.
+  expect(agent?.depth).toBe(3)
+  // Agent children shifted one deeper: category groups sit at depth 4.
   const tools = nodes.find((node) => node.id === "group:project:Implementer:tools")
-  expect(tools?.depth).toBe(3)
+  expect(tools?.depth).toBe(4)
   // Item rows carry the addressable state badge plus modified/active/review.
   const role = nodes.find((node) => node.id === "item:project:Implementer:system:role")
   expect(badgeLabels(role!)).toContain("on")
@@ -197,7 +197,7 @@ test("full subtree rows carry indentation order, markers, and addressable badges
     items: items(),
     records: [record({ item: "tool:bash", text: "mine" })],
     agents: agents(),
-    expanded: new Set(["root:project", "group:project:agents", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
+    expanded: new Set(["root:project", "group:project:agents", "group:project:agents:user", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
   })
   const bash = modified.find((node) => node.id === "item:project:Implementer:tool:bash")
   expect(badgeLabels(bash!)).toEqual(expect.arrayContaining(["on", "modified"]))

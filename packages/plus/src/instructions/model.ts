@@ -68,9 +68,12 @@ export interface Scopes {
 
 export type AgentScope = "project" | "global" | "defaults"
 
+export type AgentOrigin = "native" | "special" | "plus" | "user"
+
 export interface AgentSource {
   readonly id: string
   readonly scope: AgentScope
+  readonly origin?: AgentOrigin
   readonly path?: string
   /** team contributing this agent when it comes from an enabled team */
   readonly team?: string

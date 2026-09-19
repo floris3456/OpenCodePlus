@@ -80,14 +80,16 @@ async function expand(fixture: TestFixture): Promise<void> {
   await sleep(50)
 }
 
-// Agents live under their level's Agents group (collapsed by default), so
-// every agent-scoped test starts by revealing the named agent row. The
-// opening "Instructions" wait doubles as a mount gate, but the agent name
-// may already be on screen (the loader resolves between renders), so do not
-// require both in one predicate.
+// Agents live under their level's Agents group (collapsed by default) inside
+// the User origin subgroup, so every agent-scoped test starts by revealing
+// the named agent row. The opening "Instructions" wait doubles as a mount
+// gate, but the agent name may already be on screen (the loader resolves
+// between renders), so do not require both in one predicate.
 async function gotoAgent(fixture: TestFixture, name: string): Promise<void> {
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
   await moveTo(fixture, "Agents")
+  await expand(fixture)
+  await moveTo(fixture, "User")
   await expand(fixture)
   await moveTo(fixture, name)
 }
@@ -127,8 +129,8 @@ function toolItem(overrides?: Record<string, unknown>) {
   }
 }
 
-function projectAgent(id: string) {
-  return { id, scope: "project" as const, fileBacked: true }
+function projectAgent(id: string, origin: "native" | "special" | "plus" | "user" = "user") {
+  return { id, scope: "project" as const, fileBacked: true, origin }
 }
 
 test("roots render with agents and subtree groups", async () => {
@@ -145,10 +147,12 @@ test("roots render with agents and subtree groups", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Agents live one level down under each level's Agents group: expand
-    // Project's group to reveal Implementer, then the agent itself to reveal
-    // its Tools/Base/Skills/System subtree.
+    // Agents live one level down under each level's Agents group inside the
+    // User origin subgroup: expand Project's group and User to reveal
+    // Implementer, then the agent itself to reveal its Tools/Base/Skills/System subtree.
     await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Implementer"))
     await moveTo(fixture, "Implementer")
@@ -163,8 +167,10 @@ test("roots render with agents and subtree groups", async () => {
     expect(expanded).toContain("Base")
     expect(expanded).toContain("Skills")
     expect(expanded).toContain("System")
-    // Global's Agents group holds Helper.
+    // Global's Agents group holds Helper under its User subgroup.
     await moveToNext(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Helper"))
     expect(fixture.captureCharFrame()).toContain("Helper")
@@ -207,8 +213,10 @@ test("filter narrows visible rows", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Agents start collapsed under group:project:agents; expand it first.
+    // Agents start collapsed under group:project:agents inside the User origin subgroup; expand both first.
     await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Implementer"))
     expect(dispatch(fixture, "/")).toBe(true)
@@ -827,7 +835,7 @@ test("created project instruction deletes through instruction.delete and the row
 
 test("tool row does not offer d delete", async () => {
   const snapshot = createSnapshot({
-    agents: [{ id: "build", scope: "defaults" as const, fileBacked: false }],
+    agents: [{ id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }],
     items: [
       {
         id: "tool:read",
@@ -850,6 +858,8 @@ test("tool row does not offer d delete", async () => {
     await moveTo(fixture, "Defaults")
     await expand(fixture)
     await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
     await expand(fixture)
     await moveTo(fixture, "build")
     await expand(fixture)
@@ -1407,7 +1417,11 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
     // Section toggles under the same role still apply: exclusions assemble.
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => frame.includes("Purpose"))
-    await moveTo(fixture, "Purpose")
+    // Purpose is the first child of the expanded Role item: move down once.
+    // Do not use moveTo("Purpose") here: the detail pane also shows "Purpose"
+    // on the Role row itself, so a label search false-positives without moving.
+    dispatch(fixture, "down")
+    await sleep(100)
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))

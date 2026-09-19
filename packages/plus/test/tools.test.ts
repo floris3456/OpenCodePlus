@@ -164,6 +164,7 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
     agents: snapshot.agents.map((agent) => ({
       id: agent.id,
       scope: agent.scope,
+      ...(agent.origin === undefined ? {} : { origin: agent.origin }),
       ...(agent.path === undefined ? {} : { path: agent.path }),
       ...(agent.base === undefined ? {} : { base: agent.base }),
       ...(agent.model === undefined
