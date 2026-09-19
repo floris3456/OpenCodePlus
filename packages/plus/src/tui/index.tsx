@@ -3,12 +3,14 @@ import { createSignal } from "solid-js"
 import { createAgentActions } from "./agents/create.js"
 import { InstructionsRoute } from "./instructions/route.js"
 import { createProjectMode } from "./project-mode.js"
+import { createActiveTeam } from "./active-team.js"
 
 export default Plugin.define({
   id: "opencode.plus",
   setup(context) {
     const mode = createProjectMode(context)
     const agents = createAgentActions(context)
+    const activeTeam = createActiveTeam(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
@@ -78,6 +80,16 @@ export default Plugin.define({
               enabled: () => mode.status().enabled,
               run: () => agents.deleteAgent(),
             },
+            {
+              id: "plus.team.select",
+              title: "Select team",
+              group: "Project",
+              palette: true,
+              enabled: () => mode.status().enabled,
+              run: () => {
+                context.ui.agents.open({ filter: "Team:" })
+              },
+            },
           ],
         }))
         return null
@@ -88,6 +100,7 @@ export default Plugin.define({
       disposeSlot()
       mode.dispose()
       agents.dispose()
+      activeTeam.dispose()
     }
   },
 })

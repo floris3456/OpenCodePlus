@@ -1070,3 +1070,56 @@ test("team.delete raises every declared error through a real call", async () => 
     "project.disabled",
   )
 })
+
+test("team.list returns discovered teams, enabled state, and member modes without a snapshot", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const teamDir = path.join(projectTeamsPath(project), "alpha")
+  await writeTeamAgent(teamDir, "member1", "member1 role")
+  const subPath = path.join(teamDir, "member2.md")
+  await Bun.write(subPath, formatMarkdown({ mode: "subagent", description: "sub" }, "sub role"))
+
+  const state = createState()
+  const emitted: string[] = []
+  state.registration = {
+    dispose: Effect.void,
+    events: {
+      emit: (name: string) =>
+        Effect.sync(() => {
+          emitted.push(name)
+        }).pipe(Effect.asVoid),
+    },
+  } as any
+
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  const initial = await Effect.runPromise(handlers["team.list"](undefined, throwingContext({})))
+  expect(initial.teams).toHaveLength(1)
+  expect(initial.teams[0]).toMatchObject({
+    level: "project",
+    team: "alpha",
+    enabled: false,
+  })
+  expect(initial.teams[0]?.members).toEqual([
+    { id: "member1", mode: "primary" },
+    { id: "member2", mode: "subagent" },
+  ])
+
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "alpha", enabled: true }, throwingContext({})),
+  )
+  expect(emitted).toContain("teams.changed")
+
+  const after = await Effect.runPromise(handlers["team.list"](undefined, throwingContext({})))
+  expect(after.teams[0]?.enabled).toBe(true)
+
+  const disabledProject = (await tempRoot()).project
+  const disabledHandlers = createHandlers(fullContext({ directory: disabledProject }), createState(), { builtins: [] })
+  const disabled: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    disabledHandlers["team.list"](undefined, throwingContext(disabled)),
+    disabled,
+    "project.disabled",
+  )
+})

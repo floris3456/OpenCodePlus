@@ -293,6 +293,10 @@ export type DeleteTeamResult =
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
     }
 
+export type ListTeamsResult =
+  | { ok: true; value: Plus.TeamListOutput }
+  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+
 export type AddModelResult =
   | { ok: true; value: Plus.ModelRef }
   | {
@@ -370,6 +374,7 @@ export interface PlusApi {
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
+  readonly listTeams: () => Promise<ListTeamsResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
@@ -936,6 +941,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      await Effect.runPromise(emitTeamsChanged(state))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -985,6 +991,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           revision: saved.revision,
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      await Effect.runPromise(emitTeamsChanged(state))
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
     },
     addTeamAgent: async (input) => {
@@ -1054,6 +1061,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await fs.writeFile(target, content)
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await Effect.runPromise(emitTeamsChanged(state))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -1120,6 +1128,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       }
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await Effect.runPromise(emitTeamsChanged(state))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -1226,6 +1235,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await removeTeamRecord(directory, freshLoaded, input.level, validated.team)
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await Effect.runPromise(emitTeamsChanged(state))
       await logFileOp({
         directory,
         actor: normalizeActor(input.actor),
@@ -1242,6 +1252,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           removedMembers: found.agents.length,
         },
       }
+    },
+    listTeams: async () => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const stored = await load(directory)
+      const result = await listTeams(directory, stored.records, builtins)
+      return { ok: true as const, value: result }
     },
     catalogModels: async () => {
       const directory = ctx.location.directory
@@ -1865,6 +1884,14 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
           if (result.error.code === "team.unknown")
             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "team.list": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.listTeams())
+        if (!result.ok) {
+          return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
         }
         return result.value
       }),
@@ -3065,6 +3092,7 @@ function publishFresh(
         if (winner?.team === undefined) continue
         ownership.set(id, { team: winner.team, level: winner.scope })
       }
+      const teamOwnershipChanged = !sameTeamOwnership(state.teamOutputIds, ownership)
       state.teamOutputIds = ownership
       state.installedTools = applied.tools
       state.fingerprint = fingerprint
@@ -3073,6 +3101,7 @@ function publishFresh(
       captureBaselines(ctx, state, discovered, customizations, splits, modelRecords, teamAgents, view.overrides, view.teamBodies)
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
+      if (teamOwnershipChanged) yield* emitTeamsChanged(state)
       return discovered
     }),
   )
@@ -3215,6 +3244,24 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
+}
+
+function emitTeamsChanged(state: PlusState): Effect.Effect<void> {
+  const registration = state.registration
+  if (!registration) return Effect.void
+  return registration.events.emit("teams.changed", {}).pipe(Effect.orDie)
+}
+
+function sameTeamOwnership(
+  left: ReadonlyMap<string, TeamOwnership>,
+  right: ReadonlyMap<string, TeamOwnership>,
+): boolean {
+  if (left.size !== right.size) return false
+  for (const [key, leftVal] of left) {
+    const rightVal = right.get(key)
+    if (!rightVal || rightVal.team !== leftVal.team || rightVal.level !== leftVal.level) return false
+  }
+  return true
 }
 
 // The publish fingerprint covers what publish installs: the unmasked upstream
@@ -3859,7 +3906,59 @@ async function snapshotTeams(
     .toSorted(compareTeams)
 }
 
-function compareTeams(left: Plus.TeamEntry, right: Plus.TeamEntry): number {
+async function listTeams(
+  directory: string,
+  records: readonly StoredRecord[],
+  builtins: readonly BuiltinTeam[] = builtinTeams,
+): Promise<Plus.TeamListOutput> {
+  const teamRecords = records.filter((record): record is TeamRecord => record.type === "team")
+  const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
+  const builtin = discoverBuiltinTeams(builtins)
+  const discovered = [...disk[0], ...disk[1], ...builtin].toSorted(compareTeams)
+
+  const teams: Plus.TeamListEntry[] = await Promise.all(
+    discovered.map(async (team) => {
+      const enabled = isTeamEnabled(teamRecords, team.level, team.team)
+      const members: Plus.TeamMemberEntry[] = await Promise.all(
+        team.agents.map(async (agent) => {
+          let mode: Plus.TeamMemberMode = "primary"
+          if (agent.path !== undefined) {
+            try {
+              const text = await Bun.file(agent.path).text()
+              const fields = parseTeamFields(text)
+              if (fields.mode === "subagent" || fields.mode === "primary" || fields.mode === "all") {
+                mode = fields.mode
+              }
+            } catch {
+              // fallback to primary
+            }
+          } else {
+            const builtinTeam = builtins.find((b) => b.name === team.team)
+            const builtinMember = builtinTeam?.members.find((m) => m.id === agent.id)
+            const m = builtinMember?.fields?.mode
+            if (m === "subagent" || m === "primary" || m === "all") {
+              mode = m
+            }
+          }
+          return { id: agent.id, mode }
+        }),
+      )
+      return {
+        level: team.level,
+        team: team.team,
+        enabled,
+        members,
+      }
+    }),
+  )
+
+  return { teams }
+}
+
+function compareTeams(
+  left: { level: Plus.TeamLevel; team: string },
+  right: { level: Plus.TeamLevel; team: string },
+): number {
   if (left.level !== right.level) return left.level < right.level ? -1 : 1
   if (left.team !== right.team) return left.team < right.team ? -1 : 1
   return 0

@@ -39,6 +39,7 @@ test("every method and event is declared", () => {
     "team.addAgent",
     "team.removeAgent",
     "team.delete",
+    "team.list",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -52,7 +53,7 @@ test("every method and event is declared", () => {
   }
   expect(Object.keys(Plus.Definition.methods).sort()).toEqual(expectedMethods.sort())
 
-  const expectedEvents = ["project.changed", "instructions.changed"]
+  const expectedEvents = ["project.changed", "instructions.changed", "teams.changed"]
   for (const name of expectedEvents) {
     expect(name in Plus.Definition.events, `missing event ${name}`).toBe(true)
   }
@@ -143,6 +144,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "team.addAgent",
     "team.removeAgent",
     "team.delete",
+    "team.list",
     "model.add",
     "model.remove",
     "catalog.models",
