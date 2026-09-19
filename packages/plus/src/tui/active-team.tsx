@@ -47,7 +47,19 @@ export function createActiveTeam(context: Plugin.Context) {
 
     const unsubscribe = plus.events.on("teams.changed", () => {
       if (disposed) return
-      refreshTeams()
+      const syncPromise = context.data.location.agent?.sync?.(context.location)
+      if (syncPromise && typeof syncPromise.then === "function") {
+        void syncPromise.then(
+          () => {
+            if (!disposed) refreshTeams()
+          },
+          () => {
+            if (!disposed) refreshTeams()
+          },
+        )
+      } else {
+        refreshTeams()
+      }
     })
 
     const [storage, setStorage] = context.storage.store<{
