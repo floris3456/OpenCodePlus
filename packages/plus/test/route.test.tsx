@@ -80,14 +80,16 @@ async function expand(fixture: TestFixture): Promise<void> {
   await sleep(50)
 }
 
-// Agents live under their level's Agents group (collapsed by default), so
-// every agent-scoped test starts by revealing the named agent row. The
-// opening "Instructions" wait doubles as a mount gate, but the agent name
-// may already be on screen (the loader resolves between renders), so do not
-// require both in one predicate.
+// Agents live under their level's Agents group (collapsed by default) inside
+// the User origin subgroup, so every agent-scoped test starts by revealing
+// the named agent row. The opening "Instructions" wait doubles as a mount
+// gate, but the agent name may already be on screen (the loader resolves
+// between renders), so do not require both in one predicate.
 async function gotoAgent(fixture: TestFixture, name: string): Promise<void> {
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
   await moveTo(fixture, "Agents")
+  await expand(fixture)
+  await moveTo(fixture, "User")
   await expand(fixture)
   await moveTo(fixture, name)
 }
@@ -127,8 +129,8 @@ function toolItem(overrides?: Record<string, unknown>) {
   }
 }
 
-function projectAgent(id: string) {
-  return { id, scope: "project" as const, fileBacked: true }
+function projectAgent(id: string, origin: "native" | "special" | "plus" | "user" = "user") {
+  return { id, scope: "project" as const, fileBacked: true, origin }
 }
 
 test("roots render with agents and subtree groups", async () => {
@@ -145,10 +147,12 @@ test("roots render with agents and subtree groups", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Agents live one level down under each level's Agents group: expand
-    // Project's group to reveal Implementer, then the agent itself to reveal
-    // its Tools/Base/Skills/System subtree.
+    // Agents live one level down under each level's Agents group inside the
+    // User origin subgroup: expand Project's group and User to reveal
+    // Implementer, then the agent itself to reveal its Tools/Base/Skills/System subtree.
     await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Implementer"))
     await moveTo(fixture, "Implementer")
@@ -163,8 +167,10 @@ test("roots render with agents and subtree groups", async () => {
     expect(expanded).toContain("Base")
     expect(expanded).toContain("Skills")
     expect(expanded).toContain("System")
-    // Global's Agents group holds Helper.
+    // Global's Agents group holds Helper under its User subgroup.
     await moveToNext(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Helper"))
     expect(fixture.captureCharFrame()).toContain("Helper")
@@ -207,8 +213,10 @@ test("filter narrows visible rows", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Agents start collapsed under group:project:agents; expand it first.
+    // Agents start collapsed under group:project:agents inside the User origin subgroup; expand both first.
     await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("Implementer"))
     expect(dispatch(fixture, "/")).toBe(true)
@@ -644,6 +652,28 @@ test("delete agent asks for confirmation", async () => {
   }
 })
 
+test("defaults agent row offers no d delete", async () => {
+  // Defaults agents cannot be deleted (removalPlan refuses scope defaults),
+  // so the row must not bind `d` or advertise it in the footer.
+  const snapshot = createSnapshot({ agents: [{ id: "Template", scope: "defaults" as const, fileBacked: true }] })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "User")
+    await expand(fixture)
+    await moveTo(fixture, "Template")
+    expect(binds(fixture)).not.toContain("d")
+    expect(fixture.captureCharFrame()).not.toContain("d delete")
+    expect(fixture.fake.agentDeletes.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("delete project skill calls skill.delete and the row disappears", async () => {
   const before = createSnapshot({
     items: [
@@ -715,9 +745,8 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
     await expand(fixture)
     await moveTo(fixture, "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
-    expect(binds(fixture)).toContain("d")
-    dispatch(fixture, "d")
-    await fixture.waitForFrame((frame) => frame.includes("is not project-owned"))
+    expect(binds(fixture)).not.toContain("d")
+    expect(fixture.captureCharFrame()).not.toContain("d delete")
     expect(fixture.fake.skillDeletes.length).toBe(0)
     expect(fixture.fake.agentDeletes.length).toBe(0)
     expect(fixture.fake.mcpRemoves.length).toBe(0)
@@ -818,13 +847,53 @@ test("created project instruction deletes through instruction.delete and the row
     await fixture.waitForFrame((frame) => frame.includes("Deleted instruction AGENTS.md"))
     expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
     await fixture.waitForFrame((frame) => !frame.includes("Follow the guide."))
-    // Ancestor row offers d only as a refusal path: the handler would reject
-    // traversal, so state.remove refuses without calling instruction.delete.
     await moveTo(fixture, "../AGENTS.md")
-    expect(binds(fixture)).toContain("d")
-    dispatch(fixture, "d")
-    await fixture.waitForFrame((frame) => frame.includes("is not project-owned"))
-    expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
+    expect(binds(fixture)).not.toContain("d")
+    expect(fixture.captureCharFrame()).not.toContain("d delete")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("tool row does not offer d delete", async () => {
+  const snapshot = createSnapshot({
+    agents: [{ id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }],
+    items: [
+      {
+        id: "tool:read",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "read",
+        text: "read file",
+        enabled: true,
+        fingerprint: "fp-read",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "build")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "read")
+    expect(binds(fixture)).not.toContain("d")
+    const lines = fixture.captureCharFrame().trimEnd().split("\n")
+    const lastLine = lines[lines.length - 1] ?? ""
+    expect(lastLine).not.toContain("d delete")
   } finally {
     fixture.destroy()
   }
@@ -1370,7 +1439,11 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
     // Section toggles under the same role still apply: exclusions assemble.
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => frame.includes("Purpose"))
-    await moveTo(fixture, "Purpose")
+    // Purpose is the first child of the expanded Role item: move down once.
+    // Do not use moveTo("Purpose") here: the detail pane also shows "Purpose"
+    // on the Role row itself, so a label search false-positives without moving.
+    dispatch(fixture, "down")
+    await sleep(100)
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))
@@ -1650,8 +1723,8 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
   // the shipped roster (covered by the dedicated well-formedness test).
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
-  const teamCreates: { level: string; team: string }[] = []
-  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string }) => {
+  const teamCreates: { level: string; team: string; template?: string }[] = []
+  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string; template?: string }) => {
     teamCreates.push({ ...input })
     return Effect.runPromise(handlers["team.create"](input, throwing))
   }
@@ -1661,7 +1734,7 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
     snapshots: [],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["fresh"], selects: ["project"] },
+    dialogs: { prompts: ["fresh"], selects: ["", "project"] },
     render: (context) => {
       const rpc = context.client.rpc(Definition)
       const wired = {
@@ -1684,7 +1757,9 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
     await moveTo(fixture, "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => teamCreates.length === 1)
+    const call = teamCreates[0]
     expect(teamCreates).toEqual([{ level: "project", team: "fresh" }])
+    expect("template" in call).toBe(false)
     // The create republishes: refresh pulls a fresh snapshot whose teams
     // entry reads disabled, and the rebuilt tree shows the new off row.
     await fixture.waitForFrame(() => (liveSnapshots[liveSnapshots.length - 1].teams ?? []).length === 1)
@@ -2211,6 +2286,191 @@ test("gives up waiting for a missing agent and toasts once", async () => {
     expect(toasts[0]).toMatchObject({ variant: "warning", message: "Agent Missing not visible yet" })
     await sleep(100)
     expect(toasts.length).toBe(1)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a team row adds through the real team.addAgent without the generic picker", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-add-agent-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwing))
+  const teamAdds: { level: string; team: string; id: string; template?: string; prompt: string }[] = []
+  const wrappedTeamAddAgent = async (input: { level: "project"; team: string; id: string; template?: string; prompt: string }) => {
+    teamAdds.push({ ...input })
+    return Effect.runPromise(handlers["team.addAgent"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: [] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: [""], prompts: ["newbie", "newbie role"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.addAgent": wrappedTeamAddAgent,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamAdds.length === 1)
+    expect(teamAdds[0]).toMatchObject({ level: "project", team: "crew", id: "newbie", prompt: "newbie role" })
+    expect("template" in (teamAdds[0] as Record<string, unknown>)).toBe(false)
+    await fixture.waitForFrame(() =>
+      (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents ?? []).includes("newbie"),
+    )
+    expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")).toEqual({
+      level: "project",
+      team: "crew",
+      enabled: false,
+      agents: ["newbie"],
+    })
+    await expand(fixture)
+    await moveTo(fixture, "newbie")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("newbie")
+    const titles = fixture.fake.dialogSelects.map(([title]) => title)
+    expect(titles).toContain("Agent template")
+    expect(titles.some((title) => title === "Add")).toBe(false)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a colon team row calls team.addAgent with the full name", async () => {
+  // Team names allow colons; the old `[^:]+` dispatch fell through to the
+  // ordinary agent flow. The row identity (kind team + add:agent) must route
+  // to team.addAgent with the entire remainder as the team name.
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-colon-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "release:review" }, throwing))
+  const teamAdds: { level: string; team: string; id: string; template?: string; prompt: string }[] = []
+  const wrappedTeamAddAgent = async (input: { level: "project"; team: string; id: string; template?: string; prompt: string }) => {
+    teamAdds.push({ ...input })
+    return Effect.runPromise(handlers["team.addAgent"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "release:review", enabled: false, agents: [] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["", "project"], prompts: ["newbie", "newbie role"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.addAgent": wrappedTeamAddAgent,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "release:review")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamAdds.length === 1)
+    expect(teamAdds[0]).toMatchObject({ level: "project", team: "release:review", id: "newbie", prompt: "newbie role" })
+    // Never opened the ordinary agent-creation flow.
+    expect(fixture.fake.agentCreates.length).toBe(0)
+    const titles = fixture.fake.dialogSelects.map(([title]) => title)
+    expect(titles).toContain("Agent template")
+    expect(titles.some((title) => title === "Add")).toBe(false)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a team row with an internal newline calls team.addAgent with the multiline name", async () => {
+  // Team names allow internal newlines; validateTeamName accepts them as valid
+  // single path segments. The row identity (kind team + add:agent) must route
+  // to team.addAgent with the entire multiline name, not ordinary agent creation.
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-newline-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "release\nreview" }, throwing))
+  const teamAdds: { level: string; team: string; id: string; template?: string; prompt: string }[] = []
+  const wrappedTeamAddAgent = async (input: { level: "project"; team: string; id: string; template?: string; prompt: string }) => {
+    teamAdds.push({ ...input })
+    return Effect.runPromise(handlers["team.addAgent"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "release\nreview", enabled: false, agents: [] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["", "project"], prompts: ["newbie", "newbie role"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.addAgent": wrappedTeamAddAgent,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "release")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamAdds.length === 1)
+    expect(teamAdds[0]).toMatchObject({ level: "project", team: "release\nreview", id: "newbie", prompt: "newbie role" })
+    // Never opened the ordinary agent-creation flow.
+    expect(fixture.fake.agentCreates.length).toBe(0)
+    const titles = fixture.fake.dialogSelects.map(([title]) => title)
+    expect(titles).toContain("Agent template")
+    expect(titles.some((title) => title === "Add")).toBe(false)
   } finally {
     fixture.destroy()
   }

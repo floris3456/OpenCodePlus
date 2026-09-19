@@ -21,8 +21,8 @@ const ROLE_TEXT = "# Purpose\n\na\n\n# Usage\n\nb\n"
 
 function agents(): AgentSource[] {
   return [
-    { id: "Implementer", scope: "project", base: "gpt" },
-    { id: "Helper", scope: "global", base: "claude" },
+    { id: "Implementer", scope: "project", base: "gpt", origin: "user" },
+    { id: "Helper", scope: "global", base: "claude", origin: "user" },
   ]
 }
 
@@ -184,10 +184,10 @@ test("full subtree rows carry indentation order, markers, and addressable badges
   expect(agentsGroup?.depth).toBe(1)
   expect(agentsGroup?.label).toBe("Agents")
   const agent = nodes.find((node) => node.id === "agent:project:Implementer")
-  expect(agent?.depth).toBe(2)
-  // Agent children shifted one deeper: category groups sit at depth 3.
+  expect(agent?.depth).toBe(3)
+  // Agent children shifted one deeper: category groups sit at depth 4.
   const tools = nodes.find((node) => node.id === "group:project:Implementer:tools")
-  expect(tools?.depth).toBe(3)
+  expect(tools?.depth).toBe(4)
   // Item rows carry the addressable state badge plus modified/active/review.
   const role = nodes.find((node) => node.id === "item:project:Implementer:system:role")
   expect(badgeLabels(role!)).toContain("on")
@@ -197,7 +197,7 @@ test("full subtree rows carry indentation order, markers, and addressable badges
     items: items(),
     records: [record({ item: "tool:bash", text: "mine" })],
     agents: agents(),
-    expanded: new Set(["root:project", "group:project:agents", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
+    expanded: new Set(["root:project", "group:project:agents", "group:project:agents:user", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
   })
   const bash = modified.find((node) => node.id === "item:project:Implementer:tool:bash")
   expect(badgeLabels(bash!)).toEqual(expect.arrayContaining(["on", "modified"]))
@@ -318,6 +318,32 @@ test("review and unsupported badges own yellow and nothing else borrows it", () 
     }
   }
   expect(sawUnsupported).toBe(true)
+})
+
+test("team member rows show expand markers like agents", () => {
+  const input = {
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project" as const, team: "crew", enabled: false, agents: ["CrewMate"] }],
+  }
+  const collapsed = tree({ ...input, expanded: new Set(["root:project", "group:project:teams", "team:project:crew"]) })
+  const memberCollapsed = collapsed.find((node) => node.id === "team:project:crew:CrewMate")
+  expect(memberCollapsed).toBeDefined()
+  const collapsedIndex = collapsed.findIndex((node) => node.id === "team:project:crew:CrewMate")
+  expect(hasVisibleChildren(collapsed, collapsedIndex)).toBe(false)
+  expect(rowMarker(memberCollapsed!, false, new Set(["root:project", "group:project:teams", "team:project:crew"]))).toBe("+")
+  const expanded = tree({
+    ...input,
+    expanded: new Set(["root:project", "group:project:teams", "team:project:crew", "team:project:crew:CrewMate"]),
+  })
+  const memberExpanded = expanded.find((node) => node.id === "team:project:crew:CrewMate")
+  expect(memberExpanded).toBeDefined()
+  const expandedIndex = expanded.findIndex((node) => node.id === "team:project:crew:CrewMate")
+  expect(hasVisibleChildren(expanded, expandedIndex)).toBe(true)
+  expect(
+    rowMarker(memberExpanded!, true, new Set(["root:project", "group:project:teams", "team:project:crew", "team:project:crew:CrewMate"])),
+  ).toBe("-")
 })
 
 test("whole-item detail strikes the excluded section range", () => {

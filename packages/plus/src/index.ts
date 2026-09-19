@@ -15,11 +15,11 @@ import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
-import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
+import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
-import { apply, type ToolPlan } from "./instructions/apply.js"
+import { apply, roleUpdates, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
@@ -28,16 +28,21 @@ import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
+import { fingerprint, resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
-import { builtinBody, discoverBuiltinTeams, discoverTeams, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
+import { builtinBody, defaultsOverlayTeamDir, discoverBuiltinTeams, discoverTeams, globalDefaultsTeamsPath, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
+
+export interface TeamOwnership {
+  readonly team: string
+  readonly level: TeamLevel
+}
 
 export interface PlusState {
   registration: RpcRegistration<typeof Definition> | undefined
@@ -53,6 +58,7 @@ export interface PlusState {
   activeModels: Map<string, ModelRefLike>
   cachedAgents: readonly AgentSource[]
   cachedScopes: Scopes
+  teamOutputIds: Map<string, TeamOwnership>
   semaphore: Semaphore.Semaphore
 }
 
@@ -71,6 +77,7 @@ export function createState(): PlusState {
     activeModels: new Map(),
     cachedAgents: [],
     cachedScopes: { global: new Set(), defaults: new Set() },
+    teamOutputIds: new Map(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
 }
@@ -253,6 +260,18 @@ export type CreateTeamResult =
         | { code: "team.create"; message: string; data: Plus.TeamCreate }
     }
 
+export type AddTeamAgentResult =
+  | { ok: true; value: Plus.AgentRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+        | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+        | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+    }
+
 export type AddModelResult =
   | { ok: true; value: Plus.ModelRef }
   | {
@@ -327,6 +346,7 @@ export interface PlusApi {
   readonly removeMcp: (input: Plus.McpRef & { readonly actor?: Plus.Actor }) => Promise<RemoveMcpResult>
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
+  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
@@ -350,7 +370,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
+      const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
     },
     refresh: async () => {
       const directory = ctx.location.directory
@@ -361,7 +382,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
       const teams = await snapshotTeams(directory, loaded.records, builtins)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
+      const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
     },
     mutate: async (input) => {
       const directory = ctx.location.directory
@@ -379,9 +401,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (staleStore !== undefined) {
         const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
         const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
+        const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
         return {
           ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) },
+          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds) },
         }
       }
       const records: StoredRecord[] = [
@@ -397,9 +420,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
         const discovered = await discoverAll(ctx, refreshed, state.baselines, state.modelBaselines)
         const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
+        const outputIds = await snapshotOutputIds(directory, discovered, refreshed, builtins, state.teamOutputIds)
         return {
           ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) },
+          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams, outputIds) },
         }
       }
       await logMutate({
@@ -416,7 +440,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
       const teams = await snapshotTeams(directory, next.records, builtins)
-      const snapshot = toSnapshot(discovered, next, teams)
+      const outputIds = await snapshotOutputIds(directory, discovered, next, builtins, state.teamOutputIds)
+      const snapshot = toSnapshot(discovered, next, teams, outputIds)
       return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
     },
     log: async (input) => {
@@ -820,6 +845,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.invalid" as const, message: reason, data: { team: input.team, reason } },
         }
       }
+      const templateName = input.template === undefined || input.template === "" ? undefined : input.template
+      const template = templateName === undefined ? undefined : builtins.find((entry) => entry.name === templateName)
+      if (templateName !== undefined && template === undefined) {
+        const reason = `Unknown team template ${templateName}`
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
+        }
+      }
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
       const ensured = await fs.mkdir(root, { recursive: true }).then(
         () => ({ ok: true as const }),
@@ -847,6 +881,35 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return {
           ok: false as const,
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+        }
+      }
+      if (template !== undefined) {
+        const teamDir = path.join(root, validated.team)
+        for (const member of template.members) {
+          const memberId = validateAgentId(member.id)
+          if (!memberId.ok) {
+            const reason = memberId.reason
+            return {
+              ok: false as const,
+              error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+            }
+          }
+          const target = path.join(teamDir, `${memberId.id}.md`)
+          const content = formatMarkdown(toSeedFields(member.fields), member.body)
+          const seeded = await fs.mkdir(path.dirname(target), { recursive: true }).then(
+            () => fs.writeFile(target, content).then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            ),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+          if (!seeded.ok) {
+            const reason = messageOf(seeded.error)
+            return {
+              ok: false as const,
+              error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+            }
+          }
         }
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
@@ -900,6 +963,83 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
+    },
+    addTeamAgent: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validatedTeam = validateTeamName(input.team)
+      if (!validatedTeam.ok)
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: validatedTeam.reason, data: { team: input.team, reason: validatedTeam.reason } },
+        }
+      const validated = validateAgentId(input.id)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+        }
+      const known = await discoverTeams(input.level, directory, builtins)
+      const found = known.find((team) => team.team === validatedTeam.team)
+      if (found === undefined)
+        return {
+          ok: false as const,
+          error: { code: "team.unknown" as const, message: `Unknown team ${validatedTeam.team}`, data: { level: input.level, team: validatedTeam.team } },
+        }
+      const teamDir =
+        input.level === "project"
+          ? path.join(projectTeamsPath(directory), validatedTeam.team)
+          : input.level === "global"
+            ? path.join(globalTeamsPath(), validatedTeam.team)
+            : defaultsOverlayTeamDir(validatedTeam.team)
+      const target = teamMemberPath(teamDir, validated.id)
+      if (target === undefined)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: `Invalid agent id "${input.id}"`, data: { id: input.id, reason: `Invalid agent id "${input.id}"` } },
+        }
+      const existing = found.agents.find((agent) => agent.id === validated.id)
+      if (existing !== undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.exists" as const,
+            message: `Agent ${validated.id} already exists at ${existing.path ?? target}`,
+            data: { path: existing.path ?? target },
+          },
+        }
+      if (await Bun.file(target).exists())
+        return {
+          ok: false as const,
+          error: { code: "agent.exists" as const, message: `Agent ${validated.id} already exists at ${target}`, data: { path: target } },
+        }
+      const templateName = input.template === undefined || input.template === "" ? undefined : input.template
+      const seed = templateName === undefined ? undefined : await readTemplate(ctx, directory, templateName)
+      if (templateName !== undefined && seed === undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.invalid" as const,
+            message: `Unknown template ${templateName}`,
+            data: { id: input.id, reason: `Unknown template ${templateName}` },
+          },
+        }
+      const content = formatMarkdown(seed?.fields, seed?.prompt ?? input.prompt)
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      await fs.writeFile(target, content)
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: input.level === "project" ? "project" : "global",
+        op: "team.addAgent",
+        target,
+        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})`,
+      })
+      return { ok: true as const, value: { id: validated.id, path: target } }
     },
     catalogModels: async () => {
       const directory = ctx.location.directory
@@ -1481,6 +1621,22 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
           if (result.error.code === "team.invalid")
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "team.addAgent": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.addTeamAgent(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "team.unknown")
+            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "team.invalid")
+            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+          if (result.error.code === "agent.exists")
+            return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
       }),
@@ -2501,6 +2657,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.activeModels = new Map()
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
+      state.teamOutputIds = new Map()
     }),
   )
 }
@@ -2538,7 +2695,7 @@ function publishFresh(
       const splits = splitsOf(stored.records)
       const modelRecords = modelsOf(stored.records)
       const view = yield* Effect.promise(() =>
-        stablePublishView(discovered, stored.records, ctx.location.directory, builtins),
+        stablePublishView(discovered, stored.records, ctx.location.directory, builtins, state.teamOutputIds),
       )
       // Team-provided agents are not host upstream on the first publish
       // after enable or restart: discovered.agents lacks team-only ids, so
@@ -2558,6 +2715,7 @@ function publishFresh(
         servers: discovered.servers,
         records: stored.records,
         teamBodies: view.teamBodies,
+        overrides: [...view.overrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
         scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
       })
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
@@ -2605,18 +2763,33 @@ function publishFresh(
       // Built-in members install from the source registry with no filesystem
       // path. Team registrations install after apply's own and dispose with
       // the same superseded set when the next publish replaces them.
+      // A Plus customization of a member's role wins over the shipped body:
+      // the override map over the resolved winners (at the winner's scope)
+      // carries the edited text instead of clobbering it. Uncustomized
+      // members still receive their team body exactly as before. The winner
+      // ids just installed become the recorded team output for the next
+      // publish, so ownership never depends on matching host body text.
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
-      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents))
-      const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins))
+      const teamRoleOverrides = view.overrides
+      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides))
+      const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins, teamRoleOverrides))
       const previous = state.applied
       state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations]
+      const winnerById = new Map(teamAgents.map((agent) => [agent.id, agent] as const))
+      const ownership = new Map<string, TeamOwnership>()
+      for (const id of [...teamApplied.installedIds, ...builtinApplied.installedIds]) {
+        const winner = winnerById.get(id)
+        if (winner?.team === undefined) continue
+        ownership.set(id, { team: winner.team, level: winner.scope })
+      }
+      state.teamOutputIds = ownership
       state.installedTools = applied.tools
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
-      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords)
+      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords, teamAgents, view.overrides, view.teamBodies)
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       return discovered
@@ -2645,17 +2818,27 @@ export function captureBaselines(
   records: readonly CustomizationRecord[],
   splits: readonly SplitRecord[],
   modelRecords?: readonly ModelRecord[],
+  teamAgents?: readonly AgentSource[],
+  teamOverrides?: ReadonlyMap<string, string>,
+  teamBodies?: readonly { id: string; scope: AgentSource["scope"]; body: string | undefined }[],
 ): void {
   void ctx
   void splits
   const next = new Map<string, PromptBaseline>()
   const scopes = scopesOf(discovered.agents)
+  const winnerScope = new Map((teamAgents ?? []).map((agent) => [agent.id, agent.scope] as const))
   for (const item of discovered.items) {
     const key = baselineKey(item)
     if (item.id === "system:role") {
       const owner = item.agents?.[0]
       if (owner === undefined) continue
-      const level = scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
+      // Team-only host agents surface at `defaults` while their role records
+      // live at the team winner's level. Resolving at the discovered scope
+      // misses project/global edits, so the next discovery mistakes the
+      // installed edit for upstream and the override silently reverts. Resolve
+      // at the winner's scope so the existing unmask path reports upstream.
+      const winner = winnerScope.get(owner)
+      const level = winner !== undefined ? scopeLevel(winner) : scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
       const resolved = resolve({ upstream: item, records, splits, scopes, address: { level, agent: owner, item: item.id, section: null } })
       if (resolved.assembled === item.text) continue
       const source = discovered.agents.find((agent) => agent.id === owner)
@@ -2673,6 +2856,42 @@ export function captureBaselines(
     const resolved = resolve({ upstream: item, records, splits, scopes, address: { level: "defaults", agent: null, item: item.id, section: null } })
     if (resolved.assembled === item.text) continue
     next.set(key, { applied: resolved.assembled, upstream: item.text, fileBacked: false })
+  }
+  // Team installs overwrite the host system outside applyRoles, so the loop
+  // above never sees them: a winner absent from the host has no role item,
+  // and a winner over a regular resolves to upstream (no records) and is
+  // skipped. Retain (applied, upstream) for every installed winner so the
+  // next discovery unmasks Plus's own team output back to upstream instead
+  // of reporting it as a new upstream edit or losing a persisted edit across
+  // disable→enable. Absent members use the shipped body as upstream; members
+  // over a regular use the discovered role text (the regular body).
+  const overrides = teamOverrides ?? new Map<string, string>()
+  const bodies = new Map((teamBodies ?? []).map((entry) => [entry.id, entry.body] as const))
+  const roleText = new Map(
+    discovered.items.flatMap((item): [string, string][] => {
+      if (item.id !== "system:role") return []
+      const owner = item.agents?.[0]
+      if (owner === undefined) return []
+      return [[owner, item.text]]
+    }),
+  )
+  for (const agent of teamAgents ?? []) {
+    if (next.has(agent.id)) continue
+    const raw = bodies.get(agent.id)
+    if (raw === undefined) continue
+    const shipped = agentBody(raw)
+    const applied = overrides.get(agent.id) ?? shipped
+    const upstream = roleText.get(agent.id) ?? shipped
+    if (applied === upstream) continue
+    next.set(agent.id, { applied, upstream, fileBacked: false })
+  }
+  // A persisted edit outlives a disable: the disabled publish sees no role
+  // item and installs nothing, so without retention the baseline is dropped
+  // and the re-enable mistakes the edit for upstream. Keep old baselines for
+  // ids absent now; a deleted customization clears on its next resolving
+  // publish when the host shows the retained upstream.
+  for (const [key, baseline] of state.baselines) {
+    if (!next.has(key)) next.set(key, baseline)
   }
   state.baselines = next
   const models = modelRecords ?? []
@@ -2754,11 +2973,31 @@ async function enabledTeamApplied(
   builtins: readonly BuiltinTeam[],
 ): Promise<Map<string, TeamApplied>> {
   const applied = new Map<string, TeamApplied>()
+  const place = (id: string, entry: TeamApplied) => {
+    const existing = applied.get(id)
+    if (existing === undefined) {
+      applied.set(id, entry)
+      return
+    }
+    // Winner precedence mirrors resolveTeams: project over global over
+    // defaults, same-level ties to the lexicographically smallest team.
+    const rank = teamLevelRank(entry.level) - teamLevelRank(existing.level)
+    if (rank < 0 || (rank === 0 && entry.team < existing.team)) applied.set(id, entry)
+  }
   for (const team of builtins) {
     if (!isTeamEnabled(teamRecords, "defaults", team.name)) continue
     for (const member of team.members) {
-      if (applied.has(member.id)) continue
-      applied.set(member.id, { team: team.name, level: "defaults", body: agentBody(member.body), fields: member.fields ?? { permissions: [] } })
+      place(member.id, { team: team.name, level: "defaults", body: agentBody(member.body), fields: member.fields ?? { permissions: [] } })
+    }
+  }
+  const builtinDiscovered = discoverBuiltinTeams(builtins)
+  for (const team of builtinDiscovered) {
+    if (!isTeamEnabled(teamRecords, "defaults", team.team)) continue
+    for (const member of team.agents) {
+      if (member.path === undefined) continue
+      const text = await readTeamBody(member.path)
+      if (text === undefined) continue
+      place(member.id, { team: team.team, level: "defaults", body: agentBody(text), fields: parseTeamFields(text) })
     }
   }
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
@@ -2766,17 +3005,103 @@ async function enabledTeamApplied(
     if (!isTeamEnabled(teamRecords, discovered.level, discovered.team)) continue
     for (const member of discovered.agents) {
       if (member.path === undefined) continue
-      if (applied.has(member.id)) continue
       const text = await readTeamBody(member.path)
       if (text === undefined) continue
-      applied.set(member.id, { team: discovered.team, level: discovered.level, body: agentBody(text), fields: parseTeamFields(text) })
+      place(member.id, { team: discovered.team, level: discovered.level, body: agentBody(text), fields: parseTeamFields(text) })
     }
   }
   return applied
 }
 
-function plusTeamOutputIds(discovered: Discovered, applied: ReadonlyMap<string, TeamApplied>): Set<string> {
+function teamLevelRank(level: TeamLevel): number {
+  if (level === "project") return 0
+  if (level === "global") return 1
+  return 2
+}
+
+// Override map for installation: resolve every resolved team winner at its
+// own scope (project > global > defaults, the same winners resolveTeams
+// produces) against the unmasked discovery. A project winner resolves
+// project-level role records; resolving at the losing built-in level would
+// omit them and reinstall the shipped body. Inputs are the unfiltered
+// discovery plus records, splits, and scopes; only the agent list comes from
+// the filtered publish view's winners, which are available before the
+// installer runs. Winners absent from the host have no role item yet, so
+// synthesize their shipped-body upstream (the true upstream for a member
+// that does not exist in the host) and resolve stored records against it,
+// making the override available on the very first publish after enable.
+function teamRoleOverrides(
+  discovered: Discovered,
+  teamAgents: readonly AgentSource[],
+  records: readonly CustomizationRecord[],
+  splits: readonly SplitRecord[],
+  scopes: Scopes,
+  teamBodies: readonly { id: string; scope: AgentSource["scope"]; body: string | undefined }[],
+): Map<string, string> {
+  const haveRole = new Set(
+    discovered.items.flatMap((item) => {
+      if (item.id !== "system:role") return []
+      return [...(item.agents ?? [])]
+    }),
+  )
+  const bodies = new Map(teamBodies.map((entry) => [entry.id, entry.body] as const))
+  const synthesized: Item[] = teamAgents.flatMap((agent): Item[] => {
+    if (haveRole.has(agent.id)) return []
+    const raw = bodies.get(agent.id)
+    if (raw === undefined) return []
+    const text = agentBody(raw)
+    return [{ id: "system:role", kind: "system", group: "none", title: "Role/persona", text, enabled: true, fingerprint: fingerprint(text), agents: [agent.id], order: 0 }]
+  })
+  return new Map(
+    roleUpdates({
+      items: [...discovered.items, ...synthesized],
+      agents: teamAgents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+      records,
+      splits,
+      scopes,
+    }).map((entry) => [entry.agent, entry.text] as const),
+  )
+}
+
+function plusTeamOutputIds(
+  discovered: Discovered,
+  applied: ReadonlyMap<string, TeamApplied>,
+  owned: ReadonlyMap<string, TeamOwnership>,
+): Set<string> {
   const output = new Set<string>()
+  // Recorded ownership is authoritative, keyed by team identity: an id Plus
+  // installed last publish that is still enabled by the same team at the same
+  // level stays team output regardless of the body the host currently shows
+  // (the host holds the previous publish's body while records already
+  // describe the next one). A different team reusing the same id must not
+  // inherit ownership: on a team/level mismatch fall through to the
+  // body-based check, which declines while the host still shows the previous
+  // owner's body and preserves the regular identity. Structural guards still
+  // apply: a file-backed regular source wins, and only an unbacked defaults
+  // source with a live host entry can be Plus output.
+  if (owned.size > 0) {
+    for (const [id, ownership] of owned) {
+      const entry = applied.get(id)
+      if (entry === undefined) continue
+      const sources = discovered.agents.filter((agent) => agent.id === id)
+      if (sources.length > 0 && sources.some((agent) => agent.path !== undefined)) continue
+      const unbacked = sources.filter((agent) => agent.scope === "defaults" && agent.path === undefined)
+      if (unbacked.length === 0) continue
+      const host = discovered.hosts.find((agent) => String(agent.id) === id)
+      if (host === undefined) continue
+      if (entry.team !== ownership.team || entry.level !== ownership.level) {
+        if (!matchesTeamApplied(host, entry.body, entry.fields)) continue
+        output.add(id)
+        continue
+      }
+      output.add(id)
+    }
+    return output
+  }
+  // Cold start with no memory: fall back to matching the shipped body only.
+  // A customized member whose host shows an edited body is not recognized
+  // here; its leftover host entry flows through the regular role path rather
+  // than being dropped, and the next publish records ownership again.
   for (const [id, entry] of applied) {
     const sources = discovered.agents.filter((agent) => agent.id === id)
     if (sources.length > 0 && sources.some((agent) => agent.path !== undefined)) continue
@@ -2816,10 +3141,17 @@ async function stablePublishView(
   records: readonly StoredRecord[],
   directory: string,
   builtins: readonly BuiltinTeam[],
-): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string> }> {
+  owned: ReadonlyMap<string, TeamOwnership>,
+): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string>; overrides: Map<string, string> }> {
   const teamRecords = records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
-  const outputIds = plusTeamOutputIds(discovered, applied)
+  const customizations = customizationsOf(records)
+  const splits = splitsOf(records)
+  // Ownership no longer depends on the override map, so output filtering
+  // runs first from the recorded ids (cold-start shipped fallback only).
+  // Winners resolve against the filtered regulars, then overrides resolve at
+  // the winners' own scopes for the installer.
+  const outputIds = plusTeamOutputIds(discovered, applied, owned)
   const agents = filteredPublishAgents(discovered.agents, outputIds)
   const items = filteredPublishItems(discovered.items, outputIds)
   const scopes = scopesOf(agents)
@@ -2836,7 +3168,8 @@ async function stablePublishView(
             : builtinBody(builtins, agent.team, agent.id),
     })),
   )
-  return { agents, items, scopes, teamAgents, teamBodies, outputIds }
+  const overrides = teamRoleOverrides(discovered, teamAgents, customizations, splits, scopesOf(discovered.agents), teamBodies)
+  return { agents, items, scopes, teamAgents, teamBodies, outputIds, overrides }
 }
 
 async function fingerprintPublish(
@@ -2844,14 +3177,16 @@ async function fingerprintPublish(
   records: readonly StoredRecord[],
   directory: string,
   builtins: readonly BuiltinTeam[] = builtinTeams,
+  owned: ReadonlyMap<string, TeamOwnership> = new Map(),
 ): Promise<string> {
-  const view = await stablePublishView(discovered, records, directory, builtins)
+  const view = await stablePublishView(discovered, records, directory, builtins, owned)
   return JSON.stringify({
     items: view.items.filter((item) => item.kind !== "perm"),
     agents: view.agents,
     servers: discovered.servers,
     records,
     teamBodies: view.teamBodies,
+    overrides: [...view.overrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
     scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
   })
 }
@@ -2881,18 +3216,21 @@ async function installBuiltinTeamAgents(
   ctx: Context,
   agents: readonly AgentSource[],
   builtins: readonly BuiltinTeam[],
-): Promise<{ registrations: Registration[] }> {
+  overrides?: ReadonlyMap<string, string>,
+): Promise<{ registrations: Registration[]; installedIds: string[] }> {
   const installed: Registration[] = []
+  const installedIds: string[] = []
   try {
     for (const agent of agents) {
       if (agent.team === undefined) continue
       const body = builtinBody(builtins, agent.team, agent.id)
       if (body === undefined) continue
       const fields: TeamFields = builtins.find((entry) => entry.name === agent.team)?.members.find((member) => member.id === agent.id)?.fields ?? { permissions: [] }
-      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body), fields))
+      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body), fields, overrides?.get(agent.id)))
+      installedIds.push(agent.id)
     }
     if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
-    return { registrations: [...installed] }
+    return { registrations: [...installed], installedIds: [...installedIds] }
   } catch (error) {
     const reversed = installed.slice().reverse()
     for (const registration of reversed) {
@@ -2902,12 +3240,18 @@ async function installBuiltinTeamAgents(
   }
 }
 
-async function runBuiltinRegistration(ctx: Context, id: string, body: string, fields: TeamFields): Promise<Registration> {
+async function runBuiltinRegistration(
+  ctx: Context,
+  id: string,
+  body: string,
+  fields: TeamFields,
+  override?: string,
+): Promise<Registration> {
   return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() =>
-        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields)),
+        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields, override)),
       ).pipe(
         Effect.provideService(Scope.Scope, scope),
         Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
@@ -3055,14 +3399,33 @@ function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   })
 }
 
-function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonly Plus.TeamEntry[]): Plus.Snapshot {
+function toSnapshot(
+  discovered: Discovered,
+  loaded: LoadedStores,
+  teams: readonly Plus.TeamEntry[],
+  outputIds?: ReadonlySet<string>,
+): Plus.Snapshot {
   return {
     revision: loaded.projectRevision,
     globalRevision: loaded.globalRevision,
-    agents: discovered.agents.map((agent) => ({
-      id: agent.id,
-      scope: agent.scope,
-      ...(agent.path === undefined ? {} : { path: agent.path }),
+    agents: discovered.agents.map((agent) => {
+      // Server-side origin crosses the RPC boundary. Plus team output (an id
+      // in plusTeamOutputIds, or an AgentSource carrying team) upgrades to
+      // origin plus; otherwise the discovery classification rides through.
+      // File-backed team clashes keep their user origin via the path guard in
+      // the fallback below.
+      const fromOutput = outputIds !== undefined ? outputIds.has(agent.id) : false
+      const fromTeams =
+        outputIds === undefined && agent.path === undefined && agent.team === undefined
+          ? teams.some((team) => team.enabled && team.agents.includes(agent.id))
+          : false
+      const isPlus = agent.team !== undefined || fromOutput || fromTeams
+      const origin = isPlus ? ("plus" as const) : agent.origin
+      return {
+        id: agent.id,
+        scope: agent.scope,
+        ...(origin === undefined ? {} : { origin }),
+        ...(agent.path === undefined ? {} : { path: agent.path }),
       ...(agent.base === undefined ? {} : { base: agent.base }),
       ...(agent.model === undefined
         ? {}
@@ -3074,7 +3437,8 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
             },
           }),
       fileBacked: agent.path !== undefined,
-    })),
+      }
+    }),
     // Perm items ship in phase 3 with their rule metadata; model rows shipped in phase 2.
     items: discovered.items.map((item): Plus.SnapshotItem => {
       return {
@@ -3173,6 +3537,18 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
 // defaults members with no filesystem path, stored team records decide
 // enabled. A discovered team with no record reads DISABLED; a record with no
 // matching team never surfaces.
+async function snapshotOutputIds(
+  directory: string,
+  discovered: Discovered,
+  loaded: LoadedStores,
+  builtins: readonly BuiltinTeam[],
+  owned: ReadonlyMap<string, TeamOwnership>,
+): Promise<Set<string>> {
+  const teamRecords = loaded.records.filter(isTeamRecord)
+  const applied = await enabledTeamApplied(directory, teamRecords, builtins)
+  return plusTeamOutputIds(discovered, applied, owned)
+}
+
 async function snapshotTeams(
   directory: string,
   records: readonly StoredRecord[],
@@ -3211,4 +3587,35 @@ function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | und
     ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
     ...(fields.permissions === undefined ? {} : { permissions: fields.permissions }),
   }
+}
+
+// Team template seeding writes member files through the frontmatter+body
+// format files.ts owns. Only `request` needs conversion: TeamRequest is an
+// interface (no implicit index signature) while AgentFields.request is a
+// Record, so it is re-spread into a plain object. Every other field is
+// already assignable; the keys are spelled out (mirroring toAgentFields) so
+// nothing passes through a cast.
+function toSeedFields(fields: TeamFields | undefined): AgentFields | undefined {
+  if (fields === undefined) return undefined
+  return {
+    ...(fields.model === undefined ? {} : { model: fields.model }),
+    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
+    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
+    ...(fields.description === undefined ? {} : { description: fields.description }),
+    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
+    ...(fields.color === undefined ? {} : { color: fields.color }),
+    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
+    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
+    permissions: [...fields.permissions],
+  }
+}
+
+// Confined member path inside a team directory: validated ids can never
+// escape, so unvalidated input fails closed with undefined.
+function teamMemberPath(teamDir: string, id: string): string | undefined {
+  const base = path.resolve(teamDir)
+  const resolved = path.resolve(base, `${id}.md`)
+  if (resolved === base || !resolved.startsWith(`${base}${path.sep}`)) return undefined
+  return resolved
 }

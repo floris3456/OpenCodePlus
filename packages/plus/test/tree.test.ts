@@ -50,9 +50,9 @@ function makeRecord(overrides?: Partial<CustomizationRecord> & { type?: "customi
 
 function agents(): AgentSource[] {
   return [
-    { id: "Implementer", scope: "project", base: "gpt" },
-    { id: "Helper", scope: "global", base: "claude" },
-    { id: "Template", scope: "defaults", base: "gpt" },
+    { id: "Implementer", scope: "project", base: "gpt", origin: "user" },
+    { id: "Helper", scope: "global", base: "claude", origin: "user" },
+    { id: "Template", scope: "defaults", base: "gpt", origin: "user" },
   ]
 }
 
@@ -113,9 +113,18 @@ test("Implementer subtree shape under the project root", () => {
   expect(agentGroup?.kind).toBe("group")
   expect(agentGroup?.label).toBe("Agents")
   expect(agentGroup?.depth).toBe(1)
+  expect(childrenOf(nodes, "group:project:agents").map((node) => node.id)).toEqual([
+    "group:project:agents:native",
+    "group:project:agents:plus",
+    "group:project:agents:user",
+  ])
+  expect(childrenOf(nodes, "group:project:agents:native").map((node) => node.id)).toEqual([
+    "group:project:agents:native:special",
+  ])
+  expect(childrenOf(nodes, "group:project:agents:user").map((node) => node.id)).toEqual(["agent:project:Implementer"])
   const agent = nodes.find((node) => node.id === "agent:project:Implementer")
   expect(agent?.kind).toBe("agent")
-  expect(agent?.depth).toBe(2)
+  expect(agent?.depth).toBe(3)
   expect(childrenOf(nodes, "agent:project:Implementer").map((node) => node.label)).toEqual([
     "Models",
     "Tools",
@@ -143,9 +152,9 @@ test("Implementer subtree shape under the project root", () => {
 test("identical subtree under each of the three roots", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   for (const [level, agent, depth] of [
-    ["project", "Implementer", 2],
-    ["global", "Helper", 2],
-    ["defaults", "Template", 2],
+    ["project", "Implementer", 3],
+    ["global", "Helper", 3],
+    ["defaults", "Template", 3],
   ] as const) {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
@@ -165,7 +174,12 @@ test("Defaults holds Agents, Teams, plus the six shared inventories in order", (
     "group:defaults::system",
     "group:defaults::mcp",
   ])
-  expect(childrenOf(nodes, "group:defaults:agents").map((node) => node.id)).toEqual(["agent:defaults:Template"])
+  expect(childrenOf(nodes, "group:defaults:agents").map((node) => node.id)).toEqual([
+    "group:defaults:agents:native",
+    "group:defaults:agents:plus",
+    "group:defaults:agents:user",
+  ])
+  expect(childrenOf(nodes, "group:defaults:agents:user").map((node) => node.id)).toEqual(["agent:defaults:Template"])
   const shared = nodes.find((node) => node.id === "item:defaults::mcp:sample")
   expect(shared?.address).toEqual({ level: "defaults", agent: null, item: "mcp:sample", section: null })
 })
@@ -173,9 +187,19 @@ test("Defaults holds Agents, Teams, plus the six shared inventories in order", (
 test("Project and Global hold Agents and Teams groups", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents", "group:project:teams"])
-  expect(childrenOf(nodes, "group:project:agents").map((node) => node.id)).toEqual(["agent:project:Implementer"])
+  expect(childrenOf(nodes, "group:project:agents").map((node) => node.id)).toEqual([
+    "group:project:agents:native",
+    "group:project:agents:plus",
+    "group:project:agents:user",
+  ])
+  expect(childrenOf(nodes, "group:project:agents:user").map((node) => node.id)).toEqual(["agent:project:Implementer"])
   expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents", "group:global:teams"])
-  expect(childrenOf(nodes, "group:global:agents").map((node) => node.id)).toEqual(["agent:global:Helper"])
+  expect(childrenOf(nodes, "group:global:agents").map((node) => node.id)).toEqual([
+    "group:global:agents:native",
+    "group:global:agents:plus",
+    "group:global:agents:user",
+  ])
+  expect(childrenOf(nodes, "group:global:agents:user").map((node) => node.id)).toEqual(["agent:global:Helper"])
 })
 
 test("Teams group sits beside Agents at all three levels", () => {
@@ -258,6 +282,64 @@ test("member rows are informational: no address, no actions, depth 3", () => {
     expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
     expect(member?.badges.state).toBeUndefined()
   }
+})
+
+test("team rows carry add agent while member rows carry no add", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
+  })
+  expect(nodes.find((node) => node.id === "team:project:crew")?.add).toBe("agent")
+  expect(nodes.find((node) => node.id === "team:project:crew:alpha")?.add).toBeUndefined()
+})
+
+test("team member rows expand to full agent subtrees with team-prefixed groups", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project", team: "crew", enabled: false, agents: ["CrewMate"] }],
+  })
+  const member = nodes.find((node) => node.id === "team:project:crew:CrewMate")
+  expect(member?.kind).toBe("team")
+  expect(member?.depth).toBe(3)
+  expect(member?.address).toBeUndefined()
+  expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
+    "group:project:crew/:CrewMate:models",
+    "group:project:crew/:CrewMate:tools",
+    "group:project:crew/:CrewMate:base",
+    "group:project:crew/:CrewMate:skills",
+    "group:project:crew/:CrewMate:system",
+  ])
+  const implementerTools = nodes
+    .filter((node) => node.id.startsWith("item:project:Implementer:tool:"))
+    .map((node) => node.id.replace("item:project:Implementer:", "item:project:CrewMate:"))
+    .sort()
+  expect(implementerTools.length).toBeGreaterThan(0)
+  for (const id of implementerTools) {
+    expect(nodes.some((node) => node.id === id)).toBe(true)
+  }
+  const base = nodes.find((node) => node.id === "item:project:CrewMate:base:claude")
+  expect(base).toBeDefined()
+  expect(base?.address?.agent).toBe("CrewMate")
+})
+
+test("registered team member yields its Role/persona under System", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: [...agents(), { id: "CrewMate", scope: "project", base: "gpt" }],
+    teams: [{ level: "project", team: "crew", enabled: false, agents: ["CrewMate"] }],
+  })
+  const role = nodes.find((node) => node.id === "item:project:CrewMate:system:role")
+  expect(role).toBeDefined()
+  expect(role?.address).toEqual({ level: "project", agent: "CrewMate", item: "system:role", section: null })
+  const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
+  expect(systemGroup).toBeDefined()
+  expect(childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:CrewMate:system:role")).toBe(true)
 })
 
 test("a level with no teams renders an empty Teams group with the add affordance", () => {
@@ -429,7 +511,7 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
     { level: "project", agent: "Implementer", item: "system:role", section: "purpose" },
     { level: "project", agent: "Implementer", item: "system:role", section: "usage" },
   ])
-  expect(sections.map((node) => node.depth)).toEqual([5, 5])
+  expect(sections.map((node) => node.depth)).toEqual([6, 6])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
 })
@@ -495,7 +577,7 @@ test("review rolls up to Native, Tools, Implementer, Agents, and Project while c
   const root = collapsed.find((node) => node.id === "root:project")
   expect(root?.badges.review).toBe(true)
   expect(root?.badges.reviewCount).toBe(1)
-  const agentOnly = tree({ ...input, expanded: new Set(["root:project", "group:project:agents"]) })
+  const agentOnly = tree({ ...input, expanded: new Set(["root:project", "group:project:agents", "group:project:agents:user"]) })
   const agentNode = agentOnly.find((node) => node.id === "agent:project:Implementer")
   expect(agentNode?.badges.review).toBe(true)
   expect(agentNode?.badges.reviewCount).toBe(1)
@@ -503,6 +585,7 @@ test("review rolls up to Native, Tools, Implementer, Agents, and Project while c
   for (const id of [
     "root:project",
     "group:project:agents",
+    "group:project:agents:user",
     "agent:project:Implementer",
     "group:project:Implementer:tools",
     "group:project:Implementer:tools:native",
@@ -515,7 +598,12 @@ test("review rolls up to Native, Tools, Implementer, Agents, and Project while c
 })
 
 test("add affordances land on exactly the listed groups", () => {
-  const nodes = expandAll({ items: items(), records: [], agents: agents() })
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
+  })
   const adds = new Map(nodes.filter((node) => node.add !== undefined).map((node) => [node.id, node.add]))
   expect(adds.get("root:project")).toBeUndefined()
   expect(adds.get("root:global")).toBeUndefined()
@@ -523,10 +611,22 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:project:agents")).toBe("agent")
   expect(adds.get("group:global:agents")).toBe("agent")
   expect(adds.get("group:defaults:agents")).toBe("agent")
+  expect(adds.get("group:project:agents:user")).toBe("agent")
+  expect(adds.get("group:global:agents:user")).toBe("agent")
+  expect(adds.get("group:defaults:agents:user")).toBe("agent")
+  expect(adds.get("group:project:agents:native")).toBeUndefined()
+  expect(adds.get("group:project:agents:native:special")).toBeUndefined()
+  expect(adds.get("group:project:agents:plus")).toBeUndefined()
+  expect(adds.get("group:global:agents:native")).toBeUndefined()
+  expect(adds.get("group:global:agents:plus")).toBeUndefined()
+  expect(adds.get("group:defaults:agents:native")).toBeUndefined()
+  expect(adds.get("group:defaults:agents:plus")).toBeUndefined()
   expect(adds.get("group:project:teams")).toBe("team")
   expect(adds.get("group:global:teams")).toBe("team")
   expect(adds.get("group:defaults:teams")).toBe("team")
   expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(true)
+  expect(adds.get("team:project:crew")).toBe("agent")
+  expect(adds.get("team:project:crew:alpha")).toBeUndefined()
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
   expect(adds.get("group:project:Implementer:skills:project")).toBe("skill")
@@ -557,6 +657,23 @@ test("expansion emits only expanded children", () => {
   expect(agentsGroup.map((node) => node.id)).toEqual([
     "root:project",
     "group:project:agents",
+    "group:project:agents:native",
+    "group:project:agents:plus",
+    "group:project:agents:user",
+    "group:project:teams",
+    "root:global",
+    "root:defaults",
+  ])
+  const userGroup = tree({
+    ...input,
+    expanded: new Set(["root:project", "group:project:agents", "group:project:agents:user"]),
+  })
+  expect(userGroup.map((node) => node.id)).toEqual([
+    "root:project",
+    "group:project:agents",
+    "group:project:agents:native",
+    "group:project:agents:plus",
+    "group:project:agents:user",
     "agent:project:Implementer",
     "group:project:teams",
     "root:global",
@@ -564,11 +681,14 @@ test("expansion emits only expanded children", () => {
   ])
   const agent = tree({
     ...input,
-    expanded: new Set(["root:project", "group:project:agents", "agent:project:Implementer"]),
+    expanded: new Set(["root:project", "group:project:agents", "group:project:agents:user", "agent:project:Implementer"]),
   })
   expect(agent.map((node) => node.id)).toEqual([
     "root:project",
     "group:project:agents",
+    "group:project:agents:native",
+    "group:project:agents:plus",
+    "group:project:agents:user",
     "agent:project:Implementer",
     "group:project:Implementer:models",
     "group:project:Implementer:tools",
@@ -707,12 +827,12 @@ test("Code Mode groups nest origin › Code Mode › namespace with exact ids", 
   expect(childrenOf(nodes, native).map((node) => node.label)).toEqual(["aaa", "bash", "execute", "Code Mode"])
   const code = `${native}:codemode`
   expect(nodes.find((node) => node.id === code)?.label).toBe("Code Mode")
-  expect(nodes.find((node) => node.id === code)?.depth).toBe(5)
+  expect(nodes.find((node) => node.id === code)?.depth).toBe(6)
   // Namespace-less tools hang directly off the Code Mode group, ahead of the
   // sorted namespace groups.
   expect(childrenOf(nodes, code).map((node) => node.label)).toEqual(["lonely", "fs"])
   expect(childrenOf(nodes, `${code}:fs`).map((node) => node.label)).toEqual(["read", "write"])
-  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.depth).toBe(7)
+  expect(nodes.find((node) => node.id === "item:project:Implementer:tool:read")?.depth).toBe(8)
   const plus = "group:project:Implementer:tools:plus"
   expect(childrenOf(nodes, plus).map((node) => node.label)).toEqual(["plus-one", "Code Mode"])
   expect(childrenOf(nodes, `${plus}:codemode`).map((node) => node.label)).toEqual(["plusns"])
@@ -986,6 +1106,48 @@ test("native tool rows list perm rows directly after sections with editable rule
   expect(custom?.actions?.pin).toBe(false)
 })
 
+test("agents split into Native, Special, Plus and User origin subgroups", () => {
+  const originAgents: AgentSource[] = [
+    { id: "build", scope: "project", origin: "native" },
+    { id: "explore", scope: "project", origin: "special" },
+    { id: "teammate", scope: "project", origin: "plus" },
+    { id: "mine", scope: "project", origin: "user" },
+  ]
+  const nodes = expandAll({ items: [], records: [], agents: originAgents })
+  expect(childrenOf(nodes, "group:project:agents").map((node) => node.id)).toEqual([
+    "group:project:agents:native",
+    "group:project:agents:plus",
+    "group:project:agents:user",
+  ])
+  expect(nodes.find((node) => node.id === "group:project:agents:native")?.depth).toBe(2)
+  expect(nodes.find((node) => node.id === "group:project:agents:native:special")?.depth).toBe(3)
+  expect(nodes.find((node) => node.id === "group:project:agents:plus")?.depth).toBe(2)
+  expect(nodes.find((node) => node.id === "group:project:agents:user")?.depth).toBe(2)
+  expect(childrenOf(nodes, "group:project:agents:native").map((node) => node.id)).toEqual([
+    "agent:project:build",
+    "group:project:agents:native:special",
+  ])
+  expect(childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)).toEqual(["agent:project:explore"])
+  expect(childrenOf(nodes, "group:project:agents:plus").map((node) => node.id)).toEqual(["agent:project:teammate"])
+  expect(childrenOf(nodes, "group:project:agents:user").map((node) => node.id)).toEqual(["agent:project:mine"])
+  expect(nodes.find((node) => node.id === "agent:project:build")?.depth).toBe(3)
+  expect(nodes.find((node) => node.id === "agent:project:explore")?.depth).toBe(4)
+  expect(nodes.find((node) => node.id === "agent:project:teammate")?.depth).toBe(3)
+  expect(nodes.find((node) => node.id === "agent:project:mine")?.depth).toBe(3)
+  // Agent rows keep the origin-free id.
+  expect(nodes.some((node) => node.id === "agent:project:build")).toBe(true)
+  // Empty levels still emit all four subgroup ids.
+  const empty = expandAll({ items: [], records: [], agents: [] })
+  for (const id of [
+    "group:project:agents:native",
+    "group:project:agents:native:special",
+    "group:project:agents:plus",
+    "group:project:agents:user",
+  ]) {
+    expect(empty.some((node) => node.id === id)).toBe(true)
+  }
+})
+
 test("empty rule sets emit no perm rows but the tool still offers the add choice", () => {
   const nodes = expandAll({
     items: [makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "shell tool" })],
@@ -1035,4 +1197,27 @@ test("perm rows order most-mentioned first, not title order", () => {
   if (!toolRow) throw new Error("expected shell tool row")
   const rows = childrenOf(nodes, toolRow.id).filter((node) => node.address?.item.startsWith("perm:"))
   expect(rows.map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa generic"])
+})
+
+test("nested agent id and team member group ids never collide", () => {
+  // A project agent literally named `crew/alpha` and a project team `crew`
+  // with member `alpha` would both produce `group:project:crew/alpha:models`
+  // under the old bare-`/` scheme. The `/:` marker keeps them distinct.
+  const nodes = expandAll({
+    items: items(),
+    records: [{ type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "shared", updated: UPDATED }],
+    agents: [{ id: "crew/alpha", scope: "project", origin: "user" }],
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
+  })
+  const agentModels = "group:project:crew/alpha:models"
+  const teamModels = "group:project:crew/:alpha:models"
+  expect(agentModels).not.toBe(teamModels)
+  expect(nodes.some((node) => node.id === agentModels)).toBe(true)
+  expect(nodes.some((node) => node.id === teamModels)).toBe(true)
+  const agentKids = childrenOf(nodes, agentModels)
+  const teamKids = childrenOf(nodes, teamModels)
+  expect(agentKids.length).toBeGreaterThan(0)
+  expect(teamKids.length).toBeGreaterThan(0)
+  for (const kid of agentKids) expect(kid.address?.agent).toBe("crew/alpha")
+  for (const kid of teamKids) expect(kid.address?.agent).toBe("alpha")
 })

@@ -32,6 +32,8 @@ export function active(model: { readonly id: string; readonly name: string }) {
   if (id.includes("kimi")) return "kimi"
   if (id.includes("trinity")) return "trinity"
   if (id.includes("muse")) return "muse"
+  if (id.includes("claude")) return "claude"
+  if (id.includes("gemini")) return "gemini"
   return "general"
 }
 

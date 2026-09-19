@@ -286,9 +286,9 @@ test("project, global, and defaults agents resolve by file location with active 
   })
 
   expect(discovered.agents).toEqual([
-    { id: "planner", scope: "project", path: path.join(directory, ".opencode", "agent", "planner.md"), base: "gpt" },
-    { id: "reviewer", scope: "global", path: path.join(global, "agents", "reviewer.md") },
-    { id: "ghost", scope: "defaults" },
+    { id: "planner", scope: "project", path: path.join(directory, ".opencode", "agent", "planner.md"), base: "gpt", origin: "user" },
+    { id: "reviewer", scope: "global", path: path.join(global, "agents", "reviewer.md"), origin: "user" },
+    { id: "ghost", scope: "defaults", origin: "user" },
   ])
 })
 
@@ -711,8 +711,8 @@ test("a project agent shadowing a global file keeps both scopes", async () => {
     activeBase: noBase,
   })
   expect(discovered.agents).toEqual([
-    { id: "alpha", scope: "project", path: path.join(directory, ".opencode", "agent", "alpha.md") },
-    { id: "alpha", scope: "global", path: path.join(global, "agents", "alpha.md") },
+    { id: "alpha", scope: "project", path: path.join(directory, ".opencode", "agent", "alpha.md"), origin: "user" },
+    { id: "alpha", scope: "global", path: path.join(global, "agents", "alpha.md"), origin: "user" },
   ])
   const scopes = scopesOf(discovered.agents)
   expect(scopes.global.has("alpha")).toBe(true)
@@ -741,8 +741,8 @@ test("a project agent shadowing a builtin keeps the defaults identity", async ()
     activeBase: noBase,
   })
   expect(discovered.agents).toEqual([
-    { id: "build", scope: "project", path: path.join(directory, ".opencode", "agent", "build.md") },
-    { id: "build", scope: "defaults" },
+    { id: "build", scope: "project", path: path.join(directory, ".opencode", "agent", "build.md"), origin: "user" },
+    { id: "build", scope: "defaults", origin: "native" },
   ])
   const scopes = scopesOf(discovered.agents)
   expect(scopes.defaults.has("build")).toBe(true)
@@ -1064,4 +1064,78 @@ test("structured frontmatter models decode like the host ConfigModel.Selection",
     activeBase: noBase,
   })
   expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
+})
+
+test("base classification follows the Plus-active model, not the upstream", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "f.md"), "f body\n")
+  const hostAgents = [agent("f", "f upstream", modelRef("acme", "nova-1"))]
+  const classify = (candidate: { model?: { id?: unknown } }): string | undefined => {
+    const id = typeof candidate.model?.id === "string" ? candidate.model.id : ""
+    if (id === "claude-fable-5") return "claude"
+    if (id === "nova-1") return "general"
+    return undefined
+  }
+  const withoutRecord = await discover({
+    ctx: fullContext({ directory, agents: hostAgents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: classify as (agent: Agent.Info) => string | undefined,
+  })
+  expect(withoutRecord.agents.find((entry) => entry.id === "f")?.base).toBe("general")
+  const withRecord = await discover({
+    ctx: fullContext({ directory, agents: hostAgents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: classify as (agent: Agent.Info) => string | undefined,
+    modelRecords: [
+      {
+        type: "model",
+        level: "project",
+        agent: "f",
+        providerID: "cliproxyapi",
+        modelID: "claude-fable-5",
+        variant: "max",
+        active: true,
+        updated: UPDATED,
+      },
+    ],
+  })
+  expect(withRecord.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
+})
+
+test("built-ins split into native and special origins with file-backed user", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const ids = ["build", "plan", "explore", "title", "summary", "compaction", "general", "custom"]
+  const hostAgents = ids.map((id) => agent(id, `${id} prompt`))
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents: hostAgents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const byId = new Map(discovered.agents.map((entry) => [entry.id, entry]))
+  expect(byId.get("build")).toMatchObject({ scope: "defaults", origin: "native" })
+  expect(byId.get("plan")).toMatchObject({ scope: "defaults", origin: "native" })
+  for (const id of ["explore", "title", "summary", "compaction", "general"]) {
+    expect(byId.get(id)).toMatchObject({ scope: "defaults", origin: "special" })
+  }
+  expect(byId.get("custom")).toMatchObject({ scope: "defaults", origin: "user" })
+  // A file-backed built-in id is user-owned, not native/special.
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "build.md"), "# build\n")
+  const fileBacked = await discover({
+    ctx: fullContext({ directory, agents: hostAgents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const built = fileBacked.agents.find((entry) => entry.id === "build" && entry.scope === "project")
+  expect(built).toMatchObject({ scope: "project", origin: "user" })
+  expect(built?.path).toBe(path.join(directory, ".opencode", "agent", "build.md"))
 })

@@ -251,7 +251,9 @@ function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSour
     id: `agent:${level}:${agent.id}`,
     label: agent.id,
     depth,
-    actions: { ...noActions(), remove: true },
+    // Deletion eligibility mirrors removalPlan in ops.ts, which refuses every
+    // scope except project|global. Defaults rows must not advertise `d`.
+    actions: { ...noActions(), remove: level !== "defaults" },
     children: () => [
       lazyModels(ctx, memo, level, agent.id, agent, depth + 1),
       lazyTools(ctx, memo, level, agent.id, agent, depth + 1),
@@ -270,8 +272,72 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     depth: 1,
     add: "agent",
     actions: noActions(),
+    children: () => [lazyNativeAgents(ctx, memo, level), lazyPlusAgents(ctx, memo, level), lazyUserAgents(ctx, memo, level)],
+  })
+}
+
+// Origin subgroups: server-side origin carried on AgentSource, never inferred
+// here from ids or paths. Native holds native agents plus the nested Special
+// subgroup; Plus and User hold their own agents. All four ids are always
+// emitted even when empty; agent rows keep `agent:<level>:<id>`.
+function agentOriginOf(agent: AgentSource): "native" | "special" | "plus" | "user" {
+  if (agent.origin === "native" || agent.origin === "special" || agent.origin === "plus" || agent.origin === "user")
+    return agent.origin
+  return "user"
+}
+
+function lazyNativeAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:native`,
+    label: "Native",
+    depth: 2,
+    actions: noActions(),
+    children: () => [
+      ...ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "native")
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      lazySpecialAgents(ctx, memo, level),
+    ],
+  })
+}
+
+function lazySpecialAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:native:special`,
+    label: "Special",
+    depth: 3,
+    actions: noActions(),
     children: () =>
-      ctx.agents.filter((agent) => agent.scope === level).map((agent) => lazyAgent(ctx, memo, level, agent, 2)),
+      ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "special")
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 4)),
+  })
+}
+
+function lazyPlusAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:plus`,
+    label: "Plus",
+    depth: 2,
+    actions: noActions(),
+    children: () =>
+      ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "plus").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+  })
+}
+
+function lazyUserAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:agents:user`,
+    label: "User",
+    depth: 2,
+    add: "agent",
+    actions: noActions(),
+    children: () =>
+      ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "user").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
   })
 }
 
@@ -283,8 +349,11 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 // empty level still advertises team creation. `add` there still creates at
 // project or global scope, never defaults: pressing `a` opens the existing
 // addTeam flow, which prompts for a project/global scope. Member agent ids
-// hang under each team row as informational rows: they carry no address and
-// no actions, so space, enter, delete, and reset all ignore them.
+// hang under each team row with the same five groups an Agents-group agent
+// renders (Models, Tools, Base, Skills, System): the member rows themselves
+// carry no address and no toggle, while their descendants address the same
+// records as the Agents-group rows (level + agent + item) with working
+// toggle/edit/reset.
 function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
   const teams = ctx.teams
     .filter((team) => team.level === level)
@@ -297,31 +366,49 @@ function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
       depth: 1,
       add: "team",
       actions: noActions(),
-      children: () => teams.map((team) => lazyTeam(memo, level, team)),
+      children: () => teams.map((team) => lazyTeam(ctx, memo, level, team)),
     }),
   ]
 }
 
-function lazyTeam(memo: Memo, level: Level, team: TeamInput): Lazy {
+function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: string, member: string, depth: number): Lazy {
+  const agent = ctx.agents.find((entry) => entry.id === member && entry.scope === level) ?? ctx.agents.find((entry) => entry.id === member) ?? null
+  const owner = member
+  // Team-member group ids use `/:` between team and member. Agent ids forbid
+  // `:` (validateAgentId in agents/files.ts) while team names allow it, so an
+  // owner containing `:` can only be a team member group and never collides
+  // with a nested agent id like `crew/alpha` (`/` alone is legal in agent
+  // ids). The `/` is kept so the existing `group:<level>:<team>/` prefix still
+  // matches; the extra `:` is the disambiguator. Team names never contain
+  // `/`, so the split on the first `/` stays unambiguous even for colon team
+  // names and nested member ids.
+  return branch(memo, {
+    kind: "team",
+    id: `team:${level}:${team}:${member}`,
+    label: member,
+    depth,
+    actions: noActions(),
+    children: () => [
+      lazyModels(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:models`),
+      lazyTools(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:tools`),
+      lazyBase(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:base`),
+      lazySkills(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:skills`),
+      lazySystem(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:system`),
+    ],
+  })
+}
+
+function lazyTeam(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput): Lazy {
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `team:${level}:${team.team}`, () =>
-      team.agents.map((member) => ({
-        id: `team:${level}:${team.team}:${member}`,
-        kind: "team" as const,
-        label: member,
-        depth: 3,
-        actions: noActions(),
-        selfReview: () => false,
-        partial: () => ({}),
-        reviewCount: () => 0,
-        children: () => [],
-      })),
+      team.agents.map((member) => lazyTeamMember(ctx, memo, level, team.team, member, 3)),
     )
   return {
     id: `team:${level}:${team.team}`,
     kind: "team",
     label: team.team,
     depth: 2,
+    add: "agent",
     actions: { ...noActions(), toggle: true },
     selfReview: () => false,
     partial: () => ({ state: team.enabled ? ("on" as const) : ("off" as const) }),
@@ -366,8 +453,9 @@ function lazyModels(
   owner: string | null,
   agent: AgentSource | null,
   depth: number,
+  groupId?: string,
 ): Lazy {
-  const prefix = `group:${level}:${owner ?? ""}:models`
+  const prefix = groupId ?? `group:${level}:${owner ?? ""}:models`
   return branch(memo, {
     kind: "group",
     id: prefix,
@@ -459,8 +547,9 @@ function lazyTools(
   owner: string | null,
   agent: AgentSource | null,
   depth: number,
+  groupId?: string,
 ): Lazy {
-  const prefix = `group:${level}:${owner ?? ""}:tools`
+  const prefix = groupId ?? `group:${level}:${owner ?? ""}:tools`
   return branch(memo, {
     kind: "group",
     id: prefix,
@@ -486,8 +575,9 @@ function lazySkills(
   owner: string | null,
   agent: AgentSource | null,
   depth: number,
+  groupId?: string,
 ): Lazy {
-  const prefix = `group:${level}:${owner ?? ""}:skills`
+  const prefix = groupId ?? `group:${level}:${owner ?? ""}:skills`
   return branch(memo, {
     kind: "group",
     id: prefix,
@@ -555,10 +645,11 @@ function lazyBase(
   owner: string | null,
   agent: AgentSource | null,
   depth: number,
+  groupId?: string,
 ): Lazy {
   return branch(memo, {
     kind: "group",
-    id: `group:${level}:${owner ?? ""}:base`,
+    id: groupId ?? `group:${level}:${owner ?? ""}:base`,
     label: "Base",
     depth,
     add: "base",
@@ -574,10 +665,11 @@ function lazySystem(
   owner: string | null,
   agent: AgentSource | null,
   depth: number,
+  groupId?: string,
 ): Lazy {
   return branch(memo, {
     kind: "group",
-    id: `group:${level}:${owner ?? ""}:system`,
+    id: groupId ?? `group:${level}:${owner ?? ""}:system`,
     label: "System",
     depth,
     add: "instruction",

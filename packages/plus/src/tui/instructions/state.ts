@@ -298,11 +298,19 @@ export function createInstructionsState(context: Plugin.Context) {
     if (!current) return false
     const entry = current.agents.find((candidate) => candidate.id === agentId)
     if (!entry) return false
+    const origin = entry.origin ?? "user"
     const next = new Set(expanded())
     // Agents live under their level's Agents group at every level, so reveal
-    // the whole chain down to the agent.
+    // the whole chain down to the agent through the origin subgroup. Special
+    // agents nest under Native, so they need both the Native parent and the
+    // native:special child; other origins need only their own subgroup.
     next.add(`root:${entry.scope}`)
     next.add(`group:${entry.scope}:agents`)
+    next.add(`group:${entry.scope}:agents:${origin}`)
+    if (origin === "special") {
+      next.add(`group:${entry.scope}:agents:native`)
+      next.add(`group:${entry.scope}:agents:native:special`)
+    }
     setExpanded(next)
     setSelectedId(`agent:${entry.scope}:${agentId}`)
     return true

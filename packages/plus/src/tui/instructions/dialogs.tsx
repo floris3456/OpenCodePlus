@@ -52,7 +52,15 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   }
 
   async function addKind(kind: AddKind, node?: TreeNode): Promise<void> {
-    if (kind === "agent") return addAgent()
+    if (kind === "agent") {
+      // Team rows carry `add: "agent"`; member rows are also kind "team" but
+      // carry no `add`, so this keeps member rows on the ordinary agent path.
+      // The level prefix is fixed, the entire remainder is the team name so
+      // colon and multiline team names still route to team.addAgent.
+      if (node?.kind === "team" && node.add === "agent" && node.id.match(/^team:(project|global|defaults):(.+)$/s) !== null)
+        return addTeamAgent(node)
+      return addAgent()
+    }
     if (kind === "base") return addBase()
     if (kind === "skill") return addSkill()
     if (kind === "instruction") return addInstruction()
@@ -151,6 +159,82 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       context.ui.toast.show({ variant: "success", message: `Created agent ${id} at ${ref.path}` })
       context.ui.dialog.clear()
       context.ui.router.navigate({ type: "plugin", name: "instructions", data: { agent: id } })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  async function addTeamAgent(node: TreeNode): Promise<void> {
+    if (disposed) return
+    // Member rows are kind "team" with no `add`; only team rows (add: "agent")
+    // take this path. The team name is the entire remainder so colons and
+    // line terminators survive.
+    if (node.add !== "agent") {
+      context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
+      return
+    }
+    const match = node.id.match(/^team:(project|global|defaults):(.+)$/s)
+    if (match === null) {
+      context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
+      return
+    }
+    const level = match[1] as "project" | "global" | "defaults"
+    const team = match[2] as string
+    let templates: { id: string }[] = []
+    try {
+      const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
+      if (disposed) return
+      templates = snapshot.agents.filter((entry) => entry.scope === "defaults").map((entry) => ({ id: entry.id }))
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+      return
+    }
+    const template = await context.ui.dialog.select<string>({
+      title: "Agent template",
+      placeholder: "Select a Defaults template",
+      options: [
+        { title: "Blank", value: "", description: "Start with an empty prompt" },
+        ...templates.map((entry) => ({ title: entry.id, value: entry.id })),
+      ],
+    })
+    if (disposed) return
+    if (template === undefined) return
+    const raw = await context.ui.dialog.prompt({
+      title: "Create agent",
+      description: "Agent id; use / for nesting. .. is not allowed.",
+      placeholder: "my-agent",
+    })
+    if (disposed) return
+    if (raw === undefined) return
+    const id = raw.trim()
+    if (id.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
+      return
+    }
+    const prompt = await context.ui.dialog.prompt({
+      title: "Agent prompt",
+      description: template ? `Starting from template ${template}` : "Starting prompt",
+      placeholder: "You are a helpful assistant",
+    })
+    if (disposed) return
+    if (prompt === undefined) return
+    try {
+      const ref = await plus["team.addAgent"](
+        {
+          level,
+          team,
+          id,
+          ...(template ? { template } : {}),
+          prompt,
+        },
+        { location: context.location },
+      )
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Created agent ${id} in team ${team} at ${ref.path}` })
+      context.ui.dialog.clear()
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return
@@ -273,9 +357,29 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   async function addTeam(_node?: TreeNode): Promise<void> {
     void _node
     if (disposed) return
+    let templates: { team: string }[] = []
+    try {
+      const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
+      if (disposed) return
+      templates = (snapshot.teams ?? []).filter((entry) => entry.level === "defaults").map((entry) => ({ team: entry.team }))
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+      return
+    }
+    const template = await context.ui.dialog.select<string>({
+      title: "Team template",
+      placeholder: "Select a Defaults template",
+      options: [
+        { title: "Blank", value: "", description: "Start with an empty team" },
+        ...templates.map((entry) => ({ title: entry.team, value: entry.team })),
+      ],
+    })
+    if (disposed) return
+    if (template === undefined) return
     const raw = await context.ui.dialog.prompt({
       title: "Team name",
-      description: "Team name; no slashes or ..",
+      description: template ? `Starting from template ${template}` : "Team name; no slashes or ..",
       placeholder: "my-team",
     })
     if (disposed) return
@@ -295,7 +399,10 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (disposed) return
     if (scope === undefined) return
     try {
-      const ref = await plus["team.create"]({ level: scope, team }, { location: context.location })
+      const ref = await plus["team.create"](
+        { level: scope, team, ...(template ? { template } : {}) },
+        { location: context.location },
+      )
       if (disposed) return
       context.ui.toast.show({ variant: "success", message: `Created team ${ref.team}` })
       await state.refresh()
@@ -319,6 +426,16 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (owner === "") {
       if (level !== "defaults") return undefined
       return { level, agent: null }
+    }
+    // Team-member groups carry `/:` between team and member (agent ids forbid
+    // `:`, team names allow it), so an owner containing `/:` is a team group
+    // and never a nested agent id like `crew/alpha`. Team names never contain
+    // `/`, so the member is everything after the first `/` with the leading
+    // `:` stripped, even for colon team names and nested member ids.
+    const slash = owner.indexOf("/")
+    if (slash !== -1 && owner[slash + 1] === ":") {
+      const member = owner.slice(slash + 2)
+      if (member.length > 0) return { level, agent: member }
     }
     return { level, agent: owner }
   }
@@ -655,7 +772,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, editRule, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, editRule, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>
