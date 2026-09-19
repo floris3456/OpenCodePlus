@@ -34,17 +34,8 @@ function canReset(node: TreeNode | undefined): boolean {
   return node?.address !== undefined && node?.actions?.reset === true
 }
 
-function canRemove(node: TreeNode | undefined): boolean {
-  return node?.actions?.remove === true
-}
-
-// d is offered on every item and section row, not just removable ones, so
-// state.remove can explain why upstream-owned rows cannot be deleted.
-// Structural rows (roots, groups, agents without remove) keep no binding.
 function canDelete(node: TreeNode | undefined): boolean {
-  if (node === undefined) return false
-  if (node.actions?.remove === true) return true
-  return node.kind === "item" || node.kind === "section"
+  return node?.actions?.remove === true
 }
 
 function canSplit(node: TreeNode | undefined): boolean {
