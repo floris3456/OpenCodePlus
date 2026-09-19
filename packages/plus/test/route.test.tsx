@@ -1734,7 +1734,7 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
     snapshots: [],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["fresh"], selects: ["", "project"] },
+    dialogs: { prompts: ["fresh"], selects: [""] },
     render: (context) => {
       const rpc = context.client.rpc(Definition)
       const wired = {
@@ -1753,13 +1753,15 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // The empty Teams group is always present beside Agents: `a` on it
-    // prompts for a name then a project/global scope.
+    // prompts for a template then a name, taking project scope from the cursor.
     await moveTo(fixture, "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => teamCreates.length === 1)
     const call = teamCreates[0]
     expect(teamCreates).toEqual([{ level: "project", team: "fresh" }])
     expect("template" in call).toBe(false)
+    expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Team template"])
+    expect(fixture.captureCharFrame()).not.toContain("Team scope")
     // The create republishes: refresh pulls a fresh snapshot whose teams
     // entry reads disabled, and the rebuilt tree shows the new off row.
     await fixture.waitForFrame(() => (liveSnapshots[liveSnapshots.length - 1].teams ?? []).length === 1)
@@ -2471,6 +2473,150 @@ test("a on a team row with an internal newline calls team.addAgent with the mult
     const titles = fixture.fake.dialogSelects.map(([title]) => title)
     expect(titles).toContain("Agent template")
     expect(titles.some((title) => title === "Add")).toBe(false)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("team create from a template on group:project:teams keeps template name and cursor level without scope dialog", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-template-project-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  const teamCreates: { level: string; team: string; template?: string }[] = []
+  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string; template?: string }) => {
+    teamCreates.push({ ...input })
+    return Effect.runPromise(handlers["team.create"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  let promptOptions: { title?: string; value?: string; placeholder?: string } | undefined
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["opencodeplus-team"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.create": wrappedTeamCreate,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      const basePrompt = context.ui.dialog.prompt
+      context.ui.dialog.prompt = async (input) => {
+        promptOptions = input as typeof promptOptions
+        const scripted = await basePrompt(input)
+        return scripted !== undefined ? scripted : (input as { value?: string }).value
+      }
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamCreates.length === 1)
+    expect(teamCreates).toEqual([
+      { level: "project", team: "opencodeplus-team", template: "opencodeplus-team" },
+    ])
+    expect(promptOptions).toMatchObject({
+      title: "Team name",
+      value: "opencodeplus-team",
+      placeholder: "my-team",
+    })
+    const selectTitles = fixture.fake.dialogSelects.map(([title]) => title)
+    expect(selectTitles).toEqual(["Team template"])
+    expect(selectTitles).not.toContain("Team scope")
+    expect(fixture.captureCharFrame()).not.toContain("Team scope")
+
+    await fixture.waitForFrame(() =>
+      (liveSnapshots[liveSnapshots.length - 1].teams ?? []).some(
+        (t) => t.level === "project" && t.team === "opencodeplus-team" && !t.enabled,
+      ),
+    )
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "opencodeplus-team")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("opencodeplus-team") && selectedRow(frame).includes("[off]"))
+    const selected = selectedRow(fixture.captureCharFrame())
+    expect(selected).toContain("opencodeplus-team")
+    expect(selected).toContain("[off]")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("team create from a template on group:defaults:teams still prompts for scope", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-template-defaults-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  const teamCreates: { level: string; team: string; template?: string }[] = []
+  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string; template?: string }) => {
+    teamCreates.push({ ...input })
+    return Effect.runPromise(handlers["team.create"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  let promptOptions: { title?: string; value?: string; placeholder?: string } | undefined
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["opencodeplus-team", "project"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.create": wrappedTeamCreate,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      const basePrompt = context.ui.dialog.prompt
+      context.ui.dialog.prompt = async (input) => {
+        promptOptions = input as typeof promptOptions
+        const scripted = await basePrompt(input)
+        return scripted !== undefined ? scripted : (input as { value?: string }).value
+      }
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Teams")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => teamCreates.length === 1)
+    expect(teamCreates).toEqual([
+      { level: "project", team: "opencodeplus-team", template: "opencodeplus-team" },
+    ])
+    expect(promptOptions).toMatchObject({
+      title: "Team name",
+      value: "opencodeplus-team",
+      placeholder: "my-team",
+    })
+    const selectTitles = fixture.fake.dialogSelects.map(([title]) => title)
+    expect(selectTitles).toContain("Team template")
+    expect(selectTitles).toContain("Team scope")
   } finally {
     fixture.destroy()
   }

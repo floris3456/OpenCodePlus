@@ -354,9 +354,10 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  async function addTeam(_node?: TreeNode): Promise<void> {
-    void _node
+  async function addTeam(node?: TreeNode): Promise<void> {
     if (disposed) return
+    const match = node?.id.match(/^group:(project|global|defaults):teams$/)
+    const cursorLevel = match ? (match[1] as "project" | "global" | "defaults") : undefined
     let templates: { team: string }[] = []
     try {
       const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
@@ -381,6 +382,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       title: "Team name",
       description: template ? `Starting from template ${template}` : "Team name; no slashes or ..",
       placeholder: "my-team",
+      ...(template ? { value: template } : {}),
     })
     if (disposed) return
     if (raw === undefined) return
@@ -389,15 +391,20 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       context.ui.toast.show({ variant: "error", message: "Team name cannot be empty" })
       return
     }
-    const scope = await context.ui.dialog.select<"project" | "global">({
-      title: "Team scope",
-      options: [
-        { title: "Project", value: "project", description: "Stored with this project" },
-        { title: "Global", value: "global", description: "Stored in your global config" },
-      ],
-    })
-    if (disposed) return
-    if (scope === undefined) return
+    let scope: "project" | "global" | undefined
+    if (cursorLevel === "project" || cursorLevel === "global") {
+      scope = cursorLevel
+    } else {
+      scope = await context.ui.dialog.select<"project" | "global">({
+        title: "Team scope",
+        options: [
+          { title: "Project", value: "project", description: "Stored with this project" },
+          { title: "Global", value: "global", description: "Stored in your global config" },
+        ],
+      })
+      if (disposed) return
+      if (scope === undefined) return
+    }
     try {
       const ref = await plus["team.create"](
         { level: scope, team, ...(template ? { template } : {}) },
