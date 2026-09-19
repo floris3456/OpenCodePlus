@@ -715,9 +715,8 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
     await expand(fixture)
     await moveTo(fixture, "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
-    expect(binds(fixture)).toContain("d")
-    dispatch(fixture, "d")
-    await fixture.waitForFrame((frame) => frame.includes("is not project-owned"))
+    expect(binds(fixture)).not.toContain("d")
+    expect(fixture.captureCharFrame()).not.toContain("d delete")
     expect(fixture.fake.skillDeletes.length).toBe(0)
     expect(fixture.fake.agentDeletes.length).toBe(0)
     expect(fixture.fake.mcpRemoves.length).toBe(0)
@@ -818,13 +817,51 @@ test("created project instruction deletes through instruction.delete and the row
     await fixture.waitForFrame((frame) => frame.includes("Deleted instruction AGENTS.md"))
     expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
     await fixture.waitForFrame((frame) => !frame.includes("Follow the guide."))
-    // Ancestor row offers d only as a refusal path: the handler would reject
-    // traversal, so state.remove refuses without calling instruction.delete.
     await moveTo(fixture, "../AGENTS.md")
-    expect(binds(fixture)).toContain("d")
-    dispatch(fixture, "d")
-    await fixture.waitForFrame((frame) => frame.includes("is not project-owned"))
-    expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
+    expect(binds(fixture)).not.toContain("d")
+    expect(fixture.captureCharFrame()).not.toContain("d delete")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("tool row does not offer d delete", async () => {
+  const snapshot = createSnapshot({
+    agents: [{ id: "build", scope: "defaults" as const, fileBacked: false }],
+    items: [
+      {
+        id: "tool:read",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "read",
+        text: "read file",
+        enabled: true,
+        fingerprint: "fp-read",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "build")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "read")
+    expect(binds(fixture)).not.toContain("d")
+    const lines = fixture.captureCharFrame().trimEnd().split("\n")
+    const lastLine = lines[lines.length - 1] ?? ""
+    expect(lastLine).not.toContain("d delete")
   } finally {
     fixture.destroy()
   }
