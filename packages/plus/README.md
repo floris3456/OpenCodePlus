@@ -16,7 +16,7 @@ The launcher executes this fork directly from source (the installed `opencode2` 
 
 ## Layout
 
-Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the three holds an `Agents` group (`[a: add agent]`) whose children are the agents with the identical subtree:
+Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each of the three holds an `Agents` group (`[a: add agent]`) whose children are the agents with the identical subtree, plus a `Teams` group (`[a: add team]`) whose member rows (`team:<level>:<team>:<member>`) expand to the same five groups (Models, Tools, Base, Skills, System) with working toggle/edit/reset, whether or not the team is enabled and whether or not the host registered the agent. Member group ids carry the team prefix (`group:<level>:<team>/<member>:models|tools|base|skills|system`) so they never collide with the Agents-group ids; item and section ids stay identical because they address the same records.
 
 ```
 <Agent>

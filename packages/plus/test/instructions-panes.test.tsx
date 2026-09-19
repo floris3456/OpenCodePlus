@@ -320,6 +320,32 @@ test("review and unsupported badges own yellow and nothing else borrows it", () 
   expect(sawUnsupported).toBe(true)
 })
 
+test("team member rows show expand markers like agents", () => {
+  const input = {
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project" as const, team: "crew", enabled: false, agents: ["CrewMate"] }],
+  }
+  const collapsed = tree({ ...input, expanded: new Set(["root:project", "group:project:teams", "team:project:crew"]) })
+  const memberCollapsed = collapsed.find((node) => node.id === "team:project:crew:CrewMate")
+  expect(memberCollapsed).toBeDefined()
+  const collapsedIndex = collapsed.findIndex((node) => node.id === "team:project:crew:CrewMate")
+  expect(hasVisibleChildren(collapsed, collapsedIndex)).toBe(false)
+  expect(rowMarker(memberCollapsed!, false, new Set(["root:project", "group:project:teams", "team:project:crew"]))).toBe("+")
+  const expanded = tree({
+    ...input,
+    expanded: new Set(["root:project", "group:project:teams", "team:project:crew", "team:project:crew:CrewMate"]),
+  })
+  const memberExpanded = expanded.find((node) => node.id === "team:project:crew:CrewMate")
+  expect(memberExpanded).toBeDefined()
+  const expandedIndex = expanded.findIndex((node) => node.id === "team:project:crew:CrewMate")
+  expect(hasVisibleChildren(expanded, expandedIndex)).toBe(true)
+  expect(
+    rowMarker(memberExpanded!, true, new Set(["root:project", "group:project:teams", "team:project:crew", "team:project:crew:CrewMate"])),
+  ).toBe("-")
+})
+
 test("whole-item detail strikes the excluded section range", () => {
   const snap = snapshot([    {
       type: "customization",

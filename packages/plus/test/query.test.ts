@@ -289,6 +289,10 @@ test("team matches team rows, members, and team agents", () => {
   expect(found).toContain("team:project:crew")
   expect(found).toContain("team:project:crew:CrewMate")
   expect(found).toContain("agent:project:CrewMate")
+  for (const group of ["models", "tools", "base", "skills", "system"]) {
+    expect(found).toContain(`group:project:crew/CrewMate:${group}`)
+  }
+  expect(new Set(found).size).toBe(found.length)
   expect(found).not.toContain("team:global:ops")
   expect(ids("team:ops")).toContain("team:global:ops")
   expect(ids("team:nope")).toHaveLength(0)
@@ -464,10 +468,13 @@ test("bare words match label or id exactly like the TUI filter", () => {
   const tree = expandedTree(input())
   for (const word of ["bash", "Implementer", "zz-no-match"]) {
     const lowered = word.toLowerCase()
-    const expected = tree
-      .filter((node) => node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered))
-      .map((node) => node.id)
-      .sort()
+    const expected = [
+      ...new Set(
+        tree
+          .filter((node) => node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered))
+          .map((node) => node.id),
+      ),
+    ].sort()
     const actual = query(input(), { where: word }).rows.map((row) => row.id).sort()
     expect(actual).toEqual(expected)
   }
@@ -572,8 +579,8 @@ test("memo shares one resolve cache with no double resolves", () => {
   expect(memo.whole.size).toBe(0)
   expect(memo.section.size).toBe(0)
   const tree = expandedTree(snapshot)
-  const itemCount = tree.filter((node) => node.kind === "item").length
-  const sectionCount = tree.filter((node) => node.kind === "section").length
+  const itemCount = new Set(tree.filter((node) => node.kind === "item").map((node) => node.id)).size
+  const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
   query(snapshot, { where: "text:e tokens:>0 upstream:e" }, memo)
   expect(memo.whole.size).toBe(itemCount)
   expect(memo.section.size).toBe(sectionCount)
@@ -586,8 +593,8 @@ test("badge-backed queries resolve each address at most once through the shared 
   const snapshot = input()
   const memo = buildMemo(snapshot)
   const tree = expandedTree(snapshot)
-  const itemCount = tree.filter((node) => node.kind === "item").length
-  const sectionCount = tree.filter((node) => node.kind === "section").length
+  const itemCount = new Set(tree.filter((node) => node.kind === "item").map((node) => node.id)).size
+  const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
   const found = query(snapshot, { where: "review:true" }, memo)
   expect(found.total).toBeGreaterThan(0)
   expect(memo.whole.size).toBe(itemCount)

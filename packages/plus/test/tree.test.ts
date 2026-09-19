@@ -260,6 +260,53 @@ test("member rows are informational: no address, no actions, depth 3", () => {
   }
 })
 
+test("team member rows expand to full agent subtrees with team-prefixed groups", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: agents(),
+    teams: [{ level: "project", team: "crew", enabled: false, agents: ["CrewMate"] }],
+  })
+  const member = nodes.find((node) => node.id === "team:project:crew:CrewMate")
+  expect(member?.kind).toBe("team")
+  expect(member?.depth).toBe(3)
+  expect(member?.address).toBeUndefined()
+  expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
+    "group:project:crew/CrewMate:models",
+    "group:project:crew/CrewMate:tools",
+    "group:project:crew/CrewMate:base",
+    "group:project:crew/CrewMate:skills",
+    "group:project:crew/CrewMate:system",
+  ])
+  const implementerTools = nodes
+    .filter((node) => node.id.startsWith("item:project:Implementer:tool:"))
+    .map((node) => node.id.replace("item:project:Implementer:", "item:project:CrewMate:"))
+    .sort()
+  expect(implementerTools.length).toBeGreaterThan(0)
+  for (const id of implementerTools) {
+    expect(nodes.some((node) => node.id === id)).toBe(true)
+  }
+  const base = nodes.find((node) => node.id === "item:project:CrewMate:base:claude")
+  expect(base).toBeDefined()
+  expect(base?.address?.agent).toBe("CrewMate")
+})
+
+test("registered team member yields its Role/persona under System", () => {
+  const nodes = expandAll({
+    items: items(),
+    records: [],
+    agents: [...agents(), { id: "CrewMate", scope: "project", base: "gpt" }],
+    teams: [{ level: "project", team: "crew", enabled: false, agents: ["CrewMate"] }],
+  })
+  const role = nodes.find((node) => node.id === "item:project:CrewMate:system:role")
+  expect(role).toBeDefined()
+  expect(role?.address).toEqual({ level: "project", agent: "CrewMate", item: "system:role", section: null })
+  const systemGroup = nodes.find((node) => node.id === "group:project:crew/CrewMate:system")
+  expect(systemGroup).toBeDefined()
+  expect(childrenOf(nodes, "group:project:crew/CrewMate:system").some((node) => node.id === "item:project:CrewMate:system:role")).toBe(true)
+})
+
 test("a level with no teams renders an empty Teams group with the add affordance", () => {
   // Empty levels still show the group so the feature stays discoverable and
   // creatable: the group carries add:"team" with no team rows underneath.
