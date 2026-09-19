@@ -56,8 +56,8 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       // Team rows carry `add: "agent"`; member rows are also kind "team" but
       // carry no `add`, so this keeps member rows on the ordinary agent path.
       // The level prefix is fixed, the entire remainder is the team name so
-      // colon team names still route to team.addAgent.
-      if (node?.kind === "team" && node.add === "agent" && node.id.match(/^team:(project|global|defaults):(.+)$/) !== null)
+      // colon and multiline team names still route to team.addAgent.
+      if (node?.kind === "team" && node.add === "agent" && node.id.match(/^team:(project|global|defaults):(.+)$/s) !== null)
         return addTeamAgent(node)
       return addAgent()
     }
@@ -169,12 +169,13 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   async function addTeamAgent(node: TreeNode): Promise<void> {
     if (disposed) return
     // Member rows are kind "team" with no `add`; only team rows (add: "agent")
-    // take this path. The team name is the entire remainder so colons survive.
+    // take this path. The team name is the entire remainder so colons and
+    // line terminators survive.
     if (node.add !== "agent") {
       context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
       return
     }
-    const match = node.id.match(/^team:(project|global|defaults):(.+)$/)
+    const match = node.id.match(/^team:(project|global|defaults):(.+)$/s)
     if (match === null) {
       context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
       return
