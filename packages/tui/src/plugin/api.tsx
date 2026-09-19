@@ -22,6 +22,8 @@ import { useStorage } from "../context/storage"
 import { useSessionTabs } from "../context/session-tabs"
 import { useOptionalPanel } from "../context/panel"
 import { abbreviateHome } from "../util/path-format"
+import { useLocal } from "../context/local"
+import { DialogAgent } from "../component/dialog-agent"
 
 export type Dispose = () => Promise<void>
 
@@ -70,6 +72,7 @@ export function usePluginHost() {
     storage: useStorage(),
     sessionTabs: useSessionTabs(),
     panel: useOptionalPanel(),
+    local: useLocal(),
   }
 }
 
@@ -154,6 +157,23 @@ export function createPluginContext(input: {
     ui: {
       dialog: dialogApi,
       toast: toastApi,
+      agents: {
+        groups(provider) {
+          const unregister = host.local.agent.groups(provider)
+          let cleaned = false
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unregister()
+          }
+          input.owned.push(async () => cleanup())
+          return cleanup
+        },
+        activeGroup: host.local.agent.activeGroup,
+        open(options) {
+          host.dialog.replace(() => provide(() => <DialogAgent filter={options?.filter} />))
+        },
+      },
       format: {
         path: (value) => abbreviateHome(value, host.paths.home),
       },

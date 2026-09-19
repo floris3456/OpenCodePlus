@@ -552,7 +552,7 @@ semantics, not an unconditional compatibility guarantee. `updateRule`
 and `removeRule` share one `ruleProtectedRefusal` guard: protection follows
 the matched record's owner, not the caller's row address.
 
-Events: `project.changed`, `instructions.changed`.
+Events: `project.changed`, `instructions.changed`, `teams.changed`.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
@@ -821,6 +821,9 @@ RPC surface (`rpc.ts`, `index.ts`):
   project mode is disabled, `team.invalid` on invalid name or when directory
   escapes the teams root, or `team.unknown` when the team directory is not found.
   Returns `{ level, team, removedMembers }`. Logs `team.delete` with the caller's actor.
+- `team.list` (`Empty` → `TeamListOutput`): returns `{ teams: [{ level, team, enabled, members: [{ id, mode }] }] }`.
+  Cheap read of discovered teams and their enabled states without computing an instructions snapshot.
+  Discovered teams are sorted by level then team name; members are sorted by id in discoverTeams order.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty

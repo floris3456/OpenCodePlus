@@ -1,7 +1,8 @@
 import { createStore } from "solid-js/store"
 import { dedupeWith } from "effect/Array"
 import { createSimpleContext } from "./helper"
-import { batch, createMemo, onCleanup } from "solid-js"
+import { batch, createMemo, createSignal, onCleanup } from "solid-js"
+import type { AgentInfo } from "@opencode/client"
 import { useEvent } from "./event"
 import path from "path"
 import { useTuiPaths } from "./runtime"
@@ -66,12 +67,60 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     function createAgent() {
-      const agents = createMemo(() =>
+      const availableAgents = createMemo(() =>
         (data.location.agent.list(location.ref) ?? []).filter((agent) => agent.mode !== "subagent" && !agent.hidden),
       )
       const visibleAgents = createMemo(() =>
         (data.location.agent.list(location.ref) ?? []).filter((agent) => !agent.hidden),
       )
+      type AgentGroup = { readonly id: string; readonly label: string; readonly agents: readonly string[] }
+      type AgentGroupsProvider = () => readonly AgentGroup[] | undefined
+
+      const [providers, setProviders] = createSignal<AgentGroupsProvider[]>([])
+      const [activeGroupId, setActiveGroupId] = createSignal<string | undefined>(undefined)
+
+      const registeredGroups = createMemo(() => {
+        const result: AgentGroup[] = []
+        for (const provider of providers()) {
+          const groups = provider()
+          if (groups) {
+            result.push(...groups)
+          }
+        }
+        return result
+      })
+
+      const agents = createMemo(() => {
+        const all = availableAgents()
+        const currentGroup = activeGroupId()
+        if (currentGroup !== undefined) {
+          const group = registeredGroups().find((g) => g.id === currentGroup)
+          if (group) {
+            const byId = new Map(all.map((a) => [a.id, a]))
+            return group.agents.map((id) => byId.get(id)).filter((a): a is AgentInfo => a !== undefined)
+          }
+        }
+        const groupedIds = new Set(registeredGroups().flatMap((g) => g.agents))
+        return all.filter((a) => !groupedIds.has(a.id))
+      })
+
+      function groups(): readonly AgentGroup[]
+      function groups(provider: AgentGroupsProvider): () => void
+      function groups(provider?: AgentGroupsProvider): readonly AgentGroup[] | (() => void) {
+        if (provider === undefined) return registeredGroups()
+        setProviders((prev) => [...prev, provider])
+        return () => setProviders((prev) => prev.filter((p) => p !== provider))
+      }
+
+      const activeGroup = {
+        current() {
+          return activeGroupId()
+        },
+        set(id: string | undefined) {
+          setActiveGroupId(id)
+        },
+      }
+
       const [agentStore, setAgentStore] = createStore({
         current: undefined as string | undefined,
         draftBySession: {} as Record<string, { agent?: string } | undefined>,
@@ -95,6 +144,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         list() {
           return agents()
         },
+        all() {
+          return availableAgents()
+        },
+        groups,
+        activeGroup,
         current() {
           const draft = route.data.type === "session" ? agentStore.draftBySession[route.data.sessionID] : undefined
           const selected =
@@ -107,13 +161,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return agents().find((agent) => agent.id === selected) ?? agents().at(0)
         },
         set(id: string) {
-          if (!agents().some((agent) => agent.id === id))
+          const all = availableAgents()
+          const exists = all.some((agent) => agent.id === id)
+          if (!exists)
             return toast.show({
               variant: "warning",
               message: `Agent not found: ${id}`,
               duration: 3000,
             })
           batch(() => {
+            const allGroups = registeredGroups()
+            const matchingGroups = allGroups.filter((g) => g.agents.includes(id))
+            if (matchingGroups.length > 0) {
+              const current = activeGroupId()
+              if (!current || !matchingGroups.some((g) => g.id === current)) {
+                setActiveGroupId(matchingGroups[0].id)
+              }
+            } else {
+              setActiveGroupId(undefined)
+            }
+
             const changed = this.current()?.id !== id
             if (changed) model.remember()
             setAgentStore("current", id)

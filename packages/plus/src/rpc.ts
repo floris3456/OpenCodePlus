@@ -520,6 +520,35 @@ export const TeamDeleteInput = DeleteTeamInput
 export type TeamDeleteResult = DeleteTeamResult
 export const TeamDeleteResult = DeleteTeamResult
 
+export type TeamMemberMode = typeof TeamMemberMode.Type
+export const TeamMemberMode = Schema.Union([
+  Schema.Literal("subagent"),
+  Schema.Literal("primary"),
+  Schema.Literal("all"),
+]).annotate({ identifier: "Plus.TeamMemberMode" })
+
+export interface TeamMemberEntry extends Schema.Schema.Type<typeof TeamMemberEntry> {}
+export const TeamMemberEntry = Schema.Struct({
+  id: Schema.String,
+  mode: TeamMemberMode,
+}).annotate({ identifier: "Plus.TeamMemberEntry" })
+
+export interface TeamListEntry extends Schema.Schema.Type<typeof TeamListEntry> {}
+export const TeamListEntry = Schema.Struct({
+  level: TeamLevel,
+  team: Schema.String,
+  enabled: Schema.Boolean,
+  members: Schema.Array(TeamMemberEntry),
+}).annotate({ identifier: "Plus.TeamListEntry" })
+
+export interface TeamListOutput extends Schema.Schema.Type<typeof TeamListOutput> {}
+export const TeamListOutput = Schema.Struct({
+  teams: Schema.Array(TeamListEntry),
+}).annotate({ identifier: "Plus.TeamListOutput" })
+
+export interface TeamsChanged extends Schema.Schema.Type<typeof TeamsChanged> {}
+export const TeamsChanged = Schema.Struct({}).annotate({ identifier: "Plus.TeamsChanged" })
+
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
 export const ProjectDisabled = Schema.Struct({
   directory: Schema.String,
@@ -849,6 +878,12 @@ const PortableDeleteTeamInput = Schema.toStandardSchemaV1(
 const PortableDeleteTeamResult = Schema.toStandardSchemaV1(
   DeleteTeamResult.annotate({ identifier: "Plus.DeleteTeamResult" }),
 )
+const PortableTeamListOutput = Schema.toStandardSchemaV1(
+  TeamListOutput.annotate({ identifier: "Plus.TeamListOutput" }),
+)
+const PortableTeamsChanged = Schema.toStandardSchemaV1(
+  TeamsChanged.annotate({ identifier: "Plus.TeamsChanged" }),
+)
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -1113,6 +1148,13 @@ export const Definition = Rpc.define({
         "team.invalid": PortableTeamInvalid,
       },
     },
+    "team.list": {
+      input: Empty,
+      output: PortableTeamListOutput,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+      },
+    },
     "model.add": {
       input: PortableModelAddInput,
       output: PortableModelRef,
@@ -1171,6 +1213,9 @@ export const Definition = Rpc.define({
     },
     "instructions.changed": {
       schema: PortableInstructionsChanged,
+    },
+    "teams.changed": {
+      schema: PortableTeamsChanged,
     },
   },
 })
