@@ -2754,3 +2754,67 @@ test("a on a colon team member row calls team.addAgent with the full team name",
     fixture.destroy()
   }
 })
+
+test("d on a member row with the real handler wired removes the row", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-member-remove-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwing))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwing),
+  )
+  const teamRemoves: { level: string; team: string; id: string }[] = []
+  const wrappedTeamRemoveAgent = async (input: { level: "project" | "global" | "defaults"; team: string; id: string }) => {
+    teamRemoves.push({ ...input })
+    return Effect.runPromise(handlers["team.removeAgent"](input, throwing))
+  }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: ["alpha"] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { confirms: [true] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.removeAgent": wrappedTeamRemoveAgent,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    await expand(fixture)
+    await moveTo(fixture, "alpha")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("alpha")
+    expect(binds(fixture)).toContain("d")
+    expect(dispatch(fixture, "d")).toBe(true)
+    await fixture.waitForFrame(() => teamRemoves.length === 1)
+    expect(teamRemoves[0]).toEqual({ level: "project", team: "crew", id: "alpha" })
+    await fixture.waitForFrame((frame) => frame.includes("Deleted team member alpha"))
+    await fixture.waitForFrame(() =>
+      (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents ?? []).length === 0,
+    )
+    expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents).toEqual([])
+    expect(selectedRow(fixture.captureCharFrame())).not.toContain("alpha")
+  } finally {
+    fixture.destroy()
+  }
+})

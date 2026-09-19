@@ -644,3 +644,34 @@ test("row ids round-trip items with colons, sections, agents, and colon teams", 
   expect(colonPlan.team).toBe("my:team")
   expect(fingerprint("upstream")).not.toBe(fingerprint("other"))
 })
+
+test("removalPlan on team member row returns team.removeAgent or refusal for shipped defaults", () => {
+  const input = baseInput({
+    teams: [
+      { level: "project", team: "crew", enabled: true, agents: ["CrewMate"] },
+      { level: "defaults", team: "starter", enabled: true, agents: ["shipped", "ovl"], overlay: ["ovl"] },
+    ],
+  })
+  const projectPlan = removalPlan(input, "team:project:crew:CrewMate")
+  if ("refusal" in projectPlan) throw new Error(`expected team.removeAgent plan: ${projectPlan.refusal}`)
+  if (projectPlan.kind !== "team.removeAgent") throw new Error("wrong kind")
+  expect(projectPlan.kind).toBe("team.removeAgent")
+  expect(projectPlan.level).toBe("project")
+  expect(projectPlan.team).toBe("crew")
+  expect(projectPlan.id).toBe("CrewMate")
+  expect(projectPlan.confirmTitle).toBe("Delete team member CrewMate?")
+  expect(projectPlan.confirmMessage).toBe('Delete member "CrewMate" from team "crew"? This cannot be undone.')
+  expect(projectPlan.successStatus).toBe("Deleted team member CrewMate")
+
+  const shippedPlan = removalPlan(input, "team:defaults:starter:shipped")
+  if (!("refusal" in shippedPlan)) throw new Error("expected refusal for shipped member")
+  expect(shippedPlan.refusal).toBe('"shipped" cannot be deleted: shipped member of built-in team "starter"')
+
+  const ovlPlan = removalPlan(input, "team:defaults:starter:ovl")
+  if ("refusal" in ovlPlan) throw new Error(`expected team.removeAgent plan for overlay: ${ovlPlan.refusal}`)
+  if (ovlPlan.kind !== "team.removeAgent") throw new Error("wrong kind")
+  expect(ovlPlan.kind).toBe("team.removeAgent")
+  expect(ovlPlan.level).toBe("defaults")
+  expect(ovlPlan.team).toBe("starter")
+  expect(ovlPlan.id).toBe("ovl")
+})

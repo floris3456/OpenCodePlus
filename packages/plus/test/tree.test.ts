@@ -279,7 +279,7 @@ test("member rows are informational: no address, no actions, depth 3", () => {
     expect(member?.kind).toBe("team")
     expect(member?.depth).toBe(3)
     expect(member?.address).toBeUndefined()
-    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: true, split: false, pin: false })
     expect(member?.badges.state).toBeUndefined()
   }
 })
@@ -307,7 +307,7 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(member?.depth).toBe(3)
   expect(member?.address).toBeUndefined()
   expect(member?.add).toBe("agent")
-  expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: true, split: false, pin: false })
   expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
     "group:project:crew/:CrewMate:models",
     "group:project:crew/:CrewMate:tools",
@@ -392,7 +392,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     teams: [
       { level: "project", team: "crew", enabled: true, agents: ["alpha"] },
       { level: "global", team: "side", enabled: false, agents: [] },
-      { level: "defaults", team: "ship", enabled: true, agents: ["mate", "nested/solo"] },
+      { level: "defaults", team: "ship", enabled: true, agents: ["mate", "nested/solo", "ovl"], overlay: ["ovl"] },
       { level: "defaults", team: "other", enabled: false, agents: [] },
     ],
   })
@@ -415,6 +415,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
   expect(childrenOf(nodes, "team:defaults:ship").map((node) => node.id)).toEqual([
     "team:defaults:ship:mate",
     "team:defaults:ship:nested/solo",
+    "team:defaults:ship:ovl",
   ])
   for (const id of ["team:defaults:ship:mate", "team:defaults:ship:nested/solo"]) {
     const member = nodes.find((node) => node.id === id)
@@ -423,6 +424,8 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     expect(member?.address).toBeUndefined()
     expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
   }
+  const ovlMember = nodes.find((node) => node.id === "team:defaults:ship:ovl")
+  expect(ovlMember?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: true, split: false, pin: false })
 })
 
 test("a team created from the Defaults Teams group is stored at project or global, never defaults", async () => {

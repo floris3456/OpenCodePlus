@@ -508,6 +508,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `team.create` | `{ level, team, template? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
 | `team.addAgent` | `{ level, team, id, template?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
+| `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
@@ -777,6 +778,13 @@ RPC surface (`rpc.ts`, `index.ts`):
   installs without a restart. The team row carries `add: "agent"` (member rows
   carry none); `a` on `team:<level>:<team>` opens only the Agent template →
   id → prompt flow with the team's level as scope, never the generic picker.
+- `team.removeAgent` (`TeamRemoveAgentInput` → `AgentRef`): removes one member
+  from a team at any tier. Project/global unlinks `<teamdir>/<id>.md`; defaults
+  unlinks the overlay file `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
+  Shipped built-in members without an overlay file fail with `team.invalid`.
+  Removing the last member leaves an empty team directory. After unlink calls
+  `refreshAfterFileChange(..., true)` so an enabled team's uninstalled member
+  unregisters from the host immediately.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty

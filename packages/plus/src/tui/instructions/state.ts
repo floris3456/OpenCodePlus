@@ -138,7 +138,10 @@ export function createInstructionsState(context: Plugin.Context) {
   const teamsForTree = createMemo<TeamInput[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return (current.teams ?? []).map(teamOf)
+    return (current.teams ?? []).map((team) => ({
+      ...teamOf(team),
+      ...(team.overlay !== undefined ? { overlay: [...team.overlay] } : {}),
+    }))
   })
 
   const allNodes = createMemo<TreeNode[]>(() => {
@@ -743,6 +746,11 @@ export function createInstructionsState(context: Plugin.Context) {
     try {
       if (plan.kind === "agent.delete") {
         await plus["agent.delete"]({ scope: plan.scope, id: plan.id }, { location: context.location })
+      } else if (plan.kind === "team.removeAgent") {
+        await plus["team.removeAgent"](
+          { level: plan.level, team: plan.team, id: plan.id },
+          { location: context.location },
+        )
       } else if (plan.kind === "mcp.remove") {
         await plus["mcp.remove"]({ name: plan.name }, { location: context.location })
       } else if (plan.kind === "skill.delete") {

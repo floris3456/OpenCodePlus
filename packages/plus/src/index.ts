@@ -272,6 +272,17 @@ export type AddTeamAgentResult =
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
     }
 
+export type RemoveTeamAgentResult =
+  | { ok: true; value: Plus.AgentRef }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+        | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+    }
+
 export type AddModelResult =
   | { ok: true; value: Plus.ModelRef }
   | {
@@ -347,6 +358,7 @@ export interface PlusApi {
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
+  readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
@@ -1041,6 +1053,72 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       })
       return { ok: true as const, value: { id: validated.id, path: target } }
     },
+    removeTeamAgent: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const validatedTeam = validateTeamName(input.team)
+      if (!validatedTeam.ok)
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: validatedTeam.reason, data: { team: input.team, reason: validatedTeam.reason } },
+        }
+      const validated = validateAgentId(input.id)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+        }
+      const known = await discoverTeams(input.level, directory, builtins)
+      const found = known.find((team) => team.team === validatedTeam.team)
+      if (found === undefined)
+        return {
+          ok: false as const,
+          error: { code: "team.unknown" as const, message: `Unknown team ${validatedTeam.team}`, data: { level: input.level, team: validatedTeam.team } },
+        }
+      const existing = found.agents.find((agent) => agent.id === validated.id)
+      if (existing === undefined)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: `Agent "${validated.id}" not found in team "${validatedTeam.team}"`, data: { id: input.id, reason: `Agent "${validated.id}" not found in team "${validatedTeam.team}"` } },
+        }
+      if (input.level === "defaults" && existing.path === undefined)
+        return {
+          ok: false as const,
+          error: {
+            code: "team.invalid" as const,
+            message: `"${validated.id}" cannot be deleted: shipped member of built-in team "${validatedTeam.team}"`,
+            data: { team: validatedTeam.team, reason: `"${validated.id}" cannot be deleted: shipped member of built-in team "${validatedTeam.team}"` },
+          },
+        }
+      const teamDir =
+        input.level === "project"
+          ? path.join(projectTeamsPath(directory), validatedTeam.team)
+          : input.level === "global"
+            ? path.join(globalTeamsPath(), validatedTeam.team)
+            : defaultsOverlayTeamDir(validatedTeam.team)
+      const target = existing.path ?? teamMemberPath(teamDir, validated.id)
+      if (target === undefined)
+        return {
+          ok: false as const,
+          error: { code: "agent.invalid" as const, message: `Invalid agent id "${input.id}"`, data: { id: input.id, reason: `Invalid agent id "${input.id}"` } },
+        }
+      if (await Bun.file(target).exists()) {
+        await fs.unlink(target)
+      }
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: input.level === "project" ? "project" : "global",
+        op: "team.removeAgent",
+        target,
+        summary: `team.removeAgent ${validated.id} from ${validatedTeam.team} (${input.level})`,
+      })
+      return { ok: true as const, value: { id: validated.id, path: target } }
+    },
     catalogModels: async () => {
       const directory = ctx.location.directory
       const config = await read(directory)
@@ -1636,6 +1714,20 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           if (result.error.code === "agent.exists")
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "team.removeAgent": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.removeTeamAgent(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "team.unknown")
+            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "team.invalid")
+            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -3539,7 +3631,13 @@ function toSnapshot(
         },
       ]
     }),
-    teams: teams.map((team) => ({ level: team.level, team: team.team, enabled: team.enabled, agents: [...team.agents] })),
+    teams: teams.map((team) => ({
+      level: team.level,
+      team: team.team,
+      enabled: team.enabled,
+      agents: [...team.agents],
+      ...(team.overlay !== undefined ? { overlay: [...team.overlay] } : {}),
+    })),
     servers: discovered.servers.map((server) => ({ name: server.name, enabled: server.enabled })),
     protectedAgents: [...loaded.protectedAgents],
   }
@@ -3571,12 +3669,16 @@ async function snapshotTeams(
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
   const builtin = discoverBuiltinTeams(builtins)
   return [...disk[0], ...disk[1], ...builtin]
-    .map((team): Plus.TeamEntry => ({
-      level: team.level,
-      team: team.team,
-      enabled: isTeamEnabled(teamRecords, team.level, team.team),
-      agents: team.agents.map((agent) => agent.id),
-    }))
+    .map((team): Plus.TeamEntry => {
+      const overlay = team.agents.filter((agent) => agent.path !== undefined).map((agent) => agent.id)
+      return {
+        level: team.level,
+        team: team.team,
+        enabled: isTeamEnabled(teamRecords, team.level, team.team),
+        agents: team.agents.map((agent) => agent.id),
+        ...(team.level === "defaults" && overlay.length > 0 ? { overlay } : {}),
+      }
+    })
     .toSorted(compareTeams)
 }
 

@@ -36,6 +36,7 @@ export interface TeamInput {
   readonly team: string
   readonly enabled: boolean
   readonly agents: readonly string[]
+  readonly overlay?: readonly string[]
 }
 
 export interface MemoInput extends Omit<BaseMemoInput, "teams"> {
@@ -404,9 +405,10 @@ function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
   ]
 }
 
-function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: string, member: string, depth: number): Lazy {
+function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput, member: string, depth: number): Lazy {
   const agent = ctx.agents.find((entry) => entry.id === member && entry.scope === level) ?? ctx.agents.find((entry) => entry.id === member) ?? null
   const owner = member
+  const removable = level !== "defaults" || (team.overlay?.includes(member) ?? false)
   // Team-member group ids use `/:` between team and member. Agent ids forbid
   // `:` (validateAgentId in agents/files.ts) while team names allow it, so an
   // owner containing `:` can only be a team member group and never collides
@@ -417,17 +419,17 @@ function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: strin
   // names and nested member ids.
   return branch(memo, {
     kind: "team",
-    id: `team:${level}:${team}:${member}`,
+    id: `team:${level}:${team.team}:${member}`,
     label: member,
     depth,
     add: "agent",
-    actions: noActions(),
+    actions: { ...noActions(), remove: removable },
     children: () => [
-      lazyModels(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:models`),
-      lazyTools(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:tools`),
-      lazyBase(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:base`),
-      lazySkills(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:skills`),
-      lazySystem(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:system`),
+      lazyModels(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team.team}/:${member}:models`),
+      lazyTools(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team.team}/:${member}:tools`),
+      lazyBase(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team.team}/:${member}:base`),
+      lazySkills(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team.team}/:${member}:skills`),
+      lazySystem(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team.team}/:${member}:system`),
     ],
   })
 }
@@ -435,7 +437,7 @@ function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: strin
 function lazyTeam(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput): Lazy {
   const kids = (): readonly Lazy[] =>
     cachedKids(memo, `team:${level}:${team.team}`, () =>
-      team.agents.map((member) => lazyTeamMember(ctx, memo, level, team.team, member, 3)),
+      team.agents.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3)),
     )
   return {
     id: `team:${level}:${team.team}`,

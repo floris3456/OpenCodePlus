@@ -37,6 +37,7 @@ test("every method and event is declared", () => {
     "team.create",
     "team.setEnabled",
     "team.addAgent",
+    "team.removeAgent",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -139,6 +140,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "team.create",
     "team.setEnabled",
     "team.addAgent",
+    "team.removeAgent",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -202,6 +204,10 @@ test("error schemas are correctly bound to their corresponding methods", () => {
   expect("team.invalid" in errorsOf("team.addAgent")).toBe(true)
   expect("agent.exists" in errorsOf("team.addAgent")).toBe(true)
   expect("agent.invalid" in errorsOf("team.addAgent")).toBe(true)
+
+  expect("team.unknown" in errorsOf("team.removeAgent")).toBe(true)
+  expect("team.invalid" in errorsOf("team.removeAgent")).toBe(true)
+  expect("agent.invalid" in errorsOf("team.removeAgent")).toBe(true)
 
   expect("model.exists" in errorsOf("model.add")).toBe(true)
   expect("model.invalid" in errorsOf("model.add")).toBe(true)
@@ -722,4 +728,39 @@ test("AgentEntry origin round-trips and omits when unset", () => {
   const encodedBare = Schema.encodeSync(Plus.AgentEntry)(bare)
   expect("origin" in encodedBare).toBe(false)
   expect(Schema.decodeUnknownSync(Plus.AgentEntry)(encodedBare)).toEqual(bare)
+})
+
+test("TeamEntry overlay and TeamRemoveAgentInput round-trip correctly", () => {
+  const withOverlay: Plus.TeamEntry = {
+    level: "defaults",
+    team: "ship",
+    enabled: true,
+    agents: ["mate", "rookie"],
+    overlay: ["rookie"],
+  }
+  const encodedWith = Schema.encodeSync(Plus.TeamEntry)(withOverlay)
+  expectRpcBody(encodedWith)
+  assertNoUndefinedValues(encodedWith)
+  expect(encodedWith.overlay).toEqual(["rookie"])
+  expect(Schema.decodeUnknownSync(Plus.TeamEntry)(encodedWith)).toEqual(withOverlay)
+
+  const withoutOverlay: Plus.TeamEntry = {
+    level: "project",
+    team: "crew",
+    enabled: false,
+    agents: ["alpha"],
+  }
+  const encodedWithout = Schema.encodeSync(Plus.TeamEntry)(withoutOverlay)
+  expect("overlay" in encodedWithout).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.TeamEntry)(encodedWithout)).toEqual(withoutOverlay)
+
+  const removeInput: Plus.TeamRemoveAgentInput = {
+    level: "project",
+    team: "crew",
+    id: "alpha",
+  }
+  const encodedRemove = Schema.encodeSync(Plus.TeamRemoveAgentInput)(removeInput)
+  expectRpcBody(encodedRemove)
+  assertNoUndefinedValues(encodedRemove)
+  expect(Schema.decodeUnknownSync(Plus.TeamRemoveAgentInput)(encodedRemove)).toEqual(removeInput)
 })
