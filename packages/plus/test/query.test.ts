@@ -290,7 +290,7 @@ test("team matches team rows, members, and team agents", () => {
   expect(found).toContain("team:project:crew:CrewMate")
   expect(found).toContain("agent:project:CrewMate")
   for (const group of ["models", "tools", "base", "skills", "system"]) {
-    expect(found).toContain(`group:project:crew/CrewMate:${group}`)
+    expect(found).toContain(`group:project:crew/:CrewMate:${group}`)
   }
   expect(new Set(found).size).toBe(found.length)
   expect(found).not.toContain("team:global:ops")

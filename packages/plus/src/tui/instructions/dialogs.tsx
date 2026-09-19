@@ -53,7 +53,12 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addKind(kind: AddKind, node?: TreeNode): Promise<void> {
     if (kind === "agent") {
-      if (node?.kind === "team" && node.id.match(/^team:(project|global|defaults):[^:]+$/) !== null) return addTeamAgent(node)
+      // Team rows carry `add: "agent"`; member rows are also kind "team" but
+      // carry no `add`, so this keeps member rows on the ordinary agent path.
+      // The level prefix is fixed, the entire remainder is the team name so
+      // colon team names still route to team.addAgent.
+      if (node?.kind === "team" && node.add === "agent" && node.id.match(/^team:(project|global|defaults):(.+)$/) !== null)
+        return addTeamAgent(node)
       return addAgent()
     }
     if (kind === "base") return addBase()
@@ -163,7 +168,13 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addTeamAgent(node: TreeNode): Promise<void> {
     if (disposed) return
-    const match = node.id.match(/^team:(project|global|defaults):([^:]+)$/)
+    // Member rows are kind "team" with no `add`; only team rows (add: "agent")
+    // take this path. The team name is the entire remainder so colons survive.
+    if (node.add !== "agent") {
+      context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
+      return
+    }
+    const match = node.id.match(/^team:(project|global|defaults):(.+)$/)
     if (match === null) {
       context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
       return
@@ -415,18 +426,15 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       if (level !== "defaults") return undefined
       return { level, agent: null }
     }
+    // Team-member groups carry `/:` between team and member (agent ids forbid
+    // `:`, team names allow it), so an owner containing `/:` is a team group
+    // and never a nested agent id like `crew/alpha`. Team names never contain
+    // `/`, so the member is everything after the first `/` with the leading
+    // `:` stripped, even for colon team names and nested member ids.
     const slash = owner.indexOf("/")
-    if (slash !== -1) {
-      const maybeTeam = owner.slice(0, slash)
-      const rest = owner.slice(slash + 1)
-      if (rest.length > 0) {
-        const snap = state.snapshot()
-        const teams = snap?.teams ?? []
-        const agents = snap?.agents ?? []
-        if (agents.some((entry) => entry.id === owner)) return { level, agent: owner }
-        if (teams.some((entry) => entry.level === level && entry.team === maybeTeam)) return { level, agent: rest }
-        if (snap === undefined) return { level, agent: rest }
-      }
+    if (slash !== -1 && owner[slash + 1] === ":") {
+      const member = owner.slice(slash + 2)
+      if (member.length > 0) return { level, agent: member }
     }
     return { level, agent: owner }
   }

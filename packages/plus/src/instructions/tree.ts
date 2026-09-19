@@ -251,7 +251,9 @@ function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSour
     id: `agent:${level}:${agent.id}`,
     label: agent.id,
     depth,
-    actions: { ...noActions(), remove: true },
+    // Deletion eligibility mirrors removalPlan in ops.ts, which refuses every
+    // scope except project|global. Defaults rows must not advertise `d`.
+    actions: { ...noActions(), remove: level !== "defaults" },
     children: () => [
       lazyModels(ctx, memo, level, agent.id, agent, depth + 1),
       lazyTools(ctx, memo, level, agent.id, agent, depth + 1),
@@ -372,6 +374,14 @@ function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
 function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: string, member: string, depth: number): Lazy {
   const agent = ctx.agents.find((entry) => entry.id === member && entry.scope === level) ?? ctx.agents.find((entry) => entry.id === member) ?? null
   const owner = member
+  // Team-member group ids use `/:` between team and member. Agent ids forbid
+  // `:` (validateAgentId in agents/files.ts) while team names allow it, so an
+  // owner containing `:` can only be a team member group and never collides
+  // with a nested agent id like `crew/alpha` (`/` alone is legal in agent
+  // ids). The `/` is kept so the existing `group:<level>:<team>/` prefix still
+  // matches; the extra `:` is the disambiguator. Team names never contain
+  // `/`, so the split on the first `/` stays unambiguous even for colon team
+  // names and nested member ids.
   return branch(memo, {
     kind: "team",
     id: `team:${level}:${team}:${member}`,
@@ -379,11 +389,11 @@ function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: strin
     depth,
     actions: noActions(),
     children: () => [
-      lazyModels(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/${member}:models`),
-      lazyTools(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/${member}:tools`),
-      lazyBase(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/${member}:base`),
-      lazySkills(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/${member}:skills`),
-      lazySystem(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/${member}:system`),
+      lazyModels(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:models`),
+      lazyTools(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:tools`),
+      lazyBase(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:base`),
+      lazySkills(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:skills`),
+      lazySystem(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:system`),
     ],
   })
 }

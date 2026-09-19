@@ -74,10 +74,10 @@ and their addresses stay identical to the Agents-group ones (they address the
 same records by design: level + agent + item, and `address.agent` stays the
 bare agent id). Only the five group ids get the team prefix to avoid
 colliding with the Agents-group ids for the same agent at the same level:
-`group:<level>:<team>/<member>:models|tools|base|skills|system`, with nested
+`group:<level>:<team>/:<member>:models|tools|base|skills|system`, with nested
 Tools/Skills subgroup ids extending those prefixes. `dialogs.tsx`
-`scopeFromModelsGroup` accepts the `<team>/<member>` owner form and strips
-the `<team>/` prefix so `a` on a member's Models group adds for the member
+`scopeFromModelsGroup` accepts the `<team>/:<member>` owner form and strips
+the `<team>/:` prefix so `a` on a member's Models group adds for the member
 id.
 
 `Defaults` holds `Agents` (template agents in the same origin subgroups Native,
