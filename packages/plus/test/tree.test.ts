@@ -284,7 +284,7 @@ test("member rows are informational: no address, no actions, depth 3", () => {
   }
 })
 
-test("team rows carry add agent while member rows carry no add", () => {
+test("team rows and member rows carry add agent", () => {
   const nodes = expandAll({
     items: items(),
     records: [],
@@ -292,7 +292,7 @@ test("team rows carry add agent while member rows carry no add", () => {
     teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
   })
   expect(nodes.find((node) => node.id === "team:project:crew")?.add).toBe("agent")
-  expect(nodes.find((node) => node.id === "team:project:crew:alpha")?.add).toBeUndefined()
+  expect(nodes.find((node) => node.id === "team:project:crew:alpha")?.add).toBe("agent")
 })
 
 test("team member rows expand to full agent subtrees with team-prefixed groups", () => {
@@ -306,6 +306,7 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(member?.kind).toBe("team")
   expect(member?.depth).toBe(3)
   expect(member?.address).toBeUndefined()
+  expect(member?.add).toBe("agent")
   expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
   expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
     "group:project:crew/:CrewMate:models",
@@ -626,7 +627,7 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:defaults:teams")).toBe("team")
   expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(true)
   expect(adds.get("team:project:crew")).toBe("agent")
-  expect(adds.get("team:project:crew:alpha")).toBeUndefined()
+  expect(adds.get("team:project:crew:alpha")).toBe("agent")
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
   expect(adds.get("group:project:Implementer:skills:project")).toBe("skill")

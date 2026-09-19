@@ -420,6 +420,7 @@ function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: strin
     id: `team:${level}:${team}:${member}`,
     label: member,
     depth,
+    add: "agent",
     actions: noActions(),
     children: () => [
       lazyModels(ctx, memo, level, owner, agent, depth + 1, `group:${level}:${team}/:${member}:models`),
