@@ -13,7 +13,7 @@ import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructio
 import { load, type StoredRecord } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { fullContext } from "./harness.js"
+import { agentInfo, fullContext, modelInfo } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -582,4 +582,283 @@ test("team.addAgent refuses a duplicate member id with agent.exists", async () =
     "agent.exists",
   )
   expect(typeof (duplicate.current?.data as { path?: unknown } | undefined)?.path).toBe("string")
+})
+
+test("a model activated on a project team member sets agent.model on the host and disabling the team clears it", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const hostAgent = agentInfo("m", "upstream m")
+  const ctx = fullContext({
+    directory: project,
+    agents: [hostAgent],
+    models: [modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "m", "crew m body")
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "m", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const activeRecord: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "m",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [activeRecord],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const agent = listed.data.find((entry) => String(entry.id) === "m")
+  expect(agent?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})),
+  )
+  const listedAfterDisable = await Effect.runPromise(ctx.agent.list())
+  const agentAfterDisable = listedAfterDisable.data.find((entry) => String(entry.id) === "m")
+  expect(agentAfterDisable?.model).toBeUndefined()
+  expect(state.activeModels.get("m")).toBeUndefined()
+})
+
+test("a model activated on a global team member sets agent.model on the host and disabling the team clears it", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const hostAgent = agentInfo("m", "upstream m")
+  const ctx = fullContext({
+    directory: project,
+    agents: [hostAgent],
+    models: [modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  await Effect.runPromise(handlers["team.create"]({ level: "global", team: "globalcrew" }, throwingContext({})))
+  await writeTeamAgent(path.join(globalTeamsPath(), "globalcrew"), "m", "globalcrew m body")
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "global", team: "globalcrew", enabled: true }, throwingContext({})),
+  )
+
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "global", agent: "m", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const activeRecord: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "m",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [activeRecord],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const agent = listed.data.find((entry) => String(entry.id) === "m")
+  expect(agent?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "global", team: "globalcrew", enabled: false }, throwingContext({})),
+  )
+  const listedAfterDisable = await Effect.runPromise(ctx.agent.list())
+  const agentAfterDisable = listedAfterDisable.data.find((entry) => String(entry.id) === "m")
+  expect(agentAfterDisable?.model).toBeUndefined()
+  expect(state.activeModels.get("m")).toBeUndefined()
+})
+
+test("a model activated on a team-only member sets agent.model and disabling the team removes the agent", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    models: [modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "teamonly", "teamonly body")
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "teamonly", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const activeRecord: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "teamonly",
+    providerID: "acme",
+    modelID: "nova-2",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [activeRecord],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const agent = listed.data.find((entry) => String(entry.id) === "teamonly")
+  expect(agent?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(state.activeModels.get("teamonly")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})),
+  )
+  const listedAfterDisable = await Effect.runPromise(ctx.agent.list())
+  const agentAfterDisable = listedAfterDisable.data.find((entry) => String(entry.id) === "teamonly")
+  expect(agentAfterDisable).toBeUndefined()
+  expect(state.activeModels.get("teamonly")).toBeUndefined()
+})
+
+test("a team member inherits a defaults-level model when no team-level model is set and overrides it when set", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const hostAgent = agentInfo("m", "upstream m")
+  const ctx = fullContext({
+    directory: project,
+    agents: [hostAgent],
+    models: [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-1": "general", "nova-2": "general" },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  // Add defaults model nova-1 for agent m and activate it
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "defaults", agent: "m", providerID: "acme", modelID: "nova-1" }, throwingContext({})),
+  )
+  const snap1 = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snap1.revision,
+        expectedGlobalRevision: snap1.globalRevision,
+        records: [
+          {
+            type: "model",
+            level: "defaults",
+            agent: "m",
+            providerID: "acme",
+            modelID: "nova-1",
+            active: true,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+
+  // Host agent m now has nova-1
+  const listed1 = await Effect.runPromise(ctx.agent.list())
+  expect(listed1.data.find((entry) => String(entry.id) === "m")?.model).toMatchObject({ providerID: "acme", id: "nova-1" })
+
+  // Enable project team with m as a member
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "m", "crew m body")
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+
+  // With team enabled and no project model record, m still resolves nova-1 from defaults
+  const listed2 = await Effect.runPromise(ctx.agent.list())
+  expect(listed2.data.find((entry) => String(entry.id) === "m")?.model).toMatchObject({ providerID: "acme", id: "nova-1" })
+  expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-1" })
+
+  // Add project model nova-2 for m and activate it
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "m", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  const snap2 = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snap2.revision,
+        expectedGlobalRevision: snap2.globalRevision,
+        records: [
+          {
+            type: "model",
+            level: "defaults",
+            agent: "m",
+            providerID: "acme",
+            modelID: "nova-1",
+            active: true,
+            updated: UPDATED,
+          },
+          {
+            type: "model",
+            level: "project",
+            agent: "m",
+            providerID: "acme",
+            modelID: "nova-2",
+            active: true,
+            updated: UPDATED,
+          },
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+
+  // Project model nova-2 wins
+  const listed3 = await Effect.runPromise(ctx.agent.list())
+  expect(listed3.data.find((entry) => String(entry.id) === "m")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+
+  // Disable project team: m reverts to defaults nova-1
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})),
+  )
+  const listed4 = await Effect.runPromise(ctx.agent.list())
+  expect(listed4.data.find((entry) => String(entry.id) === "m")?.model).toMatchObject({ providerID: "acme", id: "nova-1" })
+  expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-1" })
 })

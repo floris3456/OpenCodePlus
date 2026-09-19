@@ -2380,7 +2380,11 @@ export function buildActiveModels(
   scopes: Scopes,
 ): Map<string, ModelRefLike> {
   const next = new Map<string, ModelRefLike>()
-  for (const agent of dedupeAgents(agents)) {
+  const ordered = [
+    ...agents.filter((agent) => agent.team !== undefined),
+    ...agents.filter((agent) => agent.team === undefined),
+  ]
+  for (const agent of dedupeAgents(ordered)) {
     const winner = resolveActiveModel({ models, scopes, level: scopeLevel(agent.scope), agent: agent.id })
     if (winner === undefined) continue
     if (winner.source === "upstream") continue
@@ -2699,11 +2703,20 @@ function publishFresh(
       )
       // Team-provided agents are not host upstream on the first publish
       // after enable or restart: discovered.agents lacks team-only ids, so
-      // the model cache and apply would never see them. Include the
-      // resolved team winners alongside the host agents; dedupe keeps the
-      // host effective entry first, and pushRule upserts team-only ids so
-      // the deny survives the team install that follows.
-      const mergedAgents = [...discovered.agents, ...view.teamAgents]
+      // the model cache and apply would never see them. When an id is both
+      // host-discovered (unbacked defaults) and a current team winner, the team
+      // winner's scope is authoritative for model resolution and state.activeModels:
+      // order team winners first so dedupe keeps the team winner's scope,
+      // preserving discovered fields (such as base and model) on the team winner entry.
+      // Retaining discovered.agents in mergedAgents ensures scopesOf still sees
+      // defaults for fallback inheritance.
+      const teamMerged = view.teamAgents.map((teamAgent) => {
+        const discoveredAgent = discovered.agents.find((agent) => agent.id === teamAgent.id)
+        return discoveredAgent !== undefined
+          ? { ...discoveredAgent, ...teamAgent, scope: teamAgent.scope }
+          : teamAgent
+      })
+      const mergedAgents = [...teamMerged, ...discovered.agents]
       const publishAgents = dedupeAgents(mergedAgents)
       const publishScopes = scopesOf(mergedAgents)
       state.activeModels = buildActiveModels(publishAgents, modelRecords, publishScopes)
