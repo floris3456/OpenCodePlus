@@ -292,6 +292,7 @@ test("team matches team rows, members, and team agents", () => {
   for (const group of ["models", "tools", "base", "skills", "system"]) {
     expect(found).toContain(`group:project:crew/CrewMate:${group}`)
   }
+  expect(new Set(found).size).toBe(found.length)
   expect(found).not.toContain("team:global:ops")
   expect(ids("team:ops")).toContain("team:global:ops")
   expect(ids("team:nope")).toHaveLength(0)
@@ -467,10 +468,13 @@ test("bare words match label or id exactly like the TUI filter", () => {
   const tree = expandedTree(input())
   for (const word of ["bash", "Implementer", "zz-no-match"]) {
     const lowered = word.toLowerCase()
-    const expected = tree
-      .filter((node) => node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered))
-      .map((node) => node.id)
-      .sort()
+    const expected = [
+      ...new Set(
+        tree
+          .filter((node) => node.label.toLowerCase().includes(lowered) || node.id.toLowerCase().includes(lowered))
+          .map((node) => node.id),
+      ),
+    ].sort()
     const actual = query(input(), { where: word }).rows.map((row) => row.id).sort()
     expect(actual).toEqual(expected)
   }
@@ -486,7 +490,6 @@ test("negation, OR, quotes, and combined terms", () => {
   expect(ids("kind:item label:bash").sort()).toEqual(
     [
       "item:project:Implementer:tool:bash",
-      "item:project:CrewMate:tool:bash",
       "item:project:CrewMate:tool:bash",
       "item:global:Helper:tool:bash",
       "item:defaults:Template:tool:bash",

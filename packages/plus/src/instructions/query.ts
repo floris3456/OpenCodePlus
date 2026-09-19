@@ -169,7 +169,10 @@ function lookupItem(state: QueryState, itemId: string, owner: string | null): It
 // necessarily fail (level, agent, and the upstream item attributes).
 function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
   const out: Candidate[] = []
+  const seen = new Set<string>()
   const push = (candidate: Omit<Candidate, "index" | "node" | "resolvedText" | "upstreamText">) => {
+    if (seen.has(candidate.id)) return
+    seen.add(candidate.id)
     out.push({ ...candidate, index: out.length, node: undefined, resolvedText: undefined, upstreamText: undefined })
   }
   const skipRows = parsed.filters.some((filter) => filter.excludesSections)
@@ -396,7 +399,7 @@ function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
   if (candidate.kind === "group") {
     return state.memo.ctx.teams
       .filter((entry) => entry.level === level)
-      .filter((entry) => candidate.id === `group:${level}:${entry.team}/` || candidate.id.startsWith(`group:${level}:${entry.team}/`))
+      .filter((entry) => candidate.id.startsWith(`group:${level}:${entry.team}/`))
       .map((entry) => entry.team)
   }
   return state.memo.ctx.teams
