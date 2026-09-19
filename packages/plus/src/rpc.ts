@@ -160,10 +160,19 @@ export const AgentModel = Schema.Struct({
   variant: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.AgentModel" })
 
+export type AgentOrigin = typeof AgentOrigin.Type
+export const AgentOrigin = Schema.Union([
+  Schema.Literal("native"),
+  Schema.Literal("special"),
+  Schema.Literal("plus"),
+  Schema.Literal("user"),
+]).annotate({ identifier: "Plus.AgentOrigin" })
+
 export interface AgentEntry extends Schema.Schema.Type<typeof AgentEntry> {}
 export const AgentEntry = Schema.Struct({
   id: Schema.String,
   scope: AgentScope,
+  origin: Schema.optionalKey(AgentOrigin),
   path: Schema.optionalKey(Schema.String),
   base: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(AgentModel),

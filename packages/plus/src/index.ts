@@ -363,7 +363,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
+      const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins)
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
     },
     refresh: async () => {
       const directory = ctx.location.directory
@@ -374,7 +375,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
       const teams = await snapshotTeams(directory, loaded.records, builtins)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams) }
+      const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins)
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
     },
     mutate: async (input) => {
       const directory = ctx.location.directory
@@ -392,9 +394,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (staleStore !== undefined) {
         const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
         const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
+        const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins)
         return {
           ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams) },
+          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds) },
         }
       }
       const records: StoredRecord[] = [
@@ -410,9 +413,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
         const discovered = await discoverAll(ctx, refreshed, state.baselines, state.modelBaselines)
         const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
+        const outputIds = await snapshotOutputIds(directory, discovered, refreshed, builtins)
         return {
           ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams) },
+          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams, outputIds) },
         }
       }
       await logMutate({
@@ -429,7 +433,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
       const teams = await snapshotTeams(directory, next.records, builtins)
-      const snapshot = toSnapshot(discovered, next, teams)
+      const outputIds = await snapshotOutputIds(directory, discovered, next, builtins)
+      const snapshot = toSnapshot(discovered, next, teams, outputIds)
       return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
     },
     log: async (input) => {
@@ -3211,14 +3216,33 @@ function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   })
 }
 
-function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonly Plus.TeamEntry[]): Plus.Snapshot {
+function toSnapshot(
+  discovered: Discovered,
+  loaded: LoadedStores,
+  teams: readonly Plus.TeamEntry[],
+  outputIds?: ReadonlySet<string>,
+): Plus.Snapshot {
   return {
     revision: loaded.projectRevision,
     globalRevision: loaded.globalRevision,
-    agents: discovered.agents.map((agent) => ({
-      id: agent.id,
-      scope: agent.scope,
-      ...(agent.path === undefined ? {} : { path: agent.path }),
+    agents: discovered.agents.map((agent) => {
+      // Server-side origin crosses the RPC boundary. Plus team output (an id
+      // in plusTeamOutputIds, or an AgentSource carrying team) upgrades to
+      // origin plus; otherwise the discovery classification rides through.
+      // File-backed team clashes keep their user origin via the path guard in
+      // the fallback below.
+      const fromOutput = outputIds !== undefined ? outputIds.has(agent.id) : false
+      const fromTeams =
+        outputIds === undefined && agent.path === undefined && agent.team === undefined
+          ? teams.some((team) => team.enabled && team.agents.includes(agent.id))
+          : false
+      const isPlus = agent.team !== undefined || fromOutput || fromTeams
+      const origin = isPlus ? ("plus" as const) : agent.origin
+      return {
+        id: agent.id,
+        scope: agent.scope,
+        ...(origin === undefined ? {} : { origin }),
+        ...(agent.path === undefined ? {} : { path: agent.path }),
       ...(agent.base === undefined ? {} : { base: agent.base }),
       ...(agent.model === undefined
         ? {}
@@ -3230,7 +3254,8 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
             },
           }),
       fileBacked: agent.path !== undefined,
-    })),
+      }
+    }),
     // Perm items ship in phase 3 with their rule metadata; model rows shipped in phase 2.
     items: discovered.items.map((item): Plus.SnapshotItem => {
       return {
@@ -3329,6 +3354,17 @@ function toSnapshot(discovered: Discovered, loaded: LoadedStores, teams: readonl
 // defaults members with no filesystem path, stored team records decide
 // enabled. A discovered team with no record reads DISABLED; a record with no
 // matching team never surfaces.
+async function snapshotOutputIds(
+  directory: string,
+  discovered: Discovered,
+  loaded: LoadedStores,
+  builtins: readonly BuiltinTeam[],
+): Promise<Set<string>> {
+  const teamRecords = loaded.records.filter(isTeamRecord)
+  const applied = await enabledTeamApplied(directory, teamRecords, builtins)
+  return plusTeamOutputIds(discovered, applied)
+}
+
 async function snapshotTeams(
   directory: string,
   records: readonly StoredRecord[],

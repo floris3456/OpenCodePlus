@@ -1487,3 +1487,19 @@ test("snapshot reports the Plus-active base for a file-backed agent", async () =
   if (!mutated.ok) throw new Error("expected mutate to succeed")
   expect(mutated.snapshot.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
 })
+
+test("enabling a fixture team marks its non-file-backed member as plus origin", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: registry })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const mate = snapshot.agents.find((entry) => entry.id === "mate")
+  expect(mate).toBeDefined()
+  expect(mate?.scope).toBe("defaults")
+  expect(mate?.fileBacked).toBe(false)
+  expect(mate?.origin).toBe("plus")
+  expectRpcBody(snapshot)
+})

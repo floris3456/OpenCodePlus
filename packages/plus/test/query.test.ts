@@ -42,10 +42,10 @@ function makeRecord(overrides?: Partial<CustomizationRecord> & { type?: "customi
 
 function agents(): AgentSource[] {
   return [
-    { id: "Implementer", scope: "project", base: "gpt", path: "/agents/Implementer.md" },
-    { id: "CrewMate", scope: "project", base: "gpt" },
-    { id: "Helper", scope: "global", base: "claude" },
-    { id: "Template", scope: "defaults", base: "gpt" },
+    { id: "Implementer", scope: "project", base: "gpt", path: "/agents/Implementer.md", origin: "user" },
+    { id: "CrewMate", scope: "project", base: "gpt", origin: "user" },
+    { id: "Helper", scope: "global", base: "claude", origin: "user" },
+    { id: "Template", scope: "defaults", base: "gpt", origin: "user" },
   ]
 }
 

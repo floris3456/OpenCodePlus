@@ -36,6 +36,7 @@ test("every method and event is declared", () => {
     "mcp.remove",
     "team.create",
     "team.setEnabled",
+    "team.addAgent",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -137,6 +138,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "mcp.remove",
     "team.create",
     "team.setEnabled",
+    "team.addAgent",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -195,6 +197,11 @@ test("error schemas are correctly bound to their corresponding methods", () => {
 
   expect("team.unknown" in errorsOf("team.setEnabled")).toBe(true)
   expect("team.invalid" in errorsOf("team.setEnabled")).toBe(true)
+
+  expect("team.unknown" in errorsOf("team.addAgent")).toBe(true)
+  expect("team.invalid" in errorsOf("team.addAgent")).toBe(true)
+  expect("agent.exists" in errorsOf("team.addAgent")).toBe(true)
+  expect("agent.invalid" in errorsOf("team.addAgent")).toBe(true)
 
   expect("model.exists" in errorsOf("model.add")).toBe(true)
   expect("model.invalid" in errorsOf("model.add")).toBe(true)
@@ -700,4 +707,19 @@ test("new Code Mode keys decode and never encode as undefined", () => {
   const encodedBareRecord = Schema.encodeSync(Plus.SnapshotCustomizationRecord)(bareRecord)
   expect("pin" in encodedBareRecord).toBe(false)
   expect(Schema.decodeUnknownSync(Plus.SnapshotCustomizationRecord)(encodedBareRecord)).toEqual(bareRecord)
+})
+
+test("AgentEntry origin round-trips and omits when unset", () => {
+  for (const origin of ["native", "special", "plus", "user"] as const) {
+    const entry: Plus.AgentEntry = { id: "alpha", scope: "project", origin, fileBacked: false }
+    const encoded = Schema.encodeSync(Plus.AgentEntry)(entry)
+    expectRpcBody(encoded)
+    assertNoUndefinedValues(encoded)
+    expect(encoded.origin).toBe(origin)
+    expect(Schema.decodeUnknownSync(Plus.AgentEntry)(encoded)).toEqual(entry)
+  }
+  const bare: Plus.AgentEntry = { id: "alpha", scope: "project", fileBacked: false }
+  const encodedBare = Schema.encodeSync(Plus.AgentEntry)(bare)
+  expect("origin" in encodedBare).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.AgentEntry)(encodedBare)).toEqual(bare)
 })
