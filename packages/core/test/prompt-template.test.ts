@@ -10,8 +10,9 @@ describe("PromptTemplate", () => {
     expect(PromptTemplate.active({ id: "muse-opus", name: "Muse" })).toBe("muse")
     expect(PromptTemplate.active({ id: "moonshot/kimi-k2", name: "Kimi" })).toBe("kimi")
     expect(PromptTemplate.active({ id: "arcee/trinity-large", name: "Trinity" })).toBe("trinity")
-    expect(PromptTemplate.active({ id: "claude-opus-4", name: "Claude" })).toBe("general")
-    expect(PromptTemplate.active({ id: "gemini-2.5-pro", name: "Gemini" })).toBe("general")
+    expect(PromptTemplate.active({ id: "claude-opus-4", name: "Claude" })).toBe("claude")
+    expect(PromptTemplate.active({ id: "cliproxyapi/claude-fable-5", name: "Claude Fable 5" })).toBe("claude")
+    expect(PromptTemplate.active({ id: "gemini-2.5-pro", name: "Gemini" })).toBe("gemini")
     expect(PromptTemplate.active({ id: "llama-3.3-70b", name: "Llama" })).toBe("general")
   })
 
@@ -27,6 +28,8 @@ describe("PromptTemplate", () => {
     expect(PromptTemplate.raw({ id: "moonshot/kimi-k2", name: "Kimi" })).toBe(byId.get("kimi"))
     expect(PromptTemplate.raw({ id: "arcee/trinity-large", name: "Trinity" })).toBe(byId.get("trinity"))
     expect(PromptTemplate.raw({ id: "muse-opus", name: "Muse" })).toBe(byId.get("muse"))
+    expect(PromptTemplate.raw({ id: "claude-fable-5", name: "Claude" })).toBeUndefined()
+    expect(PromptTemplate.raw({ id: "gemini-2.5-pro", name: "Gemini" })).toBeUndefined()
     expect(PromptTemplate.raw({ id: "llama-3.3-70b", name: "Llama" })).toBeUndefined()
   })
 
