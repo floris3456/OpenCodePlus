@@ -66,18 +66,18 @@ export async function installTeamAgents(ctx: Context, agents: readonly AgentSour
 
 type Draft = Types.DeepMutable<Agent.Info>
 
-interface TeamPermission {
+export interface TeamPermission {
   readonly action: string
   readonly resource: string
   readonly effect: "allow" | "deny" | "ask"
 }
 
-interface TeamRequest {
+export interface TeamRequest {
   readonly headers?: Record<string, string>
   readonly body?: Record<string, unknown>
 }
 
-interface TeamFields {
+export interface TeamFields {
   readonly model?: string
   readonly variant?: string
   readonly description?: string
@@ -120,7 +120,7 @@ async function disposeRegistrations(registrations: readonly Registration[]): Pro
   }
 }
 
-function applyTeamAgent(editor: AgentEditor, id: string, body: string, fields: TeamFields): void {
+export function applyTeamAgent(editor: AgentEditor, id: string, body: string, fields: TeamFields): void {
   editor.update(id, (agent) => {
     const ref = parseModelRef(fields.model, fields.variant)
     if (ref !== undefined) agent.model = ref
@@ -149,6 +149,13 @@ function parseModelRef(model: string | undefined, variant: string | undefined): 
   } catch {
     return undefined
   }
+}
+
+// Exported so the publish fingerprint can compare the host back against the
+// file-applied fields: while the host still shows exactly what the team file
+// installed, discovery must report upstream (absent) instead of Plus output.
+export function parseTeamFields(markdown: string): TeamFields {
+  return parseFrontmatter(markdown)
 }
 
 function parseFrontmatter(markdown: string): TeamFields {

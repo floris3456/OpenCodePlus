@@ -1089,6 +1089,48 @@ test("an active model sets the host agent model and no active installs nothing",
   expect(none.registrations).toEqual([])
 })
 
+test("a model update for a current team agent missing from the registry still lands", async () => {
+  // Team-only ids are absent from the host registry at apply time (the team
+  // install runs later in the same publish), so applyModels must upsert
+  // through editor.update rather than skip a missing entry. The upsert is
+  // allowed only because the id is a current team winner (teamAgents).
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const ctx = context({ agent: agents.domain })
+  const discovered = await discoverFor(ctx)
+  const models = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova-2", active: true as const, updated: UPDATED },
+    { type: "model" as const, level: "project" as const, agent: "ghost", providerID: "acme", modelID: "nova-3", active: true as const, updated: UPDATED },
+  ]
+  const applied = await apply(
+    ctx,
+    makeInput({ items: discovered.items, records: [], models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: ["ghost"] }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(agents.state.get("ghost")?.model).toMatchObject({ providerID: "acme", id: "nova-3" })
+})
+
+test("a model update for an agent missing from the registry and outside the team creates nothing", async () => {
+  // The same retained model record must not resurrect a disabled team role:
+  // an absent id outside the current team winners keeps the old skip-if-absent
+  // behaviour, so no phantom role with default permissions is created.
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const ctx = context({ agent: agents.domain })
+  const discovered = await discoverFor(ctx)
+  const models = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova-2", active: true as const, updated: UPDATED },
+    { type: "model" as const, level: "project" as const, agent: "ghost", providerID: "acme", modelID: "nova-3", active: true as const, updated: UPDATED },
+  ]
+  const applied = await apply(
+    ctx,
+    makeInput({ items: discovered.items, records: [], models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: [] }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
+  expect(agents.state.has("ghost")).toBe(false)
+  expect(agents.state.get("ghost")).toBeUndefined()
+})
+
 test("the base template follows the switched model family per request", async () => {
   const baseTemplates = [
     { id: "gpt", title: "GPT.txt", text: "gpt base prompt" },

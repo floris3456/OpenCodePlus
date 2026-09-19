@@ -36,7 +36,7 @@ function mcpTool(namespace: string, name: string, description: string): McpToolE
   }
 }
 
-function toolDomainFor(tools: readonly McpToolEntry[]) {
+function toolDomainFor(tools: readonly (Tool.Info & { readonly id: string })[]) {
   const live = tools.map((tool) => ({ ...tool }))
   const editor: ToolEditor = {
     list: () => live,
@@ -79,6 +79,20 @@ function mcpDomainFor(server: string) {
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,
+  }
+}
+
+function pluginTool(namespace: string, name: string, description: string): Tool.Info & { readonly id: string; readonly origin: { type: "plugin"; name: string } } {
+  const id = `${namespace.replaceAll(".", "_")}_${name.replace(/[^A-Za-z0-9_-]/g, "_")}`
+  return {
+    id,
+    name,
+    description,
+    input: Schema.Struct({}),
+    output: Schema.String,
+    options: { namespace, codemode: true, permission: `${namespace}.${name}` },
+    origin: { type: "plugin", name: "opencode.plus" },
+    execute: () => Effect.die("unused tool.execute"),
   }
 }
 
@@ -177,4 +191,85 @@ test("off on team-query.diff denies that tool and drops it from the code-mode ca
   expect(rendered).not.toContain('tools["team-query"].diff')
   expect(rendered).toContain("team-query status checks current queue")
   expect(rendered).not.toContain("team-query diff shows pending changes")
+})
+
+test("off on team.diff for a defaults-level team agent denies that tool and drops it from the catalog", async () => {
+  // Team-provided agents are not host upstream: the built-in team registry
+  // contributes muse-implementer with scope defaults, so the host starts
+  // without it and apply must still install the deny (upsert, not skip).
+  const agents = agentHarness([])
+  const status = pluginTool("team", "status", "team status shows run state")
+  const diff = pluginTool("team", "diff", "team diff shows pending changes")
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([status, diff]),
+    mcp: mcpDomainFor("team-query"),
+  })
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  const diffItem = discovered.items.find((item) => item.id === "tool:team_diff")
+  if (!diffItem) throw new Error("expected tool:team_diff in discovery")
+  expect(diffItem.codemode).toBe(true)
+
+  const records: CustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "muse-implementer",
+      item: "tool:team_diff",
+      section: null,
+      state: "off",
+      basedOn: fingerprint("upstream"),
+      updated: UPDATED,
+    },
+  ]
+  const teamAgents = [{ id: "muse-implementer", scope: "defaults" as const }]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [{ id: "muse-implementer", level: "defaults" as Level }],
+      scopes: scopesOf(teamAgents),
+      records,
+      teamAgents: ["muse-implementer"],
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+
+  const permissions = agents.state.get("muse-implementer")?.permissions ?? []
+  expect(permissions).toContainEqual({ action: "team_diff", resource: "*", effect: "deny" })
+
+  const toolLayer = LayerNode.compile(LayerNode.group([CoreTool.node]), {
+    replacements: [
+      Image.node.replace(Layer.mock(Image.Service, { normalize: (_resource, content) => Effect.succeed(content) })),
+    ],
+  })
+  const { snapshot } = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* CoreTool.Service
+      yield* registry.transform((editor) => {
+        editor.add({
+          name: status.name,
+          description: status.description,
+          input: status.input,
+          output: status.output,
+          options: status.options,
+          execute: () => Effect.die("unused tool.execute"),
+        })
+        editor.add({
+          name: diff.name,
+          description: diff.description,
+          input: diff.input,
+          output: diff.output,
+          options: diff.options,
+          execute: () => Effect.die("unused tool.execute"),
+        })
+      })
+      const snapshot = yield* registry.snapshot(permissions)
+      return { snapshot }
+    }).pipe(Effect.provide(toolLayer), Effect.scoped),
+  )
+  if (!snapshot.codeModeCatalog) throw new Error("expected codeModeCatalog in snapshot")
+  const paths = Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog))
+  expect(paths).toContain("team.status")
+  expect(paths).not.toContain("team.diff")
 })

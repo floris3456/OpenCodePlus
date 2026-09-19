@@ -65,6 +65,64 @@ export function unmaskModel(
   return baseline.upstream
 }
 
+// Team member unmask: built-in (and file) team installs write full agent
+// fields — description, mode, and a permissions allowlist/denylist — through
+// the shared applyTeamAgent, but the prompt/model baselines above cover only
+// system text and model. While the host still shows exactly what the team
+// member installed (system body plus every defined field, permissions as a
+// superset since core defaults remain), the host entry is Plus output and
+// must report upstream (absent) instead of flipping the publish fingerprint
+// into a dispose/reinstall loop. Any divergence is a genuine upstream edit
+// and flows through untouched so the team correctly loses to it.
+export interface TeamAppliedFields {
+  readonly description?: string
+  readonly mode?: string
+  readonly hidden?: boolean
+  readonly color?: string
+  readonly steps?: number
+  readonly permissions: readonly { readonly action: string; readonly resource: string; readonly effect: string }[]
+  readonly model?: string
+  readonly variant?: string
+}
+
+export function matchesTeamApplied(
+  host: { readonly system?: string; readonly description?: string; readonly mode?: string; readonly hidden?: boolean; readonly color?: string; readonly steps?: number; readonly permissions: readonly { readonly action: string; readonly resource: string; readonly effect: string }[]; readonly model?: { readonly providerID: string; readonly id: string; readonly variant?: string } },
+  appliedBody: string,
+  applied: TeamAppliedFields,
+): boolean {
+  if ((host.system ?? "") !== appliedBody) return false
+  if (applied.description !== undefined && host.description !== applied.description) return false
+  if (applied.mode !== undefined && host.mode !== applied.mode) return false
+  if (applied.hidden !== undefined && host.hidden !== applied.hidden) return false
+  if (applied.color !== undefined && host.color !== applied.color) return false
+  if (applied.steps !== undefined && host.steps !== applied.steps) return false
+  if (applied.model !== undefined) {
+    const suffixed = applied.variant === undefined || applied.model.includes("#") ? applied.model : `${applied.model}#${applied.variant}`
+    const slash = suffixed.indexOf("/")
+    const hash = suffixed.lastIndexOf("#")
+    const wantProvider = slash === -1 ? "" : suffixed.slice(0, slash)
+    const wantModel = slash === -1 ? "" : hash === -1 ? suffixed.slice(slash + 1) : suffixed.slice(slash + 1, hash)
+    const wantVariant = hash === -1 ? undefined : suffixed.slice(hash + 1)
+    // An unparseable model never reaches the host (applyTeamAgent leaves the
+    // registry entry untouched), so it cannot identify Plus output; skip the
+    // model check rather than mismatching a genuine upstream model into a loop.
+    if (wantProvider.length > 0 && wantModel.length > 0) {
+      if (host.model === undefined) return false
+      if (String(host.model.providerID) !== wantProvider) return false
+      if (String(host.model.id) !== wantModel) return false
+      const gotVariant = host.model.variant === undefined ? undefined : String(host.model.variant)
+      if ((gotVariant ?? "default") !== (wantVariant ?? "default")) return false
+    }
+  }
+  for (const rule of applied.permissions) {
+    const found = host.permissions.some(
+      (entry) => entry.action === rule.action && entry.resource === rule.resource && entry.effect === rule.effect,
+    )
+    if (!found) return false
+  }
+  return true
+}
+
 // Item enablement as the host provides it: tools, skills, base prompts, and
 // system rows carry no per-item disable flag upstream, so they are always
 // enabled at discovery. Plus records layer on top through resolution (the

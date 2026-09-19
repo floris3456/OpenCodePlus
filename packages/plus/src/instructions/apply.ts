@@ -30,6 +30,8 @@ export interface ApplyInput {
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
   readonly models?: readonly ModelRecord[]
+  /** Ids of the currently resolved (enabled) team winners; the only absent ids applyModels may create. */
+  readonly teamAgents?: readonly string[]
 }
 
 export interface ToolPlan {
@@ -55,7 +57,7 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
   try {
     const role = await applyRoles(ctx, input)
     if (role !== undefined) installed.push(role)
-    const model = await applyModels(ctx, { agents: input.agents, models, scopes: input.scopes })
+    const model = await applyModels(ctx, { agents: input.agents, models, scopes: input.scopes, teamAgents: input.teamAgents })
     if (model !== undefined) installed.push(model)
     const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
     const session = await applySession(ctx, input)
@@ -78,7 +80,7 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
 // save stays a no-op.
 export async function applyModels(
   ctx: Context,
-  input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes },
+  input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes; teamAgents?: readonly string[] },
 ): Promise<Registration | undefined> {
   const updates = input.agents.flatMap((agent) => {
     const winner = resolveActiveModel({ models: input.models, scopes: input.scopes, level: agent.level, agent: agent.id })
@@ -87,9 +89,15 @@ export async function applyModels(
     return [{ agent: agent.id, providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }]
   })
   if (updates.length === 0) return undefined
+  const team = new Set(input.teamAgents ?? [])
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
-      if (!editor.get(update.agent)) continue
+      // Upsert only for a current team winner. A retained model record for a
+      // disabled team still resolves a winner for the stale discovered id, and
+      // core's update would recreate the disposed role from Agent.Info.default
+      // (allow '*' included). Team-only ids absent at apply time need the
+      // upsert; every other absent id keeps the old skip-if-absent behaviour.
+      if (!editor.get(update.agent) && !team.has(update.agent)) continue
       editor.update(update.agent, (agent) => {
         agent.model = Model.Ref.make({
           providerID: Provider.ID.make(update.providerID),
@@ -273,20 +281,30 @@ async function applySkills(
     ]),
   ]
   if (rules.length === 0) return { agentChanged: false, skillChanged: added !== undefined }
+  const team = new Set(input.teamAgents ?? [])
   const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-    for (const rule of rules) pushRule(editor, rule)
+    for (const rule of rules) pushRule(editor, rule, team)
   })
   onInstall(agentRegistration)
   return { agentChanged: true, skillChanged: added !== undefined }
 }
 
-function pushRule(editor: AgentEditor, rule: { agent: string; action: string; resource: string; effect: "deny" | "allow" }) {
-  const current = editor.get(rule.agent)
-  if (!current) return
+function pushRule(
+  editor: AgentEditor,
+  rule: { agent: string; action: string; resource: string; effect: "deny" | "allow" },
+  team: ReadonlySet<string>,
+) {
   // Core evaluates permissions last-match-wins, so appending is always
   // sufficient and always correct, whereas deciding a rule is redundant
   // requires reimplementing core's wildcard semantics and still cannot
   // reason about concrete resources covered by a wildcard.
+  // Team-provided agents are not host upstream: core's update upserts, so a
+  // deny for a team-only id creates the entry here and the team install
+  // overlays its body and ceiling afterwards. Upsert only for a current team
+  // winner; a retained rule for a disabled team would otherwise recreate the
+  // disposed role from Agent.Info.default. Every other absent id keeps the
+  // old skip-if-absent behaviour.
+  if (!editor.get(rule.agent) && !team.has(rule.agent)) return
   editor.update(rule.agent, (agent) => {
     agent.permissions.push({ action: rule.action, resource: rule.resource, effect: rule.effect })
   })
@@ -537,16 +555,17 @@ async function applySession(
   if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub)
     return { registrations: [], tools: [], agentChanged: false }
   const installed: Registration[] = []
+  const team = new Set(input.teamAgents ?? [])
   try {
     if (denials.length > 0) {
       const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-        for (const denial of denials) pushRule(editor, { agent: denial.agent, action: denial.tool, resource: "*", effect: "deny" })
+        for (const denial of denials) pushRule(editor, { agent: denial.agent, action: denial.tool, resource: "*", effect: "deny" }, team)
       })
       installed.push(agentRegistration)
     }
     if (permDenies.length > 0) {
       const permRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-        for (const rule of permDenies) pushRule(editor, rule)
+        for (const rule of permDenies) pushRule(editor, rule, team)
       })
       installed.push(permRegistration)
     }

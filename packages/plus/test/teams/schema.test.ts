@@ -1,0 +1,216 @@
+import { describe, expect, test } from "bun:test"
+import { Option, Schema } from "effect"
+import {
+  AttemptState,
+  AttemptStates,
+  Brief,
+  BudgetOverBy,
+  FollowupBudget,
+  MergeState,
+  MergeStates,
+  Policy,
+  Report,
+  ReportStatus,
+  ReportStatuses,
+  RunID,
+  RunState,
+  RunStates,
+  TaskID,
+  TaskState,
+  TaskStates,
+  ToolError,
+  budgetExhaustion,
+  delegatedRoles,
+  toolError,
+  validateChecks,
+  type Check,
+} from "../../src/teams/schema.js"
+
+function roundTrip<S extends Schema.ConstraintDecoder<unknown>>(
+  name: string,
+  schema: S,
+  values: ReadonlyArray<S["Encoded"]>,
+): void {
+  test(`${name} values round-trip`, () => {
+    for (const value of values) expect(Schema.decodeUnknownSync(schema)(value)).toBe(value)
+    expect(Option.isNone(Schema.decodeUnknownOption(schema)("nope-not-a-state"))).toBe(true)
+  })
+}
+
+roundTrip("RunState", RunState, RunStates)
+roundTrip("AttemptState", AttemptState, AttemptStates)
+roundTrip("TaskState", TaskState, TaskStates)
+roundTrip("MergeState", MergeState, MergeStates)
+roundTrip("ReportStatus", ReportStatus, ReportStatuses)
+
+test("identity primitives accept and reject", () => {
+  expect(Schema.decodeUnknownSync(RunID)("w-0123456789abcdef")).toBe("w-0123456789abcdef")
+  expect(Schema.decodeUnknownSync(RunID)("main-0123456789abcdef")).toBe("main-0123456789abcdef")
+  expect(Option.isNone(Schema.decodeUnknownOption(RunID)("x-1"))).toBe(true)
+  expect(Option.isNone(Schema.decodeUnknownOption(TaskID)("nope"))).toBe(true)
+  expect(Schema.decodeUnknownSync(TaskID)("T3")).toBe("T3")
+  expect(Schema.decodeUnknownSync(TaskID)("T3.rework.1")).toBe("T3.rework.1")
+})
+
+test("delegatedRoles pins the eight delegatable roles", () => {
+  expect(delegatedRoles.length).toBe(8)
+  expect(delegatedRoles).toContain("muse-implementer")
+  expect(delegatedRoles).toContain("scout")
+})
+
+const briefBase = {
+  requestID: "T1-a",
+  role: "muse-implementer" as const,
+  objective: "Make the agent filter apply in the list tool output.",
+  deliverable: { kind: "commit" as const },
+  scope: { paths: ["packages/plus/src/x.ts"], forbidden: [] as string[] },
+}
+
+test("Brief.prompt of 4001 chars is rejected", () => {
+  expect(Option.isNone(Schema.decodeUnknownOption(Brief)({ ...briefBase, prompt: "x".repeat(4001) }))).toBe(true)
+  const decoded = Schema.decodeUnknownSync(Brief)({ ...briefBase, prompt: "x".repeat(4000) })
+  expect(decoded.prompt?.length).toBe(4000)
+  // Defaults apply on decode: checks, effort, scope.forbidden, context.
+  expect(decoded.checks).toEqual([])
+  expect(decoded.effort).toBe("medium")
+  expect(decoded.scope.forbidden).toEqual([])
+  expect(decoded.context).toEqual({ interfaces: [], decisions: [] })
+})
+
+const lines = (n: number): string => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")
+
+function caught(fn: () => unknown): Promise<unknown> {
+  return Promise.resolve().then(fn).then(
+    () => undefined,
+    (error: unknown) => error,
+  )
+}
+
+test("Report.summary with 16 lines is rejected with E_SUMMARY", async () => {
+  expect(Option.isNone(Schema.decodeUnknownOption(Report)({ status: "done", summary: lines(16) }))).toBe(true)
+  const thrown = await caught(() => Schema.decodeUnknownSync(Report)({ status: "done", summary: lines(16) }))
+  expect(String(thrown)).toContain("E_SUMMARY")
+  expect(Schema.decodeUnknownSync(Report)({ status: "done", summary: lines(15) }).status).toBe("done")
+})
+
+const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }
+
+describe("validateChecks", () => {
+  test("rejects bare bun test with E_CHECKS and accepted", async () => {
+    const thrown = await caught(() => validateChecks([{ id: "x", argv: ["bun", "test"] }]))
+    expect(thrown).toMatchObject({ code: "E_CHECKS" })
+    expect(thrown).toMatchObject({
+      message: "Checks must be explicit bun test FILE or bun run SCRIPT commands. Whole-suite bun test is not permitted.",
+      accepted: ACCEPTED,
+    })
+    expect(JSON.parse(JSON.stringify(thrown))).toMatchObject({ code: "E_CHECKS" })
+  })
+
+  test("rejects bun run with a path, not a named script", async () => {
+    const thrown = await caught(() => validateChecks([{ id: "x", argv: ["bun", "run", "scripts/team2/build.ts"] }]))
+    expect(thrown).toMatchObject({
+      code: "E_CHECKS",
+      message: "Use a named package script, not an external executable or path",
+      accepted: ACCEPTED,
+    })
+  })
+
+  test("accepts a named script with relative cwd", () => {
+    validateChecks([{ id: "x", argv: ["bun", "run", "build"], cwd: "scripts/team2" }])
+  })
+
+  test("accepts an explicit test file and a directory", () => {
+    validateChecks([
+      { id: "a", argv: ["bun", "test", "packages/plus/test/model.test.ts"] },
+      { id: "b", argv: ["bun", "test", "test"] },
+    ])
+  })
+
+  test("rejects duplicate ids, oversize arrays, bad ids, flags, NUL, and bad cwd", async () => {
+    const dup = await caught(() =>
+      validateChecks([
+        { id: "x", argv: ["bun", "run", "build"] },
+        { id: "x", argv: ["bun", "run", "build"] },
+      ]),
+    )
+    expect(dup).toMatchObject({ code: "E_CHECKS", message: "Checks need distinct short IDs.", accepted: ACCEPTED })
+
+    const many: Check[] = Array.from({ length: 13 }, (_, i) => ({ id: `c${i}`, argv: ["bun", "run", "build"] }))
+    const over = await caught(() => validateChecks(many))
+    expect(over).toMatchObject({
+      code: "E_CHECKS",
+      message: "E_CHECKS: Use at most 12 focused checks.",
+      accepted: ACCEPTED,
+    })
+
+    const badId = await caught(() => validateChecks([{ id: "Bad_ID", argv: ["bun", "run", "build"] }]))
+    expect(badId).toMatchObject({ code: "E_CHECKS", message: "Checks need distinct short IDs." })
+
+    const dotted = await caught(() => validateChecks([{ id: "x", argv: ["bun", "test", "app.js"] }]))
+    expect(dotted).toMatchObject({
+      code: "E_CHECKS",
+      message: "Tests must name explicit test files or directories inside the worktree.",
+    })
+
+    const flags = await caught(() => validateChecks([{ id: "x", argv: ["bun", "test", "--watch", "test/a.test.ts"] }]))
+    expect(flags).toMatchObject({ code: "E_CHECKS", message: "Use explicit test files without runtime-loading flags" })
+
+    const nul = await caught(() => validateChecks([{ id: "x", argv: ["bun", "run", "build", "x\0y"] }]))
+    expect(nul).toMatchObject({ code: "E_CHECKS", message: "Invalid check argument." })
+
+    const cwd = await caught(() => validateChecks([{ id: "x", argv: ["bun", "run", "build"], cwd: "/tmp" }]))
+    expect(cwd).toMatchObject({ code: "E_CHECKS", message: "Check cwd must remain inside the task worktree." })
+  })
+})
+
+test("Policy.parse({}) yields documented defaults", () => {
+  const policy = Schema.decodeUnknownSync(Policy)({})
+  expect(policy.bounds.inFlight).toBe(4)
+  expect(policy.bounds.members).toBe(12)
+  expect(policy.bounds.maxDepth).toBe(3)
+  expect(policy.bounds.defaultTurns).toBe(200)
+  expect(policy.bounds.defaultWallMs).toBe(5400000)
+  expect(policy.timeouts.stallMs).toBe(600000)
+  expect(policy.sweep.tickMs).toBe(2000)
+  expect(policy.integrate.auto).toBe(false)
+  expect(policy.retry.baseMs).toBe(10000)
+  expect(policy.effort.medium.turns).toBe(60)
+})
+
+test("toolError returns a plain JSON-safe object", () => {
+  const err = toolError("E_REPO", "bad repo", "opencode")
+  expect(err).not.toBeInstanceOf(Error)
+  expect(Schema.decodeUnknownSync(ToolError)(err)).toEqual(err)
+  expect(JSON.parse(JSON.stringify(err))).toEqual(err)
+  expect(toolError("E_REPO", "bad repo")).toEqual({ code: "E_REPO", message: "bad repo" })
+})
+
+test("F1.2 followup.budget parses and is optional", () => {
+  expect(Schema.decodeUnknownSync(FollowupBudget)({ turns: 200 })).toEqual({ turns: 200 })
+  expect(Schema.decodeUnknownSync(FollowupBudget)({ turns: 200, tokens: 100, wallMs: 60000 })).toEqual({
+    turns: 200,
+    tokens: 100,
+    wallMs: 60000,
+  })
+  expect(Option.isNone(Schema.decodeUnknownOption(FollowupBudget)({ turns: -1 }))).toBe(true)
+})
+
+test("F1.2 status.budget overBy/exhausted math", () => {
+  expect(Schema.decodeUnknownSync(BudgetOverBy)({ turns: 1, tokens: 0, wallMs: 0 })).toEqual({
+    turns: 1,
+    tokens: 0,
+    wallMs: 0,
+  })
+  const over = budgetExhaustion(
+    { attempts: [{}, {}, {}], budget: { turns: 2 }, createdAt: new Date().toISOString() },
+    { now: Date.now() },
+  )
+  expect(over.overBy.turns).toBe(1)
+  expect(over.exhausted).toBe(true)
+  const under = budgetExhaustion(
+    { attempts: [{}], budget: { turns: 2 }, createdAt: new Date().toISOString() },
+    { now: Date.now() },
+  )
+  expect(under.overBy).toEqual({ turns: 0, tokens: 0, wallMs: 0 })
+  expect(under.exhausted).toBe(false)
+})
