@@ -18,13 +18,24 @@ keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the
 agents with the identical subtree, plus a `Teams`
 group (`[a: add team]`) holding that level's on-disk teams, whose team rows
 (`team:<level>:<team>`, `add: "agent"`) hold member rows
-(`team:<level>:<team>:<member>`) expanding to the same five agent groups. `Defaults` holds
+(`team:<level>:<team>:<member>`, `add: "agent"`) expanding to the same five agent groups. `Defaults` holds
 `Agents` (template agents in the same origin subgroups, each with the full subtree, `[a: add agent template]`),
 `Teams` (built-in shipped teams with working toggles whose team rows carry `add: "agent"` and whose member rows
-expand to full agent subtrees, `[a: add team]` still creates at project or
+carry `add: "agent"` and expand to full agent subtrees, `[a: add team]` still creates at project or
 global, never
 defaults), and then the shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`,
-`System` `[a]`, `MCP` `[a: add MCP server]`.
+`System` `[a]`, `MCP` `[a: add MCP server]`. Built-in Native and Special agents
+project under every root with row id `agent:<level>:<id>` and are not
+removable (`actions.remove === false`). Ancestor-backed project agents are
+discovered through core's upward `.opencode` walk, are file-backed, and are not
+removable (`AgentEntry.ancestor: true` suppresses deletion because deletion is
+confined to the local project). Team member rows carry `add: "agent"` and are
+removable when on-disk (project/global, or a Defaults overlay file, invoking
+`team.removeAgent`) while shipped Defaults members are refused
+(`actions.remove === false`). Team create from a `group:<level>:teams` row takes
+that level (creating directly at project or global without a scope dialog;
+Defaults prompts for project or global) and prefills the name from the chosen
+template.
 
 Every agent in all three roots has the identical subtree:
 
@@ -62,11 +73,14 @@ Every agent in all three roots has the identical subtree:
 
 Team member rows (`tree.ts` `lazyTeamMember`): under Teams → `<team>` at
 every level, each member row (`team:<level>:<team>:<member>`, kind `"team"`,
-no address, no toggle) expands to the same five groups an Agents-group agent
-renders (Models, Tools, Base, Skills, System, in that order) with working
-toggle/edit/reset on their rows, whether or not the team is enabled and
-whether or not the host registered the agent. The owner for those groups is
-the bare member id with the registered agent when one exists
+no address, no toggle) carries `add: "agent"` and is removable when on-disk
+(project/global, or a Defaults overlay file, invoking `team.removeAgent`) while
+shipped Defaults members are refused (`actions.remove === false`). Each member
+row expands to the same five groups an Agents-group agent renders (Models,
+Tools, Base, Skills, System, in that order) with working toggle/edit/reset on
+their rows, whether or not the team is enabled and whether or not the host
+registered the agent. The owner for those groups is the bare member id with
+the registered agent when one exists
 (`ctx.agents.find(a => a.id === member && a.scope === level) ?? find(a => a.id === member) ?? null`),
 so shared items (`agents === undefined`) populate for unregistered members
 while `system:role` appears only for registered ones. Item and section ids
@@ -83,7 +97,7 @@ id.
 `Defaults` holds `Agents` (template agents in the same origin subgroups Native,
 Plus, User, Special, each with the full subtree, `[a: add agent template]`),
 `Teams` (built-in shipped teams, each with working toggles whose team rows
-carry `add: "agent"` and whose member rows expand to full agent subtrees,
+carry `add: "agent"` and whose member rows carry `add: "agent"` and expand to full agent subtrees,
 `[a: add team]` still creates
 at project or global, never defaults), and then the shared inventories:
 `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
@@ -155,7 +169,12 @@ Origin is computed server-side in `discover.ts` (`special` for
 carries `team`. It crosses the RPC boundary on `AgentEntry.origin` and is
 carried through `snapshot.ts` `agentOf` into `tree.ts` `lazyAgentsGroup`,
 which groups by that carried value (never by hardcoded ids or path/team
-heuristics in the tree layer).
+heuristics in the tree layer). Ancestor-backed project agents are discovered
+through core's upward `.opencode` walk, are file-backed, and carry
+`AgentEntry.ancestor: true` across the RPC boundary; because
+`existingAgentPath` confines deletion to the project directory and cannot
+resolve ancestor paths, ancestor rows suppress the delete action
+(`actions.remove === false`).
 
 ## Sections engine (`sections.ts`)
 
@@ -755,9 +774,13 @@ RPC surface (`rpc.ts`, `index.ts`):
   Fails with `team.invalid` on invalid name, `team.exists` when the directory
   already exists, or `team.create` when the write itself fails. Logs `team.create`
   to the owning store with the caller's actor on success only; the file write
-  never moves a revision. The TUI `a` on a Teams group lists Blank plus the
-  Defaults teams from `instructions.snapshot` first (Blank default, so the old
-  two-prompt flow is unchanged when chosen) and passes `template` when set.
+  never moves a revision. The TUI `a` on a `group:<level>:teams` row lists Blank
+  plus the Defaults teams from `instructions.snapshot` first (Blank default, so the
+  old two-prompt flow is unchanged when chosen). For `group:project:teams` and
+  `group:global:teams`, it takes that level directly without a scope dialog;
+  `group:defaults:teams` prompts for `project` or `global` scope. When a
+  template is chosen, the team name prompt is prefilled with the template name,
+  and `template` is passed to `team.create`.
 - `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
   any of the three tiers. Gated by project mode (`project.disabled`). Fails
   with `team.invalid` on invalid name, or `team.unknown` when the team is not
@@ -776,29 +799,31 @@ RPC surface (`rpc.ts`, `index.ts`):
   an existing member id with `agent.exists` (path in data) and invalid ids
   with `agent.invalid`. After the write calls `refreshAfterFileChange(...,
   true)` exactly as `createAgent` does, so an enabled team's new member
-  installs without a restart. The team row carries `add: "agent"` (member rows
-  carry none); `a` on `team:<level>:<team>` opens only the Agent template →
-  id → prompt flow with the team's level as scope, never the generic picker.
+  installs without a restart. Both team rows and member rows carry `add: "agent"`;
+  `a` on `team:<level>:<team>` or on `team:<level>:<team>:<member>` opens only
+  the Agent template → id → prompt flow with the team's level as scope, never
+  the generic picker.
 - `team.removeAgent` (`TeamRemoveAgentInput` → `AgentRef`): removes one member
-  from a team at any tier. Project/global unlinks `<teamdir>/<id>.md`; defaults
-  unlinks the overlay file `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
-  Shipped built-in members without an overlay file fail with `team.invalid`.
-  Removing the last member leaves an empty team directory. After unlink calls
-  `refreshAfterFileChange(..., true)` so an enabled team's uninstalled member
-  unregisters from the host immediately.
+  from a team at any tier. Bound to `d delete` on team member rows. Project/global
+  unlinks `<teamdir>/<id>.md`; defaults unlinks the overlay file
+  `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`. Shipped
+  built-in members without an overlay file fail with `team.invalid` (delete
+  refused). Removing the last member leaves an empty team directory. After unlink
+  calls `refreshAfterFileChange(..., true)` so an enabled team's uninstalled
+  member unregisters from the host immediately.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
 with `[a: add team]` (the Defaults group lists real built-in rows with
 working toggles and member rows that expand to full agent subtrees; `add` there still creates at
-project or global scope, never defaults). Each team row carries
-`add: "agent"` (member rows carry none), so `a` on a team row adds an agent
-to that team through `team.addAgent` with the Defaults overlay for
-`level: "defaults"`, and TUI wiring (`state.ts`
-`space` → real `team.setEnabled` + snapshot refresh, `a` → real
-`team.create` + snapshot refresh; `tree-pane.tsx` on/off badge). A created
-team starts disabled. Built-in teams cannot be created or deleted (though their
-members are editable through the Defaults overlay). Store
+project or global scope, never defaults). Both team rows and member rows carry
+`add: "agent"`, so `a` on a team row or member row adds an agent to that team
+through `team.addAgent` with the Defaults overlay for `level: "defaults"`, and
+TUI wiring (`state.ts` `space` → real `team.setEnabled` + snapshot refresh, `a`
+→ real `team.create` / `team.addAgent` + snapshot refresh, `d` on a member row
+→ `team.removeAgent` confirmation + snapshot refresh; `tree-pane.tsx` on/off
+badge). A created team starts disabled. Built-in teams cannot be created or
+deleted (though their members are editable through the Defaults overlay). Store
 persistence and the RPC surface are implemented.
 
 ## §11 Tools, log, and query
