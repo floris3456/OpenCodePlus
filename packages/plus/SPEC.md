@@ -16,9 +16,11 @@ nested under `Native`: `group:<level>:agents:native`,
 keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the
 `User` subgroup, never on `Native`/`Special`/`Plus`) holding that level's
 agents with the identical subtree, plus a `Teams`
-group (`[a: add team]`) holding that level's on-disk teams. `Defaults` holds
+group (`[a: add team]`) holding that level's on-disk teams, whose team rows
+(`team:<level>:<team>`, `add: "agent"`) hold member rows
+(`team:<level>:<team>:<member>`) expanding to the same five agent groups. `Defaults` holds
 `Agents` (template agents in the same origin subgroups, each with the full subtree, `[a: add agent template]`),
-`Teams` (built-in shipped teams with working toggles and member rows that
+`Teams` (built-in shipped teams with working toggles whose team rows carry `add: "agent"` and whose member rows
 expand to full agent subtrees, `[a: add team]` still creates at project or
 global, never
 defaults), and then the shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`,
@@ -46,7 +48,7 @@ Every agent in all three roots has the identical subtree:
         <tool>
           <section>
   Base                     [a: add base prompt]
-    <Template>.txt         (the one matching the agent's model is marked "active")
+    <Template>.txt         (the one matching the agent's Plus-active model is marked "active")
       <section>
   Skills
     Native / OpenCodePlus / MCP > <server> / Project [a: add skill]
@@ -78,9 +80,10 @@ Tools/Skills subgroup ids extending those prefixes. `dialogs.tsx`
 the `<team>/` prefix so `a` on a member's Models group adds for the member
 id.
 
-`Defaults` holds `Agents` (template agents, each with the full subtree,
-`[a: add agent template]`), `Teams` (built-in shipped teams, each with
-working toggles and member rows that expand to full agent subtrees,
+`Defaults` holds `Agents` (template agents in the same origin subgroups Native,
+Plus, User, Special, each with the full subtree, `[a: add agent template]`),
+`Teams` (built-in shipped teams, each with working toggles whose team rows
+carry `add: "agent"` and whose member rows expand to full agent subtrees,
 `[a: add team]` still creates
 at project or global, never defaults), and then the shared inventories:
 `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
@@ -138,7 +141,7 @@ export interface AgentSource {
   readonly scope: AgentScope
   readonly origin?: AgentOrigin
   readonly path?: string
-  /** id of the base prompt template active for this agent's model, e.g. "gpt" */
+  /** id of the base prompt template active for this agent's Plus-active model, e.g. "gpt" */
   readonly base?: string
 }
 /** { global: ids with scope "global", defaults: ids with scope "defaults" } */
@@ -247,7 +250,7 @@ export interface Item {
 ```
 
 Item id forms (documented, not enforced): `tool:<toolId>`,
-`base:<templateId>` (gpt|claude|muse|gemini|general), `skill:<skillId>`,
+`base:<templateId>` (gpt|claude|muse|gemini|general|kimi|trinity), `skill:<skillId>`,
 `system:role` (the agent's own prompt body = Role/persona),
 `system:<relativePath>`, `mcp:<server>`,
 `model:<providerID>/<modelID>` or `model:<providerID>/<modelID>@<variant>`,
@@ -364,6 +367,9 @@ export function removeModelRecord(models: readonly ModelRecord[], address: { lev
   `session.created` / `session.agent.selected` only when the session's
   current model differs (`index.ts`); manual mid-session picks
   (`session.model.selected`) are never subscribed to and never overridden.
+  The per-agent base badge follows the Plus-active model rather than the
+  upstream model, with `PromptTemplate.active` classifying `claude` and
+  `gemini` model ids to their own base template ids (`claude` and `gemini`).
   The base template follows the model family automatically: the context
   hook classifies each request's model through `ctx.prompt.active` and
   applies only the template active for that request.
@@ -589,9 +595,9 @@ export interface AssembledTool {
 - `mcp.missing`: `{ name: string }`
 - `mcp.invalid`: `{ name: string, reason: string }`
 - `team.invalid`: `{ team: string, reason: string }`
-- `team.unknown`: `{ level: FileScope, team: string }`
-- `team.exists`: `{ level: FileScope, team: string }`
-- `team.create`: `{ level: FileScope, team: string, reason: string }`
+- `team.unknown`: `{ level: TeamLevel, team: string }`
+- `team.exists`: `{ level: TeamLevel, team: string }`
+- `team.create`: `{ level: TeamLevel, team: string, reason: string }`
 - `model.exists`: `{ level: Level, agent: string | null, providerID: string, modelID: string, variant?: string }`
 - `model.missing`: `{ level: Level, agent: string | null, providerID: string, modelID: string, variant?: string }`
 - `model.invalid`: `{ providerID: string, modelID: string, variant?: string, reason: string }`
@@ -605,11 +611,14 @@ A team is a named set of agents toggled as a unit. When a team is enabled
 its agents become visible to core as real agents. Teams have three tiers:
 `"project" | "global" | "defaults"`. Project and global teams are
 user-authored directories on disk; defaults teams are shipped source data
-from `builtin-teams.ts` with no filesystem path, never written, never
-created or deleted. They can be enabled and disabled like any other team;
-their records carry level `defaults` and route to the global store, and
-precedence is project over global over defaults. Created teams are always
-stored at project or global level, never defaults.
+from `builtin-teams.ts` editable through the Defaults overlay directory
+(`<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`). Built-in
+teams as named units cannot be created or deleted via `team.create`, but
+they can be enabled and disabled like any other team, and member agents can
+be added or customized through the overlay. Their enablement records carry
+level `defaults` and route to the global store, and precedence is project
+over global over defaults. Created teams are always stored at project or
+global level, never defaults.
 
 ```ts
 export type TeamLevel = "project" | "global" | "defaults"
@@ -772,14 +781,15 @@ RPC surface (`rpc.ts`, `index.ts`):
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
 with `[a: add team]` (the Defaults group lists real built-in rows with
-working toggles and informational member rows; `add` there still creates at
+working toggles and member rows that expand to full agent subtrees; `add` there still creates at
 project or global scope, never defaults). Each team row carries
 `add: "agent"` (member rows carry none), so `a` on a team row adds an agent
 to that team through `team.addAgent` with the Defaults overlay for
 `level: "defaults"`, and TUI wiring (`state.ts`
 `space` → real `team.setEnabled` + snapshot refresh, `a` → real
 `team.create` + snapshot refresh; `tree-pane.tsx` on/off badge). A created
-team starts disabled. Built-in teams cannot be created or deleted. Store
+team starts disabled. Built-in teams cannot be created or deleted (though their
+members are editable through the Defaults overlay). Store
 persistence and the RPC surface are implemented.
 
 ## §11 Tools, log, and query
@@ -1000,7 +1010,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   is `on|off`; `modified`/`overridden` read the row's own stored text;
   `review` includes rolled-up descendant review; `source` is
   `project|global|defaults|upstream`; `active` is the base template active
-  for the row's agent model, or the resolved active model on model rows;
+  for the row's agent model (following the Plus-active model), or the resolved active model on model rows;
   `inactive` is a user base template that can
   never become active; `unsupported` is whole `system:role` and whole base
   rows; `codemode` reads the item flag; `namespace` is the exact Code Mode
