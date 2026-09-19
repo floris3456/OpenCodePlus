@@ -7,7 +7,10 @@ import { Keymap } from "../../../context/keymap"
 import { SubagentsTab } from "./subagents-tab"
 import { ShellTab } from "./shell-tab"
 import { TerminalsTab } from "./terminals-tab"
+import { PluginComposerTabs } from "./team-monitor-tab"
 import { useConfig } from "../../../config"
+
+export { composerPluginTabs } from "./team-monitor-tab"
 
 export interface ComposerHint {
   label: string
@@ -50,7 +53,7 @@ export function Composer(props: ComposerProps) {
     active: "",
   })
 
-  const tabList = createMemo(() => Object.values(store.tabs))
+  const tabList = createMemo(() => Object.values(store.tabs).filter((t): t is Tab => Boolean(t && t.id)))
   const activeTab = createMemo(() => tabList().find((t) => t.id === store.active))
   const footerHints = createMemo(() => activeTab()?.hints?.() ?? [])
 
@@ -60,7 +63,13 @@ export function Composer(props: ComposerProps) {
     const tabs = tabList()
     if (tabs.length === 0) return
     const match = props.defaultTab && tabs.find((t) => t.id === props.defaultTab)
-    setStore("active", match ? match.id : tabs[0].id)
+    if (match) {
+      setStore("active", match.id)
+      return
+    }
+    if (!tabs.some((t) => t.id === store.active)) {
+      setStore("active", tabs[0].id)
+    }
   })
 
   function close() {
@@ -155,6 +164,7 @@ export function Composer(props: ComposerProps) {
             <Show when={config.session.terminal}>
               <TerminalsTab sessionID={props.sessionID} visibleTerminalID={props.visibleTerminalID} />
             </Show>
+            <PluginComposerTabs sessionID={props.sessionID} />
             <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
               <For each={footerHints()}>
                 {(hint) => (
