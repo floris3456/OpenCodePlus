@@ -10,7 +10,7 @@ import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, modelInfo, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -1430,4 +1430,60 @@ test("a shared change from another Location reaches this Location without discov
   )
   expect(switches).toHaveLength(1)
   expect(String(switches[0]?.model.id)).toBe("nova-9")
+})
+
+test("snapshot reports the Plus-active base for a file-backed agent", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const fPath = path.join(project, ".opencode", "agent", "f.md")
+  await fs.mkdir(path.dirname(fPath), { recursive: true })
+  await Bun.write(fPath, "f body\n")
+  const fableCatalog = {
+    ...modelInfo("cliproxyapi", "claude-fable-5"),
+    variants: [{ id: "max" as never }],
+  }
+  const models = [modelInfo("acme", "nova-1"), fableCatalog]
+  const agents = agentHarness([agentInfo("f", "f upstream", modelRef("acme", "nova-1"))])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const tools = toolHarness([])
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    catalog: catalogHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "claude-fable-5": "claude" }),
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(
+    handlers["model.add"](
+      { level: "project", agent: "f", providerID: "cliproxyapi", modelID: "claude-fable-5", variant: "max" },
+      throwingContext({}),
+    ),
+  )
+  const afterAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const active: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "f",
+    providerID: "cliproxyapi",
+    modelID: "claude-fable-5",
+    variant: "max",
+    active: true,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: afterAdd.revision,
+      expectedGlobalRevision: afterAdd.globalRevision,
+      records: [active],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(mutated.snapshot.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
 })

@@ -15,6 +15,8 @@ import {
   isCodeModeToolEntry,
   modelItemId,
   permItemId,
+  resolveActiveModel,
+  scopesOf,
   type AgentSource,
   type CustomizationRecord,
   type Item,
@@ -86,14 +88,19 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   // The host shows Plus's own output after applyModels installs it, so
   // classifying from the transformed model moves the fingerprint on the next
   // identical refresh whenever the activation changes family. Unmasked (file
-  // frontmatter or baseline-unmasked host, possibly absent) is stable.
+  // frontmatter or baseline-unmasked host, possibly absent) is stable, but the
+  // Plus-active model wins when a stored record selects one: the badge answers
+  // for the model Plus will install, not just the upstream file/host value.
+  const scopes = scopesOf(withModels)
   const withBase = withModels.map((source) => {
     const host = agents.find((agent) => String(agent.id) === source.id)
     if (host === undefined) return source
     const unmasked = upstream.get(source.id)
+    const winner = resolveActiveModel({ models: modelRecords, scopes, level: source.scope, agent: source.id, upstream: unmasked })
+    const effective = winner === undefined ? unmasked : { providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }
     const synthetic = {
       ...host,
-      model: unmaskedModel(unmasked),
+      model: unmaskedModel(effective),
     } as Agent.Info
     const base = input.activeBase(synthetic)
     if (base === undefined) {

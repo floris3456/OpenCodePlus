@@ -1065,3 +1065,44 @@ test("structured frontmatter models decode like the host ConfigModel.Selection",
   })
   expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
 })
+
+test("base classification follows the Plus-active model, not the upstream", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
+  await Bun.write(path.join(directory, ".opencode", "agent", "f.md"), "f body\n")
+  const hostAgents = [agent("f", "f upstream", modelRef("acme", "nova-1"))]
+  const classify = (candidate: { model?: { id?: unknown } }): string | undefined => {
+    const id = typeof candidate.model?.id === "string" ? candidate.model.id : ""
+    if (id === "claude-fable-5") return "claude"
+    if (id === "nova-1") return "general"
+    return undefined
+  }
+  const withoutRecord = await discover({
+    ctx: fullContext({ directory, agents: hostAgents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: classify as (agent: Agent.Info) => string | undefined,
+  })
+  expect(withoutRecord.agents.find((entry) => entry.id === "f")?.base).toBe("general")
+  const withRecord = await discover({
+    ctx: fullContext({ directory, agents: hostAgents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: classify as (agent: Agent.Info) => string | undefined,
+    modelRecords: [
+      {
+        type: "model",
+        level: "project",
+        agent: "f",
+        providerID: "cliproxyapi",
+        modelID: "claude-fable-5",
+        variant: "max",
+        active: true,
+        updated: UPDATED,
+      },
+    ],
+  })
+  expect(withRecord.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
+})
