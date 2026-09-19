@@ -9,7 +9,10 @@ import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { enable } from "../src/project.js"
-import { createActiveTeam } from "../src/tui/active-team.js"
+import { createActiveTeam, TeamMonitorTab } from "../src/tui/active-team.js"
+import { createTestRenderer } from "@opentui/core/testing"
+import { render } from "@opentui/solid"
+import { RGBA } from "@opentui/core"
 import { fullContext } from "./harness.js"
 
 const roots: string[] = []
@@ -207,4 +210,275 @@ test("createActiveTeam registers provider with enabled teams, tracks active team
   expect(toasts.some((t) => t.message === "Team alpha disabled; back to Agents")).toBe(true)
 
   manager.dispose()
+})
+
+test("createActiveTeam registers composer tab and hints, cleans up on dispose", async () => {
+  let registeredTab: any = undefined
+  let tabUnregistered = false
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    data: {
+      location: {
+        default: () => ({ directory: "/my/project" }),
+        agent: { list: () => [] },
+      },
+    },
+    client: {
+      rpc: () => ({
+        "team.list": async () => ({ teams: [] }),
+        events: { on: () => () => {} },
+      }),
+    },
+    storage: {
+      store: () => [{ activeTeamByProject: {} }, async () => {}],
+    },
+    keymap: {
+      shortcuts: (cmd: string) => (cmd === "composer.team.select" ? ["return"] : []),
+      layer: () => {},
+    },
+    theme: { text: { subdued: "gray" } },
+    ui: {
+      toast: { show: () => {} },
+      slot: () => () => {},
+      agents: {
+        groups: () => () => {},
+        activeGroup: { current: () => undefined, set: () => {} },
+      },
+      composer: {
+        tab: (tab: any) => {
+          registeredTab = tab
+          return () => {
+            tabUnregistered = true
+          }
+        },
+      },
+    },
+  }
+
+  const manager = createActiveTeam(context)
+  expect(registeredTab).toBeDefined()
+  expect(registeredTab.id).toBe("team")
+  expect(registeredTab.label).toBe("Team")
+  const hints = registeredTab.hints()
+  expect(hints).toEqual([{ label: "select", shortcut: "return" }])
+
+  manager.dispose()
+  expect(tabUnregistered).toBe(true)
+})
+
+test("TeamMonitorTab renders fallback when no team is active, and lists members with mode/model/status when active", async () => {
+  const [activeTeamSignal, setActiveTeamSignal] = createSignal<any>(undefined)
+  const [currentAgentSignal] = createSignal<string>("coder")
+  let closeCalled = 0
+
+  const white = RGBA.fromHex("#ffffff")
+  const gray = RGBA.fromHex("#888888")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: {
+      default: white,
+      subdued: gray,
+      action: {
+        primary: { default: white, selected: white, focused: white },
+      },
+    },
+    background: {
+      default: black,
+      action: {
+        primary: { default: black, selected: black, focused: black },
+      },
+    },
+  }
+
+  const mockSessions = [
+    { id: "ses_root", agent: "coder", projectID: "p" },
+    { id: "ses_child_running", parentID: "ses_root", agent: "reviewer", projectID: "p" },
+    { id: "ses_child_idle", parentID: "ses_root", agent: "coder", projectID: "p" },
+  ]
+
+  const mockAgents = [
+    { id: "coder", mode: "primary", model: { id: "gpt-5", providerID: "openai" } },
+    { id: "reviewer", mode: "subagent", model: { id: "claude-3-5-sonnet", providerID: "anthropic" } },
+    { id: "scout", mode: "primary" },
+  ]
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: {
+        agent: {
+          list: () => mockAgents,
+        },
+      },
+      session: {
+        list: () => mockSessions,
+        get: (id: string) => mockSessions.find((s) => s.id === id),
+        root: () => "ses_root",
+        status: (id: string) => (id === "ses_child_running" ? "running" : "idle"),
+      },
+    },
+    keymap: {
+      layer: () => {},
+    },
+    ui: {
+      agents: {
+        current: () => currentAgentSignal(),
+        set: () => {},
+      },
+      router: {
+        navigate: () => {},
+      },
+    },
+  }
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => (
+      <TeamMonitorTab
+        sessionID="ses_root"
+        active={() => true}
+        close={() => closeCalled++}
+        activeTeam={activeTeamSignal}
+        context={context}
+      />
+    ),
+    output.renderer,
+  )
+
+  await output.renderOnce()
+  expect(output.captureCharFrame()).toContain("No active team — select one with ctrl+x a")
+
+  setActiveTeamSignal({
+    team: "dev-team",
+    name: "dev-team",
+    level: "project",
+    members: ["coder", "reviewer", "scout"],
+  })
+
+  await output.renderOnce()
+  const frame = output.captureCharFrame()
+  expect(frame).toContain("coder — primary — gpt-5")
+  expect(frame).toContain("idle")
+  expect(frame).toContain("reviewer — subagent — claude-3-5-sonnet")
+  expect(frame).toContain("running")
+  expect(frame).toContain("scout — primary — default")
+  expect(frame).toContain("none")
+
+  output.renderer.destroy()
+})
+
+test("TeamMonitorTab keymap commands: navigate on member with session, select agent on member without session, up closes when at 0", async () => {
+  let commands: any[] = []
+  let closeCalled = 0
+  let navigated: any = undefined
+  let selectedAgent: any = undefined
+
+  const mockSessions = [
+    { id: "ses_root", agent: "coder", projectID: "p" },
+    { id: "ses_sub", parentID: "ses_root", agent: "coder", projectID: "p" },
+  ]
+
+  const mockAgents = [
+    { id: "coder", mode: "primary", model: { id: "gpt-5", providerID: "openai" } },
+    { id: "scout", mode: "primary" },
+  ]
+
+  const white = RGBA.fromHex("#ffffff")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: {
+      default: white,
+      subdued: white,
+      action: { primary: { default: white, selected: white, focused: white } },
+    },
+    background: {
+      default: black,
+      action: { primary: { default: black, selected: black, focused: black } },
+    },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: {
+        agent: { list: () => mockAgents },
+      },
+      session: {
+        list: () => mockSessions,
+        get: (id: string) => mockSessions.find((s) => s.id === id),
+        root: () => "ses_root",
+        status: () => "idle",
+      },
+    },
+    keymap: {
+      layer: (factory: any) => {
+        const layer = factory()
+        if (layer.commands) commands = layer.commands
+      },
+    },
+    ui: {
+      agents: {
+        current: () => "coder",
+        set: (id: string) => {
+          selectedAgent = id
+        },
+      },
+      router: {
+        navigate: (dest: any) => {
+          navigated = dest
+        },
+      },
+    },
+  }
+
+  const activeTeam = () => ({
+    team: "dev-team",
+    name: "dev-team",
+    level: "project" as const,
+    members: ["coder", "scout"],
+  })
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => (
+      <TeamMonitorTab
+        sessionID="ses_root"
+        active={() => true}
+        close={() => closeCalled++}
+        activeTeam={activeTeam}
+        context={context}
+      />
+    ),
+    output.renderer,
+  )
+
+  await output.renderOnce()
+  expect(commands.length).toBe(3)
+  const upCmd = commands.find((c) => c.id === "composer.team.up")
+  const downCmd = commands.find((c) => c.id === "composer.team.down")
+  const selectCmd = commands.find((c) => c.id === "composer.team.select")
+
+  // Currently at index 0 (coder). Coder has a session ("ses_sub").
+  selectCmd.run()
+  expect(navigated).toEqual({ type: "session", sessionID: "ses_sub" })
+  expect(closeCalled).toBe(1)
+
+  // Move down to index 1 (scout). Scout has NO session.
+  downCmd.run()
+  await output.renderOnce()
+  selectCmd.run()
+  expect(selectedAgent).toEqual("scout")
+  expect(closeCalled).toBe(2)
+
+  // Move up to index 0 (coder).
+  upCmd.run()
+  await output.renderOnce()
+  // At index 0, pressing up closes composer:
+  upCmd.run()
+  expect(closeCalled).toBe(3)
+
+  output.renderer.destroy()
 })

@@ -24,6 +24,7 @@ import { useOptionalPanel } from "../context/panel"
 import { abbreviateHome } from "../util/path-format"
 import { useLocal } from "../context/local"
 import { DialogAgent } from "../component/dialog-agent"
+import { composerPluginTabs } from "../routes/session/composer/team-monitor-tab"
 
 export type Dispose = () => Promise<void>
 
@@ -173,6 +174,8 @@ export function createPluginContext(input: {
         open(options) {
           host.dialog.replace(() => provide(() => <DialogAgent filter={options?.filter} />))
         },
+        current: () => host.local.agent.current()?.id,
+        set: (id: string) => host.local.agent.set(id),
       },
       format: {
         path: (value) => abbreviateHome(value, host.paths.home),
@@ -247,6 +250,22 @@ export function createPluginContext(input: {
           if (!target || !host.sessionTabs.tabs().some((tab) => tab.sessionID === target)) return false
           host.sessionTabs.close(target)
           return true
+        },
+      },
+      composer: {
+        tab(options) {
+          const unregister = composerPluginTabs.register({
+            ...options,
+            render: (tabInput) => provide(() => options.render(tabInput)),
+          })
+          let cleaned = false
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unregister()
+          }
+          input.owned.push(async () => cleanup())
+          return cleanup
         },
       },
       slot(value: SlotClaim) {

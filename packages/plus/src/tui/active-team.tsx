@@ -1,6 +1,10 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createMemo, createRoot, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createRoot, createSignal, For, Show } from "solid-js"
+import { createStore } from "solid-js/store"
+import { TextAttributes } from "@opentui/core"
 import { Definition, type TeamLevel, type TeamListEntry } from "../rpc.js"
+
+type SessionItem = ReturnType<Plugin.Context["data"]["session"]["list"]>[number]
 
 export interface ActiveTeamInfo {
   readonly team: string
@@ -162,11 +166,30 @@ export function createActiveTeam(context: Plugin.Context) {
       },
     })
 
+    const disposeComposerTab = context.ui.composer?.tab({
+      id: "team",
+      label: "Team",
+      hints: () => {
+        const shortcut = context.keymap.shortcuts("composer.team.select")?.[0] ?? "return"
+        return [{ label: "select", shortcut }]
+      },
+      render: (input) => (
+        <TeamMonitorTab
+          sessionID={input.sessionID}
+          active={input.active}
+          close={input.close}
+          activeTeam={activeTeam}
+          context={context}
+        />
+      ),
+    }) ?? (() => {})
+
     function dispose() {
       disposed = true
       unsubscribe()
       unregisterGroups()
       disposeSlot()
+      disposeComposerTab()
       disposeRoot()
     }
 
@@ -176,4 +199,234 @@ export function createActiveTeam(context: Plugin.Context) {
       dispose,
     }
   })
+}
+
+function sessionAgent(s: SessionItem): string | undefined {
+  if (s.agent) return s.agent
+  const title = (s as any).title as string | undefined
+  const match = title?.match(/@(\w+) subagent/)
+  return match ? match[1] : undefined
+}
+
+export interface TeamMonitorTabProps {
+  sessionID: string
+  active: () => boolean
+  close: () => void
+  activeTeam: () => ActiveTeamInfo | undefined
+  context: Plugin.Context
+}
+
+export interface TeamMemberRow {
+  id: string
+  mode: string
+  model: string
+  status: "running" | "idle" | "none"
+  sessionID?: string
+  current: boolean
+}
+
+export function TeamMonitorTab(props: TeamMonitorTabProps) {
+  const [store, setStore] = createStore({ selected: 0 })
+
+  const hostAgents = createMemo(() => {
+    return props.context.data.location.agent.list(props.context.location) ??
+      props.context.data.location.agent.list() ??
+      []
+  })
+
+  const currentSession = createMemo(() => props.context.data.session.get(props.sessionID))
+
+  const rootSessionID = createMemo(() => {
+    const current = currentSession()
+    return current ? props.context.data.session.root(current.id) : props.sessionID
+  })
+
+  const familySessions = createMemo(() => {
+    const root = rootSessionID()
+    const all = props.context.data.session.list()
+    const byID = new Map(all.map((s) => [s.id, s]))
+    function findRoot(s: SessionItem): string {
+      if (!s.parentID) return s.id
+      const parent = byID.get(s.parentID)
+      return parent ? findRoot(parent) : s.id
+    }
+    return all.filter((s) => findRoot(s) === root || s.id === root)
+  })
+
+  const currentAgentID = createMemo(() => {
+    const fromAgents = props.context.ui.agents.current?.()
+    if (fromAgents) return fromAgents
+    return currentSession()?.agent
+  })
+
+  const members = createMemo<TeamMemberRow[]>(() => {
+    const team = props.activeTeam()
+    if (!team) return []
+
+    const agents = hostAgents()
+    const sessions = familySessions()
+    const currentId = currentAgentID()
+
+    return team.members.map((memberId) => {
+      const agent = agents.find((a) => a.id === memberId)
+      const mode = agent?.mode ?? "primary"
+      const model = agent?.model?.id ?? "default"
+
+      const matchingSessions = sessions.filter((s) => sessionAgent(s) === memberId)
+      let status: "running" | "idle" | "none" = "none"
+      let sessionID: string | undefined = undefined
+
+      if (matchingSessions.length > 0) {
+        const running = matchingSessions.find((s) => props.context.data.session.status(s.id) === "running")
+        if (running) {
+          status = "running"
+          sessionID = running.id
+        } else {
+          status = "idle"
+          sessionID = matchingSessions[matchingSessions.length - 1].id
+        }
+      }
+
+      return {
+        id: memberId,
+        mode,
+        model,
+        status,
+        sessionID,
+        current: memberId === currentId,
+      }
+    })
+  })
+
+  createEffect(() => {
+    if (!props.active()) return
+    const list = members()
+    if (list.length === 0) return
+    if (store.selected >= list.length) {
+      setStore("selected", Math.max(0, list.length - 1))
+    }
+  })
+
+  function selectMember(member: TeamMemberRow) {
+    if (member.sessionID) {
+      props.context.ui.router.navigate({ type: "session", sessionID: member.sessionID })
+      props.close()
+    } else {
+      props.context.ui.agents.set?.(member.id)
+      props.close()
+    }
+  }
+
+  props.context.keymap.layer(() => ({
+    mode: "composer",
+    enabled: () => props.active(),
+    priority: 1,
+    commands: [
+      {
+        id: "composer.team.up",
+        title: "Previous team member",
+        group: "Composer",
+        run() {
+          if (store.selected === 0) {
+            props.close()
+            return
+          }
+          setStore("selected", (prev) => prev - 1)
+        },
+      },
+      {
+        id: "composer.team.down",
+        title: "Next team member",
+        group: "Composer",
+        run() {
+          const list = members()
+          if (list.length === 0) return
+          setStore("selected", (prev) => (prev + 1) % list.length)
+        },
+      },
+      {
+        id: "composer.team.select",
+        title: "Select team member",
+        group: "Composer",
+        run() {
+          const list = members()
+          const member = list[store.selected]
+          if (member) selectMember(member)
+        },
+      },
+    ],
+  }))
+
+  return (
+    <Show
+      when={props.activeTeam()}
+      fallback={
+        <box paddingLeft={1}>
+          <text fg={props.context.theme.text.subdued}>No active team — select one with ctrl+x a</text>
+        </box>
+      }
+    >
+      <Show
+        when={members().length > 0}
+        fallback={
+          <box paddingLeft={1}>
+            <text fg={props.context.theme.text.subdued}>No team members</text>
+          </box>
+        }
+      >
+        <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5}>
+          <For each={members()}>
+            {(member, index) => {
+              const isSelected = createMemo(() => index() === store.selected)
+              return (
+                <box
+                  flexDirection="row"
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={
+                    isSelected()
+                      ? props.context.theme.background.action.primary.focused
+                      : member.current
+                        ? props.context.theme.background.action.primary.selected
+                        : props.context.theme.background.action.primary.default
+                  }
+                  onMouseMove={() => setStore("selected", index())}
+                  onMouseUp={() => {
+                    setStore("selected", index())
+                    selectMember(member)
+                  }}
+                >
+                  <box flexGrow={1} minWidth={0} flexDirection="row">
+                    <text
+                      fg={
+                        isSelected()
+                          ? props.context.theme.text.action.primary.focused
+                          : member.current
+                            ? props.context.theme.text.action.primary.selected
+                            : props.context.theme.text.action.primary.default
+                      }
+                      attributes={isSelected() ? TextAttributes.BOLD : undefined}
+                      wrapMode="none"
+                    >
+                      {member.id} — {member.mode} — {member.model}
+                    </text>
+                  </box>
+                  <text
+                    fg={
+                      isSelected()
+                        ? props.context.theme.text.action.primary.focused
+                        : props.context.theme.text.subdued
+                    }
+                    wrapMode="none"
+                  >
+                    {member.status}
+                  </text>
+                </box>
+              )
+            }}
+          </For>
+        </scrollbox>
+      </Show>
+    </Show>
+  )
 }

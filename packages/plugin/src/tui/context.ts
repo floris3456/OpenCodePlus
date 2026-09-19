@@ -469,6 +469,26 @@ export interface AgentsUI {
     set(id: string | undefined): void
   }
   open(options?: { readonly filter?: string }): void
+  readonly current?: () => string | undefined
+  readonly set?: (id: string) => void
+}
+
+export interface ComposerHint {
+  readonly label: string
+  readonly shortcut: string
+}
+
+export interface ComposerTabRenderInput {
+  readonly sessionID: string
+  readonly active: () => boolean
+  readonly close: () => void
+}
+
+export interface ComposerTabOptions {
+  readonly id: string
+  readonly label: string
+  readonly render: (input: ComposerTabRenderInput) => JSX.Element
+  readonly hints?: () => readonly ComposerHint[]
 }
 
 export interface UI {
@@ -511,6 +531,9 @@ export interface UI {
     move(sessionID: string, index: number): boolean
     /** Closes an open tab, or the active tab when omitted, and returns false when no tab matched. */
     close(sessionID?: string): boolean
+  }
+  readonly composer: {
+    tab(options: ComposerTabOptions): () => void
   }
   /** Claims a place in the slot tree; see SlotClaim. */
   readonly slot: (claim: SlotClaim) => () => void

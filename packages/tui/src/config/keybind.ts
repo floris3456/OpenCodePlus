@@ -250,6 +250,12 @@ export const Definitions = {
   "composer.terminal.up": keybind("up,k", "Previous terminal"),
   "composer.terminal.down": keybind("down,j", "Next terminal"),
   "composer.terminal.select": keybind("return", "Select terminal"),
+  "composer.team.up": keybind("up", "Previous team member"),
+  "composer.team.down": keybind("down", "Next team member"),
+  "composer.team.select": keybind("return", "Select team member"),
+  "composer.plugin.up": keybind("up", "Previous item"),
+  "composer.plugin.down": keybind("down", "Next item"),
+  "composer.plugin.select": keybind("return", "Select item"),
 
   "dialog.select.prev": keybind("up,ctrl+p", "Move to previous dialog item"),
   "dialog.select.next": keybind("down,ctrl+n", "Move to next dialog item"),
