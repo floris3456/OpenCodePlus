@@ -15,7 +15,7 @@ import {
 import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
-import { collectSkeleton, materialize, skeletonOf } from "./tree.js"
+import { findLazy, materialize } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { manual, slice } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -114,10 +114,9 @@ export function resolveRefusalForLabel(label: string): string {
 
 function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode } | undefined {
   const memo = buildMemo(input as unknown as Parameters<typeof buildMemo>[0])
-  const nodes = collectSkeleton(skeletonOf(memo)).map(materialize)
-  const node = nodes.find((candidate) => candidate.id === rowId)
-  if (node === undefined) return undefined
-  return { memo, node }
+  const lazy = findLazy(memo, rowId)
+  if (lazy === undefined) return undefined
+  return { memo, node: materialize(lazy) }
 }
 
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {

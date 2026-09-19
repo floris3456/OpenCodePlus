@@ -409,9 +409,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           : []),
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: togglePin }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
-        ...(canDelete(node)
-          ? [{ bind: "d", title: "Delete", group: "Instructions", run: remove }]
-          : []),
+        { bind: "d", title: "Delete", group: "Instructions", run: remove },
         ...(canReset(node)
           ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }]
           : []),

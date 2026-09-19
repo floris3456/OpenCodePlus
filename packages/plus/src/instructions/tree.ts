@@ -100,11 +100,17 @@ export function tree(input: TreeInput): TreeNode[] {
   return roots.flatMap((root) => emit(root, expanded))
 }
 
+export const expandedTreeCounter = { count: 0 }
+export function resetExpandedTreeCounter(): void {
+  expandedTreeCounter.count = 0
+}
+
 // Single-pass full expansion for filter matching: the skeleton already knows
 // every id without resolving anything, so walk it directly instead of
 // converging by repeated expanded builds. Output matches tree() with every id
 // expanded.
 export function expandedTree(input: Omit<TreeInput, "expanded">): TreeNode[] {
+  expandedTreeCounter.count++
   const memo = memoOf(contextOf(asBaseInput(input)))
   return collectSkeleton(skeletonOf(memo)).map(materialize)
 }
@@ -143,6 +149,168 @@ function collectOne(lazy: Lazy): Lazy[] {
 
 export function materialize(lazy: Lazy): TreeNode {
   return finalizeLazy(lazy)
+}
+
+declare module "./resolve-memo.js" {
+  interface Memo {
+    reviewCountCache?: Map<string, number>
+    selfReviewCache?: Map<string, boolean>
+  }
+}
+
+function cachedReviewCount(memo: Memo, id: string, compute: () => number): number {
+  let cache = memo.reviewCountCache
+  if (cache === undefined) {
+    cache = new Map<string, number>()
+    memo.reviewCountCache = cache
+  }
+  const cached = cache.get(id)
+  if (cached !== undefined) return cached
+  const value = compute()
+  cache.set(id, value)
+  return value
+}
+
+function cachedSelfReview(memo: Memo, id: string, compute: () => boolean): boolean {
+  let cache = memo.selfReviewCache
+  if (cache === undefined) {
+    cache = new Map<string, boolean>()
+    memo.selfReviewCache = cache
+  }
+  const cached = cache.get(id)
+  if (cached !== undefined) return cached
+  const value = compute()
+  cache.set(id, value)
+  return value
+}
+
+export function findLazy(memo: Memo, rowId: string): Lazy | undefined {
+  const roots = skeletonOf(memo)
+  const found = descendLazy(roots, rowId)
+  if (found !== undefined) return found
+  return collectSkeleton(roots).find((node) => node.id === rowId)
+}
+
+function descendLazy(nodes: readonly Lazy[], rowId: string): Lazy | undefined {
+  for (const node of nodes) {
+    if (node.id === rowId) return node
+    if (canDescend(node, rowId)) {
+      const found = descendLazy(node.children(), rowId)
+      if (found !== undefined) return found
+    }
+  }
+  return undefined
+}
+
+function canDescend(node: Lazy, rowId: string): boolean {
+  if (rowId.startsWith(node.id + ":") || rowId.startsWith(node.id + "/")) return true
+
+  const parts = rowId.split(":")
+  const rowKind = parts[0]
+  const rowLevel = parts[1]
+
+  if (node.kind === "root") {
+    return node.id === `root:${rowLevel}`
+  }
+
+  if (node.kind === "group") {
+    const nodeLevel = node.id.split(":")[1]
+    if (nodeLevel !== rowLevel) return false
+
+    // Teams group under root: group:<level>:teams
+    if (node.id === `group:${nodeLevel}:teams`) {
+      if (rowKind === "team") return true
+      if (rowId.startsWith(`group:${nodeLevel}:teams`)) return true
+      if (rowId.includes("/:")) return true
+      if (rowKind === "item" || rowKind === "section") return true
+      return false
+    }
+
+    // Agents group under root: group:<level>:agents
+    if (node.id === `group:${nodeLevel}:agents`) {
+      if (rowKind === "agent") return true
+      if (rowId.startsWith(`group:${nodeLevel}:agents`)) return true
+      if (rowKind === "group" && !rowId.includes("/:") && !rowId.startsWith(`group:${nodeLevel}:teams`)) return true
+      if (rowKind === "item" || rowKind === "section") return true
+      return false
+    }
+
+    // Origin group under agents (native, native:special, plus, user)
+    if (node.id.startsWith(`group:${nodeLevel}:agents:`)) {
+      if (rowKind === "agent") return true
+      if (rowId.startsWith(node.id)) return true
+      if (rowKind === "group" && !rowId.includes("/:") && !rowId.startsWith(`group:${nodeLevel}:teams`)) return true
+      if (rowKind === "item" || rowKind === "section") return true
+      return false
+    }
+
+    // Shared defaults category groups (group:defaults::<category>)
+    if (node.id.startsWith("group:defaults::")) {
+      if (rowKind === "item" || rowKind === "section") {
+        const owner = parts[2]
+        return owner === ""
+      }
+      return false
+    }
+
+    // Category groups under an agent or team member (group:<level>:<owner>:<cat> or group:<level>:<team>/:<member>:<cat>)
+    if (rowKind === "item" || rowKind === "section") {
+      const owner = parts[2]
+      if (owner === "") return false
+      if (node.id.includes(`:${owner}:`) || node.id.includes(`/:${owner}:`)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  if (node.kind === "agent") {
+    const agentParts = node.id.split(":")
+    const agentLevel = agentParts[1]
+    const agentId = node.label
+    if (agentLevel !== rowLevel) return false
+    if (rowKind === "group" && rowId.startsWith(`group:${agentLevel}:${agentId}:`)) return true
+    if ((rowKind === "item" || rowKind === "section") && parts[2] === agentId) return true
+    return false
+  }
+
+  if (node.kind === "team") {
+    const teamParts = node.id.split(":")
+    const teamLevel = teamParts[1]
+    if (teamLevel !== rowLevel) return false
+    if (node.depth === 2) {
+      if (rowId.startsWith(`${node.id}:`)) return true
+      if (rowId.startsWith(`group:${teamLevel}:${node.label}/:`)) return true
+      if (rowKind === "item" || rowKind === "section") return true
+      return false
+    }
+    if (node.depth >= 3) {
+      const member = node.label
+      if (rowKind === "group" && rowId.includes(`/:${member}:`)) return true
+      if ((rowKind === "item" || rowKind === "section") && parts[2] === member) return true
+      return false
+    }
+    return false
+  }
+
+  if (node.kind === "item") {
+    if (node.address === undefined) return false
+    const itemLevel = parts[1]
+    const itemOwner = parts[2]
+    if (itemLevel !== node.address.level || itemOwner !== (node.address.agent ?? "")) return false
+    if (rowKind === "section") {
+      const sectionItemId = parts.slice(3, -1).join(":")
+      return sectionItemId === node.address.item
+    }
+    if (rowKind === "item" && node.address.item.startsWith("tool:")) {
+      const toolName = node.address.item.slice("tool:".length)
+      const ruleItemId = parts.slice(3).join(":")
+      if (ruleItemId.startsWith(`perm:${toolName}:`)) return true
+    }
+    return false
+  }
+
+  return false
 }
 
 // Section ids come from the split, so an item with no section customizations
@@ -219,9 +387,9 @@ function branch(memo: Memo, args: BranchArgs): Lazy {
     depth: args.depth,
     ...(args.add === undefined ? {} : { add: args.add }),
     actions: args.actions,
-    selfReview: () => false,
+    selfReview: () => cachedSelfReview(memo, args.id, () => false),
     partial: () => ({}),
-    reviewCount: () => rollup(kids()),
+    reviewCount: () => cachedReviewCount(memo, args.id, () => rollup(kids())),
     children: kids,
   }
 }
@@ -1020,9 +1188,9 @@ function lazyItem(
       split: splittable,
       pin: codemode && !executable,
     },
-    selfReview: () => flagOf(memo, level, owner, item, null),
+    selfReview: () => cachedSelfReview(memo, `item:${level}:${owner ?? ""}:${item.id}`, () => flagOf(memo, level, owner, item, null)),
     partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle),
-    reviewCount: () => itemRollup(memo, level, owner, item),
+    reviewCount: () => cachedReviewCount(memo, `item:${level}:${owner ?? ""}:${item.id}`, () => itemRollup(memo, level, owner, item)),
     children: kids,
   }
 }
@@ -1155,7 +1323,10 @@ function lazySection(
       split: false,
       pin: false,
     },
-    selfReview: () => flagOf(memo, level, owner, item, section.id),
+    selfReview: () =>
+      cachedSelfReview(memo, `section:${level}:${owner ?? ""}:${item.id}:${section.id}`, () =>
+        flagOf(memo, level, owner, item, section.id),
+      ),
     partial: () => sectionBadges(memo, level, owner, item, section),
     reviewCount: () => 0,
     children: () => [],

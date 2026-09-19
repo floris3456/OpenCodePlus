@@ -156,11 +156,13 @@ export function createInstructionsState(context: Plugin.Context) {
     })
   })
 
-  const fullTree = createMemo<TreeNode[]>(() => {
-    const current = snapshot()
-    if (!current) return []
-    return expandedTree({ items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() })
-  })
+  let cachedFullTree:
+    | {
+        readonly revision: number
+        readonly globalRevision: number
+        readonly tree: TreeNode[]
+      }
+    | undefined
 
   function ancestorsOf(
     all: readonly TreeNode[],
@@ -188,13 +190,34 @@ export function createInstructionsState(context: Plugin.Context) {
 
   const nodes = createMemo<TreeNode[]>(() => {
     const raw = filter()
-    if (raw.trim().length === 0) return allNodes()
+    if (raw.trim().length === 0) {
+      cachedFullTree = undefined
+      return allNodes()
+    }
     // Reveal matches hidden inside collapsed ancestors: match against the
     // full logical tree and include each match with its ancestor chain.
     // Matches come from the shared query engine so the TUI and the tool
     // layer filter the same rows. Code Mode rows are live and filter like any
     // other row; the ancestor chain stays here, never in the engine.
-    const full = fullTree()
+    const current = snapshot()
+    if (!current) return []
+    if (
+      cachedFullTree === undefined ||
+      cachedFullTree.revision !== current.revision ||
+      cachedFullTree.globalRevision !== current.globalRevision
+    ) {
+      cachedFullTree = {
+        revision: current.revision,
+        globalRevision: current.globalRevision,
+        tree: expandedTree({
+          items: itemsForTree(),
+          records: recordsForTree(),
+          agents: agentsForTree(),
+          teams: teamsForTree(),
+        }),
+      }
+    }
+    const full = cachedFullTree.tree
     const matched = matchFilter(raw, full)
     const byId = new Map(full.map((node) => [node.id, node]))
     const indexById = new Map(full.map((node, index) => [node.id, index] as const))
