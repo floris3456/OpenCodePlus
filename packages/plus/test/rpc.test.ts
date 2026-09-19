@@ -838,6 +838,37 @@ test("agent.create from a non-file-backed Defaults template seeds prompt and fie
   expect(after.records).toEqual([])
 })
 
+test("snapshot reports built-in agents with defaults scope once without project or global duplication", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const builtinInfos = [
+    agentInfo("build", "build agent"),
+    agentInfo("plan", "plan agent"),
+    agentInfo("general", "general agent"),
+    agentInfo("explore", "explore agent"),
+    agentInfo("compaction", "compaction agent"),
+    agentInfo("title", "title agent"),
+    agentInfo("summary", "summary agent"),
+  ]
+  const handlers = createHandlers(fullContext({ directory: project, agents: builtinInfos }), createState())
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const buildEntries = snapshot.agents.filter((agent) => agent.id === "build")
+  expect(buildEntries).toEqual([
+    { id: "build", scope: "defaults", origin: "native", base: "general", fileBacked: false },
+  ])
+  const planEntries = snapshot.agents.filter((agent) => agent.id === "plan")
+  expect(planEntries).toEqual([
+    { id: "plan", scope: "defaults", origin: "native", base: "general", fileBacked: false },
+  ])
+  const specialIds = ["general", "explore", "compaction", "title", "summary"]
+  for (const id of specialIds) {
+    const entries = snapshot.agents.filter((agent) => agent.id === id)
+    expect(entries).toEqual([
+      { id, scope: "defaults", origin: "special", base: "general", fileBacked: false },
+    ])
+  }
+})
+
 test("agent create/rename/delete work at both scopes and create accepts a template seed", async () => {
   const { project, config } = await tempRoot()
   await enable(project)

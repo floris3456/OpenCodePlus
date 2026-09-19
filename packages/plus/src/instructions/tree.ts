@@ -245,6 +245,12 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   })
 }
 
+declare module "./model.js" {
+  interface AgentSource {
+    readonly ancestor?: boolean
+  }
+}
+
 function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSource, depth: number): Lazy {
   return branch(memo, {
     kind: "agent",
@@ -253,7 +259,8 @@ function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSour
     depth,
     // Deletion eligibility mirrors removalPlan in ops.ts, which refuses every
     // scope except project|global. Defaults rows must not advertise `d`.
-    actions: { ...noActions(), remove: level !== "defaults" },
+    // Built-ins and ancestor-backed agents cannot be deleted via agent.delete.
+    actions: { ...noActions(), remove: level !== "defaults" && agentOriginOf(agent) === "user" && agent.ancestor !== true },
     children: () => [
       lazyModels(ctx, memo, level, agent.id, agent, depth + 1),
       lazyTools(ctx, memo, level, agent.id, agent, depth + 1),
@@ -286,6 +293,36 @@ function agentOriginOf(agent: AgentSource): "native" | "special" | "plus" | "use
   return "user"
 }
 
+function nativeAgentsForLevel(ctx: BuildContext, level: Level): AgentSource[] {
+  const defaults = ctx.agents.filter((agent) => agent.scope === "defaults" && agentOriginOf(agent) === "native")
+  if (level === "defaults") return defaults
+  const scoped = ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "native")
+  const seen = new Set<string>()
+  const result: AgentSource[] = []
+  for (const agent of [...scoped, ...defaults]) {
+    if (!seen.has(agent.id)) {
+      seen.add(agent.id)
+      result.push(agent)
+    }
+  }
+  return result
+}
+
+function specialAgentsForLevel(ctx: BuildContext, level: Level): AgentSource[] {
+  const defaults = ctx.agents.filter((agent) => agent.scope === "defaults" && agentOriginOf(agent) === "special")
+  if (level === "defaults") return defaults
+  const scoped = ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "special")
+  const seen = new Set<string>()
+  const result: AgentSource[] = []
+  for (const agent of [...scoped, ...defaults]) {
+    if (!seen.has(agent.id)) {
+      seen.add(agent.id)
+      result.push(agent)
+    }
+  }
+  return result
+}
+
 function lazyNativeAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   return branch(memo, {
     kind: "group",
@@ -294,9 +331,7 @@ function lazyNativeAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     depth: 2,
     actions: noActions(),
     children: () => [
-      ...ctx.agents
-        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "native")
-        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      ...nativeAgentsForLevel(ctx, level).map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
       lazySpecialAgents(ctx, memo, level),
     ],
   })
@@ -310,9 +345,7 @@ function lazySpecialAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     depth: 3,
     actions: noActions(),
     children: () =>
-      ctx.agents
-        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "special")
-        .map((agent) => lazyAgent(ctx, memo, level, agent, 4)),
+      specialAgentsForLevel(ctx, level).map((agent) => lazyAgent(ctx, memo, level, agent, 4)),
   })
 }
 
