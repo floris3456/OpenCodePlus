@@ -390,9 +390,15 @@ function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
     const direct = state.agents.get(id)?.team
     return [...new Set(direct === undefined ? fromTeams : [...fromTeams, direct])]
   }
-  if (candidate.kind !== "team") return []
+  if (candidate.kind !== "team" && candidate.kind !== "group") return []
   const level = levelOf(candidate)
   if (level !== "project" && level !== "global") return []
+  if (candidate.kind === "group") {
+    return state.memo.ctx.teams
+      .filter((entry) => entry.level === level)
+      .filter((entry) => candidate.id === `group:${level}:${entry.team}/` || candidate.id.startsWith(`group:${level}:${entry.team}/`))
+      .map((entry) => entry.team)
+  }
   return state.memo.ctx.teams
     .filter((entry) => entry.level === level)
     .filter((entry) => candidate.id === `team:${level}:${entry.team}` || candidate.id.startsWith(`team:${level}:${entry.team}:`))

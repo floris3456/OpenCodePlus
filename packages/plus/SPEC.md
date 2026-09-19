@@ -12,8 +12,9 @@ Three top-level roots in this order: `Project`, `Global`, `Defaults`.
 children are that level's agents with the identical subtree, plus a `Teams`
 group (`[a: add team]`) holding that level's on-disk teams. `Defaults` holds
 `Agents` (template agents, each with the full subtree, `[a: add agent template]`),
-`Teams` (built-in shipped teams with working toggles and informational
-member rows, `[a: add team]` still creates at project or global, never
+`Teams` (built-in shipped teams with working toggles and member rows that
+expand to full agent subtrees, `[a: add team]` still creates at project or
+global, never
 defaults), and then the shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`,
 `System` `[a]`, `MCP` `[a: add MCP server]`.
 
@@ -51,9 +52,30 @@ Every agent in all three roots has the identical subtree:
       <section>
 ```
 
+Team member rows (`tree.ts` `lazyTeamMember`): under Teams → `<team>` at
+every level, each member row (`team:<level>:<team>:<member>`, kind `"team"`,
+no address, no toggle) expands to the same five groups an Agents-group agent
+renders (Models, Tools, Base, Skills, System, in that order) with working
+toggle/edit/reset on their rows, whether or not the team is enabled and
+whether or not the host registered the agent. The owner for those groups is
+the bare member id with the registered agent when one exists
+(`ctx.agents.find(a => a.id === member && a.scope === level) ?? find(a => a.id === member) ?? null`),
+so shared items (`agents === undefined`) populate for unregistered members
+while `system:role` appears only for registered ones. Item and section ids
+and their addresses stay identical to the Agents-group ones (they address the
+same records by design: level + agent + item, and `address.agent` stays the
+bare agent id). Only the five group ids get the team prefix to avoid
+colliding with the Agents-group ids for the same agent at the same level:
+`group:<level>:<team>/<member>:models|tools|base|skills|system`, with nested
+Tools/Skills subgroup ids extending those prefixes. `dialogs.tsx`
+`scopeFromModelsGroup` accepts the `<team>/<member>` owner form and strips
+the `<team>/` prefix so `a` on a member's Models group adds for the member
+id.
+
 `Defaults` holds `Agents` (template agents, each with the full subtree,
 `[a: add agent template]`), `Teams` (built-in shipped teams, each with
-working toggles and informational member rows, `[a: add team]` still creates
+working toggles and member rows that expand to full agent subtrees,
+`[a: add team]` still creates
 at project or global, never defaults), and then the shared inventories:
 `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
 

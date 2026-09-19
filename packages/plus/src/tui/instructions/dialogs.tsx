@@ -320,6 +320,19 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       if (level !== "defaults") return undefined
       return { level, agent: null }
     }
+    const slash = owner.indexOf("/")
+    if (slash !== -1) {
+      const maybeTeam = owner.slice(0, slash)
+      const rest = owner.slice(slash + 1)
+      if (rest.length > 0) {
+        const snap = state.snapshot()
+        const teams = snap?.teams ?? []
+        const agents = snap?.agents ?? []
+        if (agents.some((entry) => entry.id === owner)) return { level, agent: owner }
+        if (teams.some((entry) => entry.level === level && entry.team === maybeTeam)) return { level, agent: rest }
+        if (snap === undefined) return { level, agent: rest }
+      }
+    }
     return { level, agent: owner }
   }
 
