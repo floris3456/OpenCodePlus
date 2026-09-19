@@ -292,6 +292,54 @@ test("project, global, and defaults agents resolve by file location with active 
   ])
 })
 
+test("ancestor agent files resolve as project scope and do not appear at defaults", async () => {
+  const root = await tempDir("plus-discover-anc-")
+  const directory = path.join(root, "child", "project")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const ancPath = path.join(root, ".opencode", "agent", "anc.md")
+  await fs.mkdir(path.dirname(ancPath), { recursive: true })
+  await Bun.write(ancPath, "# anc\n")
+  await fs.mkdir(directory, { recursive: true })
+
+  const agents = [agent("anc", "custom")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+
+  expect(discovered.agents).toEqual([
+    { id: "anc", scope: "project", path: ancPath, origin: "user" },
+  ])
+})
+
+test("nearest agent file wins over ancestor file", async () => {
+  const root = await tempDir("plus-discover-near-")
+  const directory = path.join(root, "child", "project")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const ancPath = path.join(root, ".opencode", "agent", "shadowed.md")
+  const nearPath = path.join(directory, ".opencode", "agent", "shadowed.md")
+  await fs.mkdir(path.dirname(ancPath), { recursive: true })
+  await Bun.write(ancPath, "# ancestor\n")
+  await fs.mkdir(path.dirname(nearPath), { recursive: true })
+  await Bun.write(nearPath, "# near\n")
+
+  const agents = [agent("shadowed", "custom")]
+  const discovered = await discover({
+    ctx: fullContext({ directory, agents }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+
+  expect(discovered.agents).toEqual([
+    { id: "shadowed", scope: "project", path: nearPath, origin: "user" },
+  ])
+})
+
 test("tools group by origin without inferring the server from the namespace", async () => {
   const directory = await tempDir("plus-discover-")
   const server = "my.server:name"

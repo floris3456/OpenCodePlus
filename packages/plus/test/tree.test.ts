@@ -1148,6 +1148,41 @@ test("agents split into Native, Special, Plus and User origin subgroups", () => 
   }
 })
 
+test("native and special built-ins appear under every root and cannot be removed", () => {
+  const builtins: AgentSource[] = [
+    { id: "build", scope: "defaults", origin: "native" },
+    { id: "plan", scope: "defaults", origin: "native" },
+    { id: "general", scope: "defaults", origin: "special" },
+    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "compaction", scope: "defaults", origin: "special" },
+    { id: "title", scope: "defaults", origin: "special" },
+    { id: "summary", scope: "defaults", origin: "special" },
+  ]
+  const nodes = expandAll({ items: [], records: [], agents: builtins })
+
+  for (const level of ["project", "global", "defaults"] as const) {
+    expect(childrenOf(nodes, `group:${level}:agents:native`).map((node) => node.id)).toEqual([
+      `agent:${level}:build`,
+      `agent:${level}:plan`,
+      `group:${level}:agents:native:special`,
+    ])
+    expect(childrenOf(nodes, `group:${level}:agents:native:special`).map((node) => node.id)).toEqual([
+      `agent:${level}:general`,
+      `agent:${level}:explore`,
+      `agent:${level}:compaction`,
+      `agent:${level}:title`,
+      `agent:${level}:summary`,
+    ])
+    expect(nodes.find((node) => node.id === `agent:${level}:build`)?.actions?.remove).toBe(false)
+    expect(nodes.find((node) => node.id === `agent:${level}:plan`)?.actions?.remove).toBe(false)
+    expect(nodes.find((node) => node.id === `agent:${level}:general`)?.actions?.remove).toBe(false)
+    expect(nodes.find((node) => node.id === `agent:${level}:explore`)?.actions?.remove).toBe(false)
+    expect(nodes.find((node) => node.id === `agent:${level}:compaction`)?.actions?.remove).toBe(false)
+    expect(nodes.find((node) => node.id === `agent:${level}:title`)?.actions?.remove).toBe(false)
+    expect(nodes.find((node) => node.id === `agent:${level}:summary`)?.actions?.remove).toBe(false)
+  }
+})
+
 test("empty rule sets emit no perm rows but the tool still offers the add choice", () => {
   const nodes = expandAll({
     items: [makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "shell tool" })],

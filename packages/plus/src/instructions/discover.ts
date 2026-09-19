@@ -296,15 +296,47 @@ function readTransform<Editor, Value>(
 // agent id is the path relative to the agent directory without the .md
 // suffix, matching core's decode; an agent with no matching file is a
 // defaults template and is not file-backed.
+declare module "./model.js" {
+  interface AgentSource {
+    readonly ancestor?: boolean
+  }
+}
+
 async function resolveAgentSources(
   directory: string,
   agents: readonly Agent.Info[],
   activeBase: (agent: Agent.Info) => string | undefined,
 ): Promise<AgentSource[]> {
-  const project = await scanAgentFiles(path.join(directory, ".opencode"))
+  const { files: project, ancestors } = await scanProjectAgentFiles(directory)
   const global = await scanAgentFiles(globalConfigDir())
-  const effective = agents.map((agent) => withBase(sourceFor(agent.id, project, global), agent, activeBase))
+  const effective = agents.map((agent) => withBase(sourceFor(agent.id, project, global, ancestors), agent, activeBase))
   return [...effective, ...shadowedSources(effective, agents, project, global, activeBase)]
+}
+
+async function scanProjectAgentFiles(directory: string): Promise<{ files: Map<string, string>; ancestors: Set<string> }> {
+  const files = new Map<string, string>()
+  const ancestors = new Set<string>()
+  const globalDir = path.resolve(globalConfigDir())
+  const globalParent = path.dirname(globalDir)
+  let current = path.resolve(directory)
+  while (true) {
+    if (current === globalDir || current === globalParent) break
+    const opencodeDir = path.resolve(current, ".opencode")
+    if (opencodeDir !== globalDir) {
+      const found = await scanAgentFiles(opencodeDir)
+      const isAncestor = current !== path.resolve(directory)
+      for (const [id, file] of found) {
+        if (!files.has(id)) {
+          files.set(id, file)
+          if (isAncestor) ancestors.add(id)
+        }
+      }
+    }
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return { files, ancestors }
 }
 
 function withBase(
@@ -314,7 +346,11 @@ function withBase(
 ): AgentSource {
   const base = activeBase(agent)
   if (base === undefined) return source
-  return { ...source, base }
+  const next: AgentSource = { ...source, base }
+  if (source.ancestor) {
+    Object.defineProperty(next, "ancestor", { value: true, enumerable: false })
+  }
+  return next
 }
 
 // Core's agent registry is keyed by id, so when the same id exists at more
@@ -364,9 +400,20 @@ function originForId(id: string): AgentSource["origin"] {
   return "user"
 }
 
-function sourceFor(id: string, project: Map<string, string>, global: Map<string, string>): AgentSource {
+function sourceFor(
+  id: string,
+  project: Map<string, string>,
+  global: Map<string, string>,
+  ancestors?: ReadonlySet<string>,
+): AgentSource {
   const projectPath = project.get(id)
-  if (projectPath !== undefined) return { id, scope: "project", path: projectPath, origin: "user" }
+  if (projectPath !== undefined) {
+    const source: AgentSource = { id, scope: "project", path: projectPath, origin: "user" }
+    if (ancestors?.has(id)) {
+      Object.defineProperty(source, "ancestor", { value: true, enumerable: false })
+    }
+    return source
+  }
   const globalPath = global.get(id)
   if (globalPath !== undefined) return { id, scope: "global", path: globalPath, origin: "user" }
   return { id, scope: "defaults", origin: originForId(id) }
