@@ -203,8 +203,8 @@ function parseId(id: string, prefix: string): string {
   return id
 }
 
-async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
-  const updates = input.agents.flatMap((agent) =>
+export function roleUpdates(input: ApplyInput): { agent: string; text: string }[] {
+  return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "system") return []
       if (item.id !== "system:role") return []
@@ -216,6 +216,10 @@ async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration
       return [{ agent: agent.id, text: resolved.assembled }]
     }),
   )
+}
+
+async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const updates = roleUpdates(input)
   if (updates.length === 0) return undefined
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {

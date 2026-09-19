@@ -19,7 +19,7 @@ import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFiel
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
-import { apply, type ToolPlan } from "./instructions/apply.js"
+import { apply, roleUpdates, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
@@ -2754,11 +2754,25 @@ function publishFresh(
       // Built-in members install from the source registry with no filesystem
       // path. Team registrations install after apply's own and dispose with
       // the same superseded set when the next publish replaces them.
+      // A Plus customization of a member's role wins over the shipped body:
+      // resolve the winners at their team levels (the team subtree addresses
+      // records at the team level) and let the team install carry the edited
+      // text instead of clobbering it. Uncustomized members still receive
+      // their team body exactly as before.
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
-      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents))
-      const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins))
+      const teamRoleOverrides = new Map(
+        roleUpdates({
+          items: discovered.items,
+          agents: teamAgents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+          records: customizations,
+          splits,
+          scopes: publishScopes,
+        }).map((entry) => [entry.agent, entry.text] as const),
+      )
+      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides))
+      const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins, teamRoleOverrides))
       const previous = state.applied
       state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations]
       state.installedTools = applied.tools
@@ -2936,7 +2950,21 @@ async function enabledTeamApplied(
   return applied
 }
 
-function plusTeamOutputIds(discovered: Discovered, applied: ReadonlyMap<string, TeamApplied>): Set<string> {
+function isRoleCustomized(records: readonly StoredRecord[], id: string): boolean {
+  return records.some((record) => {
+    if (record.type !== "customization") return false
+    if (record.item !== "system:role") return false
+    if (record.text === undefined) return false
+    if (record.agent === null) return true
+    return record.agent === id
+  })
+}
+
+function plusTeamOutputIds(
+  discovered: Discovered,
+  applied: ReadonlyMap<string, TeamApplied>,
+  records?: readonly StoredRecord[],
+): Set<string> {
   const output = new Set<string>()
   for (const [id, entry] of applied) {
     const sources = discovered.agents.filter((agent) => agent.id === id)
@@ -2945,7 +2973,13 @@ function plusTeamOutputIds(discovered: Discovered, applied: ReadonlyMap<string, 
     if (unbacked.length === 0) continue
     const host = discovered.hosts.find((agent) => String(agent.id) === id)
     if (host === undefined) continue
-    if (!matchesTeamApplied(host, entry.body, entry.fields)) continue
+    // A customized member still counts as Plus output once the team install
+    // carries the edited text: compare the other team fields while letting
+    // the system check pass, so the host showing either the shipped body or
+    // the edited text keeps an identical fingerprint instead of storming, and
+    // the winner keeps beating its own shadowed defaults entry.
+    const body = records !== undefined && isRoleCustomized(records, id) ? (host.system ?? "") : entry.body
+    if (!matchesTeamApplied(host, body, entry.fields)) continue
     output.add(id)
   }
   return output
@@ -2980,7 +3014,7 @@ async function stablePublishView(
 ): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string> }> {
   const teamRecords = records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
-  const outputIds = plusTeamOutputIds(discovered, applied)
+  const outputIds = plusTeamOutputIds(discovered, applied, records)
   const agents = filteredPublishAgents(discovered.agents, outputIds)
   const items = filteredPublishItems(discovered.items, outputIds)
   const scopes = scopesOf(agents)
@@ -3042,6 +3076,7 @@ async function installBuiltinTeamAgents(
   ctx: Context,
   agents: readonly AgentSource[],
   builtins: readonly BuiltinTeam[],
+  overrides?: ReadonlyMap<string, string>,
 ): Promise<{ registrations: Registration[] }> {
   const installed: Registration[] = []
   try {
@@ -3050,7 +3085,7 @@ async function installBuiltinTeamAgents(
       const body = builtinBody(builtins, agent.team, agent.id)
       if (body === undefined) continue
       const fields: TeamFields = builtins.find((entry) => entry.name === agent.team)?.members.find((member) => member.id === agent.id)?.fields ?? { permissions: [] }
-      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body), fields))
+      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body), fields, overrides?.get(agent.id)))
     }
     if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
     return { registrations: [...installed] }
@@ -3063,12 +3098,18 @@ async function installBuiltinTeamAgents(
   }
 }
 
-async function runBuiltinRegistration(ctx: Context, id: string, body: string, fields: TeamFields): Promise<Registration> {
+async function runBuiltinRegistration(
+  ctx: Context,
+  id: string,
+  body: string,
+  fields: TeamFields,
+  override?: string,
+): Promise<Registration> {
   return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() =>
-        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields)),
+        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields, override)),
       ).pipe(
         Effect.provideService(Scope.Scope, scope),
         Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
@@ -3362,7 +3403,7 @@ async function snapshotOutputIds(
 ): Promise<Set<string>> {
   const teamRecords = loaded.records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
-  return plusTeamOutputIds(discovered, applied)
+  return plusTeamOutputIds(discovered, applied, loaded.records)
 }
 
 async function snapshotTeams(

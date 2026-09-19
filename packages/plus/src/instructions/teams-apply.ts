@@ -43,7 +43,11 @@ export function dedupeAgents(agents: readonly AgentSource[]): readonly AgentSour
   return agents.filter((agent, index) => agents.findIndex((entry) => entry.id === agent.id) === index)
 }
 
-export async function installTeamAgents(ctx: Context, agents: readonly AgentSource[]): Promise<TeamApplied> {
+export async function installTeamAgents(
+  ctx: Context,
+  agents: readonly AgentSource[],
+  overrides?: ReadonlyMap<string, string>,
+): Promise<TeamApplied> {
   const installed: Registration[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
@@ -54,7 +58,7 @@ export async function installTeamAgents(ctx: Context, agents: readonly AgentSour
       // A member file marked disabled follows core file semantics: it removes
       // rather than installs, so there is nothing to register for it.
       if (fields.disabled === true) continue
-      installed.push(await runTeamRegistration(ctx, agent.id, agentBody(text), fields))
+      installed.push(await runTeamRegistration(ctx, agent.id, agentBody(text), fields, overrides?.get(agent.id)))
     }
     if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
     return { registrations: [...installed] }
@@ -99,12 +103,18 @@ export interface TeamFields {
 // request defaults, core permissions) in place. Disposing the registration
 // rebuilds the host view without it, which removes team-only ids and restores
 // overwritten ones.
-async function runTeamRegistration(ctx: Context, id: string, body: string, fields: TeamFields): Promise<Registration> {
+async function runTeamRegistration(
+  ctx: Context,
+  id: string,
+  body: string,
+  fields: TeamFields,
+  override?: string,
+): Promise<Registration> {
   return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() =>
-        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields)),
+        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields, override)),
       ).pipe(
         Effect.provideService(Scope.Scope, scope),
         Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
@@ -120,7 +130,13 @@ async function disposeRegistrations(registrations: readonly Registration[]): Pro
   }
 }
 
-export function applyTeamAgent(editor: AgentEditor, id: string, body: string, fields: TeamFields): void {
+export function applyTeamAgent(
+  editor: AgentEditor,
+  id: string,
+  body: string,
+  fields: TeamFields,
+  override?: string,
+): void {
   editor.update(id, (agent) => {
     const ref = parseModelRef(fields.model, fields.variant)
     if (ref !== undefined) agent.model = ref
@@ -132,7 +148,9 @@ export function applyTeamAgent(editor: AgentEditor, id: string, body: string, fi
     if (fields.steps !== undefined) agent.steps = fields.steps as Draft["steps"]
     if (fields.request?.headers !== undefined) Object.assign(agent.request.headers, fields.request.headers)
     if (fields.request?.body !== undefined) Object.assign(agent.request.body, fields.request.body)
-    agent.system = body
+    // A Plus customization of this member's role wins over the shipped body;
+    // an uncustomized member still receives its team body exactly as before.
+    agent.system = override ?? body
     agent.permissions.push(...fields.permissions)
   })
 }
