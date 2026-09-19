@@ -311,8 +311,14 @@ test("ancestor agent files resolve as project scope and do not appear at default
   })
 
   expect(discovered.agents).toEqual([
-    { id: "anc", scope: "project", path: ancPath, origin: "user" },
+    { id: "anc", scope: "project", path: ancPath, origin: "user", ancestor: true },
   ])
+
+  const ancAgent = discovered.agents[0]
+  expect(ancAgent.ancestor).toBe(true)
+  expect(Object.prototype.propertyIsEnumerable.call(ancAgent, "ancestor")).toBe(true)
+  expect({ ...ancAgent }.ancestor).toBe(true)
+  expect(JSON.parse(JSON.stringify(ancAgent)).ancestor).toBe(true)
 })
 
 test("nearest agent file wins over ancestor file", async () => {

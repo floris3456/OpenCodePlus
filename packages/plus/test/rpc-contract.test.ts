@@ -730,6 +730,20 @@ test("AgentEntry origin round-trips and omits when unset", () => {
   expect(Schema.decodeUnknownSync(Plus.AgentEntry)(encodedBare)).toEqual(bare)
 })
 
+test("AgentEntry ancestor round-trips and omits when unset", () => {
+  const entry: Plus.AgentEntry = { id: "alpha", scope: "project", ancestor: true, fileBacked: true }
+  const encoded = Schema.encodeSync(Plus.AgentEntry)(entry)
+  expectRpcBody(encoded)
+  assertNoUndefinedValues(encoded)
+  expect(encoded.ancestor).toBe(true)
+  expect(Schema.decodeUnknownSync(Plus.AgentEntry)(encoded)).toEqual(entry)
+
+  const bare: Plus.AgentEntry = { id: "alpha", scope: "project", fileBacked: false }
+  const encodedBare = Schema.encodeSync(Plus.AgentEntry)(bare)
+  expect("ancestor" in encodedBare).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.AgentEntry)(encodedBare)).toEqual(bare)
+})
+
 test("TeamEntry overlay and TeamRemoveAgentInput round-trip correctly", () => {
   const withOverlay: Plus.TeamEntry = {
     level: "defaults",

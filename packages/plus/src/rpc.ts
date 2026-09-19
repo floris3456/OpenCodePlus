@@ -176,6 +176,7 @@ export const AgentEntry = Schema.Struct({
   path: Schema.optionalKey(Schema.String),
   base: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(AgentModel),
+  ancestor: Schema.optionalKey(Schema.Boolean),
   fileBacked: Schema.Boolean,
 }).annotate({ identifier: "Plus.AgentEntry" })
 

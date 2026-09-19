@@ -545,7 +545,8 @@ variant?, active?: true, updated }`), and `SnapshotRuleRecord`
 (`{ type: "rule", level, agent, tool, id, label, patterns, keywords,
 updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
 "user"`, computed server-side), `model?` (`{ providerID, modelID,
-variant? }`) and `fileBacked`. Optional keys are omitted
+variant? }`), `ancestor?` (`boolean`, true when backed by an ancestor directory
+agent file), and `fileBacked`. Optional keys are omitted
 when unset: never send an optional key whose value is `undefined` across
 the RPC boundary, because results are validated as JSON and the whole call
 fails with HTTP 400.

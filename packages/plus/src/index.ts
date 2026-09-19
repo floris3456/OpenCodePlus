@@ -3541,6 +3541,7 @@ function toSnapshot(
               ...(agent.model.variant === undefined ? {} : { variant: agent.model.variant }),
             },
           }),
+      ...(agent.ancestor ? { ancestor: true } : {}),
       fileBacked: agent.path !== undefined,
       }
     }),

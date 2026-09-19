@@ -777,6 +777,18 @@ test("instruction rows are removable only when project-owned", () => {
   expect(nodes.find((node) => node.id === "item:defaults::system:../../AGENTS.md")?.actions?.remove).toBe(false)
 })
 
+test("ancestor-backed agents suppress remove action while project-file agents allow it", () => {
+  const agentList: AgentSource[] = [
+    { id: "local", scope: "project", origin: "user", path: "/project/.opencode/agent/local.md" },
+    { id: "anc", scope: "project", origin: "user", ancestor: true, path: "/parent/.opencode/agent/anc.md" },
+  ]
+  const nodes = expandAll({ items: items(), records: [], agents: agentList })
+  const ancRow = nodes.find((node) => node.id === "agent:project:anc")
+  expect(ancRow?.actions?.remove).toBe(false)
+  const localRow = nodes.find((node) => node.id === "agent:project:local")
+  expect(localRow?.actions?.remove).toBe(true)
+})
+
 test("builtin-id user base shadows stay deletable and never read inactive", () => {
   // Legacy shadow predating the creation refusal: the host entry is dropped
   // by resolveBaseTemplates, so only the user copy is listed.
