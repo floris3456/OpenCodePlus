@@ -308,11 +308,11 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(member?.address).toBeUndefined()
   expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
   expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
-    "group:project:crew/CrewMate:models",
-    "group:project:crew/CrewMate:tools",
-    "group:project:crew/CrewMate:base",
-    "group:project:crew/CrewMate:skills",
-    "group:project:crew/CrewMate:system",
+    "group:project:crew/:CrewMate:models",
+    "group:project:crew/:CrewMate:tools",
+    "group:project:crew/:CrewMate:base",
+    "group:project:crew/:CrewMate:skills",
+    "group:project:crew/:CrewMate:system",
   ])
   const implementerTools = nodes
     .filter((node) => node.id.startsWith("item:project:Implementer:tool:"))
@@ -337,9 +337,9 @@ test("registered team member yields its Role/persona under System", () => {
   const role = nodes.find((node) => node.id === "item:project:CrewMate:system:role")
   expect(role).toBeDefined()
   expect(role?.address).toEqual({ level: "project", agent: "CrewMate", item: "system:role", section: null })
-  const systemGroup = nodes.find((node) => node.id === "group:project:crew/CrewMate:system")
+  const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
   expect(systemGroup).toBeDefined()
-  expect(childrenOf(nodes, "group:project:crew/CrewMate:system").some((node) => node.id === "item:project:CrewMate:system:role")).toBe(true)
+  expect(childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:CrewMate:system:role")).toBe(true)
 })
 
 test("a level with no teams renders an empty Teams group with the add affordance", () => {
@@ -1197,4 +1197,27 @@ test("perm rows order most-mentioned first, not title order", () => {
   if (!toolRow) throw new Error("expected shell tool row")
   const rows = childrenOf(nodes, toolRow.id).filter((node) => node.address?.item.startsWith("perm:"))
   expect(rows.map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa generic"])
+})
+
+test("nested agent id and team member group ids never collide", () => {
+  // A project agent literally named `crew/alpha` and a project team `crew`
+  // with member `alpha` would both produce `group:project:crew/alpha:models`
+  // under the old bare-`/` scheme. The `/:` marker keeps them distinct.
+  const nodes = expandAll({
+    items: items(),
+    records: [{ type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "shared", updated: UPDATED }],
+    agents: [{ id: "crew/alpha", scope: "project", origin: "user" }],
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
+  })
+  const agentModels = "group:project:crew/alpha:models"
+  const teamModels = "group:project:crew/:alpha:models"
+  expect(agentModels).not.toBe(teamModels)
+  expect(nodes.some((node) => node.id === agentModels)).toBe(true)
+  expect(nodes.some((node) => node.id === teamModels)).toBe(true)
+  const agentKids = childrenOf(nodes, agentModels)
+  const teamKids = childrenOf(nodes, teamModels)
+  expect(agentKids.length).toBeGreaterThan(0)
+  expect(teamKids.length).toBeGreaterThan(0)
+  for (const kid of agentKids) expect(kid.address?.agent).toBe("crew/alpha")
+  for (const kid of teamKids) expect(kid.address?.agent).toBe("alpha")
 })
