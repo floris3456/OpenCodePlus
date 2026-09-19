@@ -811,6 +811,16 @@ RPC surface (`rpc.ts`, `index.ts`):
   refused). Removing the last member leaves an empty team directory. After unlink
   calls `refreshAfterFileChange(..., true)` so an enabled team's uninstalled
   member unregisters from the host immediately.
+- `team.delete` (`DeleteTeamInput` → `DeleteTeamResult`): deletes a team at
+  project or global scope (`level: "defaults"` is refused with `team.invalid`:
+  built-in teams cannot be deleted). Bound to `d delete` on team rows.
+  An enabled team is first disabled (reusing `team.setEnabled false` logic so
+  member agents unregister from the host and registrations dispose), then the
+  team directory is removed recursively (`fs.rm`), and any `TeamRecord` for that
+  level and team is removed from the store. Fails with `project.disabled` when
+  project mode is disabled, `team.invalid` on invalid name or when directory
+  escapes the teams root, or `team.unknown` when the team directory is not found.
+  Returns `{ level, team, removedMembers }`. Logs `team.delete` with the caller's actor.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
@@ -820,7 +830,8 @@ project or global scope, never defaults). Both team rows and member rows carry
 `add: "agent"`, so `a` on a team row or member row adds an agent to that team
 through `team.addAgent` with the Defaults overlay for `level: "defaults"`, and
 TUI wiring (`state.ts` `space` → real `team.setEnabled` + snapshot refresh, `a`
-→ real `team.create` / `team.addAgent` + snapshot refresh, `d` on a member row
+→ real `team.create` / `team.addAgent` + snapshot refresh, `d` on a team row
+→ `team.delete` confirmation + snapshot refresh, `d` on a member row
 → `team.removeAgent` confirmation + snapshot refresh; `tree-pane.tsx` on/off
 badge). A created team starts disabled. Built-in teams cannot be created or
 deleted (though their members are editable through the Defaults overlay). Store

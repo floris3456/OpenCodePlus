@@ -2893,3 +2893,120 @@ test("d on a member row with the real handler wired removes the row", async () =
     fixture.destroy()
   }
 })
+
+test("d on a team row with the real handler wired removes the row and wires team.delete", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-team-remove-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwing))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwing),
+  )
+  const teamDeletes: { level: "project" | "global"; team: string }[] = []
+  const wrappedTeamDelete = async (input: { level: "project" | "global"; team: string }) => {
+    teamDeletes.push({ ...input })
+    return Effect.runPromise(handlers["team.delete"](input, throwing))
+  }
+  let confirmOptions: unknown = undefined
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  expect(liveSnapshots[0].teams).toEqual([{ level: "project", team: "crew", enabled: false, agents: ["alpha"] }])
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { confirms: [true] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+        "team.delete": wrappedTeamDelete,
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      const baseConfirm = context.ui.dialog.confirm
+      context.ui.dialog.confirm = async (input) => {
+        confirmOptions = input
+        return baseConfirm(input)
+      }
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("crew")
+    expect(binds(fixture)).toContain("d")
+    expect(dispatch(fixture, "d")).toBe(true)
+    await fixture.waitForFrame(() => teamDeletes.length === 1)
+    expect(teamDeletes[0]).toEqual({ level: "project", team: "crew" })
+    expect(confirmOptions).toMatchObject({
+      title: "Delete team crew?",
+      message: 'Delete project team "crew" and its 1 member file(s)? It is currently disabled. This cannot be undone.',
+    })
+    await fixture.waitForFrame((frame) => frame.includes("Deleted team crew"))
+    await fixture.waitForFrame(() =>
+      (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")) === undefined,
+    )
+    expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")).toBeUndefined()
+    expect(selectedRow(fixture.captureCharFrame())).not.toContain("crew")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("defaults team row offers no d delete", async () => {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-route-defaults-team-refusal-"))
+  e2eRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await enable(project)
+  const registry = [{ name: "starter", members: [{ id: "planner", body: "planner body" }] }]
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: registry })
+  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
+  const liveSnapshots: Snapshot[] = [await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))]
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => {
+          liveSnapshots.push(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)))
+          return liveSnapshots[liveSnapshots.length - 1]
+        },
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Defaults")
+    await expand(fixture)
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "starter")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("starter")
+    expect(binds(fixture)).not.toContain("d")
+    expect(fixture.captureCharFrame()).not.toContain("d delete")
+  } finally {
+    fixture.destroy()
+  }
+})

@@ -283,6 +283,16 @@ export type RemoveTeamAgentResult =
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
     }
 
+export type DeleteTeamResult =
+  | { ok: true; value: Plus.DeleteTeamResult }
+  | {
+      ok: false
+      error:
+        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+    }
+
 export type AddModelResult =
   | { ok: true; value: Plus.ModelRef }
   | {
@@ -359,6 +369,7 @@ export interface PlusApi {
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
+  readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
@@ -1119,6 +1130,119 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       })
       return { ok: true as const, value: { id: validated.id, path: target } }
     },
+    deleteTeam: async (input) => {
+      const directory = ctx.location.directory
+      const config = await read(directory)
+      if (config === undefined)
+        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      if (input.level === "defaults") {
+        const reason = `Team "${input.team}" is built in: built-in teams cannot be deleted`
+        return {
+          ok: false as const,
+          error: {
+            code: "team.invalid" as const,
+            message: reason,
+            data: { team: input.team, reason },
+          },
+        }
+      }
+      const validated = validateTeamName(input.team)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: validated.reason, data: { team: input.team, reason: validated.reason } },
+        }
+      const known = await discoverTeams(input.level, directory, builtins)
+      const found = known.find((team) => team.team === validated.team)
+      if (found === undefined)
+        return {
+          ok: false as const,
+          error: { code: "team.unknown" as const, message: `Unknown team ${validated.team}`, data: { level: input.level, team: validated.team } },
+        }
+      const teamsRoot = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
+      const teamDir = path.join(teamsRoot, validated.team)
+      let realTeamDir: string
+      let realTeamsRoot: string
+      try {
+        realTeamDir = await fs.realpath(teamDir)
+        realTeamsRoot = await fs.realpath(teamsRoot)
+      } catch {
+        return {
+          ok: false as const,
+          error: { code: "team.unknown" as const, message: `Team directory "${validated.team}" not found`, data: { level: input.level, team: validated.team } },
+        }
+      }
+      const rel = path.relative(realTeamsRoot, realTeamDir)
+      if (rel.startsWith("..") || path.isAbsolute(rel) || rel === "") {
+        const reason = `Team directory "${validated.team}" is outside teams root`
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
+        }
+      }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const existing = loaded.records.find(
+        (record): record is TeamRecord => record.type === "team" && record.level === input.level && record.team === validated.team,
+      )
+      if (existing?.enabled) {
+        const disabledSave = await saveTeamRecord(directory, loaded, input.level, validated.team, false)
+        if (!disabledSave.ok)
+          return {
+            ok: false as const,
+            error: {
+              code: "team.unknown" as const,
+              message: `Team ${validated.team} changed concurrently; retry`,
+              data: { level: input.level, team: validated.team },
+            },
+          }
+        if (disabledSave.changed)
+          await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+            ts: new Date().toISOString(),
+            actor: normalizeActor(input.actor),
+            op: "team.setEnabled",
+            target: `team:${input.level}:${validated.team}`,
+            summary: `team.setEnabled ${validated.team} disabled (${input.level})`,
+            revision: disabledSave.revision,
+          })
+        await Effect.runPromise(ctx.agent.reload())
+        await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      }
+      try {
+        await fs.rm(realTeamDir, { recursive: true, force: true })
+      } catch (error) {
+        const reason = `Failed to remove team directory: ${messageOf(error)}`
+        return {
+          ok: false as const,
+          error: {
+            code: "team.invalid" as const,
+            message: reason,
+            data: { team: validated.team, reason },
+          },
+        }
+      }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeTeamRecord(directory, freshLoaded, input.level, validated.team)
+      await Effect.runPromise(ctx.agent.reload())
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: input.level,
+        op: "team.delete",
+        target: `team:${input.level}:${validated.team}`,
+        summary: `team.delete ${validated.team} (${input.level})`,
+      })
+      return {
+        ok: true as const,
+        value: {
+          level: input.level,
+          team: validated.team,
+          removedMembers: found.agents.length,
+        },
+      }
+    },
     catalogModels: async () => {
       const directory = ctx.location.directory
       const config = await read(directory)
@@ -1732,6 +1856,18 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         }
         return result.value
       }),
+    "team.delete": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.deleteTeam(input))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "team.unknown")
+            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
     "model.add": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.addModel(input))
@@ -1839,6 +1975,46 @@ async function saveTeamRecord(
       ...records.filter((record) => !(record.type === "team" && record.level === level && record.team === team)),
       next,
     ] as readonly StoredRecord[]
+  }
+  const revisionOf = (projectRevision: number, globalRevision: number) =>
+    level === "project" ? projectRevision : globalRevision
+  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
+    level === "project" ? changed.project : changed.global
+  const first = attempt(loaded.records)
+  if (first === undefined) return { ok: true, changed: false, revision: revisionOf(loaded.projectRevision, loaded.globalRevision) }
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: first,
+  })
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision) }
+  const fresh = await load(directory)
+  const second = attempt(fresh.records)
+  if (second === undefined) return { ok: true, changed: false, revision: revisionOf(fresh.projectRevision, fresh.globalRevision) }
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: second,
+  })
+  if (retried.ok)
+    return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
+  return { ok: false }
+}
+
+async function removeTeamRecord(
+  directory: string,
+  loaded: LoadedStores,
+  level: TeamRecord["level"],
+  team: string,
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
+  const attempt = (records: readonly StoredRecord[]) => {
+    const existing = records.find(
+      (record): record is TeamRecord => record.type === "team" && record.level === level && record.team === team,
+    )
+    if (existing === undefined) return undefined
+    return records.filter(
+      (record) => !(record.type === "team" && record.level === level && record.team === team),
+    ) as readonly StoredRecord[]
   }
   const revisionOf = (projectRevision: number, globalRevision: number) =>
     level === "project" ? projectRevision : globalRevision

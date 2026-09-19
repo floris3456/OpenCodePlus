@@ -1121,6 +1121,11 @@ function deletePlan(
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }
+    if (plan.kind === "team.delete") {
+      const result = yield* Effect.promise(() => api.deleteTeam({ level: plan.level, team: plan.team, actor }))
+      if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+      return { output: { ...result.value, status: plan.successStatus } }
+    }
     const result = yield* Effect.promise(() =>
       api.removeTeamAgent({ level: plan.level, team: plan.team, id: plan.id, actor }),
     )

@@ -688,3 +688,44 @@ test("removalPlan on ambiguous team and member row id returns refusal", () => {
     refusal: '"crew:alpha" is ambiguous: it matches both a team and a member of team "crew". Rename one to continue.',
   })
 })
+
+test("removalPlan on team row returns team.delete plan or refusal for defaults", () => {
+  const input = baseInput({
+    teams: [
+      { level: "project", team: "crew", enabled: true, agents: ["CrewMate", "SecondMate"] },
+      { level: "global", team: "globalcrew", enabled: false, agents: [] },
+      { level: "defaults", team: "starter", enabled: true, agents: ["shipped"] },
+    ],
+  })
+  const projectPlan = removalPlan(input, "team:project:crew")
+  if ("refusal" in projectPlan) throw new Error(`expected team.delete plan: ${projectPlan.refusal}`)
+  if (projectPlan.kind !== "team.delete") throw new Error("wrong kind")
+  expect(projectPlan.kind).toBe("team.delete")
+  expect(projectPlan.level).toBe("project")
+  expect(projectPlan.team).toBe("crew")
+  expect(projectPlan.memberCount).toBe(2)
+  expect(projectPlan.enabled).toBe(true)
+  expect(projectPlan.confirmTitle).toBe("Delete team crew?")
+  expect(projectPlan.confirmMessage).toBe(
+    'Delete project team "crew" and its 2 member file(s)? It is currently enabled. This cannot be undone.',
+  )
+  expect(projectPlan.successStatus).toBe("Deleted team crew")
+
+  const globalPlan = removalPlan(input, "team:global:globalcrew")
+  if ("refusal" in globalPlan) throw new Error(`expected team.delete plan: ${globalPlan.refusal}`)
+  if (globalPlan.kind !== "team.delete") throw new Error("wrong kind")
+  expect(globalPlan.kind).toBe("team.delete")
+  expect(globalPlan.level).toBe("global")
+  expect(globalPlan.team).toBe("globalcrew")
+  expect(globalPlan.memberCount).toBe(0)
+  expect(globalPlan.enabled).toBe(false)
+  expect(globalPlan.confirmTitle).toBe("Delete team globalcrew?")
+  expect(globalPlan.confirmMessage).toBe(
+    'Delete global team "globalcrew" and its 0 member file(s)? It is currently disabled. This cannot be undone.',
+  )
+  expect(globalPlan.successStatus).toBe("Deleted team globalcrew")
+
+  const defaultsPlan = removalPlan(input, "team:defaults:starter")
+  if (!("refusal" in defaultsPlan)) throw new Error("expected refusal for defaults team")
+  expect(defaultsPlan.refusal).toBe('"starter" cannot be deleted: team "starter" is built in')
+})

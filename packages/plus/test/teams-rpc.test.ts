@@ -942,3 +942,131 @@ test("team.removeAgent on an overlay member unlinks the overlay file", async () 
     agents: ["mate"],
   })
 })
+
+test("team.delete on a project team unlinks directory, drops record, updates snapshot, and logs actor tui", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwingContext({})),
+  )
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
+  const loadedBefore = await load(project)
+  expect(loadedBefore.records.some((r) => r.type === "team" && r.team === "crew")).toBe(true)
+
+  const deleted = await Effect.runPromise(
+    handlers["team.delete"]({ level: "project", team: "crew" }, throwingContext({})),
+  )
+  expect(deleted).toEqual({ level: "project", team: "crew", removedMembers: 1 })
+  expectRpcBody(deleted)
+
+  // Directory is gone
+  expect(await fs.stat(teamDir).then(() => true, () => false)).toBe(false)
+
+  // Record is gone from store
+  const loadedAfter = await load(project)
+  expect(loadedAfter.records.some((r) => r.type === "team" && r.team === "crew")).toBe(false)
+
+  // Snapshot has no crew team
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "crew")).toBeUndefined()
+
+  // Log line has op team.delete, actor tui, target team:project:crew
+  const logged = await Effect.runPromise(handlers["instructions.log"]({}, throwingContext({})))
+  const entry = logged.entries.find((candidate) => candidate.op === "team.delete")
+  if (entry === undefined) throw new Error("missing team.delete log entry")
+  expect(entry.actor).toEqual({ type: "tui" })
+  expect(entry.target).toBe("team:project:crew")
+})
+
+test("team.delete on an enabled team unregisters member agents from host", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwingContext({})),
+  )
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+
+  const listedBefore = await Effect.runPromise(ctx.agent.list())
+  expect(listedBefore.data.find((entry) => String(entry.id) === "alpha")?.system).toBe("alpha role")
+
+  await Effect.runPromise(
+    handlers["team.delete"]({ level: "project", team: "crew" }, throwingContext({})),
+  )
+
+  const listedAfter = await Effect.runPromise(ctx.agent.list())
+  expect(listedAfter.data.find((entry) => String(entry.id) === "alpha")).toBeUndefined()
+})
+
+test("team.delete on a global team removes the directory under global teams root", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+
+  await Effect.runPromise(handlers["team.create"]({ level: "global", team: "globalcrew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "global", team: "globalcrew", id: "beta", prompt: "beta role" }, throwingContext({})),
+  )
+
+  const globalTeamDir = path.join(globalTeamsPath(), "globalcrew")
+  expect(await fs.stat(globalTeamDir).then(() => true, () => false)).toBe(true)
+
+  const deleted = await Effect.runPromise(
+    handlers["team.delete"]({ level: "global", team: "globalcrew" }, throwingContext({})),
+  )
+  expect(deleted).toEqual({ level: "global", team: "globalcrew", removedMembers: 1 })
+  expectRpcBody(deleted)
+  expect(await fs.stat(globalTeamDir).then(() => true, () => false)).toBe(false)
+})
+
+test("team.delete raises every declared error through a real call", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+
+  const unknown: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.delete"]({ level: "project", team: "ghost" }, throwingContext(unknown)),
+    unknown,
+    "team.unknown",
+  )
+
+  const invalid: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.delete"]({ level: "project", team: "../bad" }, throwingContext(invalid)),
+    invalid,
+    "team.invalid",
+  )
+
+  const defaultsRefusal: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.delete"]({ level: "defaults", team: "starter" }, throwingContext(defaultsRefusal)),
+    defaultsRefusal,
+    "team.invalid",
+  )
+  expect(defaultsRefusal.current?.message).toContain("built-in teams cannot be deleted")
+
+  const disabledProject = (await tempRoot()).project
+  const disabledHandlers = createHandlers(fullContext({ directory: disabledProject }), createState(), { builtins: [] })
+  const disabled: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    disabledHandlers["team.delete"]({ level: "project", team: "crew" }, throwingContext(disabled)),
+    disabled,
+    "project.disabled",
+  )
+})
