@@ -449,7 +449,7 @@ function runGatedInner(
     const sessionID = String(toolCtx.sessionID)
     const run = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
     auditState.run = run?.id ?? null
-    if (run === undefined && name === "prepare") {
+    if (run === undefined && name === "prepare" && isRootPrepareInput(input)) {
       const kind = kindOf(agent)
       // Root-run bootstrap, the single no-run exception: a planner or
       // orchestrator session calling prepare becomes the main run. All

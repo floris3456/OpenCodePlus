@@ -16,7 +16,7 @@ import { teamsDataDir } from "../../src/instructions/paths.js"
 import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
-import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { registerTeamTools } from "../../src/teams/tools.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { context, toolHarness } from "../harness.js"
@@ -255,6 +255,39 @@ test("team_prepare from a no-run implementer session still fails E_NOT_ACTOR", a
     const ctx = toolContext("ses_team_prep_impl", "muse-implementer")
     const message = await runMessage(need(tools, "team_prepare"), {}, ctx)
     expect(message).toBe(notActor("unknown"))
+  })
+})
+
+test("team_prepare with a cwd argument from a no-run orchestrator session fails E_NOT_ACTOR and creates no run record", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# root\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const harness = toolHarness()
+      const directory = AbsolutePath.make(repoDir)
+      const location = new Location.Info({
+        directory,
+        project: { id: Project.ID.global, directory, canonical: directory },
+      })
+      const pluginCtx = context({ tool: harness.domain, location })
+      const api = createTeamApi(pluginCtx, createState())
+      await registerTeamTools(pluginCtx, api)
+      const tool = need(harness.tools, "team_prepare")
+      const toolCtx = toolContext("ses_team_prep_orch_cwd", "sol-orchestrator")
+      const message = await runMessage(tool, { cwd: "scripts/team2" }, toolCtx)
+      expect(message).toBe(notActor("unknown"))
+      const bound = await bySession(root, "ses_team_prep_orch_cwd")
+      expect(bound).toBeUndefined()
+      const runs = await fs.readdir(path.join(root, "runs")).catch(() => [])
+      expect(runs).toEqual([])
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
   })
 })
 

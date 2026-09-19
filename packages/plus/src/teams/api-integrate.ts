@@ -54,17 +54,6 @@ async function latestReport(root: string, runID: string): Promise<{ n: number; s
   return best
 }
 
-async function findPlanForTask(root: string, taskID: string): Promise<string | undefined> {
-  const dir = path.join(root, "tasks")
-  const entries = await readdir(dir).catch(() => [] as string[])
-  for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".")) continue
-    const graph = await readJson<{ tasks?: Record<string, unknown> }>(path.join(dir, name))
-    if (graph?.tasks !== undefined && Object.hasOwn(graph.tasks, taskID)) return name.slice(0, -5)
-  }
-  return undefined
-}
-
 export async function integrateHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
   void ctx
   const root = teamsDataDir()
@@ -94,18 +83,12 @@ export async function integrateHandler(ctx: Context, input: unknown, caller: Tea
   if (top.code !== 0) return fail("E_INTERNAL", top.err || top.out || `Cannot resolve repository from ${parent.directory}.`)
   const repoRoot = top.out
   const checks = (await readJson<Check[]>(path.join(root, "runs", parent.id, "checks.json"))) ?? []
-  const childTask = child.task
-  const found = childTask === null ? undefined : await findPlanForTask(root, childTask)
-  const planRun = childTask === null ? child.id : (found ?? child.id)
-  const taskID = childTask ?? child.id
   const mergeCtx: MergeContext = {
     repoRoot,
     repoKey: parent.repoKey,
     workspaceRoot: root,
     parentWorktree: parent.directory,
     checks,
-    planRun,
-    taskID,
   }
   const live = await gitRaw(child.directory, ["rev-parse", "HEAD"])
   const childHead = live.code === 0 ? live.out : child.head

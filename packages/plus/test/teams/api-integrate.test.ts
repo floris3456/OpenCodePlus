@@ -12,6 +12,7 @@ import { git } from "../../src/teams/git.js"
 import { enqueue, pending, queue } from "../../src/teams/merge.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { create, load } from "../../src/teams/tasks.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
@@ -579,6 +580,256 @@ test("integrate drains an older pending entry instead of stranding it", async ()
       expect((await queue(root, parent.id)).filter((entry) => entry.state === "landed")).toHaveLength(2)
       expect(await fs.readFile(path.join(repo.dir, "old.txt"), "utf8")).toBe("old\n")
       expect(await fs.readFile(path.join(repo.dir, "new.txt"), "utf8")).toBe("new\n")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("rework attribution on conflict belongs to older child's task and plan run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const plan1 = "p-1111111111111111"
+      const plan2 = "p-2222222222222222"
+      await create(root, plan1, [
+        {
+          id: "T1",
+          title: "Task T1",
+          dependsOn: [],
+          role: "muse-implementer",
+          effort: "small",
+          deliverable: { kind: "commit" },
+          paths: ["base.txt"],
+          checks: [],
+        },
+      ])
+      await create(root, plan2, [
+        {
+          id: "T2",
+          title: "Task T2",
+          dependsOn: [],
+          role: "muse-implementer",
+          effort: "small",
+          deliverable: { kind: "commit" },
+          paths: ["new.txt"],
+          checks: [],
+        },
+      ])
+      await fs.writeFile(path.join(repo.dir, "base.txt"), "initial\n")
+      await git(repo.dir, ["add", "base.txt"])
+      await git(repo.dir, ["commit", "-m", "chore: add base"])
+      const p0 = await git(repo.dir, ["rev-parse", "HEAD"])
+
+      const oldWork = await makeChild(repo.scratch, repo.dir, "oldconflict", p0, { "base.txt": "old change\n" }, "feat: old edit")
+
+      await fs.writeFile(path.join(repo.dir, "base.txt"), "parent change\n")
+      await git(repo.dir, ["add", "base.txt"])
+      await git(repo.dir, ["commit", "-m", "feat: parent edit"])
+      const p1 = await git(repo.dir, ["rev-parse", "HEAD"])
+
+      const newWork = await makeChild(repo.scratch, repo.dir, "newclean", p1, { "new.txt": "new\n" }, "feat: new edit")
+
+      const now = new Date().toISOString()
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: p1,
+        head: p1,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_parent_conflict",
+        children: ["w-1111111111111111", "w-2222222222222222"],
+      })
+      const oldChild = baseRun({
+        id: "w-1111111111111111",
+        role: "muse-implementer",
+        directory: oldWork.dir,
+        branch: oldWork.branch,
+        base: p0,
+        head: oldWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_old",
+        task: "T1",
+      })
+      const newChild = baseRun({
+        id: "w-2222222222222222",
+        role: "muse-implementer",
+        directory: newWork.dir,
+        branch: newWork.branch,
+        base: p1,
+        head: newWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_new",
+        task: "T2",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, oldChild)
+      await saveRun(root, newChild)
+      await writeReport(root, oldChild.id, 1, "done")
+      await writeReport(root, newChild.id, 1, "done")
+
+      await enqueue(root, {
+        parentRun: parent.id,
+        parentWorktree: parent.directory,
+        childRun: oldChild.id,
+        childBranch: oldChild.branch,
+        childHead: oldWork.head,
+        expectedParentHead: p1,
+      })
+
+      const value = required(
+        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: p1 }, callerFor(parent)),
+      ) as { entry: string; state: string; head: string | null }
+      expect(value.state).toBe("landed")
+
+      const all = await queue(root, parent.id)
+      const oldEntry = all.find((e) => e.childRun === oldChild.id)
+      const newEntry = all.find((e) => e.childRun === newChild.id)
+      expect(oldEntry?.state).toBe("conflict")
+      expect(oldEntry?.conflictFiles).toContain("base.txt")
+      expect(oldEntry?.reworkTask).toBe("T1.rework.1")
+      expect(newEntry?.state).toBe("landed")
+      expect(newEntry?.reworkTask).toBeUndefined()
+
+      const graph1 = await load(root, plan1)
+      expect(graph1.tasks["T1"].state).toBe("rework")
+      expect(graph1.tasks["T1.rework.1"]).toBeDefined()
+      expect(graph1.tasks["T1.rework.1"].paths).toContain("base.txt")
+
+      const graph2 = await load(root, plan2)
+      expect(graph2.tasks["T2"].state).not.toBe("rework")
+      expect(graph2.tasks["T2.rework.1"]).toBeUndefined()
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("rework attribution on red checks belongs to older child's task and plan run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const plan1 = "p-3333333333333333"
+      const plan2 = "p-4444444444444444"
+      await create(root, plan1, [
+        {
+          id: "T1",
+          title: "Task T1",
+          dependsOn: [],
+          role: "muse-implementer",
+          effort: "small",
+          deliverable: { kind: "commit" },
+          paths: ["gate.test.ts"],
+          checks: [],
+        },
+      ])
+      await create(root, plan2, [
+        {
+          id: "T2",
+          title: "Task T2",
+          dependsOn: [],
+          role: "muse-implementer",
+          effort: "small",
+          deliverable: { kind: "commit" },
+          paths: ["gate.test.ts"],
+          checks: [],
+        },
+      ])
+      const parentHead = repo.head
+      const failingTest = 'import { test, expect } from "bun:test"\ntest("gate", () => { expect(1).toBe(2) })\n'
+      const passingTest = 'import { test, expect } from "bun:test"\ntest("gate", () => { expect(1).toBe(1) })\n'
+
+      const oldWork = await makeChild(repo.scratch, repo.dir, "oldred", parentHead, { "gate.test.ts": failingTest }, "feat: failing test")
+      const newWork = await makeChild(repo.scratch, repo.dir, "newgreen", parentHead, { "gate.test.ts": passingTest }, "feat: passing test")
+
+      const now = new Date().toISOString()
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: parentHead,
+        head: parentHead,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_parent_red",
+        children: ["w-3333333333333333", "w-4444444444444444"],
+      })
+      const oldChild = baseRun({
+        id: "w-3333333333333333",
+        role: "muse-implementer",
+        directory: oldWork.dir,
+        branch: oldWork.branch,
+        base: parentHead,
+        head: oldWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_old_red",
+        task: "T1",
+      })
+      const newChild = baseRun({
+        id: "w-4444444444444444",
+        role: "muse-implementer",
+        directory: newWork.dir,
+        branch: newWork.branch,
+        base: parentHead,
+        head: newWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_new_green",
+        task: "T2",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, oldChild)
+      await saveRun(root, newChild)
+      await writeReport(root, oldChild.id, 1, "done")
+      await writeReport(root, newChild.id, 1, "done")
+
+      await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [
+        { id: "gate-check", argv: ["bun", "test", "gate.test.ts"] },
+      ])
+
+      await enqueue(root, {
+        parentRun: parent.id,
+        parentWorktree: parent.directory,
+        childRun: oldChild.id,
+        childBranch: oldChild.branch,
+        childHead: oldWork.head,
+        expectedParentHead: parentHead,
+      })
+
+      const value = required(
+        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent)),
+      ) as { entry: string; state: string; head: string | null }
+      expect(value.state).toBe("landed")
+
+      const all = await queue(root, parent.id)
+      const oldEntry = all.find((e) => e.childRun === oldChild.id)
+      const newEntry = all.find((e) => e.childRun === newChild.id)
+      expect(oldEntry?.state).toBe("red")
+      expect(oldEntry?.redChecks).toContain("gate-check")
+      expect(oldEntry?.reworkTask).toBe("T1.rework.1")
+      expect(newEntry?.state).toBe("landed")
+      expect(newEntry?.reworkTask).toBeUndefined()
+
+      const graph1 = await load(root, plan1)
+      expect(graph1.tasks["T1"].state).toBe("rework")
+      expect(graph1.tasks["T1.rework.1"]).toBeDefined()
+
+      const graph2 = await load(root, plan2)
+      expect(graph2.tasks["T2"].state).not.toBe("rework")
+      expect(graph2.tasks["T2.rework.1"]).toBeUndefined()
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

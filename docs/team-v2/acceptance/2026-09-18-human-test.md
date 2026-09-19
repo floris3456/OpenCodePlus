@@ -20,8 +20,11 @@ You need:
   Your project does **not** need to commit `.opencodeplus/project.json`. Enabling project mode in
   step 1 writes it into your working copy, and `team_delegate` writes a copy into every worktree it
   creates (inheriting your `protectedAgents`) so the child's Location is a Plus project too — without
-  it the child cannot resolve its own role agent. Plus keeps that copy out of `git status` with a
-  worktree-local `core.excludesFile`, so it can never dirty a child's tree or reach your `.gitignore`.
+  it the child cannot resolve its own role agent. Plus writes no git configuration for that copy: it
+  stays untracked, so a raw `git status` in the child worktree lists it, while the team's own dirty
+  accounting (`parsePorcelain` in `src/teams/api.ts`) ignores every `.opencodeplus/*` path, so
+  `team_finish` and `team_status` still report the tree clean. No `git config`, `.gitignore` or
+  exclude file is touched.
 - a **models config** — `opencode.json` with your provider and models. Running
   the product normally this is your own `~/.config/opencode`; this acceptance
   run used an isolated one so it could never touch the human's.
@@ -415,7 +418,8 @@ Two bugs the procedure found, both fixed and covered by focused tests:
    so the plugin never activated in that Location and core answered
    `Session.AgentNotFoundError: Agent not found: "muse-implementer"`; the child session died with
    zero messages and the run sat in `starting` forever. `worktree.create` now writes the project
-   config into the new worktree and hides it with a worktree-local `core.excludesFile`.
+   config into the new worktree and the team's dirty accounting ignores `.opencodeplus/*`, so the
+   untracked file never counts as the child's change.
 2. **A per-role model pin never reached the model that ran.** `applyModels` skipped agent ids that
    were not yet in the host registry, which is exactly every team-only role, so the agent carried no
    model and the host reset the session to the default right after Plus switched it. `applyModels`
