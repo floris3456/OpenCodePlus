@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { formatMarkdown } from "../src/agents/files.js"
-import { createHandlers, createState } from "../src/index.js"
+import { createHandlers, createState, deactivate } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { enable } from "../src/project.js"
@@ -656,4 +656,152 @@ test("a non-file-backed authored agent keeps its identity against a same-id Defa
   expect(await hostSystem(ctx, "shared")).toBe("defaults edit")
   const reread = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(reread.agents.find((agent) => agent.id === "shared")?.origin).not.toBe("plus")
+})
+
+test("disable then enable retains a Defaults team role edit", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const shipped = "ship body S"
+  const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
+  const agents = agentHarness([], project)
+  const base = fullContext({ directory: project })
+  const skillState = skillHarness([])
+  const tools = toolHarness([])
+  const ctx = context({
+    location: base.location,
+    agent: agents.domain,
+    skill: { ...skillState.domain, list: () => Effect.succeed({ location: base.location, data: Array.from(skillState.state.values()) }) },
+    tool: tools.domain,
+    mcp: base.mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "mate")).toBe(shipped)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("mate"))
+  if (!role) throw new Error("expected system:role for mate")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "mate",
+      item: "system:role",
+      section: null,
+      text: "custom B",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: false }, throwingContext({})))
+  const listed = await Effect.runPromise(ctx.agent.list())
+  expect(listed.data.some((entry) => String(entry.id) === "mate")).toBe(false)
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+  const fingerprintAfter = state.fingerprint
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(state.fingerprint).toBe(fingerprintAfter)
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+})
+
+test("fresh activation installs a Defaults team role edit", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const shipped = "ship body S"
+  const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
+  const agents = agentHarness([], project)
+  const base = fullContext({ directory: project })
+  const skillState = skillHarness([])
+  const tools = toolHarness([])
+  const ctx = context({
+    location: base.location,
+    agent: agents.domain,
+    skill: { ...skillState.domain, list: () => Effect.succeed({ location: base.location, data: Array.from(skillState.state.values()) }) },
+    tool: tools.domain,
+    mcp: base.mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "mate")).toBe(shipped)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("mate"))
+  if (!role) throw new Error("expected system:role for mate")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "mate",
+      item: "system:role",
+      section: null,
+      text: "custom B",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+  await Effect.runPromise(deactivate(state))
+  const fresh = createState()
+  const freshHandlers = createHandlers(ctx, fresh, { builtins })
+  await Effect.runPromise(freshHandlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+})
+
+test("ownership does not transfer between teams sharing an id", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const regular = "regular body U"
+  const projectBody = "project body P"
+  const shipped = "ship body S"
+  const builtins = [{ name: "ship", members: [{ id: "shared", body: shipped }] }]
+  const agents = agentHarness([agentInfo("shared", regular)], project)
+  const base = fullContext({ directory: project })
+  const skillState = skillHarness([])
+  const tools = toolHarness([])
+  const ctx = context({
+    location: base.location,
+    agent: agents.domain,
+    skill: { ...skillState.domain, list: () => Effect.succeed({ location: base.location, data: Array.from(skillState.state.values()) }) },
+    tool: tools.domain,
+    mcp: base.mcp,
+  })
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "shared", projectBody)
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe(projectBody)
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe(projectBody)
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe(regular)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const entry = snapshot.agents.find((agent) => agent.id === "shared")
+  expect(entry?.origin).not.toBe("plus")
+  const fingerprintAfter = state.fingerprint
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(state.fingerprint).toBe(fingerprintAfter)
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(await hostSystem(ctx, "shared")).toBe(regular)
 })
