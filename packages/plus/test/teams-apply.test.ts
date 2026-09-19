@@ -446,3 +446,214 @@ test("a non-file-backed authored agent keeps its identity against a same-id Defa
   expect(entry?.origin).not.toBe("plus")
   expect(entry?.fileBacked).toBe(false)
 })
+
+test("a Defaults team-only member survives S to A to B with a stable refresh", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const shipped = "ship body S"
+  const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
+  const agents = agentHarness([], project)
+  const base = fullContext({ directory: project })
+  const skillState = skillHarness([])
+  const tools = toolHarness([])
+  const ctx = context({
+    location: base.location,
+    agent: agents.domain,
+    skill: { ...skillState.domain, list: () => Effect.succeed({ location: base.location, data: Array.from(skillState.state.values()) }) },
+    tool: tools.domain,
+    mcp: base.mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "mate")).toBe(shipped)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("mate"))
+  if (!role) throw new Error("expected system:role for mate")
+  const firstRecords: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "mate",
+      item: "system:role",
+      section: null,
+      text: "custom A",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const first = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: firstRecords },
+      throwingContext({}),
+    ),
+  )
+  expect(first.ok).toBe(true)
+  expect(await hostSystem(ctx, "mate")).toBe("custom A")
+  if (!first.ok) throw new Error("expected first mutate to succeed")
+  const secondRecords: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "mate",
+      item: "system:role",
+      section: null,
+      text: "custom B",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const second = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: first.revision, expectedGlobalRevision: first.globalRevision, records: secondRecords },
+      throwingContext({}),
+    ),
+  )
+  expect(second.ok).toBe(true)
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+  const fingerprintAfter = state.fingerprint
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(state.fingerprint).toBe(fingerprintAfter)
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(await hostSystem(ctx, "mate")).toBe("custom B")
+})
+
+test("removing a state-only section exclusion restores the full shipped body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const shipped = "# Alpha\n\nfirst part\n\n# Beta\n\nsecond part\n"
+  const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
+  const agents = agentHarness([], project)
+  const base = fullContext({ directory: project })
+  const skillState = skillHarness([])
+  const tools = toolHarness([])
+  const ctx = context({
+    location: base.location,
+    agent: agents.domain,
+    skill: { ...skillState.domain, list: () => Effect.succeed({ location: base.location, data: Array.from(skillState.state.values()) }) },
+    tool: tools.domain,
+    mcp: base.mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("mate"))
+  if (!role) throw new Error("expected system:role for mate")
+  const excluded: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "mate",
+      item: "system:role",
+      section: "beta",
+      state: "off",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: excluded },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const shortened = await hostSystem(ctx, "mate")
+  expect(shortened).toContain("first part")
+  expect(shortened).not.toContain("second part")
+  const cleared = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: mutated.revision, expectedGlobalRevision: mutated.globalRevision, records: [] },
+      throwingContext({}),
+    ),
+  )
+  expect(cleared.ok).toBe(true)
+  const restored = await hostSystem(ctx, "mate")
+  expect(restored).toContain("first part")
+  expect(restored).toContain("second part")
+})
+
+test("a project-level role edit wins over the shipped body for a project team sharing a built-in id", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "shared", "crew body")
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe("crew body")
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("shared"))
+  if (!role) throw new Error("expected system:role for shared")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "shared",
+      item: "system:role",
+      section: null,
+      text: "project edit",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(await hostSystem(ctx, "shared")).toBe("project edit")
+})
+
+test("a non-file-backed authored agent keeps its identity against a same-id Defaults team with an applicable defaults record", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const authored = "authored body"
+  const shipped = "ship body"
+  const builtins = [{ name: "ship", members: [{ id: "shared", body: shipped }] }]
+  const ctx = fullContext({ directory: project, agents: [agentInfo("shared", authored)] })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins })
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe(authored)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const entry = snapshot.agents.find((agent) => agent.id === "shared")
+  expect(entry?.origin).not.toBe("plus")
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("shared"))
+  if (!role) throw new Error("expected system:role for shared")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: "shared",
+      item: "system:role",
+      section: null,
+      text: "defaults edit",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(await hostSystem(ctx, "shared")).toBe("defaults edit")
+  const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const kept = after.agents.find((agent) => agent.id === "shared")
+  expect(kept?.origin).not.toBe("plus")
+  expect(kept?.fileBacked).toBe(false)
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(await hostSystem(ctx, "shared")).toBe("defaults edit")
+  const reread = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(reread.agents.find((agent) => agent.id === "shared")?.origin).not.toBe("plus")
+})
