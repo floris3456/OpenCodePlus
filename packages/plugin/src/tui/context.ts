@@ -456,9 +456,25 @@ export interface Keymap {
   }
 }
 
+export interface AgentGroup {
+  readonly id: string
+  readonly label: string
+  readonly agents: readonly string[]
+}
+
+export interface AgentsUI {
+  groups(provider: () => readonly AgentGroup[] | undefined): () => void
+  readonly activeGroup: {
+    current(): string | undefined
+    set(id: string | undefined): void
+  }
+  open(options?: { readonly filter?: string }): void
+}
+
 export interface UI {
   readonly dialog: Dialog
   readonly toast: Toast
+  readonly agents: AgentsUI
   readonly format: {
     path(value: string): string
   }
