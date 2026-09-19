@@ -666,8 +666,10 @@ test("defaults agent row offers no d delete", async () => {
     await moveTo(fixture, "User")
     await expand(fixture)
     await moveTo(fixture, "Template")
-    expect(binds(fixture)).not.toContain("d")
+    expect(binds(fixture)).toContain("d")
     expect(fixture.captureCharFrame()).not.toContain("d delete")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
     expect(fixture.fake.agentDeletes.length).toBe(0)
   } finally {
     fixture.destroy()
@@ -745,8 +747,10 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
     await expand(fixture)
     await moveTo(fixture, "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
-    expect(binds(fixture)).not.toContain("d")
+    expect(binds(fixture)).toContain("d")
     expect(fixture.captureCharFrame()).not.toContain("d delete")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
     expect(fixture.fake.skillDeletes.length).toBe(0)
     expect(fixture.fake.agentDeletes.length).toBe(0)
     expect(fixture.fake.mcpRemoves.length).toBe(0)
@@ -848,8 +852,10 @@ test("created project instruction deletes through instruction.delete and the row
     expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
     await fixture.waitForFrame((frame) => !frame.includes("Follow the guide."))
     await moveTo(fixture, "../AGENTS.md")
-    expect(binds(fixture)).not.toContain("d")
+    expect(binds(fixture)).toContain("d")
     expect(fixture.captureCharFrame()).not.toContain("d delete")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
   } finally {
     fixture.destroy()
   }
@@ -890,10 +896,12 @@ test("tool row does not offer d delete", async () => {
     await moveTo(fixture, "Native")
     await expand(fixture)
     await moveTo(fixture, "read")
-    expect(binds(fixture)).not.toContain("d")
+    expect(binds(fixture)).toContain("d")
     const lines = fixture.captureCharFrame().trimEnd().split("\n")
     const lastLine = lines[lines.length - 1] ?? ""
     expect(lastLine).not.toContain("d delete")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
   } finally {
     fixture.destroy()
   }
@@ -987,12 +995,12 @@ test("key availability follows the selected row", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    // Root row: structural, no space/d/r/s. Goto gates the mount first.
+    // Root row: structural, no space/r/s; d produces status refusal. Goto gates the mount first.
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     const rootBinds = binds(fixture)
     expect(rootBinds).toContain("a")
+    expect(rootBinds).toContain("d")
     expect(rootBinds).not.toContain("space")
-    expect(rootBinds).not.toContain("d")
     expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
     // Agent row: removable, so d appears but space still does not. The agent
