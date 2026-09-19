@@ -38,6 +38,7 @@ test("every method and event is declared", () => {
     "team.setEnabled",
     "team.addAgent",
     "team.removeAgent",
+    "team.delete",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -141,6 +142,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "team.setEnabled",
     "team.addAgent",
     "team.removeAgent",
+    "team.delete",
     "model.add",
     "model.remove",
     "catalog.models",
@@ -208,6 +210,9 @@ test("error schemas are correctly bound to their corresponding methods", () => {
   expect("team.unknown" in errorsOf("team.removeAgent")).toBe(true)
   expect("team.invalid" in errorsOf("team.removeAgent")).toBe(true)
   expect("agent.invalid" in errorsOf("team.removeAgent")).toBe(true)
+
+  expect("team.unknown" in errorsOf("team.delete")).toBe(true)
+  expect("team.invalid" in errorsOf("team.delete")).toBe(true)
 
   expect("model.exists" in errorsOf("model.add")).toBe(true)
   expect("model.invalid" in errorsOf("model.add")).toBe(true)
@@ -777,4 +782,23 @@ test("TeamEntry overlay and TeamRemoveAgentInput round-trip correctly", () => {
   expectRpcBody(encodedRemove)
   assertNoUndefinedValues(encodedRemove)
   expect(Schema.decodeUnknownSync(Plus.TeamRemoveAgentInput)(encodedRemove)).toEqual(removeInput)
+
+  const deleteInput: Plus.DeleteTeamInput = {
+    level: "project",
+    team: "crew",
+  }
+  const encodedDelete = Schema.encodeSync(Plus.DeleteTeamInput)(deleteInput)
+  expectRpcBody(encodedDelete)
+  assertNoUndefinedValues(encodedDelete)
+  expect(Schema.decodeUnknownSync(Plus.DeleteTeamInput)(encodedDelete)).toEqual(deleteInput)
+
+  const deleteResult: Plus.DeleteTeamResult = {
+    level: "project",
+    team: "crew",
+    removedMembers: 3,
+  }
+  const encodedDeleteResult = Schema.encodeSync(Plus.DeleteTeamResult)(deleteResult)
+  expectRpcBody(encodedDeleteResult)
+  assertNoUndefinedValues(encodedDeleteResult)
+  expect(Schema.decodeUnknownSync(Plus.DeleteTeamResult)(encodedDeleteResult)).toEqual(deleteResult)
 })

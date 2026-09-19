@@ -643,6 +643,47 @@ test("delete shipped defaults team member is refused with shipped member wording
   expect(entry).toBeUndefined()
 })
 
+test("delete team removes a project team directory and reports the plan status", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+
+  const created = await api.createTeam({ level: "project", team: "crew" })
+  if (!created.ok) throw new Error("create team failed")
+  const added = await api.addTeamAgent({ level: "project", team: "crew", id: "alpha", prompt: "crew alpha prompt" })
+  if (!added.ok) throw new Error("add member failed")
+
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
+
+  const snapshot = await snapshotOf(api)
+  const memo = memoFromSnapshot(snapshot)
+  const teamRow = expandedTree(memo).find((node) => node.id === "team:project:crew")
+  if (teamRow === undefined) throw new Error("missing team row")
+  const teamDeletePlan = removalPlan(memo, teamRow.id)
+  if ("refusal" in teamDeletePlan) throw new Error(`expected team.delete plan: ${teamDeletePlan.refusal}`)
+
+  const deletedTeam = (await runOk(need(tools, "instructions_delete"), { id: teamRow.id, confirm: true })) as {
+    status: string
+    removedMembers: number
+  }
+  expect(deletedTeam.status).toBe(teamDeletePlan.successStatus)
+  expect(deletedTeam.removedMembers).toBe(1)
+  expect(await fs.stat(teamDir).then(() => true, () => false)).toBe(false)
+
+  const nextSnapshot = await snapshotOf(api)
+  expect(nextSnapshot.teams?.find((team) => team.team === "crew")).toBeUndefined()
+
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "team.delete")
+  if (entry === undefined) throw new Error("missing team.delete log entry")
+  expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
+  expect(entry.target).toBe("team:project:crew")
+})
+
 test("delete overlay defaults team member through instructions_delete unlinks file and updates snapshot", async () => {
   const { project } = await tempProject()
   const ctx = fixtureContext(project)

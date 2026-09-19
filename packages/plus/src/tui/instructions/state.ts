@@ -744,7 +744,9 @@ export function createInstructionsState(context: Plugin.Context) {
       return false
     }
     try {
-      if (plan.kind === "agent.delete") {
+      if (plan.kind === "team.delete") {
+        await plus["team.delete"]({ level: plan.level, team: plan.team }, { location: context.location })
+      } else if (plan.kind === "agent.delete") {
         await plus["agent.delete"]({ scope: plan.scope, id: plan.id }, { location: context.location })
       } else if (plan.kind === "team.removeAgent") {
         await plus["team.removeAgent"](

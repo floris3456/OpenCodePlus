@@ -502,6 +502,24 @@ export const TeamRemoveAgentInput = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.TeamRemoveAgentInput" })
 
+export interface DeleteTeamInput extends Schema.Schema.Type<typeof DeleteTeamInput> {}
+export const DeleteTeamInput = Schema.Struct({
+  level: TeamLevel,
+  team: Schema.String,
+}).annotate({ identifier: "Plus.DeleteTeamInput" })
+
+export interface DeleteTeamResult extends Schema.Schema.Type<typeof DeleteTeamResult> {}
+export const DeleteTeamResult = Schema.Struct({
+  level: TeamLevel,
+  team: Schema.String,
+  removedMembers: Schema.Number,
+}).annotate({ identifier: "Plus.DeleteTeamResult" })
+
+export type TeamDeleteInput = DeleteTeamInput
+export const TeamDeleteInput = DeleteTeamInput
+export type TeamDeleteResult = DeleteTeamResult
+export const TeamDeleteResult = DeleteTeamResult
+
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
 export const ProjectDisabled = Schema.Struct({
   directory: Schema.String,
@@ -825,6 +843,12 @@ const PortableTeamAddAgentInput = Schema.toStandardSchemaV1(
 const PortableTeamRemoveAgentInput = Schema.toStandardSchemaV1(
   TeamRemoveAgentInput.annotate({ identifier: "Plus.TeamRemoveAgentInput" }),
 )
+const PortableDeleteTeamInput = Schema.toStandardSchemaV1(
+  DeleteTeamInput.annotate({ identifier: "Plus.DeleteTeamInput" }),
+)
+const PortableDeleteTeamResult = Schema.toStandardSchemaV1(
+  DeleteTeamResult.annotate({ identifier: "Plus.DeleteTeamResult" }),
+)
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -1078,6 +1102,15 @@ export const Definition = Rpc.define({
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
         "agent.invalid": PortableAgentInvalid,
+      },
+    },
+    "team.delete": {
+      input: PortableDeleteTeamInput,
+      output: PortableDeleteTeamResult,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "team.unknown": PortableTeamUnknown,
+        "team.invalid": PortableTeamInvalid,
       },
     },
     "model.add": {

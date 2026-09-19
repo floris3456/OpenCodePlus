@@ -89,6 +89,16 @@ export type RemovalPlan =
       readonly confirmMessage: string
       readonly successStatus: string
     }
+  | {
+      readonly kind: "team.delete"
+      readonly level: "project" | "global"
+      readonly team: string
+      readonly memberCount: number
+      readonly enabled: boolean
+      readonly confirmTitle: string
+      readonly confirmMessage: string
+      readonly successStatus: string
+    }
 
 export type TeamPlan =
   | OpFailure
@@ -540,7 +550,19 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
     if (entry !== undefined) {
       if ((entry.level as string) === "defaults")
         return { refusal: `"${node.label}" cannot be deleted: team "${entry.team}" is built in` }
-      return { refusal: `"${node.label}" cannot be deleted` }
+      const memberCount = entry.agents.length
+      const enabled = entry.enabled
+      const statusText = enabled ? "enabled" : "disabled"
+      return {
+        kind: "team.delete",
+        level: entry.level as "project" | "global",
+        team: entry.team,
+        memberCount,
+        enabled,
+        confirmTitle: `Delete team ${entry.team}?`,
+        confirmMessage: `Delete ${entry.level} team "${entry.team}" and its ${memberCount} member file(s)? It is currently ${statusText}. This cannot be undone.`,
+        successStatus: `Deleted team ${entry.team}`,
+      }
     }
     const candidates = ((input.teams ?? memo.ctx.teams) as readonly TeamInput[]).toSorted(
       (left, right) => right.team.length - left.team.length,
