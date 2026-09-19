@@ -273,3 +273,42 @@ test("a built-in member with fields installs through the shared applyTeamAgent s
     agent?.permissions.some((rule) => rule.action === "team.delegate" && rule.resource === "*" && rule.effect === "deny"),
   ).toBe(true)
 })
+
+test("a customized team member role survives publication while an uncustomized sibling keeps its shipped body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  await writeTeamAgent(teamDir, "alpha", "crew alpha body")
+  await writeTeamAgent(teamDir, "beta", "crew beta body")
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  expect(await hostSystem(ctx, "alpha")).toBe("crew alpha body")
+  expect(await hostSystem(ctx, "beta")).toBe("crew beta body")
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("alpha"))
+  if (!role) throw new Error("expected system:role for alpha")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "system:role",
+      section: null,
+      text: "edited alpha role",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  const alphaSystem = await hostSystem(ctx, "alpha")
+  expect(alphaSystem).toBe("edited alpha role")
+  expect(alphaSystem).not.toContain("crew alpha body")
+  expect(await hostSystem(ctx, "beta")).toBe("crew beta body")
+})
