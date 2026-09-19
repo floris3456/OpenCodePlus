@@ -346,11 +346,7 @@ function withBase(
 ): AgentSource {
   const base = activeBase(agent)
   if (base === undefined) return source
-  const next: AgentSource = { ...source, base }
-  if (source.ancestor) {
-    Object.defineProperty(next, "ancestor", { value: true, enumerable: false })
-  }
-  return next
+  return { ...source, base }
 }
 
 // Core's agent registry is keyed by id, so when the same id exists at more
@@ -408,11 +404,13 @@ function sourceFor(
 ): AgentSource {
   const projectPath = project.get(id)
   if (projectPath !== undefined) {
-    const source: AgentSource = { id, scope: "project", path: projectPath, origin: "user" }
-    if (ancestors?.has(id)) {
-      Object.defineProperty(source, "ancestor", { value: true, enumerable: false })
+    return {
+      id,
+      scope: "project",
+      path: projectPath,
+      origin: "user",
+      ...(ancestors?.has(id) ? { ancestor: true } : {}),
     }
-    return source
   }
   const globalPath = global.get(id)
   if (globalPath !== undefined) return { id, scope: "global", path: globalPath, origin: "user" }

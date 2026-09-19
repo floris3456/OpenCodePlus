@@ -279,12 +279,12 @@ test("member rows are informational: no address, no actions, depth 3", () => {
     expect(member?.kind).toBe("team")
     expect(member?.depth).toBe(3)
     expect(member?.address).toBeUndefined()
-    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+    expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: true, split: false, pin: false })
     expect(member?.badges.state).toBeUndefined()
   }
 })
 
-test("team rows carry add agent while member rows carry no add", () => {
+test("team rows and member rows carry add agent", () => {
   const nodes = expandAll({
     items: items(),
     records: [],
@@ -292,7 +292,7 @@ test("team rows carry add agent while member rows carry no add", () => {
     teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
   })
   expect(nodes.find((node) => node.id === "team:project:crew")?.add).toBe("agent")
-  expect(nodes.find((node) => node.id === "team:project:crew:alpha")?.add).toBeUndefined()
+  expect(nodes.find((node) => node.id === "team:project:crew:alpha")?.add).toBe("agent")
 })
 
 test("team member rows expand to full agent subtrees with team-prefixed groups", () => {
@@ -306,7 +306,8 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(member?.kind).toBe("team")
   expect(member?.depth).toBe(3)
   expect(member?.address).toBeUndefined()
-  expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(member?.add).toBe("agent")
+  expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: true, split: false, pin: false })
   expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
     "group:project:crew/:CrewMate:models",
     "group:project:crew/:CrewMate:tools",
@@ -391,7 +392,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     teams: [
       { level: "project", team: "crew", enabled: true, agents: ["alpha"] },
       { level: "global", team: "side", enabled: false, agents: [] },
-      { level: "defaults", team: "ship", enabled: true, agents: ["mate", "nested/solo"] },
+      { level: "defaults", team: "ship", enabled: true, agents: ["mate", "nested/solo", "ovl"], overlay: ["ovl"] },
       { level: "defaults", team: "other", enabled: false, agents: [] },
     ],
   })
@@ -414,6 +415,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
   expect(childrenOf(nodes, "team:defaults:ship").map((node) => node.id)).toEqual([
     "team:defaults:ship:mate",
     "team:defaults:ship:nested/solo",
+    "team:defaults:ship:ovl",
   ])
   for (const id of ["team:defaults:ship:mate", "team:defaults:ship:nested/solo"]) {
     const member = nodes.find((node) => node.id === id)
@@ -422,6 +424,8 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     expect(member?.address).toBeUndefined()
     expect(member?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
   }
+  const ovlMember = nodes.find((node) => node.id === "team:defaults:ship:ovl")
+  expect(ovlMember?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: true, split: false, pin: false })
 })
 
 test("a team created from the Defaults Teams group is stored at project or global, never defaults", async () => {
@@ -626,7 +630,7 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:defaults:teams")).toBe("team")
   expect(nodes.some((node) => node.id === "group:defaults:teams")).toBe(true)
   expect(adds.get("team:project:crew")).toBe("agent")
-  expect(adds.get("team:project:crew:alpha")).toBeUndefined()
+  expect(adds.get("team:project:crew:alpha")).toBe("agent")
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
   expect(adds.get("group:project:Implementer:skills:project")).toBe("skill")
@@ -771,6 +775,18 @@ test("instruction rows are removable only when project-owned", () => {
   expect(nodes.find((node) => node.id === "item:defaults::system:AGENTS.md")?.actions?.remove).toBe(true)
   expect(nodes.find((node) => node.id === "item:defaults::system:../AGENTS.md")?.actions?.remove).toBe(false)
   expect(nodes.find((node) => node.id === "item:defaults::system:../../AGENTS.md")?.actions?.remove).toBe(false)
+})
+
+test("ancestor-backed agents suppress remove action while project-file agents allow it", () => {
+  const agentList: AgentSource[] = [
+    { id: "local", scope: "project", origin: "user", path: "/project/.opencode/agent/local.md" },
+    { id: "anc", scope: "project", origin: "user", ancestor: true, path: "/parent/.opencode/agent/anc.md" },
+  ]
+  const nodes = expandAll({ items: items(), records: [], agents: agentList })
+  const ancRow = nodes.find((node) => node.id === "agent:project:anc")
+  expect(ancRow?.actions?.remove).toBe(false)
+  const localRow = nodes.find((node) => node.id === "agent:project:local")
+  expect(localRow?.actions?.remove).toBe(true)
 })
 
 test("builtin-id user base shadows stay deletable and never read inactive", () => {

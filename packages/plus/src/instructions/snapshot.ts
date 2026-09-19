@@ -29,6 +29,12 @@ export function itemOf(item: Plus.SnapshotItem): Item {
   }
 }
 
+declare module "./model.js" {
+  interface AgentSource {
+    readonly ancestor?: boolean
+  }
+}
+
 export function agentOf(agent: Plus.AgentEntry): AgentSource {
   return {
     id: agent.id,
@@ -45,6 +51,7 @@ export function agentOf(agent: Plus.AgentEntry): AgentSource {
             ...(agent.model.variant === undefined ? {} : { variant: agent.model.variant }),
           },
         }),
+    ...(agent.ancestor ? { ancestor: true } : {}),
   }
 }
 

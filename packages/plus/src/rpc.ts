@@ -176,6 +176,7 @@ export const AgentEntry = Schema.Struct({
   path: Schema.optionalKey(Schema.String),
   base: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(AgentModel),
+  ancestor: Schema.optionalKey(Schema.Boolean),
   fileBacked: Schema.Boolean,
 }).annotate({ identifier: "Plus.AgentEntry" })
 
@@ -211,6 +212,7 @@ export const TeamEntry = Schema.Struct({
   team: Schema.String,
   enabled: Schema.Boolean,
   agents: Schema.Array(Schema.String),
+  overlay: Schema.optionalKey(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Plus.TeamEntry" })
 
 export interface Snapshot extends Schema.Schema.Type<typeof Snapshot> {}
@@ -492,6 +494,13 @@ export const TeamAddAgentInput = Schema.Struct({
   template: Schema.optionalKey(Schema.String),
   prompt: Schema.String,
 }).annotate({ identifier: "Plus.TeamAddAgentInput" })
+
+export interface TeamRemoveAgentInput extends Schema.Schema.Type<typeof TeamRemoveAgentInput> {}
+export const TeamRemoveAgentInput = Schema.Struct({
+  level: TeamLevel,
+  team: Schema.String,
+  id: Schema.String,
+}).annotate({ identifier: "Plus.TeamRemoveAgentInput" })
 
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
 export const ProjectDisabled = Schema.Struct({
@@ -813,6 +822,9 @@ const PortableCreateTeamInput = Schema.toStandardSchemaV1(
 const PortableTeamAddAgentInput = Schema.toStandardSchemaV1(
   TeamAddAgentInput.annotate({ identifier: "Plus.TeamAddAgentInput" }),
 )
+const PortableTeamRemoveAgentInput = Schema.toStandardSchemaV1(
+  TeamRemoveAgentInput.annotate({ identifier: "Plus.TeamRemoveAgentInput" }),
+)
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -1055,6 +1067,16 @@ export const Definition = Rpc.define({
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
         "agent.exists": PortableAgentExists,
+        "agent.invalid": PortableAgentInvalid,
+      },
+    },
+    "team.removeAgent": {
+      input: PortableTeamRemoveAgentInput,
+      output: PortableAgentRef,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "team.unknown": PortableTeamUnknown,
+        "team.invalid": PortableTeamInvalid,
         "agent.invalid": PortableAgentInvalid,
       },
     },

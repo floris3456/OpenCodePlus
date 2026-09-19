@@ -16,7 +16,7 @@ import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, Split
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, materialize, skeletonOf } from "./tree.js"
-import type { MemoInput, TreeNode } from "./tree.js"
+import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { manual, slice } from "./sections.js"
 import type { Split } from "./sections.js"
 
@@ -76,6 +76,15 @@ export type RemovalPlan =
   | {
       readonly kind: "instruction.delete"
       readonly name: string
+      readonly confirmTitle: string
+      readonly confirmMessage: string
+      readonly successStatus: string
+    }
+  | {
+      readonly kind: "team.removeAgent"
+      readonly level: "project" | "global" | "defaults"
+      readonly team: string
+      readonly id: string
       readonly confirmTitle: string
       readonly confirmMessage: string
       readonly successStatus: string
@@ -516,14 +525,27 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
         return { refusal: `"${node.label}" cannot be deleted: team "${entry.team}" is built in` }
       return { refusal: `"${node.label}" cannot be deleted` }
     }
-    const parent = memo.ctx.teams.find(
+    const candidates = ((input.teams ?? memo.ctx.teams) as readonly TeamInput[]).toSorted(
+      (left, right) => right.team.length - left.team.length,
+    )
+    const parent = candidates.find(
       (candidate) =>
         node.id === `team:${candidate.level}:${candidate.team}:${node.label}` ||
+        candidate.agents.some((member) => node.id === `team:${candidate.level}:${candidate.team}:${member}`) ||
         node.id.startsWith(`team:${candidate.level}:${candidate.team}:`),
     )
-    if (parent !== undefined && (parent.level as string) === "defaults")
-      return { refusal: `"${node.label}" cannot be deleted: team "${parent.team}" is built in` }
-    return { refusal: `"${node.label}" cannot be deleted` }
+    if (parent === undefined) return { refusal: `"${node.label}" cannot be deleted` }
+    if ((parent.level as string) === "defaults" && !(parent.overlay?.includes(node.label) ?? false))
+      return { refusal: `"${node.label}" cannot be deleted: shipped member of built-in team "${parent.team}"` }
+    return {
+      kind: "team.removeAgent",
+      level: parent.level,
+      team: parent.team,
+      id: node.label,
+      confirmTitle: `Delete team member ${node.label}?`,
+      confirmMessage: `Delete member "${node.label}" from team "${parent.team}"? This cannot be undone.`,
+      successStatus: `Deleted team member ${node.label}`,
+    }
   }
   const address = node.address
   if (node.kind === "item" && node.actions?.remove !== true) {

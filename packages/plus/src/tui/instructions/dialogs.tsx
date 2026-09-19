@@ -53,10 +53,8 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addKind(kind: AddKind, node?: TreeNode): Promise<void> {
     if (kind === "agent") {
-      // Team rows carry `add: "agent"`; member rows are also kind "team" but
-      // carry no `add`, so this keeps member rows on the ordinary agent path.
-      // The level prefix is fixed, the entire remainder is the team name so
-      // colon and multiline team names still route to team.addAgent.
+      // Team rows and member rows carry `add: "agent"` (kind "team"); both
+      // route to addTeamAgent, which resolves the enclosing team.
       if (node?.kind === "team" && node.add === "agent" && node.id.match(/^team:(project|global|defaults):(.+)$/s) !== null)
         return addTeamAgent(node)
       return addAgent()
@@ -168,9 +166,9 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addTeamAgent(node: TreeNode): Promise<void> {
     if (disposed) return
-    // Member rows are kind "team" with no `add`; only team rows (add: "agent")
-    // take this path. The team name is the entire remainder so colons and
-    // line terminators survive.
+    // Team rows and member rows (add: "agent") take this path. The team name
+    // is resolved against known teams in the snapshot, choosing the longest
+    // match so colon team names win.
     if (node.add !== "agent") {
       context.ui.toast.show({ variant: "error", message: "This row does not support adding agents" })
       return
@@ -181,7 +179,16 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       return
     }
     const level = match[1] as "project" | "global" | "defaults"
-    const team = match[2] as string
+    const teams = (state.snapshot()?.teams ?? [])
+      .filter((entry) => entry.level === level)
+      .toSorted((left, right) => right.team.length - left.team.length)
+    const matchEntry = teams.find(
+      (entry) =>
+        node.id === `team:${level}:${entry.team}` ||
+        entry.agents.some((member) => node.id === `team:${level}:${entry.team}:${member}`) ||
+        node.id.startsWith(`team:${level}:${entry.team}:`),
+    )
+    const team = matchEntry !== undefined ? matchEntry.team : (match[2] as string)
     let templates: { id: string }[] = []
     try {
       const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })

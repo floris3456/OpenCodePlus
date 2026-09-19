@@ -1534,3 +1534,38 @@ test("enabling a fixture team marks its non-file-backed member as plus origin", 
   expect(mate?.origin).toBe("plus")
   expectRpcBody(snapshot)
 })
+
+test("snapshot reports ancestor-backed agent with ancestor: true and omits the key for local agent", async () => {
+  const { project: baseProject } = await tempRoot()
+  const parent = path.join(baseProject, "workspace")
+  const project = path.join(parent, "project")
+  const ancPath = path.join(parent, ".opencode", "agent", "anc.md")
+  await fs.mkdir(path.dirname(ancPath), { recursive: true })
+  await Bun.write(ancPath, "# ancestor agent\n")
+
+  const localPath = path.join(project, ".opencode", "agent", "local.md")
+  await fs.mkdir(path.dirname(localPath), { recursive: true })
+  await Bun.write(localPath, "# local agent\n")
+
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("anc", "anc prompt"), agentInfo("local", "local prompt")],
+  })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+
+  const ancEntry = snapshot.agents.find((entry) => entry.id === "anc")
+  expect(ancEntry).toBeDefined()
+  expect(ancEntry?.scope).toBe("project")
+  expect(ancEntry?.fileBacked).toBe(true)
+  expect(ancEntry?.ancestor).toBe(true)
+
+  const localEntry = snapshot.agents.find((entry) => entry.id === "local")
+  expect(localEntry).toBeDefined()
+  expect(localEntry?.scope).toBe("project")
+  expect(localEntry?.fileBacked).toBe(true)
+  expect("ancestor" in (localEntry ?? {})).toBe(false)
+
+  expectRpcBody(snapshot)
+})

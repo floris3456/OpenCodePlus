@@ -587,6 +587,61 @@ test("delete mcp removes the server from the project config", async () => {
   expect(await Bun.file(path.join(project, ".opencode", "opencode.json")).text()).not.toContain("search")
 })
 
+test("delete team member removes a project team member and reports the plan status", async () => {
+  const { project } = await tempProject()
+  const memberPath = path.join(projectTeamsPath(project), "crew", "alpha.md")
+  await fs.mkdir(path.dirname(memberPath), { recursive: true })
+  await Bun.write(memberPath, formatMarkdown({ description: "alpha" }, "role"))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const memo = memoFromSnapshot(snapshot)
+  const memberRow = expandedTree(memo).find((node) => node.id === "team:project:crew:alpha")
+  if (memberRow === undefined) throw new Error("missing team member row")
+  const memberPlan = removalPlan(memo, memberRow.id)
+  if ("refusal" in memberPlan) throw new Error(`expected team member plan: ${memberPlan.refusal}`)
+  const deletedMember = (await runOk(need(tools, "instructions_delete"), { id: memberRow.id, confirm: true })) as {
+    status: string
+  }
+  expect(deletedMember.status).toBe(memberPlan.successStatus)
+  expect(await Bun.file(memberPath).exists()).toBe(false)
+
+  const nextSnapshot = await snapshotOf(api)
+  const crewTeam = nextSnapshot.teams?.find((team) => team.team === "crew" && team.level === "project")
+  expect(crewTeam?.agents).not.toContain("alpha")
+
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "team.removeAgent")
+  if (entry === undefined) throw new Error("missing team.removeAgent log entry")
+  expect(entry.actor).toEqual({ type: "tool", agent: "alpha", sessionID: "ses_tools_test", messageID: "msg_tools_test" })
+})
+
+test("delete shipped defaults team member is refused with shipped member wording and writes nothing", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const memo = memoFromSnapshot(snapshot)
+  const shippedRow = expandedTree(memo).find((node) => node.id === "team:defaults:starter:planner")
+  if (shippedRow === undefined) throw new Error("missing shipped team member row")
+  const plan = removalPlan(memo, shippedRow.id)
+  if (!("refusal" in plan)) throw new Error("expected refusal for shipped team member")
+  expect(plan.refusal).toContain('shipped member of built-in team "starter"')
+
+  const error = await runFail(need(tools, "instructions_delete"), { id: shippedRow.id, confirm: true })
+  expect(error.message).toContain('shipped member of built-in team "starter"')
+
+  const logged = await api.log({ where: "actor:tool" })
+  if (!logged.ok) throw new Error("log failed")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "team.removeAgent")
+  expect(entry).toBeUndefined()
+})
+
 test("team toggle through set matches teamPlan", async () => {
   const { project } = await tempProject()
   await fs.mkdir(path.join(projectTeamsPath(project), "crew"), { recursive: true })

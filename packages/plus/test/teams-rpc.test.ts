@@ -564,6 +564,7 @@ test("team.addAgent on a fixture defaults team writes the overlay and discover l
     team: "ship",
     enabled: false,
     agents: ["mate", "rookie"],
+    overlay: ["rookie"],
   })
 })
 
@@ -861,4 +862,83 @@ test("a team member inherits a defaults-level model when no team-level model is 
   const listed4 = await Effect.runPromise(ctx.agent.list())
   expect(listed4.data.find((entry) => String(entry.id) === "m")?.model).toMatchObject({ providerID: "acme", id: "nova-1" })
   expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-1" })
+})
+
+test("team.removeAgent on a project team unlinks the file and on an enabled team unregisters from host", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
+  )
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "newbie", prompt: "newbie role" }, throwingContext({})),
+  )
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  expect(await Bun.file(path.join(teamDir, "newbie.md")).exists()).toBe(true)
+  const listedBefore = await Effect.runPromise(ctx.agent.list())
+  expect(listedBefore.data.find((entry) => String(entry.id) === "newbie")?.system).toBe("newbie role")
+
+  const removed = await Effect.runPromise(
+    handlers["team.removeAgent"]({ level: "project", team: "crew", id: "newbie" }, throwingContext({})),
+  )
+  expect(removed).toEqual({ id: "newbie", path: path.join(teamDir, "newbie.md") })
+  expectRpcBody(removed)
+  expect(await Bun.file(path.join(teamDir, "newbie.md")).exists()).toBe(false)
+  // Removing the last member leaves an empty team directory
+  expect(await fs.stat(teamDir).then((s) => s.isDirectory())).toBe(true)
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "crew")).toEqual({
+    level: "project",
+    team: "crew",
+    enabled: true,
+    agents: [],
+  })
+
+  const listedAfter = await Effect.runPromise(ctx.agent.list())
+  expect(listedAfter.data.find((entry) => String(entry.id) === "newbie")).toBeUndefined()
+})
+
+test("team.removeAgent on a shipped built-in member raises team.invalid", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  const captured: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.removeAgent"]({ level: "defaults", team: "ship", id: "mate" }, throwingContext(captured)),
+    captured,
+    "team.invalid",
+  )
+  expect(captured.current?.message).toContain('"mate" cannot be deleted: shipped member of built-in team "ship"')
+})
+
+test("team.removeAgent on an overlay member unlinks the overlay file", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "defaults", team: "ship", id: "rookie", prompt: "rookie role" }, throwingContext({})),
+  )
+  const overlayFile = path.join(globalDefaultsTeamsPath(), "ship", "rookie.md")
+  expect(await Bun.file(overlayFile).exists()).toBe(true)
+
+  const removed = await Effect.runPromise(
+    handlers["team.removeAgent"]({ level: "defaults", team: "ship", id: "rookie" }, throwingContext({})),
+  )
+  expect(removed).toEqual({ id: "rookie", path: overlayFile })
+  expectRpcBody(removed)
+  expect(await Bun.file(overlayFile).exists()).toBe(false)
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "ship")).toEqual({
+    level: "defaults",
+    team: "ship",
+    enabled: false,
+    agents: ["mate"],
+  })
 })

@@ -22,6 +22,8 @@ import {
   teamPlan,
   toggle,
   unknownRowRefusal,
+  type OpFailure,
+  type RemovalPlan,
 } from "./instructions/ops.js"
 import { query } from "./instructions/query.js"
 import { applies, parseModelItemId, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
@@ -1086,14 +1088,11 @@ function createRow(
   })
 }
 
+type ExecutableRemovalPlan = Exclude<RemovalPlan, OpFailure>
+
 function deletePlan(
   api: PlusApi,
-  plan:
-    | { kind: "agent.delete"; scope: "project" | "global"; id: string; successStatus: string }
-    | { kind: "mcp.remove"; name: string; successStatus: string }
-    | { kind: "skill.delete"; id: string; successStatus: string }
-    | { kind: "base.delete"; id: string; successStatus: string }
-    | { kind: "instruction.delete"; name: string; successStatus: string },
+  plan: ExecutableRemovalPlan,
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
@@ -1117,7 +1116,14 @@ function deletePlan(
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }
-    const result = yield* Effect.promise(() => api.deleteInstruction({ name: plan.name, actor }))
+    if (plan.kind === "instruction.delete") {
+      const result = yield* Effect.promise(() => api.deleteInstruction({ name: plan.name, actor }))
+      if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+      return { output: { ...result.value, status: plan.successStatus } }
+    }
+    const result = yield* Effect.promise(() =>
+      api.removeTeamAgent({ level: plan.level, team: plan.team, id: plan.id, actor }),
+    )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: plan.successStatus } }
   })
