@@ -870,7 +870,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             }
           }
           const target = path.join(teamDir, `${memberId.id}.md`)
-          const content = formatMarkdown(member.fields as unknown as AgentFields | undefined, member.body)
+          const content = formatMarkdown(toSeedFields(member.fields), member.body)
           const seeded = await fs.mkdir(path.dirname(target), { recursive: true }).then(
             () => fs.writeFile(target, content).then(
               () => ({ ok: true as const }),
@@ -3248,5 +3248,27 @@ function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | und
     ...(fields.steps === undefined ? {} : { steps: fields.steps }),
     ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
     ...(fields.permissions === undefined ? {} : { permissions: fields.permissions }),
+  }
+}
+
+// Team template seeding writes member files through the frontmatter+body
+// format files.ts owns. Only `request` needs conversion: TeamRequest is an
+// interface (no implicit index signature) while AgentFields.request is a
+// Record, so it is re-spread into a plain object. Every other field is
+// already assignable; the keys are spelled out (mirroring toAgentFields) so
+// nothing passes through a cast.
+function toSeedFields(fields: TeamFields | undefined): AgentFields | undefined {
+  if (fields === undefined) return undefined
+  return {
+    ...(fields.model === undefined ? {} : { model: fields.model }),
+    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
+    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
+    ...(fields.description === undefined ? {} : { description: fields.description }),
+    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
+    ...(fields.color === undefined ? {} : { color: fields.color }),
+    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
+    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
+    permissions: [...fields.permissions],
   }
 }
