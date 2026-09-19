@@ -3004,8 +3004,13 @@ test("defaults team row offers no d delete", async () => {
     await expand(fixture)
     await moveTo(fixture, "starter")
     expect(selectedRow(fixture.captureCharFrame())).toContain("starter")
-    expect(binds(fixture)).not.toContain("d")
+    // `d` is bound on every row so undeletable rows answer with the honest
+    // refusal instead of swallowing the key; the hint line still offers
+    // `d delete` only where the row can actually be deleted.
+    expect(binds(fixture)).toContain("d")
     expect(fixture.captureCharFrame()).not.toContain("d delete")
+    dispatch(fixture, "d")
+    await fixture.waitForFrame((frame) => frame.includes('"starter" cannot be deleted: team "starter" is built in'))
   } finally {
     fixture.destroy()
   }
