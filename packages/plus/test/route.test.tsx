@@ -1687,8 +1687,8 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
   // the shipped roster (covered by the dedicated well-formedness test).
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
-  const teamCreates: { level: string; team: string }[] = []
-  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string }) => {
+  const teamCreates: { level: string; team: string; template?: string }[] = []
+  const wrappedTeamCreate = async (input: { level: "project" | "global"; team: string; template?: string }) => {
     teamCreates.push({ ...input })
     return Effect.runPromise(handlers["team.create"](input, throwing))
   }
@@ -1698,7 +1698,7 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
     snapshots: [],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["fresh"], selects: ["project"] },
+    dialogs: { prompts: ["fresh"], selects: ["", "project"] },
     render: (context) => {
       const rpc = context.client.rpc(Definition)
       const wired = {
@@ -1721,7 +1721,9 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
     await moveTo(fixture, "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => teamCreates.length === 1)
+    const call = teamCreates[0]
     expect(teamCreates).toEqual([{ level: "project", team: "fresh" }])
+    expect("template" in call).toBe(false)
     // The create republishes: refresh pulls a fresh snapshot whose teams
     // entry reads disabled, and the rebuilt tree shows the new off row.
     await fixture.waitForFrame(() => (liveSnapshots[liveSnapshots.length - 1].teams ?? []).length === 1)
