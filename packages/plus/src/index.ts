@@ -15,7 +15,7 @@ import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
-import { create, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
+import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
@@ -820,6 +820,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.invalid" as const, message: reason, data: { team: input.team, reason } },
         }
       }
+      const templateName = input.template === undefined || input.template === "" ? undefined : input.template
+      const template = templateName === undefined ? undefined : builtins.find((entry) => entry.name === templateName)
+      if (templateName !== undefined && template === undefined) {
+        const reason = `Unknown team template ${templateName}`
+        return {
+          ok: false as const,
+          error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
+        }
+      }
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
       const ensured = await fs.mkdir(root, { recursive: true }).then(
         () => ({ ok: true as const }),
@@ -847,6 +856,35 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return {
           ok: false as const,
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+        }
+      }
+      if (template !== undefined) {
+        const teamDir = path.join(root, validated.team)
+        for (const member of template.members) {
+          const memberId = validateAgentId(member.id)
+          if (!memberId.ok) {
+            const reason = memberId.reason
+            return {
+              ok: false as const,
+              error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+            }
+          }
+          const target = path.join(teamDir, `${memberId.id}.md`)
+          const content = formatMarkdown(toSeedFields(member.fields), member.body)
+          const seeded = await fs.mkdir(path.dirname(target), { recursive: true }).then(
+            () => fs.writeFile(target, content).then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            ),
+            (error: unknown) => ({ ok: false as const, error }),
+          )
+          if (!seeded.ok) {
+            const reason = messageOf(seeded.error)
+            return {
+              ok: false as const,
+              error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
+            }
+          }
         }
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
@@ -3210,5 +3248,27 @@ function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | und
     ...(fields.steps === undefined ? {} : { steps: fields.steps }),
     ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
     ...(fields.permissions === undefined ? {} : { permissions: fields.permissions }),
+  }
+}
+
+// Team template seeding writes member files through the frontmatter+body
+// format files.ts owns. Only `request` needs conversion: TeamRequest is an
+// interface (no implicit index signature) while AgentFields.request is a
+// Record, so it is re-spread into a plain object. Every other field is
+// already assignable; the keys are spelled out (mirroring toAgentFields) so
+// nothing passes through a cast.
+function toSeedFields(fields: TeamFields | undefined): AgentFields | undefined {
+  if (fields === undefined) return undefined
+  return {
+    ...(fields.model === undefined ? {} : { model: fields.model }),
+    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
+    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
+    ...(fields.description === undefined ? {} : { description: fields.description }),
+    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
+    ...(fields.color === undefined ? {} : { color: fields.color }),
+    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
+    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
+    permissions: [...fields.permissions],
   }
 }

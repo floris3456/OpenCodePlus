@@ -3,7 +3,9 @@ import { Effect, Exit, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { formatMarkdown } from "../src/agents/files.js"
+import { formatMarkdown, parseFrontmatter } from "../src/agents/files.js"
+import { agentBody } from "../src/instructions/discover.js"
+import { parseTeamFields } from "../src/instructions/teams-apply.js"
 import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
@@ -461,4 +463,52 @@ test("team.create refuses defaults with team.invalid", async () => {
     "team.invalid",
   )
   expect((await load(project)).records).toEqual([])
+})
+
+test("team.create with a Defaults template seeds member files from the registry", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const registry = [
+    {
+      name: "review",
+      members: [
+        {
+          id: "editor",
+          body: "You are an editor. Tighten the wording without changing the meaning.",
+          fields: { description: "editor desc", mode: "primary" as const, permissions: [] },
+        },
+        { id: "reviewer", body: "You are a reviewer. Check the change for correctness and list issues first." },
+      ],
+    },
+  ]
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  const created = await Effect.runPromise(
+    handlers["team.create"]({ level: "project", team: "mine", template: "review" }, throwingContext({})),
+  )
+  expect(created).toEqual({ level: "project", team: "mine", enabled: false })
+  expectRpcBody(created)
+  const teamDir = path.join(projectTeamsPath(project), "mine")
+  const editorText = await fs.readFile(path.join(teamDir, "editor.md"), "utf8")
+  const reviewerText = await fs.readFile(path.join(teamDir, "reviewer.md"), "utf8")
+  const [editorMember, reviewerMember] = registry[0]!.members
+  expect(editorText).toBe(formatMarkdown(editorMember!.fields as never, editorMember!.body))
+  expect(agentBody(editorText)).toBe(editorMember!.body)
+  expect(parseTeamFields(editorText)).toEqual(editorMember!.fields!)
+  expect(reviewerText).toBe(formatMarkdown(undefined, reviewerMember!.body))
+  expect(agentBody(reviewerText)).toBe(reviewerMember!.body)
+  expect(parseFrontmatter(reviewerText)).toBeUndefined()
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.teams?.find((team) => team.team === "mine")).toEqual({
+    level: "project",
+    team: "mine",
+    enabled: false,
+    agents: ["editor", "reviewer"],
+  })
+  const unknown: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.create"]({ level: "project", team: "other", template: "ghost" }, throwingContext(unknown)),
+    unknown,
+    "team.invalid",
+  )
+  expect(unknown.current?.data).toEqual({ team: "other", reason: "Unknown team template ghost" })
 })

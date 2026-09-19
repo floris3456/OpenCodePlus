@@ -594,6 +594,24 @@ test("agent.create input with template round-trips correctly", () => {
   expect(Schema.decodeUnknownSync(Plus.CreateAgentInput)(encodedWithout)).toEqual(withoutTemplate)
 })
 
+test("team.create input with template round-trips correctly", () => {
+  const withTemplate: Plus.CreateTeamInput = {
+    level: "project",
+    team: "mine",
+    template: "review",
+  }
+  const encodedWith = Schema.encodeSync(Plus.CreateTeamInput)(withTemplate)
+  expect(Schema.decodeUnknownSync(Plus.CreateTeamInput)(encodedWith)).toEqual(withTemplate)
+
+  const withoutTemplate: Plus.CreateTeamInput = {
+    level: "global",
+    team: "ops",
+  }
+  const encodedWithout = Schema.encodeSync(Plus.CreateTeamInput)(withoutTemplate)
+  expect("template" in encodedWithout).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.CreateTeamInput)(encodedWithout)).toEqual(withoutTemplate)
+})
+
 test("MCP and Skill input/output schemas round-trip correctly", () => {
   const addMcp: Plus.AddMcpInput = {
     name: "github",
