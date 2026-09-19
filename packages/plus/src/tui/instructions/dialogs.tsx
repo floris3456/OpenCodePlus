@@ -273,9 +273,29 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   async function addTeam(_node?: TreeNode): Promise<void> {
     void _node
     if (disposed) return
+    let templates: { team: string }[] = []
+    try {
+      const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
+      if (disposed) return
+      templates = (snapshot.teams ?? []).filter((entry) => entry.level === "defaults").map((entry) => ({ team: entry.team }))
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+      return
+    }
+    const template = await context.ui.dialog.select<string>({
+      title: "Team template",
+      placeholder: "Select a Defaults template",
+      options: [
+        { title: "Blank", value: "", description: "Start with an empty team" },
+        ...templates.map((entry) => ({ title: entry.team, value: entry.team })),
+      ],
+    })
+    if (disposed) return
+    if (template === undefined) return
     const raw = await context.ui.dialog.prompt({
       title: "Team name",
-      description: "Team name; no slashes or ..",
+      description: template ? `Starting from template ${template}` : "Team name; no slashes or ..",
       placeholder: "my-team",
     })
     if (disposed) return
@@ -295,7 +315,10 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (disposed) return
     if (scope === undefined) return
     try {
-      const ref = await plus["team.create"]({ level: scope, team }, { location: context.location })
+      const ref = await plus["team.create"](
+        { level: scope, team, ...(template ? { template } : {}) },
+        { location: context.location },
+      )
       if (disposed) return
       context.ui.toast.show({ variant: "success", message: `Created team ${ref.team}` })
       await state.refresh()

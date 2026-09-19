@@ -460,7 +460,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
 | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
-| `team.create` | `{ level, team }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
+| `team.create` | `{ level, team, template? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
@@ -686,13 +686,20 @@ RPC surface (`rpc.ts`, `index.ts`):
 - `team.create` (`CreateTeamInput` → `TeamRef`): creates the team directory
   under the matching teams root (`projectTeamsPath` for `"project"`,
   `globalTeamsPath` for `"global"`); `level: "defaults"` is refused with
-  `team.invalid` (shipped teams cannot be created). Creation does NOT enable:
+  `team.invalid` (shipped teams cannot be created). An optional `template`
+  names a built-in Defaults team from the injected registry; each member is
+  written as `<team>/<member>.md` through `formatMarkdown` (body and fields,
+  with a present `fields.permissions` written verbatim). Unknown template
+  names fail with `team.invalid` (`Unknown team template <name>`); an omitted
+  template creates an empty team. Creation does NOT enable:
   the new team has no record, so the next snapshot lists it as DISABLED until
   `team.setEnabled` toggles it. Gated by project mode (`project.disabled`).
   Fails with `team.invalid` on invalid name, `team.exists` when the directory
   already exists, or `team.create` when the write itself fails. Logs `team.create`
   to the owning store with the caller's actor on success only; the file write
-  never moves a revision.
+  never moves a revision. The TUI `a` on a Teams group lists Blank plus the
+  Defaults teams from `instructions.snapshot` first (Blank default, so the old
+  two-prompt flow is unchanged when chosen) and passes `template` when set.
 - `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
   any of the three tiers. Gated by project mode (`project.disabled`). Fails
   with `team.invalid` on invalid name, or `team.unknown` when the team is not

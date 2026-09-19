@@ -459,11 +459,15 @@ export const TeamRef = Schema.Struct({
 // Creating a team makes the on-disk team directory without enabling it: a
 // newly created team has no record at all, so it reads as DISABLED until
 // toggled with team.setEnabled. Creation at defaults is refused: shipped
-// teams cannot be created.
+// teams cannot be created. An optional `template` names a built-in Defaults
+// team whose roster seeds the new directory (one member file per member,
+// body and fields through `formatMarkdown`); unknown names fail with
+// `team.invalid`. Omitted (or blank from the TUI) creates an empty team.
 export interface CreateTeamInput extends Schema.Schema.Type<typeof CreateTeamInput> {}
 export const CreateTeamInput = Schema.Struct({
   level: TeamLevel,
   team: Schema.String,
+  template: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.CreateTeamInput" })
 
 export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
