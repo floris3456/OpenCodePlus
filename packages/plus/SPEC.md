@@ -556,16 +556,21 @@ Events: `project.changed`, `instructions.changed`, `teams.changed`.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
-`provenance`, `custom`; `SnapshotCustomizationRecord` carries `pin`;
+`provenance`, `custom`; `SnapshotCustomizationRecord` carries `pin`, `team?` (`{ level, team }`);
+`SnapshotSplitRecord` carries `team?` (`{ level, team }`);
 `AssembledTool` carries `codemode`, `pinned`. `SnapshotRecord` is the union
 of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,
-`SnapshotModelRecord` (`{ type: "model", level, agent, providerID, modelID,
+`SnapshotModelRecord` (`{ type: "model", level, agent, team?: { level, team }, providerID, modelID,
 variant?, active?: true, updated }`), and `SnapshotRuleRecord`
-(`{ type: "rule", level, agent, tool, id, label, patterns, keywords,
+(`{ type: "rule", level, agent, team?: { level, team }, tool, id, label, patterns, keywords,
 updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
 "user"`, computed server-side), `model?` (`{ providerID, modelID,
 variant? }`), `ancestor?` (`boolean`, true when backed by an ancestor directory
-agent file), and `fileBacked`. Optional keys are omitted
+agent file), and `fileBacked`. `ModelAddInput` and `ModelRemoveInput` carry optional `team?: { level, team }`.
+Every team row expands to its member rows followed by a `Special` row (`team:<level>:<team>:special`),
+which expands to `general`, `explore`, `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`),
+each carrying the five groups (`group:<level>:<team>/:special:<id>:<group>`). Their overrides carry `team: { level, team }`
+and apply only while the team is enabled. Optional keys are omitted
 when unset: never send an optional key whose value is `undefined` across
 the RPC boundary, because results are validated as JSON and the whole call
 fails with HTTP 400.

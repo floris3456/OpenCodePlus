@@ -16,12 +16,19 @@ export const Level = Schema.Union([
   Schema.Literal("project"),
 ]).annotate({ identifier: "Plus.Level" })
 
+export interface TeamOwner extends Schema.Schema.Type<typeof TeamOwner> {}
+export const TeamOwner = Schema.Struct({
+  level: Level,
+  team: Schema.String,
+}).annotate({ identifier: "Plus.TeamOwner" })
+
 export interface Address extends Schema.Schema.Type<typeof Address> {}
 export const Address = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   item: Schema.String,
   section: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
 }).annotate({ identifier: "Plus.Address" })
 
 export type ItemKind = typeof ItemKind.Type
@@ -87,6 +94,7 @@ export const SnapshotCustomizationRecord = Schema.Struct({
   type: Schema.Literal("customization"),
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   item: Schema.String,
   section: Schema.NullOr(Schema.String),
   text: Schema.optionalKey(Schema.String),
@@ -103,6 +111,7 @@ export const SnapshotSplitRecord = Schema.Struct({
   type: Schema.Literal("split"),
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   item: Schema.String,
   boundaries: Schema.Array(Boundary),
   updated: Schema.String,
@@ -116,6 +125,7 @@ export const SnapshotModelRecord = Schema.Struct({
   type: Schema.Literal("model"),
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -128,6 +138,7 @@ export const SnapshotRuleRecord = Schema.Struct({
   type: Schema.Literal("rule"),
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,
@@ -672,6 +683,7 @@ export interface ModelAddInput extends Schema.Schema.Type<typeof ModelAddInput> 
 export const ModelAddInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -681,6 +693,7 @@ export interface ModelRemoveInput extends Schema.Schema.Type<typeof ModelRemoveI
 export const ModelRemoveInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -690,6 +703,7 @@ export interface ModelRef extends Schema.Schema.Type<typeof ModelRef> {}
 export const ModelRef = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),

@@ -3015,3 +3015,96 @@ test("defaults team row offers no d delete", async () => {
     fixture.destroy()
   }
 })
+
+test("a on a Special row or special-agent row under a team shows status refusal", async () => {
+  const snapshot: Snapshot = {
+    ...createSnapshot({
+      agents: [
+        { id: "alpha", scope: "project" as const, fileBacked: true },
+        { id: "explore", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
+      ],
+    }),
+    teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["alpha"] }],
+  }
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    await expand(fixture)
+    await moveTo(fixture, "Special")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Special agents are built in; add is not available here"))
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+
+    await expand(fixture)
+    await moveTo(fixture, "explore")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Special agents are built in; add is not available here"))
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("space on a Models row under a team special persists the team-scoped record", async () => {
+  const snapshot: Snapshot = {
+    ...createSnapshot({
+      agents: [
+        { id: "alpha", scope: "project" as const, fileBacked: true },
+        { id: "explore", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
+      ],
+      items: [
+        {
+          id: "model:acme/nova-2",
+          kind: "model" as const,
+          group: "none" as const,
+          title: "acme/nova-2",
+          text: "acme/nova-2",
+          enabled: true,
+          fingerprint: "fp-nova-2",
+          agents: ["explore"],
+        },
+      ],
+      records: [
+        {
+          type: "model" as const,
+          level: "defaults" as const,
+          agent: null,
+          providerID: "acme",
+          modelID: "nova-2",
+          updated: "2026-09-14T00:00:00.000Z",
+        },
+      ],
+    }),
+    teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["alpha"] }],
+  }
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    await expand(fixture)
+    await moveTo(fixture, "Special")
+    await expand(fixture)
+    await moveTo(fixture, "explore")
+    await expand(fixture)
+    await moveTo(fixture, "Models")
+    await expand(fixture)
+    await moveTo(fixture, "acme/nova-2")
+    expect(binds(fixture)).toContain("space")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((frame) => frame.includes('Activated "acme/nova-2"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    const models = fixture.fake.mutateInputs[0].records.filter((record) => record.type === "model")
+    expect(models.length).toBeGreaterThan(0)
+    const teamModel = models.find((m) => m.type === "model" && m.agent === "explore" && m.team?.team === "crew")
+    expect(teamModel).toBeDefined()
+    expect(teamModel?.team).toEqual({ level: "project", team: "crew" })
+    expect(teamModel?.active).toBe(true)
+  } finally {
+    fixture.destroy()
+  }
+})

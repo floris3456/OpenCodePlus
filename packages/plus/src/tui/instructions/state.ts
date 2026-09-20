@@ -36,7 +36,13 @@ export type { TreeNode }
 
 function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[] {
   return records
-    .map(recordOf)
+    .map((record) => {
+      const converted = recordOf(record)
+      if (record.team !== undefined && converted !== undefined) {
+        return { ...converted, team: record.team }
+      }
+      return converted
+    })
     .filter(
       (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord =>
         record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule",
@@ -55,6 +61,7 @@ function toRpcRecords(
         type: "customization",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         item: record.item,
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
@@ -72,6 +79,7 @@ function toRpcRecords(
         type: "split",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         item: record.item,
         boundaries: [...record.boundaries],
         updated: known,
@@ -82,6 +90,7 @@ function toRpcRecords(
         type: "model",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         providerID: record.providerID,
         modelID: record.modelID,
         ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -94,6 +103,7 @@ function toRpcRecords(
         type: "rule",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         tool: record.tool,
         id: record.id,
         label: record.label,
@@ -830,6 +840,7 @@ export function createInstructionsState(context: Plugin.Context) {
     filter,
     setFilter,
     status,
+    setStatus,
     loading,
     toggleExpanded,
     select,

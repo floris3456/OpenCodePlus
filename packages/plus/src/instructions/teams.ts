@@ -114,7 +114,10 @@ export function discoverBuiltinTeams(registry: readonly BuiltinTeam[] = builtinT
   const base = new Map<string, { members: Map<string, TeamAgent>; order: number }>()
   registry.forEach((team, index) => {
     const members = new Map<string, TeamAgent>()
-    for (const member of team.members) members.set(member.id, { id: member.id, body: member.body })
+    for (const member of team.members) {
+      if (member.id === "special") continue
+      members.set(member.id, { id: member.id, body: member.body })
+    }
     base.set(team.name, { members, order: index })
   })
   const overlayRoot = globalDefaultsTeamsPath()
@@ -126,7 +129,7 @@ export function discoverBuiltinTeams(registry: readonly BuiltinTeam[] = builtinT
     if (!base.has(name)) base.set(name, entry)
     for (const file of files) {
       const id = idFromPath(teamDir, file)
-      if (id.length === 0) continue
+      if (id.length === 0 || id === "special") continue
       const text = readFileSync(file)
       if (text === undefined) continue
       entry.members.set(id, { id, body: agentBody(text), path: file })
@@ -234,7 +237,7 @@ async function readTeam(level: TeamLevel, root: string, team: string): Promise<D
   const files = await scanMarkdown(directory)
   const agents = files
     .map((file): TeamAgent => ({ id: idFromPath(directory, file), path: file }))
-    .filter((agent) => agent.id.length > 0)
+    .filter((agent) => agent.id.length > 0 && agent.id !== "special")
     .toSorted(compareAgentIds)
   return { level, team, path: directory, agents }
 }
@@ -312,7 +315,7 @@ function compareAgentIds(left: { id: string }, right: { id: string }): number {
   return 0
 }
 
-function rankOf(scope: AgentSource["scope"]): number {
+export function rankOf(scope: AgentSource["scope"]): number {
   if (scope === "project") return 0
   if (scope === "global") return 1
   return 2

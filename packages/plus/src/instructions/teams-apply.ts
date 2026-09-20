@@ -48,6 +48,7 @@ export async function installTeamAgents(
   ctx: Context,
   agents: readonly AgentSource[],
   overrides?: ReadonlyMap<string, string>,
+  specialOverrides?: ReadonlyMap<string, string>,
 ): Promise<TeamApplied> {
   const installed: Registration[] = []
   const installedIds: string[] = []
@@ -63,12 +64,40 @@ export async function installTeamAgents(
       installed.push(await runTeamRegistration(ctx, agent.id, agentBody(text), fields, overrides?.get(agent.id)))
       installedIds.push(agent.id)
     }
+    if (specialOverrides !== undefined) {
+      for (const [id, text] of specialOverrides) {
+        installed.push(await runSpecialRegistration(ctx, id, text))
+        installedIds.push(id)
+      }
+    }
     if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
     return { registrations: [...installed], installedIds: [...installedIds] }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
   }
+}
+
+async function runSpecialRegistration(
+  ctx: Context,
+  id: string,
+  systemText: string,
+): Promise<Registration> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      return yield* Effect.suspend(() =>
+        ctx.agent.transform((editor: AgentEditor) => {
+          editor.update(id, (agent) => {
+            agent.system = systemText
+          })
+        }),
+      ).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
+      )
+    }),
+  )
 }
 
 type Draft = Types.DeepMutable<Agent.Info>

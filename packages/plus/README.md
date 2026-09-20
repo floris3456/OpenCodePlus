@@ -97,6 +97,10 @@ Row ids name one row everywhere: the TUI filter, tool calls, log targets, and er
 - `section:<level>:<agent|''>:<itemId>:<sectionId>` — one section inside a row
 - `agent:<level>:<id>` — one agent's subtree (only these accept `view: "assembled"`)
 - `team:<level>:<name>` — one team
+- `team:<level>:<name>:<member>` — one team member
+- `team:<level>:<name>:special` — a team's Special group
+- `team:<level>:<name>:special:<id>` — a team-scoped special agent
+- `group:<level>:<team>/:special:<id>:<group>` — one of the five groups under a team-scoped special agent
 - `model:<providerID>/<modelID>` (optionally `@<variant>`) — the `<itemId>` of a model row
 - `perm:<toolId>:<ruleId>` (the rule id keeps any extra `:` it contains) — the `<itemId>` of a permission row
 

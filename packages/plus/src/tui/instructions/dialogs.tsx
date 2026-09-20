@@ -10,6 +10,14 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   async function addFor(node: TreeNode | undefined): Promise<void> {
     if (disposed) return
+    if (
+      node !== undefined &&
+      (node.id.match(/^team:(project|global|defaults):[^:]+:special$/) !== null ||
+        node.id.match(/^team:(project|global|defaults):[^:]+:special:[^:]+$/) !== null)
+    ) {
+      state.setStatus("Special agents are built in; add is not available here")
+      return
+    }
     // A tool row that hosts both sections and rules carries no direct add:
     // `a` offers the Section / Permission rule choice. Every other row keeps
     // today's direct add or the generic picker.

@@ -7,10 +7,12 @@ import {
   modelCandidates,
   modelItemId,
   parseModelItemId,
+  resolve,
   resolveActiveModel,
+  resolveSplit,
   sameModelCandidate,
 } from "./model.js"
-import type { Address, AgentSource, CustomizationRecord, Item, Level, ModelRecord, SplitRecord } from "./model.js"
+import type { Address, AgentSource, CustomizationRecord, Item, Level, ModelRecord, SplitRecord, TeamRef } from "./model.js"
 import {
   flagOf,
   memoOf,
@@ -217,6 +219,43 @@ function canDescend(node: Lazy, rowId: string): boolean {
     const nodeLevel = node.id.split(":")[1]
     if (nodeLevel !== rowLevel) return false
 
+    // Team Special group: team:<level>:<team>:special
+    if (node.id.endsWith(":special")) {
+      const match = node.id.match(/^team:(project|global|defaults):(.+):special$/)
+      if (match) {
+        const tLevel = match[1]
+        const tName = match[2]
+        if (rowId.startsWith(`team:${tLevel}:${tName}:special:`)) return true
+        if (rowId.startsWith(`group:${tLevel}:${tName}/:special:`)) return true
+        if (rowId.startsWith(`item:${tLevel}:${tName}/:special:`)) return true
+        if (rowId.startsWith(`section:${tLevel}:${tName}/:special:`)) return true
+        return false
+      }
+    }
+
+    // Special category groups: group:<level>:<team>/:special:<id>:<group>
+    if (node.id.includes("/:special:")) {
+      const match = node.id.match(/^group:(project|global|defaults):(.+)\/:special:(.+):([a-z]+)$/)
+      if (match) {
+        const tLevel = match[1]
+        const tName = match[2]
+        const spId = match[3]
+        const groupName = match[4]
+        if (rowKind === "item" || rowKind === "section") {
+          const itemPrefix = `${rowKind}:${tLevel}:${tName}/:special:${spId}:`
+          if (rowId.startsWith(itemPrefix)) {
+            if (groupName === "models") return rowId.includes(":model:")
+            if (groupName === "tools") return rowId.includes(":tool:") || rowId.includes(":perm:")
+            if (groupName === "base") return rowId.includes(":base:")
+            if (groupName === "skills") return rowId.includes(":skill:")
+            if (groupName === "system") return rowId.includes(":system:")
+            return true
+          }
+        }
+        return false
+      }
+    }
+
     // Teams group under root: group:<level>:teams
     if (node.id === `group:${nodeLevel}:teams`) {
       if (rowKind === "team") return true
@@ -278,9 +317,23 @@ function canDescend(node: Lazy, rowId: string): boolean {
     const teamParts = node.id.split(":")
     const teamLevel = teamParts[1]
     if (teamLevel !== rowLevel) return false
+    if (node.id.includes(":special:")) {
+      const match = node.id.match(/^team:(project|global|defaults):(.+):special:(.+)$/)
+      if (match) {
+        const tLevel = match[1]
+        const tName = match[2]
+        const spId = match[3]
+        if (rowId.startsWith(`group:${tLevel}:${tName}/:special:${spId}:`)) return true
+        if (rowId.startsWith(`item:${tLevel}:${tName}/:special:${spId}:`)) return true
+        if (rowId.startsWith(`section:${tLevel}:${tName}/:special:${spId}:`)) return true
+        return false
+      }
+    }
     if (node.depth === 2) {
       if (rowId.startsWith(`${node.id}:`)) return true
       if (rowId.startsWith(`group:${teamLevel}:${node.label}/:`)) return true
+      if (rowId.startsWith(`item:${teamLevel}:${node.label}/:`)) return true
+      if (rowId.startsWith(`section:${teamLevel}:${node.label}/:`)) return true
       if (rowKind === "item" || rowKind === "section") return true
       return false
     }
@@ -295,6 +348,9 @@ function canDescend(node: Lazy, rowId: string): boolean {
 
   if (node.kind === "item") {
     if (node.address === undefined) return false
+    if (rowKind === "section") {
+      if (rowId.startsWith(node.id.replace("item:", "section:") + ":")) return true
+    }
     const itemLevel = parts[1]
     const itemOwner = parts[2]
     if (itemLevel !== node.address.level || itemOwner !== (node.address.agent ?? "")) return false
@@ -588,6 +644,9 @@ function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy[] {
 }
 
 function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput, member: string, depth: number): Lazy {
+  if (member === "special") {
+    throw new Error(`Cannot construct team member "special": member id "special" is reserved`)
+  }
   const agent = ctx.agents.find((entry) => entry.id === member && entry.scope === level) ?? ctx.agents.find((entry) => entry.id === member) ?? null
   const owner = member
   const removable = level !== "defaults" || (team.overlay?.includes(member) ?? false)
@@ -616,11 +675,50 @@ function lazyTeamMember(ctx: BuildContext, memo: Memo, level: Level, team: TeamI
   })
 }
 
+function lazyTeamSpecial(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput): Lazy {
+  const specials = specialAgentsForLevel(ctx, level)
+  return branch(memo, {
+    kind: "group",
+    id: `team:${level}:${team.team}:special`,
+    label: "Special",
+    depth: 3,
+    actions: noActions(),
+    children: () =>
+      specials.map((agent) => lazyTeamSpecialAgent(ctx, memo, level, team, agent)),
+  })
+}
+
+function lazyTeamSpecialAgent(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  team: TeamInput,
+  agent: AgentSource,
+): Lazy {
+  const owner = agent.id
+  const teamRef: TeamRef = { level, team: team.team }
+  return branch(memo, {
+    kind: "team",
+    id: `team:${level}:${team.team}:special:${agent.id}`,
+    label: agent.id,
+    depth: 4,
+    actions: noActions(),
+    children: () => [
+      lazyModels(ctx, memo, level, owner, agent, 5, `group:${level}:${team.team}/:special:${agent.id}:models`, teamRef),
+      lazyTools(ctx, memo, level, owner, agent, 5, `group:${level}:${team.team}/:special:${agent.id}:tools`, teamRef),
+      lazyBase(ctx, memo, level, owner, agent, 5, `group:${level}:${team.team}/:special:${agent.id}:base`, teamRef),
+      lazySkills(ctx, memo, level, owner, agent, 5, `group:${level}:${team.team}/:special:${agent.id}:skills`, teamRef),
+      lazySystem(ctx, memo, level, owner, agent, 5, `group:${level}:${team.team}/:special:${agent.id}:system`, teamRef),
+    ],
+  })
+}
+
 function lazyTeam(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput): Lazy {
   const kids = (): readonly Lazy[] =>
-    cachedKids(memo, `team:${level}:${team.team}`, () =>
-      team.agents.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3)),
-    )
+    cachedKids(memo, `team:${level}:${team.team}`, () => [
+      ...team.agents.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3)),
+      lazyTeamSpecial(ctx, memo, level, team),
+    ])
   return {
     id: `team:${level}:${team.team}`,
     kind: "team",
@@ -672,6 +770,7 @@ function lazyModels(
   agent: AgentSource | null,
   depth: number,
   groupId?: string,
+  teamRef?: TeamRef,
 ): Lazy {
   const prefix = groupId ?? `group:${level}:${owner ?? ""}:models`
   return branch(memo, {
@@ -684,8 +783,22 @@ function lazyModels(
     children: () =>
       cachedKids(memo, prefix, () => {
         const upstream = upstreamForModels(ctx, level, owner, agent)
-        const candidates = modelCandidates({ models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...(upstream === undefined ? {} : { upstream }) })
-        const active = resolveActiveModel({ models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...(upstream === undefined ? {} : { upstream }) })
+        const candidates = modelCandidates({
+          models: ctx.models,
+          scopes: ctx.scopes,
+          level,
+          agent: owner,
+          ...(teamRef !== undefined ? { team: teamRef } : {}),
+          ...(upstream === undefined ? {} : { upstream }),
+        })
+        const active = resolveActiveModel({
+          models: ctx.models,
+          scopes: ctx.scopes,
+          level,
+          agent: owner,
+          ...(teamRef !== undefined ? { team: teamRef } : {}),
+          ...(upstream === undefined ? {} : { upstream }),
+        })
         return candidates
           .toSorted((left, right) => {
             const leftId = modelItemId(left)
@@ -694,7 +807,7 @@ function lazyModels(
             if (leftId > rightId) return 1
             return 0
           })
-          .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, active, depth + 1))
+          .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, active, depth + 1, teamRef))
       }) as readonly Lazy[],
   })
 }
@@ -720,17 +833,27 @@ function lazyModelItem(
   candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream" },
   active: { providerID: string; modelID: string; variant?: string } | undefined,
   depth: number,
+  teamRef?: TeamRef,
 ): Lazy {
   const itemId = modelItemId(candidate)
-  const address: Address = { level, agent: owner, item: itemId, section: null }
+  const address: Address = {
+    level,
+    agent: owner,
+    item: itemId,
+    section: null,
+    ...(teamRef !== undefined ? { team: teamRef } : {}),
+  }
   const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
   const isActive = active !== undefined && sameModelCandidate(target, active)
-  const hasLocal = hasModelRecordAt(ctx.models, { level, agent: owner }, target)
-  const canResetHere = hasModelActiveAt(ctx.models, { level, agent: owner })
+  const hasLocal = hasModelRecordAt(ctx.models, { level, agent: owner, ...(teamRef !== undefined ? { team: teamRef } : {}) }, target)
+  const canResetHere = hasModelActiveAt(ctx.models, { level, agent: owner, ...(teamRef !== undefined ? { team: teamRef } : {}) })
   void memo
   void parseModelItemId
+  const id = teamRef !== undefined
+    ? `item:${level}:${teamRef.team}/:special:${owner ?? ""}:${itemId}`
+    : `item:${level}:${owner ?? ""}:${itemId}`
   return {
-    id: `item:${level}:${owner ?? ""}:${itemId}`,
+    id,
     kind: "item",
     label: modelLabel(candidate),
     depth,
@@ -766,6 +889,7 @@ function lazyTools(
   agent: AgentSource | null,
   depth: number,
   groupId?: string,
+  teamRef?: TeamRef,
 ): Lazy {
   const prefix = groupId ?? `group:${level}:${owner ?? ""}:tools`
   return branch(memo, {
@@ -777,10 +901,10 @@ function lazyTools(
     children: () => {
       const tools = sortedKind(ctx, "tool", owner)
       return [
-        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native")),
-        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus")),
-        mcpToolsGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp")),
-        ...strayTools(ctx, memo, level, owner, agent, tools, depth + 1),
+        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native"), teamRef),
+        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus"), teamRef),
+        mcpToolsGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp"), teamRef),
+        ...strayTools(ctx, memo, level, owner, agent, tools, depth + 1, teamRef),
       ]
     },
   })
@@ -794,6 +918,7 @@ function lazySkills(
   agent: AgentSource | null,
   depth: number,
   groupId?: string,
+  teamRef?: TeamRef,
 ): Lazy {
   const prefix = groupId ?? `group:${level}:${owner ?? ""}:skills`
   return branch(memo, {
@@ -805,9 +930,9 @@ function lazySkills(
     children: () => {
       const skills = sortedKind(ctx, "skill", owner)
       return [
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, skills.filter((item) => item.group === "native")),
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, skills.filter((item) => item.group === "plus")),
-        mcpGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, skills.filter((item) => item.group === "mcp")),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, skills.filter((item) => item.group === "native"), undefined, teamRef),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, skills.filter((item) => item.group === "plus"), undefined, teamRef),
+        mcpGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, skills.filter((item) => item.group === "mcp"), teamRef),
         leafGroup(
           ctx,
           memo,
@@ -819,8 +944,9 @@ function lazySkills(
           depth + 1,
           skills.filter((item) => item.group === "project"),
           "skill",
+          teamRef,
         ),
-        ...straySkills(ctx, memo, level, owner, agent, skills, depth + 1),
+        ...straySkills(ctx, memo, level, owner, agent, skills, depth + 1, teamRef),
       ]
     },
   })
@@ -836,10 +962,11 @@ function strayTools(
   agent: AgentSource | null,
   tools: readonly Item[],
   depth: number,
+  teamRef?: TeamRef,
 ): Lazy[] {
   return tools
     .filter((item) => item.group !== "native" && item.group !== "plus" && item.group !== "mcp")
-    .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth))
+    .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth, teamRef))
 }
 
 function straySkills(
@@ -850,10 +977,11 @@ function straySkills(
   agent: AgentSource | null,
   skills: readonly Item[],
   depth: number,
+  teamRef?: TeamRef,
 ): Lazy[] {
   return skills
     .filter((item) => item.group !== "native" && item.group !== "plus" && item.group !== "mcp" && item.group !== "project")
-    .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth))
+    .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth, teamRef))
 }
 
 function lazyBase(
@@ -864,6 +992,7 @@ function lazyBase(
   agent: AgentSource | null,
   depth: number,
   groupId?: string,
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -872,7 +1001,7 @@ function lazyBase(
     depth,
     add: "base",
     actions: noActions(),
-    children: () => sortedKind(ctx, "base", owner).map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1)),
+    children: () => sortedKind(ctx, "base", owner).map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef)),
   })
 }
 
@@ -884,6 +1013,7 @@ function lazySystem(
   agent: AgentSource | null,
   depth: number,
   groupId?: string,
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -895,10 +1025,10 @@ function lazySystem(
     children: () => {
       const systems = sortedKind(ctx, "system", owner)
       const role = systems.find((item) => item.id === "system:role")
-      const head = role === undefined ? [] : [lazyItem(ctx, memo, level, owner, agent, role, depth + 1)]
+      const head = role === undefined ? [] : [lazyItem(ctx, memo, level, owner, agent, role, depth + 1, teamRef)]
       return [
         ...head,
-        ...systems.filter((item) => item.id !== "system:role").map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1)),
+        ...systems.filter((item) => item.id !== "system:role").map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef)),
       ]
     },
   })
@@ -915,6 +1045,7 @@ function leafGroup(
   depth: number,
   items: readonly Item[],
   add?: AddKind,
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -923,7 +1054,7 @@ function leafGroup(
     depth,
     ...(add === undefined ? {} : { add }),
     actions: noActions(),
-    children: () => items.map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1)),
+    children: () => items.map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef)),
   })
 }
 
@@ -936,6 +1067,7 @@ function mcpGroup(
   id: string,
   depth: number,
   items: readonly Item[],
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -956,6 +1088,8 @@ function mcpGroup(
           server,
           depth + 1,
           items.filter((item) => (item.server ?? "unknown") === server),
+          undefined,
+          teamRef,
         ),
       )
     },
@@ -976,6 +1110,7 @@ function toolOriginGroup(
   label: string,
   depth: number,
   items: readonly Item[],
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -987,9 +1122,9 @@ function toolOriginGroup(
       const code = items.filter((item) => item.codemode === true)
       const rows = items
         .filter((item) => item.codemode !== true)
-        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef))
       if (code.length === 0) return rows
-      return [...rows, codemodeGroup(ctx, memo, level, owner, agent, `${id}:codemode`, depth + 1, code, true)]
+      return [...rows, codemodeGroup(ctx, memo, level, owner, agent, `${id}:codemode`, depth + 1, code, true, teamRef)]
     },
   })
 }
@@ -1007,6 +1142,7 @@ function mcpToolsGroup(
   id: string,
   depth: number,
   items: readonly Item[],
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -1027,6 +1163,7 @@ function mcpToolsGroup(
           server,
           depth + 1,
           items.filter((item) => (item.server ?? "unknown") === server),
+          teamRef,
         ),
       )
     },
@@ -1043,6 +1180,7 @@ function toolServerGroup(
   label: string,
   depth: number,
   items: readonly Item[],
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -1054,9 +1192,9 @@ function toolServerGroup(
       const code = items.filter((item) => item.codemode === true)
       const rows = items
         .filter((item) => item.codemode !== true)
-        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef))
       if (code.length === 0) return rows
-      return [...rows, codemodeGroup(ctx, memo, level, owner, agent, `${id}:codemode`, depth + 1, code, false)]
+      return [...rows, codemodeGroup(ctx, memo, level, owner, agent, `${id}:codemode`, depth + 1, code, false, teamRef)]
     },
   })
 }
@@ -1077,6 +1215,7 @@ function codemodeGroup(
   depth: number,
   items: readonly Item[],
   namespaced: boolean,
+  teamRef?: TeamRef,
 ): Lazy {
   return branch(memo, {
     kind: "group",
@@ -1085,10 +1224,10 @@ function codemodeGroup(
     depth,
     actions: noActions(),
     children: () => {
-      if (!namespaced) return items.map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+      if (!namespaced) return items.map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef))
       const direct = items
         .filter((item) => item.namespace === undefined)
-        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1))
+        .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef))
       const namespaces = [...new Set(items.map((item) => item.namespace))].filter((ns): ns is string => ns !== undefined).sort()
       return [
         ...direct,
@@ -1102,7 +1241,7 @@ function codemodeGroup(
             children: () =>
               items
                 .filter((item) => item.namespace === namespace)
-                .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 2)),
+                .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 2, teamRef)),
           }),
         ),
       ]
@@ -1118,8 +1257,15 @@ function lazyItem(
   agent: AgentSource | null,
   item: Item,
   depth: number,
+  teamRef?: TeamRef,
 ): Lazy {
-  const address: Address = { level, agent: owner, item: item.id, section: null }
+  const address: Address = {
+    level,
+    agent: owner,
+    item: item.id,
+    section: null,
+    ...(teamRef !== undefined ? { team: teamRef } : {}),
+  }
   // Code Mode tool rows are first-class: a plugin can rewrite the catalog per
   // agent and deny a single tool by id, so their toggle/edit/split/pin apply
   // like any other tool. The synthetic `execute` row is host-owned: it
@@ -1135,23 +1281,41 @@ function lazyItem(
     !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
   const perm = item.kind === "perm"
   const hostRules = canHostPermRules(item)
+  const rowId = teamRef !== undefined
+    ? `item:${level}:${teamRef.team}/:special:${owner ?? ""}:${item.id}`
+    : `item:${level}:${owner ?? ""}:${item.id}`
   const kids = (): readonly Lazy[] => {
     if (executable) return []
     if (perm) return []
-    const sections = cachedKids(memo, `item:${level}:${owner ?? ""}:${item.id}`, () =>
-      splitOf(memo, level, owner, item).sections.map((section) =>
-        lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth),
-      ),
-    )
+    const sections = cachedKids(memo, rowId, () => {
+      const split = teamRef !== undefined
+        ? resolveSplit({
+            text: resolve({ upstream: item, records: ctx.customizations, splits: ctx.splits, scopes: ctx.scopes, address }).text,
+            title: item.title,
+            splits: ctx.splits,
+            scopes: ctx.scopes,
+            address,
+          })
+        : splitOf(memo, level, owner, item)
+      return split.sections.map((section) =>
+        lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth, teamRef),
+      )
+    })
     // Permission rows hang directly off the tool row after its sections, in
     // byOrderTitle order. Empty sets emit nothing; the `a` choice on the tool
     // row still offers rule creation.
-    return [...sections, ...toolPermRows(ctx, memo, level, owner, item, depth + 1)]
+    return [...sections, ...toolPermRows(ctx, memo, level, owner, item, depth + 1, teamRef)]
   }
   if (perm) {
-    const permAddress: Address = { level, agent: owner, item: item.id, section: null }
+    const permAddress: Address = {
+      level,
+      agent: owner,
+      item: item.id,
+      section: null,
+      ...(teamRef !== undefined ? { team: teamRef } : {}),
+    }
     return {
-      id: `item:${level}:${owner ?? ""}:${item.id}`,
+      id: rowId,
       kind: "item",
       label: item.title,
       depth,
@@ -1165,13 +1329,13 @@ function lazyItem(
         pin: false,
       },
       selfReview: () => false,
-      partial: () => permBadges(memo, level, owner, item),
+      partial: () => permBadges(memo, level, owner, item, teamRef),
       reviewCount: () => 0,
       children: kids,
     }
   }
   return {
-    id: `item:${level}:${owner ?? ""}:${item.id}`,
+    id: rowId,
     kind: "item",
     label: item.id === "system:role" ? "Role/persona" : item.title,
     depth,
@@ -1184,13 +1348,22 @@ function lazyItem(
       toggle: executable || codemode || !wholeNoToggle,
       edit: !executable,
       reset: !executable && canReset(ctx.customizations, address),
-      remove: removable(level, owner, item),
+      remove: teamRef !== undefined ? false : removable(level, owner, item),
       split: splittable,
       pin: codemode && !executable,
     },
-    selfReview: () => cachedSelfReview(memo, `item:${level}:${owner ?? ""}:${item.id}`, () => flagOf(memo, level, owner, item, null)),
-    partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle),
-    reviewCount: () => cachedReviewCount(memo, `item:${level}:${owner ?? ""}:${item.id}`, () => itemRollup(memo, level, owner, item)),
+    selfReview: () => cachedSelfReview(memo, rowId, () => {
+      if (teamRef !== undefined) {
+        const resolved = resolve({ upstream: item, records: ctx.customizations, splits: ctx.splits, scopes: ctx.scopes, address })
+        return resolved.review
+      }
+      return flagOf(memo, level, owner, item, null)
+    }),
+    partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle, teamRef),
+    reviewCount: () => cachedReviewCount(memo, rowId, () => {
+      if (teamRef !== undefined) return 0
+      return itemRollup(memo, level, owner, item)
+    }),
     children: kids,
   }
 }
@@ -1218,6 +1391,7 @@ export function toolPermRows(
   owner: string | null,
   item: Item,
   depth: number,
+  teamRef?: TeamRef,
 ): Lazy[] {
   if (!canHostPermRules(item)) return []
   const toolId = item.id.slice("tool:".length)
@@ -1226,13 +1400,29 @@ export function toolPermRows(
     .filter((entry) => (owner === null ? entry.agents === undefined : applies(entry, owner)))
     .toSorted(byOrderTitle)
   if (rows.length === 0) return []
-  return rows.map((entry) => lazyPermRow(memo, level, owner, entry, depth))
+  return rows.map((entry) => lazyPermRow(memo, level, owner, entry, depth, teamRef))
 }
 
-function lazyPermRow(memo: Memo, level: Level, owner: string | null, item: Item, depth: number): Lazy {
-  const address: Address = { level, agent: owner, item: item.id, section: null }
+function lazyPermRow(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  depth: number,
+  teamRef?: TeamRef,
+): Lazy {
+  const address: Address = {
+    level,
+    agent: owner,
+    item: item.id,
+    section: null,
+    ...(teamRef !== undefined ? { team: teamRef } : {}),
+  }
+  const id = teamRef !== undefined
+    ? `item:${level}:${teamRef.team}/:special:${owner ?? ""}:${item.id}`
+    : `item:${level}:${owner ?? ""}:${item.id}`
   return {
-    id: `item:${level}:${owner ?? ""}:${item.id}`,
+    id,
     kind: "item",
     label: item.title,
     depth,
@@ -1246,14 +1436,28 @@ function lazyPermRow(memo: Memo, level: Level, owner: string | null, item: Item,
       pin: false,
     },
     selfReview: () => false,
-    partial: () => permBadges(memo, level, owner, item),
+    partial: () => permBadges(memo, level, owner, item, teamRef),
     reviewCount: () => 0,
     children: () => [],
   }
 }
 
-function permBadges(memo: Memo, level: Level, owner: string | null, item: Item): TreeNodeBadges {
-  const resolved = wholeOf(memo, level, owner, item)
+function permBadges(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  teamRef?: TeamRef,
+): TreeNodeBadges {
+  const resolved = teamRef !== undefined
+    ? resolve({
+        upstream: item,
+        records: memo.ctx.customizations,
+        splits: memo.ctx.splits,
+        scopes: memo.ctx.scopes,
+        address: { level, agent: owner, item: item.id, section: null, team: teamRef },
+      })
+    : wholeOf(memo, level, owner, item)
   return { state: resolved.enabled ? "on" : "off", modified: resolved.modified, source: resolved.source }
 }
 
@@ -1264,8 +1468,17 @@ function itemBadges(
   agent: AgentSource | null,
   item: Item,
   wholeNoToggle = false,
+  teamRef?: TeamRef,
 ): TreeNodeBadges {
-  const resolved = wholeOf(memo, level, owner, item)
+  const resolved = teamRef !== undefined
+    ? resolve({
+        upstream: item,
+        records: memo.ctx.customizations,
+        splits: memo.ctx.splits,
+        scopes: memo.ctx.scopes,
+        address: { level, agent: owner, item: item.id, section: null, team: teamRef },
+      })
+    : wholeOf(memo, level, owner, item)
   const active = agent?.base !== undefined && item.id === `base:${agent.base}`
   // A builtin-id shadow CAN be the host active answer (the classifier answers
   // host ids like `gpt`, and the shadow carries that id), so marking it
@@ -1304,13 +1517,32 @@ function lazySection(
   item: Item,
   section: Section,
   depth: number,
+  teamRef?: TeamRef,
 ): Lazy {
-  const address: Address = { level, agent: owner, item: item.id, section: section.id }
+  const address: Address = {
+    level,
+    agent: owner,
+    item: item.id,
+    section: section.id,
+    ...(teamRef !== undefined ? { team: teamRef } : {}),
+  }
+  const id = teamRef !== undefined
+    ? `section:${level}:${teamRef.team}/:special:${owner ?? ""}:${item.id}:${section.id}`
+    : `section:${level}:${owner ?? ""}:${item.id}:${section.id}`
+  const resolved = teamRef !== undefined
+    ? resolve({
+        upstream: item,
+        records: ctx.customizations,
+        splits: ctx.splits,
+        scopes: ctx.scopes,
+        address,
+      })
+    : sectionResolveOf(memo, level, owner, item, section.id)
   // Code Mode sections apply like any other section now that per-agent
   // catalog rewrites reach them, so they carry the normal toggle/edit/reset
   // treatment with no gate.
   return {
-    id: `section:${level}:${owner ?? ""}:${item.id}:${section.id}`,
+    id,
     kind: "section",
     label: section.name,
     depth,
@@ -1324,10 +1556,13 @@ function lazySection(
       pin: false,
     },
     selfReview: () =>
-      cachedSelfReview(memo, `section:${level}:${owner ?? ""}:${item.id}:${section.id}`, () =>
-        flagOf(memo, level, owner, item, section.id),
-      ),
-    partial: () => sectionBadges(memo, level, owner, item, section),
+      cachedSelfReview(memo, id, () => {
+        if (teamRef !== undefined) {
+          return resolved.review
+        }
+        return flagOf(memo, level, owner, item, section.id)
+      }),
+    partial: () => sectionBadges(memo, level, owner, item, section, teamRef),
     reviewCount: () => 0,
     children: () => [],
   }
@@ -1339,8 +1574,17 @@ function sectionBadges(
   owner: string | null,
   item: Item,
   section: Section,
+  teamRef?: TeamRef,
 ): TreeNodeBadges {
-  const resolved = sectionResolveOf(memo, level, owner, item, section.id)
+  const resolved = teamRef !== undefined
+    ? resolve({
+        upstream: item,
+        records: memo.ctx.customizations,
+        splits: memo.ctx.splits,
+        scopes: memo.ctx.scopes,
+        address: { level, agent: owner, item: item.id, section: section.id, team: teamRef },
+      })
+    : sectionResolveOf(memo, level, owner, item, section.id)
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,

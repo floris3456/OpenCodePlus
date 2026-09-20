@@ -1822,3 +1822,40 @@ test("updateRule preserves a shared agent:null owner instead of retargeting it",
   )
   if (updateEntry === undefined) throw new Error("missing shared rule.update log entry at the shared address")
 })
+
+test("instructions_set on a team-special row persists team-scoped record", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [
+      agentInfo("alpha", "upstream alpha"),
+      agentInfo("explore", "upstream explore"),
+    ],
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+
+  await runOk(need(tools, "instructions_create"), {
+    kind: "team",
+    team: "crew",
+    level: "project",
+  })
+
+  const rowId = "item:project:crew/:special:explore:tool:bash"
+  const setResult = (await runOk(need(tools, "instructions_set"), {
+    id: rowId,
+    state: "off",
+  })) as { status: string }
+  expect(setResult.status).toBe('Disabled "bash"')
+
+  const snap = await snapshotOf(api)
+  const custom = snap.records.find((r) => r.type === "customization" && r.agent === "explore" && r.item === "tool:bash")
+  expect(custom).toBeDefined()
+  expect(custom?.type).toBe("customization")
+  if (custom?.type === "customization") {
+    expect(custom.state).toBe("off")
+    expect(custom.team).toEqual({ level: "project", team: "crew" })
+  }
+})
