@@ -891,6 +891,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const scopes = scopesOf(memo.agents)
     const upstream = upstreamOf(memo, address)
     if (upstream === undefined) return yield* Effect.fail(new Tool.Error({ message: `Item not found for "${node.label}"` }))
+    if (view === "record") {
+      return { output: { id, view, record: recordOfRow(memo, address, customizations) } }
+    }
     if (upstream.kind === "perm") {
       const chain = { upstream, records: customizations, splits, scopes, address }
       const resolved = resolve(chain)
@@ -928,12 +931,6 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       )
       return { output: { id, view, text: own?.text ?? "", hasOverride: own?.text !== undefined } }
     }
-    if (view === "record") {
-      const own = customizations.find(
-        (record) => record.level === address.level && record.agent === address.agent && record.item === address.item && record.section === address.section,
-      )
-      return { output: { id, view, record: own ?? null } }
-    }
     if (view === "sections") {
       const resolved = resolve(chain)
       const split = resolveSplit({ text: resolved.text, title: upstream.title, splits, scopes, address })
@@ -952,6 +949,43 @@ function upstreamOf(memo: MemoInput, address: { item: string; agent: string | nu
   const matches = memo.items.filter((item) => item.id === address.item)
   if (address.agent === null) return matches[0]
   return matches.find((item) => applies(item, address.agent as string)) ?? matches[0]
+}
+
+function recordOfRow(
+  memo: MemoInput,
+  address: { level: CustomizationRecord["level"]; agent: string | null; item: string; section: string | null },
+  customizations: readonly CustomizationRecord[],
+): ModelRecord | RuleRecord | CustomizationRecord | null {
+  if (address.item.startsWith("model:")) {
+    const parsed = parseModelItemId(address.item)
+    if (parsed === undefined) return null
+    return (
+      modelsOfMemo(memo).find(
+        (record) =>
+          record.level === address.level &&
+          record.agent === address.agent &&
+          record.providerID === parsed.providerID &&
+          record.modelID === parsed.modelID &&
+          record.variant === parsed.variant,
+      ) ?? null
+    )
+  }
+  if (address.item.startsWith("perm:")) {
+    const parsed = parsePermItemId(address.item)
+    if (parsed !== undefined) {
+      const rule = rulesOfMemo(memo).find((record) => record.tool === parsed.tool && record.id === parsed.ruleId)
+      if (rule !== undefined) return rule
+    }
+  }
+  return (
+    customizations.find(
+      (record) =>
+        record.level === address.level &&
+        record.agent === address.agent &&
+        record.item === address.item &&
+        record.section === address.section,
+    ) ?? null
+  )
 }
 
 function createRow(
