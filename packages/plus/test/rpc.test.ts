@@ -1569,3 +1569,139 @@ test("snapshot reports ancestor-backed agent with ancestor: true and omits the k
 
   expectRpcBody(snapshot)
 })
+
+test("agent delete removes customization records so re-created agent does not inherit override", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "First prompt." }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role")
+  if (!role) throw new Error("expected system:role")
+
+  const override: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "Override prompt.",
+    basedOn: role.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [override],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const assembledBefore = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(assembledBefore.system).toEqual(["Override prompt."])
+
+  const deleted = await Effect.runPromise(handlers["agent.delete"]({ scope: "project", id: "alpha" }, throwingContext({})))
+  expect(deleted.id).toBe("alpha")
+  expectRpcBody(deleted)
+
+  const { load } = await import("../src/instructions/store.js")
+  const stored = await load(project)
+  const remainingProjectRecords = stored.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.agent === "alpha" && r.level === "project",
+  )
+  expect(remainingProjectRecords).toHaveLength(0)
+
+  const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const remainingSnapshotRecords = snapshotAfterDelete.records.filter((r) => r.agent === "alpha" && r.level === "project")
+  expect(remainingSnapshotRecords).toHaveLength(0)
+
+  await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "Different second prompt." }, throwingContext({})),
+  )
+
+  const assembledAfter = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(assembledAfter.system).toEqual(["Different second prompt."])
+  expectRpcBody(assembledAfter)
+})
+
+test("agent delete shadowing guard keeps global records when project agent is deleted", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  await Effect.runPromise(
+    handlers["agent.create"]({ scope: "global", id: "alpha", prompt: "Global prompt." }, throwingContext({})),
+  )
+  await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "Project prompt." }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role")
+  if (!role) throw new Error("expected system:role")
+
+  const globalOverride: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "global",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "Global override.",
+    basedOn: role.fingerprint,
+    updated: UPDATED,
+  }
+  const projectOverride: Plus.SnapshotCustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:role",
+    section: null,
+    text: "Project override.",
+    basedOn: role.fingerprint,
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: snapshot.revision,
+      expectedGlobalRevision: snapshot.globalRevision,
+      records: [globalOverride, projectOverride],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const deleted = await Effect.runPromise(handlers["agent.delete"]({ scope: "project", id: "alpha" }, throwingContext({})))
+  expect(deleted.id).toBe("alpha")
+  expectRpcBody(deleted)
+
+  const { load } = await import("../src/instructions/store.js")
+  const stored = await load(project)
+  const projectRecords = stored.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.agent === "alpha" && r.level === "project",
+  )
+  expect(projectRecords).toHaveLength(0)
+
+  const globalRecords = stored.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.agent === "alpha" && r.level === "global",
+  )
+  expect(globalRecords).toHaveLength(1)
+  expect(globalRecords[0].type).toBe("customization")
+  if (globalRecords[0].type === "customization") {
+    expect(globalRecords[0].text).toBe("Global override.")
+  }
+
+  const snapshotAfter = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const snapshotProjectRecords = snapshotAfter.records.filter((r) => r.agent === "alpha" && r.level === "project")
+  expect(snapshotProjectRecords).toHaveLength(0)
+
+  const snapshotGlobalRecords = snapshotAfter.records.filter((r) => r.agent === "alpha" && r.level === "global")
+  expect(snapshotGlobalRecords).toHaveLength(1)
+  expect(snapshotGlobalRecords[0].type).toBe("customization")
+  if (snapshotGlobalRecords[0].type === "customization") {
+    expect(snapshotGlobalRecords[0].text).toBe("Global override.")
+  }
+})
