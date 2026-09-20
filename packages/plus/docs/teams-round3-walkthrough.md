@@ -198,7 +198,7 @@ Note that `pilotty key "Shift+Tab"` reports ok but never reaches the TUI's `agen
 
 ```
 --- Terminal 130x45 | Cursor: (14, 39) ---
-                                       Select agent                                     esc
+                                       Select agent or team                             esc
                                        [S]earch
                                        Agents
                                      ● build The default agent. Executes tools based on con

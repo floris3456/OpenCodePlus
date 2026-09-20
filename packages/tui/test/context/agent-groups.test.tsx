@@ -117,7 +117,7 @@ test("DialogAgent renders categories: Agents first, then groups in provider orde
   setup.dialog.replace(() => <DialogAgent />)
   await setup.renderOnce()
   const frame = setup.captureCharFrame()
-  expect(frame).toContain("Select agent")
+  expect(frame).toContain("Select agent or team")
   expect(frame).toContain("Agents")
   expect(frame).toContain("Team: opencodeplus-team (project)")
   expect(frame).toContain("build")

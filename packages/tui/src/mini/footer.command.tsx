@@ -688,7 +688,7 @@ export function RunAgentSelectBody(props: {
 
   return (
     <PanelShell
-      title="Select agent"
+      title="Select agent or team"
       layout={controller.layout()}
       query={controller.query()}
       count={controller.items().length}

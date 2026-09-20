@@ -2627,7 +2627,7 @@ test("direct agent panel shows eligible agents and marks the current agent", asy
     await app.renderOnce()
     const frame = app.captureCharFrame()
 
-    expect(frame).toContain("Select agent")
+    expect(frame).toContain("Select agent or team")
     expect(frame).toContain("build")
     expect(frame).toContain("review")
     expect(frame).toContain("Review changes")
