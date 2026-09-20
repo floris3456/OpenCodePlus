@@ -251,13 +251,16 @@ test("team rows carry toggle actions and read enabled state as on/off", () => {
   expect(enabled?.kind).toBe("team")
   expect(enabled?.label).toBe("crew")
   expect(enabled?.depth).toBe(2)
-  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+  // Project and global teams are deletable through team.delete; the built-in
+  // Defaults teams below stay non-deletable.
+  expect(enabled?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: true, split: false, pin: false })
   expect(enabled?.address).toBeUndefined()
   expect(enabled?.badges.state).toBe("on")
   const disabled = nodes.find((node) => node.id === "team:global:crew")
   expect(disabled?.kind).toBe("team")
   expect(disabled?.depth).toBe(2)
   expect(disabled?.actions?.toggle).toBe(true)
+  expect(disabled?.actions?.remove).toBe(true)
   expect(disabled?.badges.state).toBe("off")
   // Same team name at different levels stays two distinct rows.
   expect(enabled?.id).not.toBe(disabled?.id)
