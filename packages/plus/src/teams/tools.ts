@@ -10,7 +10,31 @@ import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, type RunRecord } from "./run.js"
-import { Brief, FollowupBudget, Head, Report, RunID, RunState } from "./schema.js"
+import {
+  Brief,
+  CheckInput,
+  CheckpointInput,
+  DiffInput,
+  ExaCodeSearchInput,
+  FollowupInput,
+  GetContextInput,
+  IntegrateInput,
+  ListInput,
+  MetricsInput,
+  PlanHandoffInput,
+  PrepareInput,
+  Report,
+  ResumeInput,
+  ReviewInput,
+  SetChecksInput,
+  ShutdownRequestInput,
+  StatusInput,
+  StopInput,
+  SupersedeInput,
+  TavilyExtractInput,
+  TavilySearchInput,
+  WaitInput,
+} from "./schema.js"
 
 const namespace = "team"
 const origin = { type: "plugin", name: "opencode.plus" } as const
@@ -40,145 +64,6 @@ const ExaCodeSearchDescription =
 const TavilySearchDescription = "Search the web via Tavily with scored snippets.\nPrefer specific queries under 400 chars."
 const TavilyExtractDescription =
   "Extract clean content from up to 20 page URLs.\nProvide a query with chunks_per_source to return only the most relevant chunks and avoid context bloat."
-
-const FollowupInput = Schema.Struct({
-  run: RunID,
-  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
-  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)),
-  delivery: Schema.optional(Schema.Literals(["now", "queue"])),
-  budget: Schema.optional(FollowupBudget),
-})
-
-const ReviewInput = Schema.Struct({
-  requestID: Schema.String,
-  expectedHead: Head,
-  completion: Schema.String.check(Schema.isMinLength(40), Schema.isMaxLength(3000)),
-  previous: Schema.optional(Schema.Union([Schema.Literal("latest"), RunID, Schema.Literal("none")])),
-  scope: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(40))),
-})
-
-const IntegrateInput = Schema.Struct({
-  run: RunID,
-  expectedParentHead: Head,
-})
-
-const CheckpointInput = Schema.Struct({
-  expectedHead: Head,
-  files: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
-  message: Schema.String.check(Schema.isMaxLength(300)),
-})
-
-const SetChecksInput = Schema.Struct({
-  checks: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      argv: Schema.Array(Schema.String),
-      cwd: Schema.optional(Schema.String),
-    }),
-  ),
-})
-
-const SupersedeInput = Schema.Struct({
-  run: RunID,
-  reason: Schema.String.check(Schema.isMinLength(10), Schema.isMaxLength(500)),
-  waitMs: Schema.optional(Schema.Number),
-})
-
-const ShutdownRequestInput = Schema.Struct({
-  run: RunID,
-  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
-})
-
-const StopInput = Schema.Struct({
-  run: RunID,
-})
-
-const ResumeInput = Schema.Struct({
-  run: RunID,
-})
-
-const PrepareInput = Schema.Struct({
-  cwd: Schema.optional(Schema.String),
-})
-
-const PlanHandoffInput = Schema.Struct({
-  requestID: Schema.String,
-  planFile: Schema.String,
-  role: Schema.optional(Schema.Literals(["opus-orchestrator", "sol-orchestrator"])),
-  repo: Schema.optional(Schema.String),
-  base: Schema.optional(Schema.String),
-  authorization: Schema.Literal(true),
-})
-
-const StatusInput = Schema.Struct({
-  runs: Schema.optional(Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20))),
-})
-
-const WaitInput = Schema.Struct({
-  runs: Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
-  timeoutMs: Schema.optional(Schema.Number),
-  until: Schema.optional(Schema.Literals(["settled", "idle"])),
-})
-
-const DiffInput = Schema.Struct({
-  run: RunID,
-  from: Schema.optional(Schema.Union([Head, Schema.Literal("base"), Schema.Literal("parent")])),
-  paths: Schema.optional(Schema.Array(Schema.String)),
-  maxBytes: Schema.optional(Schema.Number),
-})
-
-const ListInput = Schema.Struct({
-  all: Schema.optional(Schema.Boolean),
-  role: Schema.optional(Schema.String),
-  state: Schema.optional(RunState),
-  parent: Schema.optional(RunID),
-})
-
-const GetContextInput = Schema.Struct({})
-
-const CheckInput = Schema.Struct({
-  id: Schema.String.check(Schema.isMinLength(1)),
-})
-
-const MetricsInput = Schema.Struct({
-  scope: Schema.optional(Schema.Literals(["self", "tree", "namespace"])),
-  since: Schema.optional(Schema.String),
-})
-
-const ExaContentsInput = Schema.Struct({
-  text: Schema.optional(Schema.Union([Schema.Boolean, Schema.Struct({ maxCharacters: Schema.Number })])),
-  highlights: Schema.optional(Schema.Boolean),
-  summary: Schema.optional(Schema.Boolean),
-})
-
-const ExaCodeSearchInput = Schema.Struct({
-  query: Schema.String.check(Schema.isMinLength(1)),
-  type: Schema.optional(Schema.Literals(["fast", "auto", "neural", "keyword"])),
-  numResults: Schema.optional(Schema.Number),
-  includeDomains: Schema.optional(Schema.Array(Schema.String)),
-  excludeDomains: Schema.optional(Schema.Array(Schema.String)),
-  startPublishedDate: Schema.optional(Schema.String),
-  endPublishedDate: Schema.optional(Schema.String),
-  contents: Schema.optional(ExaContentsInput),
-})
-
-const TavilySearchInput = Schema.Struct({
-  query: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(400)),
-  search_depth: Schema.optional(Schema.Literals(["ultra-fast", "fast", "basic", "advanced"])),
-  topic: Schema.optional(Schema.Literals(["general", "news", "finance"])),
-  max_results: Schema.optional(Schema.Number),
-  time_range: Schema.optional(Schema.Literals(["day", "week", "month", "year"])),
-  include_domains: Schema.optional(Schema.Array(Schema.String)),
-  exclude_domains: Schema.optional(Schema.Array(Schema.String)),
-})
-
-const TavilyExtractInput = Schema.Struct({
-  urls: Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
-  extract_depth: Schema.optional(Schema.Literals(["basic", "advanced"])),
-  query: Schema.optional(Schema.String),
-  chunks_per_source: Schema.optional(Schema.Number),
-  format: Schema.optional(Schema.Literals(["markdown", "text"])),
-})
 
 export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
   return runRegistration(ctx.tool.transform, (editor) => {
@@ -397,12 +282,12 @@ function teamOptions(name: TeamTool, codemode: boolean) {
   return { namespace, codemode, permission: `team.${name}` }
 }
 
-function runGated(
+function runGated<A>(
   name: TeamTool,
-  input: unknown,
+  input: A,
   toolCtx: Tool.Context,
   pluginCtx: Context,
-  call: (args: unknown, caller: TeamCaller) => Promise<TeamApiResult>,
+  call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
@@ -436,12 +321,12 @@ function runGated(
   })
 }
 
-function runGatedInner(
+function runGatedInner<A>(
   name: TeamTool,
-  input: unknown,
+  input: A,
   toolCtx: Tool.Context,
   pluginCtx: Context,
-  call: (args: unknown, caller: TeamCaller) => Promise<TeamApiResult>,
+  call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
   auditState: { run: string | null },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
@@ -517,7 +402,13 @@ function runGatedInner(
     yield* requireRole(owned, name)
     const caller: TeamCaller = { sessionID, agent, run: owned }
     const result = yield* Effect.promise(() => call(input, caller))
-    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    if (!result.ok) {
+      const acceptedLine =
+        result.error.accepted !== undefined ? `\naccepted: ${JSON.stringify(result.error.accepted)}` : ""
+      return yield* Effect.fail(
+        new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
+      )
+    }
     return { output: result.value }
   })
 }

@@ -851,6 +851,45 @@ badge). A created team starts disabled. Built-in teams cannot be created or
 deleted (though their members are editable through the Defaults overlay). Store
 persistence and the RPC surface are implemented.
 
+## Team tools (`teams/schema.ts`, `teams/tools.ts`)
+
+Every team tool has exactly one input schema; all of them live in
+`teams/schema.ts` and are imported by `teams/tools.ts` and by the handler that
+implements the tool. The tool layer validates the input once, against the
+registered schema; handlers receive the decoded value and never re-decode.
+`E_INPUT` is therefore unreachable from a tool call.
+
+A refusal renders as `${code}: ${message}`. When the error carries `accepted`,
+one more line follows: `accepted: ${JSON.stringify(accepted)}`. For example,
+an implementer delegate call with empty paths refuses with:
+
+```
+E_PATHS: Implementers need scope.paths (files or dir/* they may edit).
+accepted: ["packages/plus/src/*","packages/plus/test/*"]
+```
+
+`E_CHECKS` and `E_SUMMARY` are raised by the `delegate` / `set_checks` /
+`finish` handlers through `validateChecks` / `validateSummary`, not by schema
+filters, and both carry `accepted`.
+
+Error codes carrying `accepted` today:
+- `E_PATHS`: valid scope paths array (`["packages/plus/src/*","packages/plus/test/*"]`)
+- `E_ROLE`: allowed target role object (`{"role":"opus-orchestrator"}`)
+- `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
+- `E_SUMMARY`: summary length guidance (`"a summary of ≤15 lines"`)
+- `E_TIMEOUT_MIN`: minimum timeout object (`{"timeoutMs":10000}`)
+- `E_SPARK`: spark delegation example (`{"reason":"...","paths":["src/a.ts"],"checks":1}`)
+- `E_REASON`: orchestrator reason example (`{"reason":"3 independent packages, each needs its own workers"}`)
+- `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
+- `E_MESSAGE`: conventional commit example (`"fix: apply agent filter in query"`)
+- `E_BASE`: valid base ref (`"ocp-main"`)
+- `E_REPO`: caller's repository key
+- `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
+- `E_BOUNDS`: bounds action guidance (`"call wait first"` or `"raise bounds.members in policy"`)
+- `E_REQUEST_ID`: reuse guidance (`"pick a new requestID"`)
+- `E_TOO_LONG`: brief length guidance (`"pass briefFile"`)
+- `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
+
 ## §11 Tools, log, and query
 
 Agent-facing Code Mode namespace `instructions` (`teaching.ts` pins the

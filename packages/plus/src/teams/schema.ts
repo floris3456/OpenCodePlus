@@ -79,31 +79,19 @@ function checkViolation(check: {
   return undefined
 }
 
-const CheckBase = Schema.Struct({
+export const Check = Schema.Struct({
   id: Schema.String,
   argv: Schema.Array(Schema.String),
   cwd: Schema.optional(Schema.String),
 })
-
-export const Check = CheckBase.check(Schema.makeFilter((c) => checkViolation(c) ?? undefined))
 export type Check = typeof Check.Type
 
-export const ChecksArray = Schema.Array(Check).check(
-  Schema.isMaxLength(12, { message: "E_CHECKS: Use at most 12 focused checks." }),
-  Schema.makeFilter((checks) => {
-    const seen = new Set<string>()
-    for (const c of checks) {
-      if (seen.has(c.id)) return "Checks need distinct short IDs."
-      seen.add(c.id)
-    }
-    return undefined
-  }),
-)
+export const ChecksArray = Schema.Array(Check)
 export type ChecksArray = typeof ChecksArray.Type
 
 // Throws a ToolError-shaped object on any failure. The message is the
 // underlying rule text; accepted is the documented valid example.
-export function validateChecks(checks: Check[]): void {
+export function validateChecks(checks: readonly Check[] | Check[]): void {
   if (checks.length > 12)
     throw toolError(E_CHECKS, "E_CHECKS: Use at most 12 focused checks.", {
       id: CHECKS_ACCEPTED.id,
@@ -181,21 +169,20 @@ export const Finding = Schema.Struct({
 })
 export type Finding = typeof Finding.Type
 
-function summaryViolation(summary: string): string | undefined {
+export function validateSummary(summary: string): void {
   const lines = summary.split("\n").length
-  if (lines <= 15) return undefined
-  return (
-    `E_SUMMARY: summary is ${lines} lines (max 15). ` +
-    "Detail goes to the report file automatically; keep the summary to what the parent must act on."
-  )
+  if (lines > 15) {
+    throw toolError(
+      "E_SUMMARY",
+      `summary is ${lines} lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.`,
+      "a summary of ≤15 lines",
+    )
+  }
 }
 
 export const Report = Schema.Struct({
   status: Schema.Literals(["done", "done_with_concerns", "blocked", "needs_context", "rejected"]),
-  summary: Schema.String.check(
-    Schema.isMaxLength(1500),
-    Schema.makeFilter((summary) => summaryViolation(summary) ?? undefined),
-  ),
+  summary: Schema.String.check(Schema.isMaxLength(1500)),
   concerns: field(
     Schema.Array(Schema.String.check(Schema.isMaxLength(300))).check(Schema.isMaxLength(10)),
     () => [],
@@ -570,3 +557,160 @@ export type ToolError = typeof ToolError.Type
 export function toolError(code: string, message: string, accepted?: unknown): ToolError {
   return accepted === undefined ? { code, message } : { code, message, accepted }
 }
+
+// Tool input schemas (docs/team-v2/03-tools.md). Every tool has exactly one
+// input schema, exported from here and shared between registration and handlers.
+export const FollowupInput = Schema.Struct({
+  run: RunID,
+  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)),
+  delivery: Schema.optional(Schema.Literals(["now", "queue"])),
+  budget: Schema.optional(FollowupBudget),
+})
+export type FollowupInput = typeof FollowupInput.Type
+
+export const ReviewInput = Schema.Struct({
+  requestID: Schema.String,
+  expectedHead: Head,
+  completion: Schema.String.check(Schema.isMinLength(40), Schema.isMaxLength(3000)),
+  previous: Schema.optional(Schema.Union([Schema.Literal("latest"), RunID, Schema.Literal("none")])),
+  scope: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(40))),
+})
+export type ReviewInput = typeof ReviewInput.Type
+
+export const IntegrateInput = Schema.Struct({
+  run: RunID,
+  expectedParentHead: Head,
+})
+export type IntegrateInput = typeof IntegrateInput.Type
+
+export const CheckpointInput = Schema.Struct({
+  expectedHead: Head,
+  files: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
+  message: Schema.String.check(Schema.isMaxLength(300)),
+})
+export type CheckpointInput = typeof CheckpointInput.Type
+
+export const SetChecksInput = Schema.Struct({
+  checks: ChecksArray,
+})
+export type SetChecksInput = typeof SetChecksInput.Type
+
+export const SupersedeInput = Schema.Struct({
+  run: RunID,
+  reason: Schema.String.check(Schema.isMinLength(10), Schema.isMaxLength(500)),
+  waitMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(120000))),
+})
+export type SupersedeInput = typeof SupersedeInput.Type
+
+export const ShutdownRequestInput = Schema.Struct({
+  run: RunID,
+  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
+})
+export type ShutdownRequestInput = typeof ShutdownRequestInput.Type
+
+export const StopInput = Schema.Struct({
+  run: RunID,
+})
+export type StopInput = typeof StopInput.Type
+
+export const ResumeInput = Schema.Struct({
+  run: RunID,
+})
+export type ResumeInput = typeof ResumeInput.Type
+
+export const PrepareInput = Schema.Struct({
+  cwd: Schema.optional(Schema.String),
+})
+export type PrepareInput = typeof PrepareInput.Type
+
+export const PlanHandoffInput = Schema.Struct({
+  requestID: Schema.String,
+  planFile: Schema.String,
+  role: Schema.optional(Schema.Literals(["opus-orchestrator", "sol-orchestrator"])),
+  repo: Schema.optional(Schema.String),
+  base: Schema.optional(Schema.String),
+  authorization: Schema.Literal(true),
+})
+export type PlanHandoffInput = typeof PlanHandoffInput.Type
+
+export const StatusInput = Schema.Struct({
+  runs: Schema.optional(Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20))),
+})
+export type StatusInput = typeof StatusInput.Type
+
+export const WaitInput = Schema.Struct({
+  runs: Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+  timeoutMs: Schema.optional(Schema.Number),
+  until: Schema.optional(Schema.Literals(["settled", "idle"])),
+})
+export type WaitInput = typeof WaitInput.Type
+
+export const DiffInput = Schema.Struct({
+  run: RunID,
+  from: Schema.optional(Schema.Union([Head, Schema.Literal("base"), Schema.Literal("parent")])),
+  paths: Schema.optional(Schema.Array(Schema.String)),
+  maxBytes: Schema.optional(Schema.Number),
+})
+export type DiffInput = typeof DiffInput.Type
+
+export const ListInput = Schema.Struct({
+  all: Schema.optional(Schema.Boolean),
+  role: Schema.optional(Schema.String),
+  state: Schema.optional(RunState),
+  parent: Schema.optional(RunID),
+})
+export type ListInput = typeof ListInput.Type
+
+export const GetContextInput = Schema.Struct({})
+export type GetContextInput = typeof GetContextInput.Type
+
+export const CheckInput = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1)),
+})
+export type CheckInput = typeof CheckInput.Type
+
+export const MetricsInput = Schema.Struct({
+  scope: Schema.optional(Schema.Literals(["self", "tree", "namespace"])),
+  since: Schema.optional(Schema.String),
+})
+export type MetricsInput = typeof MetricsInput.Type
+
+export const ExaContentsInput = Schema.Struct({
+  text: Schema.optional(Schema.Union([Schema.Boolean, Schema.Struct({ maxCharacters: Schema.Number })])),
+  highlights: Schema.optional(Schema.Boolean),
+  summary: Schema.optional(Schema.Boolean),
+})
+export type ExaContentsInput = typeof ExaContentsInput.Type
+
+export const ExaCodeSearchInput = Schema.Struct({
+  query: Schema.String.check(Schema.isMinLength(1)),
+  type: Schema.optional(Schema.Literals(["fast", "auto", "neural", "keyword"])),
+  numResults: Schema.optional(Schema.Number),
+  includeDomains: Schema.optional(Schema.Array(Schema.String)),
+  excludeDomains: Schema.optional(Schema.Array(Schema.String)),
+  startPublishedDate: Schema.optional(Schema.String),
+  endPublishedDate: Schema.optional(Schema.String),
+  contents: Schema.optional(ExaContentsInput),
+})
+export type ExaCodeSearchInput = typeof ExaCodeSearchInput.Type
+
+export const TavilySearchInput = Schema.Struct({
+  query: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(400)),
+  search_depth: Schema.optional(Schema.Literals(["ultra-fast", "fast", "basic", "advanced"])),
+  topic: Schema.optional(Schema.Literals(["general", "news", "finance"])),
+  max_results: Schema.optional(Schema.Number),
+  time_range: Schema.optional(Schema.Literals(["day", "week", "month", "year"])),
+  include_domains: Schema.optional(Schema.Array(Schema.String)),
+  exclude_domains: Schema.optional(Schema.Array(Schema.String)),
+})
+export type TavilySearchInput = typeof TavilySearchInput.Type
+
+export const TavilyExtractInput = Schema.Struct({
+  urls: Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+  extract_depth: Schema.optional(Schema.Literals(["basic", "advanced"])),
+  query: Schema.optional(Schema.String),
+  chunks_per_source: Schema.optional(Schema.Number),
+  format: Schema.optional(Schema.Literals(["markdown", "text"])),
+})
+export type TavilyExtractInput = typeof TavilyExtractInput.Type
