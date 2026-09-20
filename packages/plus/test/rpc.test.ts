@@ -3,11 +3,13 @@ import type { Rpc } from "@opencode/schema/rpc"
 import { Schema } from "effect"
 import { Effect, Exit } from "effect"
 import fs from "node:fs/promises"
+import syncFs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { applySessionModel, createHandlers, createState, type PlusState } from "../src/index.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
-import { fingerprint } from "../src/instructions/model.js"
+import { fingerprint, resolve, scopesOf, type CustomizationRecord } from "../src/instructions/model.js"
+import { expandedTree } from "../src/instructions/tree.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
@@ -946,6 +948,230 @@ test("skill delete removes the project SKILL.md directory and raises declared er
   await expectDeclaredError(handlers["skill.delete"]({ id: "ghost" }, throwingContext(missing)), missing, "skill.missing")
   const invalid: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["skill.delete"]({ id: "../evil" }, throwingContext(invalid)), invalid, "skill.invalid")
+})
+
+test("rule remove drops customizations so re-adding the rule reads enabled:true", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    }),
+    createState(),
+  )
+
+  await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: null, tool: "shell", id: "custom", label: "Custom rule", patterns: ["danger *"] },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const permItem = snapshot.items.find((item) => item.id === "perm:shell:custom")
+  expect(permItem).toBeDefined()
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          ...snapshot.records,
+          record("perm:shell:custom", {
+            state: "off",
+            basedOn: permItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(mutated.snapshot.records.some((r) => r.type === "customization" && r.item === "perm:shell:custom")).toBe(true)
+
+  await Effect.runPromise(
+    handlers["rule.remove"](
+      { level: "project", agent: null, tool: "shell", id: "custom" },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshotAfterRemove = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshotAfterRemove.records.some((r) => (r as { item?: string }).item === "perm:shell:custom")).toBe(false)
+
+  await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: null, tool: "shell", id: "custom", label: "Custom rule", patterns: ["danger *"] },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshotAfterReAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshotAfterReAdd.records.some((r) => (r as { item?: string }).item === "perm:shell:custom")).toBe(false)
+  const readdedItem = snapshotAfterReAdd.items.find((item) => item.id === "perm:shell:custom")
+  expect(readdedItem).toBeDefined()
+  expect(readdedItem?.enabled).toBe(true)
+
+  const row = expandedTree({
+    items: snapshotAfterReAdd.items.map(itemOf),
+    records: snapshotAfterReAdd.records.map(recordOf),
+    agents: snapshotAfterReAdd.agents,
+  }).find((node) => node.address?.item === "perm:shell:custom")
+  expect(row).toBeDefined()
+  expect(row?.badges.state).toBe("on")
+
+  const resolved = resolve({
+    upstream: itemOf(readdedItem!),
+    records: snapshotAfterReAdd.records
+      .map(recordOf)
+      .filter((r): r is CustomizationRecord => r.type === "customization"),
+    splits: [],
+    scopes: scopesOf(snapshotAfterReAdd.agents),
+    address: { level: "project", agent: null, item: "perm:shell:custom", section: null },
+  })
+  expect(resolved.enabled).toBe(true)
+})
+
+test("skill delete drops item-addressed customizations so re-created skill resolves new body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+
+  const syncDiskSkills = (directory: string) => {
+    const skillRoot = path.join(directory, ".opencode", "skill")
+    const skills: ReturnType<typeof skillInfo>[] = []
+    try {
+      if (syncFs.existsSync(skillRoot)) {
+        const entries = syncFs.readdirSync(skillRoot, { withFileTypes: true })
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue
+          const file = path.join(skillRoot, entry.name, "SKILL.md")
+          if (!syncFs.existsSync(file)) continue
+          const text = syncFs.readFileSync(file, "utf8")
+          const body = text.replace(/^---[\s\S]*?---\r?\n*/, "").trimEnd()
+          skills.push(skillInfo(entry.name, body, file))
+        }
+      }
+    } catch {}
+    return skills
+  }
+
+  const baseCtx = fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] })
+  const installed: Array<(editor: any) => void> = []
+  const currentSkills = new Map<string, ReturnType<typeof skillInfo>>()
+
+  function rebuild() {
+    currentSkills.clear()
+    for (const s of syncDiskSkills(project)) {
+      currentSkills.set(String(s.id), s)
+    }
+    const editor = {
+      list: () => Array.from(currentSkills.values()),
+      get: (id: string) => currentSkills.get(id),
+      add: (s: ReturnType<typeof skillInfo>) => {
+        currentSkills.set(String(s.id), s)
+      },
+      update: (id: string, update: (s: any) => void) => {
+        const current = currentSkills.get(id)
+        if (current) update(current)
+      },
+      remove: (id: string) => {
+        currentSkills.delete(id)
+      },
+    }
+    for (const transform of installed) transform(editor)
+  }
+
+  const skill = {
+    reload: () => Effect.void,
+    list: () =>
+      Effect.sync(() => {
+        rebuild()
+        return {
+          location: baseCtx.location,
+          data: Array.from(currentSkills.values()),
+        }
+      }),
+    transform: (callback: any) =>
+      Effect.sync(() => {
+        installed.push(callback)
+        rebuild()
+        return {
+          dispose: Effect.sync(() => {
+            const index = installed.indexOf(callback)
+            if (index !== -1) installed.splice(index, 1)
+            rebuild()
+          }),
+        }
+      }),
+  }
+  const ctx = { ...baseCtx, skill }
+  const handlers = createHandlers(ctx, createState())
+
+  await Effect.runPromise(
+    handlers["skill.create"]({ name: "notes", body: "Original body." }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const skillItem = snapshot.items.find((item) => item.id === "skill:notes")
+  expect(skillItem).toBeDefined()
+  expect(skillItem?.text).toBe("Original body.")
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          record("skill:notes", {
+            text: "Overridden body.",
+            basedOn: skillItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(mutated.snapshot.records.some((r) => r.type === "customization" && r.item === "skill:notes")).toBe(true)
+
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.skills.find((s) => s.id === "notes")?.content).toBe("Overridden body.")
+
+  await Effect.runPromise(handlers["skill.delete"]({ id: "notes" }, throwingContext({})))
+
+  const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshotAfterDelete.records.some((r) => (r as { item?: string }).item === "skill:notes")).toBe(false)
+  expect(snapshotAfterDelete.items.some((item) => item.id === "skill:notes")).toBe(false)
+
+  await Effect.runPromise(
+    handlers["skill.create"]({ name: "notes", body: "Different brand new body." }, throwingContext({})),
+  )
+
+  const forAlphaAfter = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlphaAfter.skills.find((s) => s.id === "notes")?.content).toBe("Different brand new body.")
+
+  const snapshotAfterRecreate = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshotAfterRecreate.records.some((r) => (r as { item?: string }).item === "skill:notes")).toBe(false)
+  const recreatedItem = snapshotAfterRecreate.items.find((item) => item.id === "skill:notes")
+  expect(recreatedItem).toBeDefined()
+  expect(recreatedItem?.text).toBe("Different brand new body.")
+
+  const resolved = resolve({
+    upstream: itemOf(recreatedItem!),
+    records: snapshotAfterRecreate.records
+      .map(recordOf)
+      .filter((r): r is CustomizationRecord => r.type === "customization"),
+    splits: [],
+    scopes: scopesOf(snapshotAfterRecreate.agents),
+    address: { level: "project", agent: "alpha", item: "skill:notes", section: null },
+  })
+  expect(resolved.text).toBe("Different brand new body.")
 })
 
 test("base create refuses a builtin id so user templates can never shadow the host", async () => {

@@ -28,7 +28,7 @@ import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { fingerprint, hasModelActiveAt, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
+import { fingerprint, hasModelActiveAt, permItemId, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
@@ -696,6 +696,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeItemRecords(directory, freshLoaded, `skill:${result.id}`)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` })
       return { ok: true as const, value: { id: result.id, path: result.path } }
@@ -1551,6 +1554,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
         }
       }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeItemRecords(directory, freshLoaded, permItemId(validated.tool, validated.id))
       if (saved.changed)
         await append(existing.level === "project" ? projectLogPath(directory) : globalLogPath(), {
           ts: new Date().toISOString(),
@@ -2239,6 +2245,39 @@ function mergeModelInto(
   const freshTargets = new Set(modelsOf(kept).map((record) => modelRecordTarget(record)))
   const added = [...nextModels.values()].filter((record) => !freshTargets.has(modelRecordTarget(record)))
   return [...kept, ...added]
+}
+
+async function removeItemRecords(
+  directory: string,
+  loaded: LoadedStores,
+  item: string,
+): Promise<{ ok: true; changed: boolean } | { ok: false }> {
+  const attempt = (records: readonly StoredRecord[]) => {
+    const drop = (record: StoredRecord) =>
+      (record.type === "customization" || record.type === "split") && record.item === item
+    if (!records.some(drop)) return undefined
+    return records.filter((record) => !drop(record)) as readonly StoredRecord[]
+  }
+  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
+    changed.project || changed.global
+  const first = attempt(loaded.records)
+  if (first === undefined) return { ok: true, changed: false }
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: first,
+  })
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed) }
+  const fresh = await load(directory)
+  const second = attempt(fresh.records)
+  if (second === undefined) return { ok: true, changed: false }
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: second,
+  })
+  if (retried.ok) return { ok: true, changed: changedOf(retried.changed) }
+  return { ok: false }
 }
 
 async function saveRuleRecords(
