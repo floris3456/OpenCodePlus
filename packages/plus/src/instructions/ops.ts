@@ -347,7 +347,14 @@ export function reset(input: MemoInput, rowId: string): OpResult {
   if (node.address === undefined) return { refusal: `"${node.label}" cannot be reset` }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  if (node.actions?.reset !== true) return { refusal: `"${node.label}" has no override to reset` }
+  if (node.actions?.reset !== true) {
+    const hasStored = chain.customizations.some((record) => sameAddress(record, chain.address))
+    return {
+      refusal: hasStored
+        ? `"${node.label}" cannot be reset; set state "on" to clear the stored override`
+        : `"${node.label}" has no override to reset`,
+    }
+  }
   // Clear through merge's removal path (null fields drop the record) so row
   // identity stays in merge's sameNode check instead of a second filter.
   const next = merge(

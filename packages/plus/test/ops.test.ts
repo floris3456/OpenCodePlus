@@ -779,3 +779,49 @@ test("toggle, reset, and model activation under a team special write records car
   expect(modelRec?.team).toEqual({ level: "project", team: "crew" })
   expect(modelRec?.active).toBe(true)
 })
+
+test("reset refusal distinguishes stored override on non-resettable row from absent override", () => {
+  const withExecute = baseInput({
+    items: [
+      ...baseInput().items,
+      {
+        id: "tool:execute",
+        kind: "tool",
+        group: "native",
+        title: "execute",
+        text: "Host-owned Code Mode entry point",
+        enabled: true,
+        fingerprint: "fp-execute",
+        codemode: false,
+        execute: true,
+      },
+    ],
+  })
+  const executeNodes = expandedTree(withExecute)
+  const execute = executeNodes.find((candidate) => candidate.address?.item === "tool:execute")
+  if (!execute || !execute.address) throw new Error("missing execute row")
+
+  // 1. A tool:execute row carrying a stored state: "off" customization record
+  const record: CustomizationRecord = {
+    type: "customization",
+    level: execute.address.level,
+    agent: execute.address.agent,
+    item: execute.address.item,
+    section: execute.address.section,
+    state: "off",
+    basedOn: "fp-execute",
+    updated: "2026-09-14T00:00:00.000Z",
+  }
+  const inputWithRecord = { ...withExecute, records: [record] }
+  const storedResult = reset(inputWithRecord, execute.id)
+  if (!("refusal" in storedResult)) throw new Error("expected refusal for stored record on execute row")
+  expect(storedResult.refusal).not.toContain("has no override to reset")
+  expect(storedResult.refusal).toContain('set state "on" to clear the stored override')
+  expect(storedResult.refusal).toBe(`"${execute.label}" cannot be reset; set state "on" to clear the stored override`)
+
+  // 2. A clean non-resettable row with no stored record
+  const cleanResult = reset(withExecute, execute.id)
+  if (!("refusal" in cleanResult)) throw new Error("expected refusal for clean non-resettable row")
+  expect(cleanResult.refusal).toBe(`"${execute.label}" has no override to reset`)
+})
+
