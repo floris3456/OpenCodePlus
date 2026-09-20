@@ -282,12 +282,12 @@ function teamOptions(name: TeamTool, codemode: boolean) {
   return { namespace, codemode, permission: `team.${name}` }
 }
 
-function runGated(
+function runGated<A>(
   name: TeamTool,
-  input: unknown,
+  input: A,
   toolCtx: Tool.Context,
   pluginCtx: Context,
-  call: (args: any, caller: TeamCaller) => Promise<TeamApiResult>,
+  call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
@@ -321,12 +321,12 @@ function runGated(
   })
 }
 
-function runGatedInner(
+function runGatedInner<A>(
   name: TeamTool,
-  input: unknown,
+  input: A,
   toolCtx: Tool.Context,
   pluginCtx: Context,
-  call: (args: any, caller: TeamCaller) => Promise<TeamApiResult>,
+  call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
   auditState: { run: string | null },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
