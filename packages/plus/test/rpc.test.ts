@@ -8,6 +8,7 @@ import path from "node:path"
 import { applySessionModel, createHandlers, createState, type PlusState } from "../src/index.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint } from "../src/instructions/model.js"
+import { expandedTree } from "../src/instructions/tree.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
@@ -946,6 +947,190 @@ test("skill delete removes the project SKILL.md directory and raises declared er
   await expectDeclaredError(handlers["skill.delete"]({ id: "ghost" }, throwingContext(missing)), missing, "skill.missing")
   const invalid: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["skill.delete"]({ id: "../evil" }, throwingContext(invalid)), invalid, "skill.invalid")
+})
+
+test("rule remove drops customizations so re-adding the rule reads enabled:true", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    }),
+    createState(),
+  )
+
+  await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: null, tool: "shell", id: "custom", label: "Custom rule", patterns: ["danger *"] },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const permItem = snapshot.items.find((item) => item.id === "perm:shell:custom")
+  expect(permItem).toBeDefined()
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          ...snapshot.records,
+          record("perm:shell:custom", {
+            state: "off",
+            basedOn: permItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(mutated.snapshot.records.some((r) => r.type === "customization" && r.item === "perm:shell:custom")).toBe(true)
+
+  await Effect.runPromise(
+    handlers["rule.remove"](
+      { level: "project", agent: null, tool: "shell", id: "custom" },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshotAfterRemove = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterRemove.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "perm:shell:custom",
+    ),
+  ).toBe(false)
+
+  await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: null, tool: "shell", id: "custom", label: "Custom rule", patterns: ["danger *"] },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshotAfterReAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterReAdd.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "perm:shell:custom",
+    ),
+  ).toBe(false)
+  const readdedItem = snapshotAfterReAdd.items.find((item) => item.id === "perm:shell:custom")
+  expect(readdedItem).toBeDefined()
+  expect(readdedItem?.enabled).toBe(true)
+
+  const row = expandedTree({
+    items: snapshotAfterReAdd.items.map(itemOf),
+    records: snapshotAfterReAdd.records.map(recordOf),
+    agents: snapshotAfterReAdd.agents,
+  }).find((node) => node.address?.item === "perm:shell:custom")
+  expect(row).toBeDefined()
+  expect(row?.badges.state).toBe("on")
+})
+
+test("skill delete drops item-addressed customizations so re-created skill resolves new body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+
+  const location = fullContext({ directory: project }).location
+  const agents = agentHarness([agentInfo("alpha", "upstream role")])
+  const tools = toolHarness([])
+  const testSkills = new Map<string, ReturnType<typeof skillInfo>>()
+  const skillState = skillHarness([])
+
+  const skill = {
+    ...skillState.domain,
+    list: () =>
+      Effect.succeed({
+        location,
+        data: Array.from(new Map([...testSkills, ...skillState.state]).values()),
+      }),
+    transform: (callback: Parameters<typeof skillState.domain.transform>[0]) =>
+      skillState.domain.transform((editor) => {
+        callback({
+          ...editor,
+          get: (id) => editor.get(id) ?? testSkills.get(id),
+        })
+      }),
+  }
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: tools.domain,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const handlers = createHandlers(ctx, createState())
+
+  const created = await Effect.runPromise(
+    handlers["skill.create"]({ name: "notes", body: "Original body." }, throwingContext({})),
+  )
+  testSkills.set("notes", skillInfo("notes", "Original body.", created.path))
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const skillItem = snapshot.items.find((item) => item.id === "skill:notes")
+  expect(skillItem).toBeDefined()
+  expect(skillItem?.text).toBe("Original body.")
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          record("skill:notes", {
+            text: "Overridden body.",
+            basedOn: skillItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(
+    mutated.snapshot.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "skill:notes",
+    ),
+  ).toBe(true)
+
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.skills.find((s) => s.id === "notes")?.content).toBe("Overridden body.")
+
+  await Effect.runPromise(handlers["skill.delete"]({ id: "notes" }, throwingContext({})))
+  testSkills.delete("notes")
+
+  const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterDelete.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "skill:notes",
+    ),
+  ).toBe(false)
+  expect(snapshotAfterDelete.items.some((item) => item.id === "skill:notes")).toBe(false)
+
+  const recreated = await Effect.runPromise(
+    handlers["skill.create"]({ name: "notes", body: "Different brand new body." }, throwingContext({})),
+  )
+  testSkills.set("notes", skillInfo("notes", "Different brand new body.", recreated.path))
+
+  const forAlphaAfter = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlphaAfter.skills.find((s) => s.id === "notes")?.content).toBe("Different brand new body.")
+
+  const snapshotAfterRecreate = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterRecreate.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "skill:notes",
+    ),
+  ).toBe(false)
+  const recreatedItem = snapshotAfterRecreate.items.find((item) => item.id === "skill:notes")
+  expect(recreatedItem).toBeDefined()
+  expect(recreatedItem?.text).toBe("Different brand new body.")
 })
 
 test("base create refuses a builtin id so user templates can never shadow the host", async () => {
