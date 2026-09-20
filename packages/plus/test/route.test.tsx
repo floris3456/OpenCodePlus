@@ -1003,13 +1003,18 @@ test("key availability follows the selected row", async () => {
     expect(rootBinds).not.toContain("space")
     expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
-    // Agent row: removable, so d appears but space still does not. The agent
-    // hides under its Agents group; the initial Implementer frame only gates
-    // the mount, then gotoAgent reveals the row.
+    // Agent row: removable, so d appears; space selects the agent (the same
+    // gesture as the picker), never a record toggle — no mutate is sent. The
+    // agent hides under its Agents group; the initial Implementer frame only
+    // gates the mount, then gotoAgent reveals the row.
     await gotoAgent(fixture, "Implementer")
     const agentBinds = binds(fixture)
     expect(agentBinds).toContain("d")
-    expect(agentBinds).not.toContain("space")
+    expect(agentBinds).toContain("space")
+    expect(fixture.captureCharFrame()).toContain("space select")
+    dispatch(fixture, "space")
+    expect(fixture.fake.agentSelects).toEqual(["Implementer"])
+    expect(fixture.fake.mutateInputs.length).toBe(0)
   } finally {
     fixture.destroy()
   }
@@ -3104,6 +3109,51 @@ test("space on a Models row under a team special persists the team-scoped record
     expect(teamModel).toBeDefined()
     expect(teamModel?.team).toEqual({ level: "project", team: "crew" })
     expect(teamModel?.active).toBe(true)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("space on an Agents-group agent row selects it through the core picker, never on special or team member rows", async () => {
+  const snapshot: Snapshot = {
+    ...createSnapshot({
+      agents: [
+        { id: "alpha", scope: "project" as const, origin: "user" as const, fileBacked: true },
+        { id: "explore", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
+      ],
+    }),
+    teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["mate"] }],
+  }
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  try {
+    await gotoAgent(fixture, "alpha")
+    expect(binds(fixture)).toContain("space")
+    expect(fixture.captureCharFrame()).toContain("space select")
+    expect(dispatch(fixture, "space")).toBe(true)
+    expect(fixture.fake.agentSelects).toEqual(["alpha"])
+    expect(fixture.fake.mutateInputs.length).toBe(0)
+
+    // Team member rows keep their own (non-select) behaviour.
+    await moveTo(fixture, "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "crew")
+    await expand(fixture)
+    await moveTo(fixture, "mate")
+    expect(binds(fixture)).not.toContain("space")
+    expect(fixture.fake.agentSelects).toEqual(["alpha"])
+
+    // Special agents are not offered by the picker: no select bind. They sit
+    // under Defaults → Agents → Native → Special.
+    await moveTo(fixture, "Defaults")
+    await moveToNext(fixture, "Agents")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "Special")
+    await expand(fixture)
+    await moveTo(fixture, "explore")
+    expect(binds(fixture)).not.toContain("space")
+    expect(fixture.fake.agentSelects).toEqual(["alpha"])
   } finally {
     fixture.destroy()
   }

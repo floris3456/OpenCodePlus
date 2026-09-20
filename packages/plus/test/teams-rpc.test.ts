@@ -10,7 +10,7 @@ import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructions/teams.js"
-import { load, type StoredRecord } from "../src/instructions/store.js"
+import { load, save, type StoredRecord } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
@@ -70,6 +70,27 @@ async function expectDeclaredError(
 }
 
 const RpcBody = Schema.toCodecJson(Schema.Struct({ output: Schema.optionalKey(Schema.Unknown) }))
+
+// Writes a team enablement straight through the store (bypassing
+// team.setEnabled's one-team-at-a-time rule) and republishes the host.
+async function coEnableTeam(
+  project: string,
+  handlers: ReturnType<typeof createHandlers>,
+  level: "project" | "global" | "defaults",
+  team: string,
+): Promise<void> {
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records.filter((record) => !(record.type === "team" && record.level === level && record.team === team)),
+      { type: "team", level, team, enabled: true, updated: UPDATED },
+    ],
+  })
+  if (!saved.ok) throw new Error("coEnableTeam: stale save")
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+}
 
 function expectRpcBody(value: unknown) {
   expect(() => Schema.encodeUnknownSync(RpcBody)({ output: value })).not.toThrow()
@@ -271,6 +292,43 @@ test("toggling a team on writes a real TeamRecord and the next snapshot reports 
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
   const reloaded = await Effect.runPromise(ctx.agent.list())
   expect(reloaded.data.some((entry) => String(entry.id) === "alpha")).toBe(false)
+})
+
+test("enabling a team disables every other enabled team across levels in one save", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
+  await writeTeamAgent(path.join(projectTeamsPath(project), "band"), "beta", "band beta body")
+  await writeTeamAgent(path.join(globalTeamsPath(), "orbit"), "gamma", "orbit gamma body")
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const enabledOf = async () => {
+    const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+    return (snapshot.teams ?? []).filter((team) => team.enabled).map((team) => `${team.level}:${team.team}`)
+  }
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  expect(await enabledOf()).toEqual(["project:crew"])
+  // A second project team takes over: crew flips off in the same save.
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "band", enabled: true }, throwingContext({})))
+  expect(await enabledOf()).toEqual(["project:band"])
+  const listed = await Effect.runPromise(ctx.agent.list())
+  expect(listed.data.some((entry) => String(entry.id) === "alpha")).toBe(false)
+  expect(listed.data.find((entry) => String(entry.id) === "beta")?.system).toBe("band beta body")
+  // A global team takes over from a project team, and vice versa.
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "orbit", enabled: true }, throwingContext({})))
+  expect(await enabledOf()).toEqual(["global:orbit"])
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  expect(await enabledOf()).toEqual(["project:crew"])
+  const stored = await load(project)
+  const teamRecords = stored.records.filter((record): record is Extract<StoredRecord, { type: "team" }> => record.type === "team")
+  expect(teamRecords.map((record) => [record.level, record.team, record.enabled]).toSorted()).toEqual([
+    ["global", "orbit", false],
+    ["project", "band", false],
+    ["project", "crew", true],
+  ])
+  // Disabling never touches the others.
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
+  expect(await enabledOf()).toEqual([])
 })
 
 test("toggling an unknown team name raises team.unknown and an invalid name raises team.invalid", async () => {
@@ -1221,8 +1279,10 @@ test("enable team with special override reaches host agent.system and agent.mode
   expect(exploreGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
   expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
 
-  // Case B: Enable project team "crew" as well -> project beats global for same team name!
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  // Case B: Enable project team "crew" as well -> project beats global for
+  // same team name. team.setEnabled keeps one team enabled, so the second
+  // enablement goes straight through the store to have both on at once.
+  await coEnableTeam(project, handlers, "project", "crew")
   const listedProject = await Effect.runPromise(ctx.agent.list())
   const exploreProject = listedProject.data.find((e) => String(e.id) === "explore")
   expect(exploreProject?.system).toBe("project explore text")

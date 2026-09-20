@@ -2006,6 +2006,11 @@ function messageOf(error: unknown): string {
 // stays a no-op. A stale save retries once against a fresh read — the toggle
 // intent is an absolute value, so re-applying it onto fresh records is safe —
 // and a second stale result reports failure to the caller.
+//
+// Exactly one team is enabled at a time, mirroring the agent picker where
+// choosing a team member makes that team the active ring: enabling a team
+// flips every other enabled team record (at any level) to disabled in the
+// same save, so the TUI never has to reconcile two "on" teams.
 async function saveTeamRecord(
   directory: string,
   loaded: LoadedStores,
@@ -2017,10 +2022,19 @@ async function saveTeamRecord(
     const existing = records.find(
       (record): record is TeamRecord => record.type === "team" && record.level === level && record.team === team,
     )
-    if (existing !== undefined && existing.enabled === enabled) return undefined
-    const next: TeamRecord = { type: "team", level, team, enabled, updated: new Date().toISOString() }
+    const others = enabled
+      ? records.filter(
+          (record): record is TeamRecord =>
+            record.type === "team" && record.enabled && !(record.level === level && record.team === team),
+        )
+      : []
+    if (existing !== undefined && existing.enabled === enabled && others.length === 0) return undefined
+    const updated = new Date().toISOString()
+    const next: TeamRecord = { type: "team", level, team, enabled, updated }
+    const isTarget = (record: StoredRecord) => record.type === "team" && record.level === level && record.team === team
     return [
-      ...records.filter((record) => !(record.type === "team" && record.level === level && record.team === team)),
+      ...records.filter((record) => !isTarget(record) && !others.includes(record as TeamRecord)),
+      ...others.map((record): TeamRecord => ({ ...record, enabled: false, updated })),
       next,
     ] as readonly StoredRecord[]
   }

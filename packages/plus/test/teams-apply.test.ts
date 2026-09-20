@@ -10,6 +10,7 @@ import { createHandlers, createState, deactivate } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { enable } from "../src/project.js"
+import { load, save } from "../src/instructions/store.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness, toolHarness } from "./harness.js"
 
@@ -55,6 +56,28 @@ function throwingContext(captured: { current?: CapturedError }): {
       throw failure
     },
   }
+}
+
+// team.setEnabled keeps exactly one team enabled. The collision tests below
+// need two teams enabled at once, so the second enablement is written straight
+// through the store and the host republished, bypassing that exclusivity.
+async function coEnableTeam(
+  project: string,
+  handlers: ReturnType<typeof createHandlers>,
+  level: "project" | "global" | "defaults",
+  team: string,
+): Promise<void> {
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records.filter((record) => !(record.type === "team" && record.level === level && record.team === team)),
+      { type: "team", level, team, enabled: true, updated: UPDATED },
+    ],
+  })
+  if (!saved.ok) throw new Error("coEnableTeam: stale save")
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
 }
 
 async function hostSystem(ctx: ReturnType<typeof fullContext>, id: string): Promise<string | undefined> {
@@ -130,7 +153,7 @@ test("a built-in member loses to a project team with the same id", async () => {
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  await coEnableTeam(project, handlers, "defaults", "ship")
   expect(await hostSystem(ctx, "shared")).toBe("crew body")
 })
 
@@ -585,7 +608,7 @@ test("a project-level role edit wins over the shipped body for a project team sh
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  await coEnableTeam(project, handlers, "defaults", "ship")
   expect(await hostSystem(ctx, "shared")).toBe("crew body")
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("shared"))
@@ -789,7 +812,7 @@ test("ownership does not transfer between teams sharing an id", async () => {
   const handlers = createHandlers(ctx, state, { builtins })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   expect(await hostSystem(ctx, "shared")).toBe(projectBody)
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
+  await coEnableTeam(project, handlers, "defaults", "ship")
   expect(await hostSystem(ctx, "shared")).toBe(projectBody)
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
   expect(await hostSystem(ctx, "shared")).toBe(regular)

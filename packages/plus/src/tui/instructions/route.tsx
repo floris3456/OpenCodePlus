@@ -26,6 +26,16 @@ function canToggle(node: TreeNode | undefined): boolean {
   return node?.address !== undefined && node?.actions?.toggle === true
 }
 
+// Agent rows under the Agents groups (never team member rows, which are kind
+// "team") can be made the current agent with space, the same gesture as
+// picking them in Select agent or team. Special agents are not selectable
+// there either, so they get no select here.
+export function selectableAgentId(node: TreeNode | undefined): string | undefined {
+  if (node?.kind !== "agent") return undefined
+  const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
+  return match?.[2]
+}
+
 function canEdit(node: TreeNode | undefined): boolean {
   return node?.address !== undefined && node?.actions?.edit === true
 }
@@ -210,9 +220,27 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     props.onClose()
   }
 
+  // Space on an Agents-group agent row makes it the current agent, exactly
+  // like choosing it under "Agents" in Select agent or team: the core picker
+  // clears any active team, so cycling returns to the normal agents. Special
+  // agents (general, explore, …) are not offered by the picker and are not
+  // selectable here either.
+  function selectableAgent(node: TreeNode | undefined): string | undefined {
+    const id = selectableAgentId(node)
+    if (id === undefined) return undefined
+    const entry = state.snapshot()?.agents.find((candidate) => candidate.id === id)
+    if (entry?.origin === "special") return undefined
+    return id
+  }
+
   function toggle() {
     const node = current()
     if (!node) return
+    const agentId = selectableAgent(node)
+    if (agentId !== undefined) {
+      props.context.ui.agents.set?.(agentId)
+      return
+    }
     void state.toggle(node)
   }
 
@@ -344,6 +372,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
     else hints.push("enter edit")
     if (canToggle(node)) hints.push("space toggle")
+    else if (selectableAgent(node) !== undefined) hints.push("space select")
     if (canPin(node)) hints.push("p pin")
     hints.push("a add")
     if (canDelete(node)) hints.push("d delete")
@@ -406,7 +435,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "return", title: "Edit or diff", group: "Instructions", run: enter },
         ...(canToggle(node)
           ? [{ bind: "space", title: "Toggle include", group: "Instructions", run: toggle }]
-          : []),
+          : selectableAgent(node) !== undefined
+            ? [{ bind: "space", title: "Select agent", group: "Instructions", run: toggle }]
+            : []),
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: togglePin }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
         { bind: "d", title: "Delete", group: "Instructions", run: remove },

@@ -99,6 +99,7 @@ export interface FakeRpc {
   readonly dialogPrompts: string[][]
   readonly dialogSelects: unknown[][]
   readonly dialogConfirms: unknown[][]
+  readonly agentSelects: string[]
 }
 
 export interface DialogScript {
@@ -157,6 +158,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     dialogPrompts: [],
     dialogSelects: [],
     dialogConfirms: [],
+    agentSelects: [],
   }
   const promptScript = [...(options.dialogs?.prompts ?? [])]
   const selectScript = [...(options.dialogs?.selects ?? [])]
@@ -317,6 +319,15 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       },
       toast: {
         show: () => {},
+      },
+      agents: {
+        groups: () => () => {},
+        activeGroup: { current: () => undefined, set: () => {} },
+        open: () => {},
+        current: () => undefined,
+        set: (id: string) => {
+          fake.agentSelects.push(id)
+        },
       },
       format: {
         path: (p: string) => p,

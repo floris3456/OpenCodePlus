@@ -212,6 +212,91 @@ test("createActiveTeam registers provider with enabled teams, tracks active team
   manager.dispose()
 })
 
+test("enabling a team from the server side activates it and selects its first installed member; a later normal-agent pick sticks", async () => {
+  const teamListeners = new Set<() => void>()
+  const [activeGroupSignal, setActiveGroupSignal] = createSignal<string | undefined>(undefined)
+  const selected: string[] = []
+  let rawStorage: Record<string, any> = { activeTeamByProject: {} }
+  const [storageState, setStorageState] = createStore<Record<string, any>>(rawStorage)
+  const fakeTeams = [
+    { level: "project" as const, team: "alpha", enabled: false, members: [{ id: "coder", mode: "primary" as const }, { id: "tester", mode: "primary" as const }] },
+    { level: "project" as const, team: "beta", enabled: false, members: [{ id: "designer", mode: "primary" as const }] },
+  ]
+  const context: any = {
+    location: { directory: "/my/project" },
+    data: {
+      location: {
+        default: () => ({ directory: "/my/project" }),
+        // coder is not installed on the host yet: the first INSTALLED member wins.
+        agent: { list: () => [{ id: "tester", mode: "primary" }, { id: "designer", mode: "primary" }, { id: "build", mode: "primary" }] },
+      },
+    },
+    client: {
+      rpc: () => ({
+        "team.list": async () => ({ teams: fakeTeams.map((t) => ({ ...t, members: t.members.map((m) => ({ ...m })) })) }),
+        events: {
+          on: (event: string, handler: () => void) => {
+            if (event === "teams.changed") teamListeners.add(handler)
+            return () => teamListeners.delete(handler)
+          },
+        },
+      }),
+    },
+    storage: {
+      store: () => [
+        storageState,
+        (mutation: (draft: any) => void) => {
+          const draft = structuredClone(rawStorage)
+          mutation(draft)
+          rawStorage = draft
+          setStorageState(draft)
+          return Promise.resolve()
+        },
+      ],
+    },
+    theme: { text: { subdued: "gray" } },
+    ui: {
+      toast: { show: () => {} },
+      slot: () => () => {},
+      agents: {
+        groups: () => () => {},
+        activeGroup: { current: () => activeGroupSignal(), set: (id: string | undefined) => setActiveGroupSignal(id) },
+        set: (id: string) => selected.push(id),
+      },
+    },
+  }
+  const manager = createActiveTeam(context)
+  await new Promise((r) => setTimeout(r, 10))
+  // Initial load with nothing enabled activates nothing.
+  expect(activeGroupSignal()).toBeUndefined()
+  expect(selected).toEqual([])
+
+  // Enable alpha (as /instructions space would): alpha becomes the active ring.
+  fakeTeams[0]!.enabled = true
+  for (const listener of teamListeners) listener()
+  await new Promise((r) => setTimeout(r, 10))
+  expect(activeGroupSignal()).toBe("team:project:alpha")
+  expect(selected).toEqual(["tester"])
+
+  // The user picks a normal agent while alpha stays enabled: an unrelated
+  // teams.changed (same enabled team) must not pull them back into alpha.
+  setActiveGroupSignal(undefined)
+  for (const listener of teamListeners) listener()
+  await new Promise((r) => setTimeout(r, 10))
+  expect(activeGroupSignal()).toBeUndefined()
+  expect(selected).toEqual(["tester"])
+
+  // Enabling beta (server flips alpha off) switches the ring to beta.
+  fakeTeams[0]!.enabled = false
+  fakeTeams[1]!.enabled = true
+  for (const listener of teamListeners) listener()
+  await new Promise((r) => setTimeout(r, 10))
+  expect(activeGroupSignal()).toBe("team:project:beta")
+  expect(selected).toEqual(["tester", "designer"])
+  expect(manager.activeTeam()?.team).toBe("beta")
+  manager.dispose()
+})
+
 test("createActiveTeam registers composer tab and hints, cleans up on dispose", async () => {
   let registeredTab: any = undefined
   let tabUnregistered = false

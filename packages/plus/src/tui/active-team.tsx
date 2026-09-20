@@ -147,6 +147,37 @@ export function createActiveTeam(context: Plugin.Context) {
       }
     })
 
+    // The server keeps exactly one team enabled (team.setEnabled disables
+    // the others), so enabling a team in /instructions is the same gesture
+    // as picking one of its members in Select agent or team: the enabled
+    // team becomes the active ring. Only a CHANGE in which team is enabled
+    // activates it, so a user who picked a normal agent while a team stays
+    // enabled is not pulled back into the team on every refresh.
+    let previousEnabledId: string | undefined = undefined
+    let enabledSeen = false
+    createEffect(() => {
+      const list = teams()
+      const enabled = list.find((t) => t.enabled)
+      const enabledId = enabled ? groupId(enabled) : undefined
+      if (!enabledSeen) {
+        enabledSeen = list.length > 0
+        previousEnabledId = enabledId
+        return
+      }
+      if (enabledId === previousEnabledId) return
+      previousEnabledId = enabledId
+      if (enabledId === undefined) return
+      if (currentActiveGroupId() === enabledId) return
+      const members = enabled?.members.map((m) => m.id) ?? []
+      const hostAgents = context.data.location.agent.list(context.location) ?? context.data.location.agent.list() ?? []
+      // Selecting the first installed member makes the footer and the ring
+      // agree immediately; when the host has not listed the members yet the
+      // group alone is set and current() falls back to the ring's first entry.
+      const first = members.find((id) => hostAgents.some((a) => a.id === id))
+      context.ui.agents.activeGroup.set(enabledId)
+      if (first !== undefined) context.ui.agents.set?.(first)
+    })
+
     let previousActiveTeamName: string | undefined = undefined
     createEffect(() => {
       const currentActive = activeTeam()
