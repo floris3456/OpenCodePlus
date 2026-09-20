@@ -824,4 +824,3 @@ test("reset refusal distinguishes stored override on non-resettable row from abs
   if (!("refusal" in cleanResult)) throw new Error("expected refusal for clean non-resettable row")
   expect(cleanResult.refusal).toBe(`"${execute.label}" has no override to reset`)
 })
-
