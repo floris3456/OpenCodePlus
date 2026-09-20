@@ -10,7 +10,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
-import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type Scopes, type SplitRecord } from "./model.js"
+import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
 import { actionForToolId, scrubLines } from "./tool-permissions.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
@@ -21,6 +21,7 @@ export interface ApplyAgent {
   readonly base?: string | undefined
   /** True when the agent defines its own custom system prompt. Base edits never touch such agents. */
   readonly customSystem?: boolean | undefined
+  readonly team?: TeamRef | undefined
 }
 
 export interface ApplyInput {
@@ -83,7 +84,13 @@ export async function applyModels(
   input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes; teamAgents?: readonly string[] },
 ): Promise<Registration | undefined> {
   const updates = input.agents.flatMap((agent) => {
-    const winner = resolveActiveModel({ models: input.models, scopes: input.scopes, level: agent.level, agent: agent.id })
+    const winner = resolveActiveModel({
+      models: input.models,
+      scopes: input.scopes,
+      level: agent.level,
+      agent: agent.id,
+      ...(agent.team !== undefined ? { team: agent.team } : {}),
+    })
     if (winner === undefined) return []
     if (winner.source === "upstream") return []
     return [{ agent: agent.id, providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }]
@@ -163,7 +170,13 @@ function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
     records: args.records,
     splits: args.splits,
     scopes: args.scopes,
-    address: { level: agent.level, agent: agent.id, item: item.id, section: null },
+    address: {
+      level: agent.level,
+      agent: agent.id,
+      item: item.id,
+      section: null,
+      ...(agent.team !== undefined ? { team: agent.team } : {}),
+    },
   })
 }
 

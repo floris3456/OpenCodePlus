@@ -373,6 +373,14 @@ function levelOf(candidate: Candidate): Level | undefined {
 function agentOf(candidate: Candidate): string | null {
   if (candidate.address !== undefined) return candidate.address.agent
   if (candidate.kind === "agent") return candidate.id.split(":").slice(2).join(":")
+  if (candidate.id.startsWith("team:") && candidate.id.includes(":special:")) {
+    const parts = candidate.id.split(":")
+    return parts[parts.length - 1] ?? null
+  }
+  if (candidate.id.startsWith("group:") && candidate.id.includes("/:special:")) {
+    const match = candidate.id.match(/\/:special:([^:]+)/)
+    return match ? match[1] : null
+  }
   return null
 }
 
@@ -387,6 +395,9 @@ function itemKindOf(state: QueryState, candidate: Candidate): string | undefined
 }
 
 function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
+  if (candidate.address?.team !== undefined) {
+    return [candidate.address.team.team]
+  }
   if (candidate.kind === "agent") {
     const id = agentOf(candidate) ?? ""
     const fromTeams = state.memo.ctx.teams.filter((entry) => entry.agents.includes(id)).map((entry) => entry.team)
@@ -395,11 +406,11 @@ function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
   }
   if (candidate.kind !== "team" && candidate.kind !== "group") return []
   const level = levelOf(candidate)
-  if (level !== "project" && level !== "global") return []
+  if (level !== "project" && level !== "global" && level !== "defaults") return []
   if (candidate.kind === "group") {
     return state.memo.ctx.teams
       .filter((entry) => entry.level === level)
-      .filter((entry) => candidate.id.startsWith(`group:${level}:${entry.team}/`))
+      .filter((entry) => candidate.id.startsWith(`group:${level}:${entry.team}/`) || candidate.id.startsWith(`team:${level}:${entry.team}:special`))
       .map((entry) => entry.team)
   }
   return state.memo.ctx.teams

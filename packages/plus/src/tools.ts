@@ -399,7 +399,17 @@ function protectedError(agent: string): Tool.Error {
 }
 
 function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
-  return memoInputOf(snapshot)
+  const memo = memoInputOf(snapshot)
+  return {
+    ...memo,
+    records: memo.records.map((record, index) => {
+      const snap = snapshot.records[index]
+      if (snap?.team !== undefined) {
+        return { ...record, team: snap.team }
+      }
+      return record
+    }),
+  }
 }
 
 function toSnapshotRecords(
@@ -414,6 +424,7 @@ function toSnapshotRecords(
         type: "customization",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         item: record.item,
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
@@ -430,6 +441,7 @@ function toSnapshotRecords(
         type: "split",
         level: split.level,
         agent: split.agent,
+        ...(split.team !== undefined ? { team: split.team } : {}),
         item: split.item,
         boundaries: split.boundaries.map((boundary) => ({ ...boundary })),
         updated: split.updated,
@@ -440,6 +452,7 @@ function toSnapshotRecords(
         type: "model",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         providerID: record.providerID,
         modelID: record.modelID,
         ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -452,6 +465,7 @@ function toSnapshotRecords(
         type: "rule",
         level: record.level,
         agent: record.agent,
+        ...(record.team !== undefined ? { team: record.team } : {}),
         tool: record.tool,
         id: record.id,
         label: record.label,

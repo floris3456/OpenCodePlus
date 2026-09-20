@@ -942,3 +942,125 @@ test("team.removeAgent on an overlay member unlinks the overlay file", async () 
     agents: ["mate"],
   })
 })
+
+test("team.addAgent refuses member id special with team.invalid", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  const captured: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "special", prompt: "special prompt" }, throwingContext(captured)),
+    captured,
+    "team.invalid",
+  )
+  expect(captured.current?.message).toContain('Member id "special" is reserved')
+})
+
+test("enable team with special override reaches host agent.system and agent.model, disable restores, project team beats global for same team name", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const specialAgent = { ...agentInfo("explore", "upstream explore text"), origin: "special" as const }
+  const ctx = fullContext({
+    directory: project,
+    agents: [specialAgent],
+    models: [modelInfo("acme", "nova-project"), modelInfo("acme", "nova-global")],
+    classifications: { "": "general", "nova-project": "general", "nova-global": "general" },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  // 1. Create global team crew
+  await Effect.runPromise(handlers["team.create"]({ level: "global", team: "crew" }, throwingContext({})))
+  // 2. Create project team crew
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+
+  const snap1 = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+
+  const records: Plus.SnapshotRecord[] = [
+    {
+      type: "customization",
+      level: "global",
+      agent: "explore",
+      item: "system:role",
+      section: null,
+      team: { level: "global", team: "crew" },
+      text: "global explore text",
+      basedOn: "fp",
+      updated: UPDATED,
+    },
+    {
+      type: "model",
+      level: "global",
+      agent: "explore",
+      team: { level: "global", team: "crew" },
+      providerID: "acme",
+      modelID: "nova-global",
+      active: true,
+      updated: UPDATED,
+    },
+    {
+      type: "customization",
+      level: "project",
+      agent: "explore",
+      item: "system:role",
+      section: null,
+      team: { level: "project", team: "crew" },
+      text: "project explore text",
+      basedOn: "fp",
+      updated: UPDATED,
+    },
+    {
+      type: "model",
+      level: "project",
+      agent: "explore",
+      team: { level: "project", team: "crew" },
+      providerID: "acme",
+      modelID: "nova-project",
+      active: true,
+      updated: UPDATED,
+    },
+  ]
+  await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snap1.revision,
+        expectedGlobalRevision: snap1.globalRevision,
+        records,
+      },
+      throwingContext({}),
+    ),
+  )
+
+  // Case A: Enable only global team "crew"
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "crew", enabled: true }, throwingContext({})))
+  const listedGlobal = await Effect.runPromise(ctx.agent.list())
+  const exploreGlobal = listedGlobal.data.find((e) => String(e.id) === "explore")
+  expect(exploreGlobal?.system).toBe("global explore text")
+  expect(exploreGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
+  expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
+
+  // Case B: Enable project team "crew" as well -> project beats global for same team name!
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const listedProject = await Effect.runPromise(ctx.agent.list())
+  const exploreProject = listedProject.data.find((e) => String(e.id) === "explore")
+  expect(exploreProject?.system).toBe("project explore text")
+  expect(exploreProject?.model).toMatchObject({ providerID: "acme", id: "nova-project" })
+  expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-project" })
+
+  // Case C: Disable project team "crew" -> global team "crew" is still enabled, so global wins!
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
+  const listedBackToGlobal = await Effect.runPromise(ctx.agent.list())
+  const exploreBackToGlobal = listedBackToGlobal.data.find((e) => String(e.id) === "explore")
+  expect(exploreBackToGlobal?.system).toBe("global explore text")
+  expect(exploreBackToGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
+  expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
+
+  // Case D: Disable global team "crew" -> all disabled, restored to non-team state!
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "crew", enabled: false }, throwingContext({})))
+  const listedRestored = await Effect.runPromise(ctx.agent.list())
+  const exploreRestored = listedRestored.data.find((e) => String(e.id) === "explore")
+  expect(exploreRestored?.system).toBe("upstream explore text")
+  expect(exploreRestored?.model).toBeUndefined()
+  expect(state.activeModels.get("explore")).toBeUndefined()
+})

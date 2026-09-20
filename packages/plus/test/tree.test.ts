@@ -273,6 +273,7 @@ test("member rows are informational: no address, no actions, depth 3", () => {
   expect(childrenOf(nodes, "team:project:crew").map((node) => node.id)).toEqual([
     "team:project:crew:alpha",
     "team:project:crew:nested/beta",
+    "team:project:crew:special",
   ])
   for (const id of ["team:project:crew:alpha", "team:project:crew:nested/beta"]) {
     const member = nodes.find((node) => node.id === id)
@@ -341,6 +342,70 @@ test("registered team member yields its Role/persona under System", () => {
   const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
   expect(systemGroup).toBeDefined()
   expect(childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:CrewMate:system:role")).toBe(true)
+})
+
+test("team Special group row and special agent subtrees across all three levels", () => {
+  for (const level of ["project", "global", "defaults"] as const) {
+    const nodes = expandAll({
+      items: items(),
+      records: [],
+      agents: [
+        ...agents(),
+        { id: "general", scope: "defaults", origin: "special" },
+        { id: "explore", scope: "defaults", origin: "special" },
+        { id: "compaction", scope: "defaults", origin: "special" },
+        { id: "title", scope: "defaults", origin: "special" },
+        { id: "summary", scope: "defaults", origin: "special" },
+      ],
+      teams: [{ level, team: "crew", enabled: true, agents: ["alpha"] }],
+    })
+    const specialGroup = nodes.find((node) => node.id === `team:${level}:crew:special`)
+    expect(specialGroup).toBeDefined()
+    expect(specialGroup?.kind).toBe("group")
+    expect(specialGroup?.label).toBe("Special")
+    expect(specialGroup?.depth).toBe(3)
+    expect(specialGroup?.add).toBeUndefined()
+    expect(specialGroup?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+
+    const specialKids = childrenOf(nodes, `team:${level}:crew:special`)
+    expect(specialKids.length).toBe(5)
+    const expectedIds = ["general", "explore", "compaction", "title", "summary"]
+    expect(specialKids.map((k) => k.label)).toEqual(expectedIds)
+
+    for (const id of expectedIds) {
+      const agentRow = nodes.find((node) => node.id === `team:${level}:crew:special:${id}`)
+      expect(agentRow).toBeDefined()
+      expect(agentRow?.kind).toBe("team")
+      expect(agentRow?.label).toBe(id)
+      expect(agentRow?.depth).toBe(4)
+      expect(agentRow?.add).toBeUndefined()
+      expect(agentRow?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+
+      const agentKids = childrenOf(nodes, `team:${level}:crew:special:${id}`)
+      expect(agentKids.map((k) => k.id)).toEqual([
+        `group:${level}:crew/:special:${id}:models`,
+        `group:${level}:crew/:special:${id}:tools`,
+        `group:${level}:crew/:special:${id}:base`,
+        `group:${level}:crew/:special:${id}:skills`,
+        `group:${level}:crew/:special:${id}:system`,
+      ])
+      for (const group of agentKids) {
+        expect(group.kind).toBe("group")
+        expect(group.depth).toBe(5)
+      }
+    }
+  }
+})
+
+test("a fixture member named special cannot be constructed", () => {
+  expect(() =>
+    expandAll({
+      items: items(),
+      records: [],
+      agents: agents(),
+      teams: [{ level: "project", team: "crew", enabled: true, agents: ["special"] }],
+    }),
+  ).toThrow('member id "special" is reserved')
 })
 
 test("a level with no teams renders an empty Teams group with the add affordance", () => {
@@ -416,6 +481,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     "team:defaults:ship:mate",
     "team:defaults:ship:nested/solo",
     "team:defaults:ship:ovl",
+    "team:defaults:ship:special",
   ])
   for (const id of ["team:defaults:ship:mate", "team:defaults:ship:nested/solo"]) {
     const member = nodes.find((node) => node.id === id)
@@ -1329,7 +1395,7 @@ test("perm rows order most-mentioned first, not title order", () => {
   expect(rows.map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa generic"])
 })
 
-test("nested agent id and team member group ids never collide", () => {
+test("nested agent id and team member group ids never collide", async () => {
   // A project agent literally named `crew/alpha` and a project team `crew`
   // with member `alpha` would both produce `group:project:crew/alpha:models`
   // under the old bare-`/` scheme. The `/:` marker keeps them distinct.

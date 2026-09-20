@@ -4,6 +4,7 @@ import type { CustomizationRecord } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput } from "../src/instructions/tree.js"
 import {
+  activateModelRow,
   addSection,
   refusalFor,
   removalPlan,
@@ -687,4 +688,53 @@ test("removalPlan on ambiguous team and member row id returns refusal", () => {
   expect(plan).toEqual({
     refusal: '"crew:alpha" is ambiguous: it matches both a team and a member of team "crew". Rename one to continue.',
   })
+})
+
+test("toggle, reset, and model activation under a team special write records carrying team", () => {
+  const input = baseInput({
+    agents: [
+      { id: "alpha", scope: "project" },
+      { id: "explore", scope: "defaults", origin: "special" },
+    ],
+    records: [
+      {
+        type: "model",
+        level: "defaults",
+        agent: null,
+        providerID: "acme",
+        modelID: "nova-2",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
+  })
+
+  // 1. Toggle
+  const toolRowId = "item:project:crew/:special:explore:tool:bash"
+  const toggleResult = toggle(input, toolRowId)
+  expect("records" in toggleResult).toBe(true)
+  if (!("records" in toggleResult)) throw new Error("expected toggle success")
+  const custom = toggleResult.records.find((r) => r.item === "tool:bash" && r.agent === "explore")
+  expect(custom).toBeDefined()
+  expect(custom?.level).toBe("project")
+  expect(custom?.team).toEqual({ level: "project", team: "crew" })
+  expect(custom?.state).toBe("off")
+
+  // 2. Reset
+  const resetResult = reset({ ...input, records: toggleResult.records }, toolRowId)
+  expect("records" in resetResult).toBe(true)
+  if (!("records" in resetResult)) throw new Error("expected reset success")
+  const customAfterReset = resetResult.records.find((r) => r.item === "tool:bash" && r.agent === "explore" && r.team?.team === "crew")
+  expect(customAfterReset).toBeUndefined()
+
+  // 3. Model activation
+  const modelRowId = "item:project:crew/:special:explore:model:acme/nova-2"
+  const modelResult = activateModelRow(input, modelRowId)
+  expect("models" in modelResult).toBe(true)
+  if (!("models" in modelResult)) throw new Error("expected model activation success")
+  const modelRec = modelResult.models.find((m) => m.providerID === "acme" && m.modelID === "nova-2" && m.agent === "explore")
+  expect(modelRec).toBeDefined()
+  expect(modelRec?.level).toBe("project")
+  expect(modelRec?.team).toEqual({ level: "project", team: "crew" })
+  expect(modelRec?.active).toBe(true)
 })

@@ -49,6 +49,11 @@ const VERSION = 2
 
 const LevelSchema = Schema.Union([Schema.Literal("defaults"), Schema.Literal("global"), Schema.Literal("project")])
 
+const V2TeamRef = Schema.Struct({
+  level: LevelSchema,
+  team: Schema.String,
+})
+
 const BoundarySchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -59,6 +64,7 @@ const V2Customization = Schema.Struct({
   type: Schema.Literal("customization"),
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
+  team: Schema.optional(V2TeamRef),
   item: Schema.String,
   section: Schema.Union([Schema.String, Schema.Null]),
   text: Schema.optional(Schema.String),
@@ -74,6 +80,7 @@ const V2Split = Schema.Struct({
   type: Schema.Literal("split"),
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
+  team: Schema.optional(V2TeamRef),
   item: Schema.String,
   boundaries: Schema.Array(BoundarySchema),
   updated: Schema.String,
@@ -97,6 +104,7 @@ const V2Model = Schema.Struct({
   type: Schema.Literal("model"),
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
+  team: Schema.optional(V2TeamRef),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optional(Schema.String),
@@ -108,6 +116,7 @@ const V2Rule = Schema.Struct({
   type: Schema.Literal("rule"),
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
+  team: Schema.optional(V2TeamRef),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,
@@ -292,6 +301,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           type: "split",
           level: record.level,
           agent: record.agent,
+          ...(record.team === undefined ? {} : { team: record.team }),
           item: record.item,
           boundaries: record.boundaries.map((boundary): Boundary => ({ ...boundary })),
           updated: record.updated,
@@ -303,6 +313,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           type: "model",
           level: record.level,
           agent: record.agent,
+          ...(record.team === undefined ? {} : { team: record.team }),
           providerID: record.providerID,
           modelID: record.modelID,
           ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -316,6 +327,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           type: "rule",
           level: record.level,
           agent: record.agent,
+          ...(record.team === undefined ? {} : { team: record.team }),
           tool: record.tool,
           id: record.id,
           label: record.label,
@@ -329,6 +341,7 @@ function parseV2(lines: string[]): StoredRecord[] {
         type: "customization",
         level: record.level,
         agent: record.agent,
+        ...(record.team === undefined ? {} : { team: record.team }),
         item: record.item,
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
@@ -422,6 +435,7 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 // order by tool and id, then agent and level. Both end with `updated` so the
 // order is total and an unchanged save stays a no-op.
 function sortKey(record: StoredRecord): string[] {
+  const teamKey = record.type !== "team" && record.team !== undefined ? `${record.team.level}:${record.team.team}` : ""
   if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
   if (record.type === "model")
     return [
@@ -430,12 +444,13 @@ function sortKey(record: StoredRecord): string[] {
       record.modelID,
       record.variant ?? "",
       String(record.agent),
+      teamKey,
       record.level,
       record.active === true ? "active" : "",
       record.updated,
     ]
-  if (record.type === "rule") return ["rule", record.tool, record.id, String(record.agent), record.level, record.updated]
-  return [record.type, record.item, String(record.agent), record.level, record.type === "customization" ? String(record.section) : ""]
+  if (record.type === "rule") return ["rule", record.tool, record.id, String(record.agent), teamKey, record.level, record.updated]
+  return [record.type, record.item, String(record.agent), teamKey, record.level, record.type === "customization" ? String(record.section) : ""]
 }
 
 export function stable(record: StoredRecord): StoredRecord {
@@ -452,6 +467,7 @@ export function stable(record: StoredRecord): StoredRecord {
       type: "model",
       level: record.level,
       agent: record.agent,
+      ...(record.team === undefined ? {} : { team: record.team }),
       providerID: record.providerID,
       modelID: record.modelID,
       ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -463,6 +479,7 @@ export function stable(record: StoredRecord): StoredRecord {
       type: "rule",
       level: record.level,
       agent: record.agent,
+      ...(record.team === undefined ? {} : { team: record.team }),
       tool: record.tool,
       id: record.id,
       label: record.label,
@@ -475,6 +492,7 @@ export function stable(record: StoredRecord): StoredRecord {
       type: "split",
       level: record.level,
       agent: record.agent,
+      ...(record.team === undefined ? {} : { team: record.team }),
       item: record.item,
       boundaries: record.boundaries.map((boundary) => ({ id: boundary.id, name: boundary.name, start: boundary.start })),
       updated: record.updated,
@@ -483,6 +501,7 @@ export function stable(record: StoredRecord): StoredRecord {
     type: "customization",
     level: record.level,
     agent: record.agent,
+    ...(record.team === undefined ? {} : { team: record.team }),
     item: record.item,
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),

@@ -288,6 +288,7 @@ test("team matches team rows, members, and team agents", () => {
   const found = ids("team:crew")
   expect(found).toContain("team:project:crew")
   expect(found).toContain("team:project:crew:CrewMate")
+  expect(found).toContain("team:project:crew:special")
   expect(found).toContain("agent:project:CrewMate")
   for (const group of ["models", "tools", "base", "skills", "system"]) {
     expect(found).toContain(`group:project:crew/:CrewMate:${group}`)
@@ -296,6 +297,43 @@ test("team matches team rows, members, and team agents", () => {
   expect(found).not.toContain("team:global:ops")
   expect(ids("team:ops")).toContain("team:global:ops")
   expect(ids("team:nope")).toHaveLength(0)
+})
+
+test("team and agent query filters match team special rows and children", () => {
+  const customAgents: AgentSource[] = [
+    ...agents(),
+    { id: "explore", scope: "defaults", origin: "special" },
+  ]
+  const customRecords = [
+    ...records(),
+    {
+      type: "customization" as const,
+      level: "project" as const,
+      agent: "explore",
+      team: { level: "project" as const, team: "crew" },
+      item: "tool:bash",
+      section: null,
+      state: "off" as const,
+      basedOn: "fp-bash",
+      updated: OLD,
+    },
+  ]
+  const customInput = {
+    items: items(),
+    records: customRecords,
+    agents: customAgents,
+    teams: teams(),
+  }
+  const qTeam = query(customInput, { where: "team:crew" }).rows.map((r) => r.id)
+  expect(qTeam).toContain("team:project:crew:special")
+  expect(qTeam).toContain("team:project:crew:special:explore")
+  expect(qTeam).toContain("group:project:crew/:special:explore:tools")
+  expect(qTeam).toContain("item:project:crew/:special:explore:tool:bash")
+
+  const qAgent = query(customInput, { where: "agent:explore" }).rows.map((r) => r.id)
+  expect(qAgent).toContain("team:project:crew:special:explore")
+  expect(qAgent).toContain("group:project:crew/:special:explore:tools")
+  expect(qAgent).toContain("item:project:crew/:special:explore:tool:bash")
 })
 
 test("acked reads the record acknowledgement", () => {

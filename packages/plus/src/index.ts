@@ -28,11 +28,11 @@ import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { fingerprint, resolve, resolveActiveModel, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
+import { fingerprint, hasModelActiveAt, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
-import { builtinBody, defaultsOverlayTeamDir, discoverBuiltinTeams, discoverTeams, globalDefaultsTeamsPath, isTeamEnabled, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
+import { builtinBody, defaultsOverlayTeamDir, discoverAllTeams, discoverBuiltinTeams, discoverTeams, globalDefaultsTeamsPath, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
@@ -898,6 +898,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (template !== undefined) {
         const teamDir = path.join(root, validated.team)
         for (const member of template.members) {
+          if (member.id === "special") {
+            const reason = 'Member id "special" is reserved'
+            return {
+              ok: false as const,
+              error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
+            }
+          }
           const memberId = validateAgentId(member.id)
           if (!memberId.ok) {
             const reason = memberId.reason
@@ -992,6 +999,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return {
           ok: false as const,
           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+        }
+      if (input.id === "special")
+        return {
+          ok: false as const,
+          error: {
+            code: "team.invalid" as const,
+            message: 'Member id "special" is reserved',
+            data: { level: input.level, team: validatedTeam.team, reason: 'Member id "special" is reserved' },
+          },
         }
       const known = await discoverTeams(input.level, directory, builtins)
       const found = known.find((team) => team.team === validatedTeam.team)
@@ -1179,6 +1195,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.type === "model" &&
           record.level === input.level &&
           record.agent === input.agent &&
+          sameTeam(record.team, input.team) &&
           record.providerID === validated.providerID &&
           record.modelID === validated.modelID &&
           record.variant === validated.variant,
@@ -1196,6 +1213,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         type: "model",
         level: input.level,
         agent: input.agent,
+        ...(input.team !== undefined ? { team: input.team } : {}),
         providerID: validated.providerID,
         modelID: validated.modelID,
         ...(validated.variant === undefined ? {} : { variant: validated.variant }),
@@ -1224,6 +1242,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         value: {
           level: next.level,
           agent: next.agent,
+          ...(next.team !== undefined ? { team: next.team } : {}),
           providerID: next.providerID,
           modelID: next.modelID,
           ...(next.variant === undefined ? {} : { variant: next.variant }),
@@ -1248,6 +1267,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.type === "model" &&
           record.level === input.level &&
           record.agent === input.agent &&
+          sameTeam(record.team, input.team) &&
           record.providerID === validated.providerID &&
           record.modelID === validated.modelID &&
           record.variant === validated.variant,
@@ -1285,6 +1305,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         value: {
           level: existing.level,
           agent: existing.agent,
+          ...(existing.team !== undefined ? { team: existing.team } : {}),
           providerID: existing.providerID,
           modelID: existing.modelID,
           ...(existing.variant === undefined ? {} : { variant: existing.variant }),
@@ -1878,7 +1899,8 @@ function rulesOf(records: readonly StoredRecord[]): RuleRecord[] {
 }
 
 function modelRecordTarget(record: ModelRecord): string {
-  return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
+  const teamPrefix = record.team !== undefined ? `${record.team.level}:${record.team.team}:` : ""
+  return `model:${teamPrefix}${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
 }
 
 function ruleRecordTarget(record: RuleRecord): string {
@@ -2299,6 +2321,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       type: "split",
       level: record.level,
       agent: record.agent,
+      ...(record.team !== undefined ? { team: record.team } : {}),
       item: record.item,
       boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
       updated: record.updated,
@@ -2308,6 +2331,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       type: "model",
       level: record.level,
       agent: record.agent,
+      ...(record.team !== undefined ? { team: record.team } : {}),
       providerID: record.providerID,
       modelID: record.modelID,
       ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -2319,6 +2343,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       type: "rule",
       level: record.level,
       agent: record.agent,
+      ...(record.team !== undefined ? { team: record.team } : {}),
       tool: record.tool,
       id: record.id,
       label: record.label,
@@ -2330,6 +2355,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
     type: "customization",
     level: record.level,
     agent: record.agent,
+    ...(record.team !== undefined ? { team: record.team } : {}),
     item: record.item,
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),
@@ -2477,7 +2503,13 @@ export function buildActiveModels(
     ...agents.filter((agent) => agent.team === undefined),
   ]
   for (const agent of dedupeAgents(ordered)) {
-    const winner = resolveActiveModel({ models, scopes, level: scopeLevel(agent.scope), agent: agent.id })
+    const winner = resolveActiveModel({
+      models,
+      scopes,
+      level: scopeLevel(agent.scope),
+      agent: agent.id,
+      ...(agent.team !== undefined ? { team: { level: scopeLevel(agent.scope), team: agent.team } } : {}),
+    })
     if (winner === undefined) continue
     if (winner.source === "upstream") continue
     next.set(agent.id, {
@@ -2771,6 +2803,92 @@ function refreshAfterFileChange(
   })
 }
 
+function winningEnabledTeams(
+  discovered: readonly { level: TeamLevel; team: string }[],
+  records: readonly TeamRecord[],
+): { level: TeamLevel; team: string }[] {
+  const enabled = discovered.filter((t) => isTeamEnabled(records, t.level, t.team))
+  const sorted = [...enabled].sort((a, b) => rankOf(a.level) - rankOf(b.level))
+  const seen = new Set<string>()
+  const winners: { level: TeamLevel; team: string }[] = []
+  for (const team of sorted) {
+    if (!seen.has(team.team)) {
+      seen.add(team.team)
+      winners.push(team)
+    }
+  }
+  return winners
+}
+
+const specialAgentIds = ["general", "explore", "compaction", "title", "summary"] as const
+
+function computeSpecialOverrides(
+  winningEnabled: readonly { level: TeamLevel; team: string }[],
+  discovered: Discovered,
+  records: readonly StoredRecord[],
+): {
+  specialModelAgents: AgentSource[]
+  specialRoleOverrides: Map<string, string>
+} {
+  const customizations = customizationsOf(records)
+  const splits = splitsOf(records)
+  const modelRecords = modelsOf(records)
+  const specialModelAgents: AgentSource[] = []
+  const specialRoleOverrides = new Map<string, string>()
+
+  for (const team of winningEnabled) {
+    for (const specialId of specialAgentIds) {
+      const teamAddress = { level: team.level, agent: specialId, team: { level: team.level, team: team.team } }
+      const hasActiveModel = hasModelActiveAt(modelRecords, teamAddress)
+      if (hasActiveModel) {
+        specialModelAgents.push({
+          id: specialId,
+          scope: team.level,
+          team: team.team,
+          origin: "special",
+        })
+      }
+
+      const roleRecord = customizations.find(
+        (r) =>
+          r.item === "system:role" &&
+          r.agent === specialId &&
+          r.level === team.level &&
+          r.team?.level === team.level &&
+          r.team?.team === team.team,
+      )
+      if (roleRecord !== undefined && (roleRecord.text !== undefined || roleRecord.state !== undefined)) {
+        const roleItem = discovered.items.find((i) => i.id === "system:role" && i.agents?.includes(specialId)) ?? {
+          id: "system:role",
+          kind: "system" as const,
+          group: "none" as const,
+          title: "system:role",
+          text: "",
+          enabled: true,
+          fingerprint: "",
+        }
+        const resolvedRole = resolve({
+          upstream: roleItem,
+          records: customizations,
+          splits,
+          scopes: scopesOf(discovered.agents),
+          address: {
+            level: team.level,
+            agent: specialId,
+            item: "system:role",
+            section: null,
+            team: { level: team.level, team: team.team },
+          },
+        })
+        if (resolvedRole.modified || resolvedRole.overriddenHere) {
+          specialRoleOverrides.set(specialId, resolvedRole.assembled)
+        }
+      }
+    }
+  }
+  return { specialModelAgents, specialRoleOverrides }
+}
+
 // Only publishFresh and deactivate acquire the semaphore, and neither calls the
 // other, so a caller never blocks on a permit it already holds.
 function publishFresh(
@@ -2793,6 +2911,11 @@ function publishFresh(
       const view = yield* Effect.promise(() =>
         stablePublishView(discovered, stored.records, ctx.location.directory, builtins, state.teamOutputIds),
       )
+      const teamRecords = stored.records.filter(isTeamRecord)
+      const allDiscoveredTeams = yield* Effect.promise(() => discoverAllTeams(ctx.location.directory, builtins))
+      const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
+      const { specialModelAgents, specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, stored.records)
+
       // Team-provided agents are not host upstream on the first publish
       // after enable or restart: discovered.agents lacks team-only ids, so
       // the model cache and apply would never see them. When an id is both
@@ -2802,12 +2925,15 @@ function publishFresh(
       // preserving discovered fields (such as base and model) on the team winner entry.
       // Retaining discovered.agents in mergedAgents ensures scopesOf still sees
       // defaults for fallback inheritance.
-      const teamMerged = view.teamAgents.map((teamAgent) => {
-        const discoveredAgent = discovered.agents.find((agent) => agent.id === teamAgent.id)
-        return discoveredAgent !== undefined
-          ? { ...discoveredAgent, ...teamAgent, scope: teamAgent.scope }
-          : teamAgent
-      })
+      const teamMerged = [
+        ...specialModelAgents,
+        ...view.teamAgents.map((teamAgent) => {
+          const discoveredAgent = discovered.agents.find((agent) => agent.id === teamAgent.id)
+          return discoveredAgent !== undefined
+            ? { ...discoveredAgent, ...teamAgent, scope: teamAgent.scope }
+            : teamAgent
+        }),
+      ]
       const mergedAgents = [...teamMerged, ...discovered.agents]
       const publishAgents = dedupeAgents(mergedAgents)
       const publishScopes = scopesOf(mergedAgents)
@@ -2821,6 +2947,7 @@ function publishFresh(
         records: stored.records,
         teamBodies: view.teamBodies,
         overrides: [...view.overrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
+        specialOverrides: [...specialRoleOverrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
         scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
       })
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
@@ -2851,6 +2978,7 @@ function publishFresh(
             id: agent.id,
             level: scopeLevel(agent.scope),
             base: agent.base,
+            ...(agent.team !== undefined ? { team: { level: scopeLevel(agent.scope), team: agent.team } } : {}),
           })),
           records: customizations,
           splits,
@@ -2878,7 +3006,7 @@ function publishFresh(
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
       const teamRoleOverrides = view.overrides
-      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides))
+      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides, specialRoleOverrides))
       const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins, teamRoleOverrides))
       const previous = state.applied
       state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations]
@@ -2894,7 +3022,7 @@ function publishFresh(
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
-      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords, teamAgents, view.overrides, view.teamBodies)
+      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords, teamAgents, view.overrides, view.teamBodies, specialRoleOverrides)
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       return discovered
@@ -2926,6 +3054,7 @@ export function captureBaselines(
   teamAgents?: readonly AgentSource[],
   teamOverrides?: ReadonlyMap<string, string>,
   teamBodies?: readonly { id: string; scope: AgentSource["scope"]; body: string | undefined }[],
+  specialOverrides?: ReadonlyMap<string, string>,
 ): void {
   void ctx
   void splits
@@ -2937,6 +3066,14 @@ export function captureBaselines(
     if (item.id === "system:role") {
       const owner = item.agents?.[0]
       if (owner === undefined) continue
+      if (specialOverrides?.has(owner)) {
+        next.set(key, {
+          applied: specialOverrides.get(owner)!,
+          upstream: item.text,
+          fileBacked: false,
+        })
+        continue
+      }
       // Team-only host agents surface at `defaults` while their role records
       // live at the team winner's level. Resolving at the discovered scope
       // misses project/global edits, so the next discovery mistakes the
@@ -3009,7 +3146,10 @@ export function captureBaselines(
   for (const agent of effective) {
     const level = scopeLevel(agent.scope)
     const upstream = discovered.modelUpstream.get(agent.id)
-    const winner = resolveActiveModel({ models, scopes, level, agent: agent.id })
+    const active = state.activeModels.get(agent.id)
+    const winner = active !== undefined
+      ? { providerID: active.providerID, modelID: active.modelID, ...(active.variant === undefined ? {} : { variant: active.variant }), source: level }
+      : resolveActiveModel({ models, scopes, level, agent: agent.id })
     if (winner === undefined) continue
     if (winner.source === "upstream") continue
     if (sameModelRef(winner, upstream)) continue
@@ -3285,6 +3425,10 @@ async function fingerprintPublish(
   owned: ReadonlyMap<string, TeamOwnership> = new Map(),
 ): Promise<string> {
   const view = await stablePublishView(discovered, records, directory, builtins, owned)
+  const teamRecords = records.filter(isTeamRecord)
+  const allDiscoveredTeams = await discoverAllTeams(directory, builtins)
+  const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
+  const { specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, records)
   return JSON.stringify({
     items: view.items.filter((item) => item.kind !== "perm"),
     agents: view.agents,
@@ -3292,6 +3436,7 @@ async function fingerprintPublish(
     records,
     teamBodies: view.teamBodies,
     overrides: [...view.overrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
+    specialOverrides: [...specialRoleOverrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
     scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
   })
 }
@@ -3579,6 +3724,7 @@ function toSnapshot(
             type: "split" as const,
             level: record.level,
             agent: record.agent,
+            ...(record.team !== undefined ? { team: record.team } : {}),
             item: record.item,
             boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
             updated: record.updated,
@@ -3590,6 +3736,7 @@ function toSnapshot(
             type: "model" as const,
             level: record.level,
             agent: record.agent,
+            ...(record.team !== undefined ? { team: record.team } : {}),
             providerID: record.providerID,
             modelID: record.modelID,
             ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -3603,6 +3750,7 @@ function toSnapshot(
             type: "rule" as const,
             level: record.level,
             agent: record.agent,
+            ...(record.team !== undefined ? { team: record.team } : {}),
             tool: record.tool,
             id: record.id,
             label: record.label,
@@ -3620,6 +3768,7 @@ function toSnapshot(
           type: "customization" as const,
           level: record.level,
           agent: record.agent,
+          ...(record.team !== undefined ? { team: record.team } : {}),
           item: record.item,
           section: record.section,
           ...(record.text === undefined ? {} : { text: record.text }),
