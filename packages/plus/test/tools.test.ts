@@ -979,8 +979,10 @@ test("show with each view returns the right shape, diff returns two diffs plus s
   expect(typeof upstream.text).toBe("string")
   const mine = (await runOk(show, { id, view: "mine" })) as { text: string }
   expect(mine.text).toBe("mine text\nline two\n")
-  const record = (await runOk(show, { id, view: "record" })) as { record: unknown }
+  const record = (await runOk(show, { id, view: "record" })) as { record: { type?: string; text?: string } | null }
   expect(record.record).not.toBeNull()
+  expect(record.record?.type).toBe("customization")
+  expect(record.record?.text).toBe("mine text\nline two\n")
   const sections = (await runOk(show, { id, view: "sections" })) as { sections: readonly string[] }
   expect(Array.isArray(sections.sections)).toBe(true)
   const diff = (await runOk(show, { id, view: "diff" })) as { mineDiff: string; upstreamDiff: string; summary: string }
@@ -1234,6 +1236,13 @@ test("create model, activate through set, list with item:model and active, then 
   if (row === undefined) throw new Error("missing model row")
   const activated = (await runOk(need(tools, "instructions_set"), { id: row.id, active: true })) as { status: string }
   expect(activated.status).toBe(`Activated "acme/nova-2"`)
+  const recordView = (await runOk(need(tools, "instructions_show"), { id: row.id, view: "record" })) as {
+    id: string
+    view: string
+    record: { type?: string; active?: boolean } | null
+  }
+  expect(recordView.record?.type).toBe("model")
+  expect(recordView.record?.active).toBe(true)
   const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true" })) as { rows: readonly { id: string }[] }
   expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
   const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { providerID: string }
@@ -1266,6 +1275,11 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(toggled.status).toContain("Disabled")
   const afterOff = await snapshotOf(api)
   expect(afterOff.records.some((record) => record.type === "customization" && record.item === "perm:shell:git-push" && record.state === "off")).toBe(true)
+  const curatedShownRecord = (await runOk(need(tools, "instructions_show"), { id: row.id, view: "record" })) as {
+    record: { type?: string; state?: string } | null
+  }
+  expect(curatedShownRecord.record?.type).toBe("customization")
+  expect(curatedShownRecord.record?.state).toBe("off")
   const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
   expect(textError.message).toContain("cannot be edited")
   const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"] })) as { tool: string; id: string }
@@ -1273,6 +1287,19 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const afterCreate = await snapshotOf(api)
   const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.address?.item === "perm:shell:no-push")
   if (customRow === undefined) throw new Error("missing custom perm row")
+  const customShownRecord = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
+    id: string
+    view: string
+    record: { type?: string; patterns?: readonly string[] } | null
+  }
+  expect(customShownRecord.record?.type).toBe("rule")
+  expect(customShownRecord.record?.patterns).toEqual(["git push --force *"])
+  await runOk(need(tools, "instructions_set"), { id: customRow.id, state: "off" })
+  const customBoth = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
+    record: { type?: string; patterns?: readonly string[] } | null
+  }
+  expect(customBoth.record?.type).toBe("rule")
+  expect(customBoth.record?.patterns).toEqual(["git push --force *"])
   const unconfirmed = await runFail(need(tools, "instructions_delete"), { id: customRow.id })
   expect(unconfirmed.message).toContain("delete.unconfirmed")
   const deleted = (await runOk(need(tools, "instructions_delete"), { id: customRow.id, confirm: true })) as { tool: string }
