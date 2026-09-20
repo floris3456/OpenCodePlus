@@ -181,8 +181,12 @@ test("a reviewer cannot delegate but reaches the finish handler", async () => {
     const ctx = toolContext("ses_team_reviewer", "astra-reviewer")
     const delegateMessage = await runMessage(need(tools, "team_delegate"), {}, ctx)
     expect(delegateMessage.startsWith("E_ROLE:")).toBe(true)
-    const finishMessage = await runMessage(need(tools, "team_finish"), {}, ctx)
-    expect(finishMessage.startsWith("E_INPUT:")).toBe(true)
+    const finishMessage = await runMessage(
+      need(tools, "team_finish"),
+      { status: "blocked", summary: "need decision", needs: [{ kind: "decision", detail: "need decision" }] },
+      ctx,
+    )
+    expect(finishMessage.startsWith("E_INTERNAL:")).toBe(true)
   })
 })
 
@@ -404,8 +408,12 @@ test("integrate, set_checks, supersede, stop and list reach real handlers while 
     expect(supersedeMessage.startsWith("E_NOT_CHILD:")).toBe(true)
     expect(supersedeMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
 
-    const setChecksMessage = await runMessage(need(tools, "team_set_checks"), {}, ctx)
-    expect(setChecksMessage.startsWith("E_INPUT:")).toBe(true)
+    const setChecksMessage = await runMessage(
+      need(tools, "team_set_checks"),
+      { checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] },
+      ctx,
+    )
+    expect(setChecksMessage.startsWith("E_CHECKS:")).toBe(true)
     expect(setChecksMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
 
     const listResult = (await runSuccess(need(tools, "team_list"), { parent: "w-0000000000000000" }, ctx)) as unknown[]
@@ -429,6 +437,122 @@ test("registered set_checks returns E_CHECKS for an invalid check through the to
     const message = await runMessage(tool, invalid, ctx)
     expect(message.startsWith("E_CHECKS:")).toBe(true)
     expect(message).toContain("Checks need distinct short IDs.")
+    expect(message).toContain('\naccepted: {"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}')
+  })
+})
+
+test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SUMMARY, E_TIMEOUT_MIN", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-accepted-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# accepted test\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const head = await git(repoDir, ["rev-parse", "HEAD"])
+
+      // 1. E_PATHS: Orchestrator delegating with empty paths for implementer
+      const orchRun = {
+        ...makeRun("w-orch000000000001", "sol-orchestrator", "ses_orch_paths"),
+        directory: repoDir,
+        base: head,
+        head,
+      }
+      await saveRun(root, orchRun)
+      const tools = await registeredTools()
+      const orchCtx = toolContext("ses_orch_paths", "sol-orchestrator")
+      const pathsMsg = await runMessage(
+        need(tools, "team_delegate"),
+        {
+          requestID: "r-paths",
+          role: "muse-implementer",
+          objective: "Implement with empty paths to trigger E_PATHS refusal.",
+          deliverable: { kind: "commit" },
+          scope: { paths: [] },
+          checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }],
+        },
+        orchCtx,
+      )
+      expect(pathsMsg).toBe(
+        `E_PATHS: Implementers need scope.paths (files or dir/* they may edit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+      )
+
+      // 2. E_ROLE: Planner delegating to a non-orchestrator (e.g. scout)
+      const plannerRun = {
+        ...makeRun("w-plan000000000001", "fable-planner", "ses_planner_role"),
+        directory: repoDir,
+        base: head,
+        head,
+      }
+      await saveRun(root, plannerRun)
+      const plannerCtx = toolContext("ses_planner_role", "fable-planner")
+      const roleMsg = await runMessage(
+        need(tools, "team_delegate"),
+        {
+          requestID: "r-role",
+          role: "scout",
+          objective: "Delegate to scout from planner to trigger E_ROLE refusal.",
+          deliverable: { kind: "findings" },
+          scope: { paths: ["packages/plus/src/*"] },
+          checks: [],
+        },
+        plannerCtx,
+      )
+      expect(roleMsg).toBe(
+        `E_ROLE: Planners may delegate only to opus-orchestrator or sol-orchestrator.\naccepted: {"role":"opus-orchestrator"}`,
+      )
+
+      // 3. E_CHECKS: Invalid check ID in set_checks
+      const checksMsg = await runMessage(
+        need(tools, "team_set_checks"),
+        {
+          checks: [{ id: "Bad_ID!", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }],
+        },
+        orchCtx,
+      )
+      expect(checksMsg).toBe(
+        `E_CHECKS: Checks need distinct short IDs.\naccepted: {"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`,
+      )
+
+      // 4. E_SUMMARY: Summary with 16 lines in finish
+      const implRun = {
+        ...makeRun("w-impl000000000001", "muse-implementer", "ses_impl_summary"),
+        directory: repoDir,
+        base: head,
+        head,
+        attempts: [{ n: 1, state: "streaming" as const, trigger: "delegate", startedAt: new Date().toISOString() }],
+      }
+      await saveRun(root, implRun)
+      const implCtx = toolContext("ses_impl_summary", "muse-implementer")
+      const summaryMsg = await runMessage(
+        need(tools, "team_finish"),
+        {
+          status: "done",
+          summary: Array.from({ length: 16 }, (_, i) => `line ${i + 1}`).join("\n"),
+        },
+        implCtx,
+      )
+      expect(summaryMsg).toBe(
+        `E_SUMMARY: summary is 16 lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤15 lines"`,
+      )
+
+      // 5. E_TIMEOUT_MIN: Wait with timeoutMs below 10000ms floor
+      const waitMsg = await runMessage(
+        need(tools, "team_wait"),
+        {
+          runs: ["w-orch000000000001"],
+          timeoutMs: 5000,
+        },
+        orchCtx,
+      )
+      expect(waitMsg).toBe(
+        `E_TIMEOUT_MIN: timeoutMs 5000 is below the 10000ms floor.\naccepted: {"timeoutMs":10000}`,
+      )
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
   })
 })
 

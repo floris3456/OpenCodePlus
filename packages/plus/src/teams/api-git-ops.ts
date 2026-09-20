@@ -1,23 +1,9 @@
 import path from "node:path"
-import { Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { loadRun } from "./run.js"
-import { validateChecks } from "./schema.js"
+import { SetChecksInput, validateChecks } from "./schema.js"
 import { atomicJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
-
-// Shape-only input: per-check and array-level rules belong to the single
-// validateChecks call below (the same gate delegateHandler runs), so the
-// schema stays loose and every rule failure surfaces as E_CHECKS.
-const SetChecksInput = Schema.Struct({
-  checks: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      argv: Schema.Array(Schema.String),
-      cwd: Schema.optional(Schema.String),
-    }),
-  ),
-})
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -45,11 +31,9 @@ function thrownError(error: unknown): { code: string; message: string; accepted?
 // Records integration checks in the caller's own run directory (the file
 // readChecks and checks.ts read), replacing any previous list. An empty
 // array is legal and clears the list.
-export async function setChecksHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+export async function setChecksHandler(args: SetChecksInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(SetChecksInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid set_checks input.")
-  const checks = [...decoded.value.checks]
+  const checks = [...args.checks]
   try {
     validateChecks(checks)
   } catch (error) {

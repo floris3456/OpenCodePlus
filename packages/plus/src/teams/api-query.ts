@@ -1,22 +1,12 @@
 import { readdir } from "node:fs/promises"
 import path from "node:path"
-import { Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { git } from "./git.js"
 import { kindOf } from "./policy.js"
 import { isTerminal, loadRun, type RunRecord } from "./run.js"
-import { RunID, RunState } from "./schema.js"
+import { ListInput } from "./schema.js"
 import { readJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
-
-// Input mirrors ListInput in ./tools.ts: all is optional and defaults to
-// false (hidden states superseded/reaped stay hidden without all:true).
-const ListInput = Schema.Struct({
-  all: Schema.optional(Schema.Boolean),
-  role: Schema.optional(Schema.String),
-  state: Schema.optional(RunState),
-  parent: Schema.optional(RunID),
-})
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -30,11 +20,8 @@ function fail(code: string, message: string, accepted?: unknown): TeamApiResult 
 // Read-only listing: planners see every run in the namespace, every other
 // role sees its own run plus its direct children. Never writes, never
 // acknowledges, never transitions anything.
-export async function listHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+export async function listHandler(args: ListInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(ListInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid list input.")
-  const args = decoded.value
   const stored = await loadRun(root, caller.run.id)
   const self = stored ?? caller.run
   const visible = visibleTo(await listRuns(root), self)

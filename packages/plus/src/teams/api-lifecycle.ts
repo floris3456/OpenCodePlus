@@ -2,26 +2,16 @@ import path from "node:path"
 import { readdir } from "node:fs/promises"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { gitRaw } from "./git.js"
 import { put } from "./inbox.js"
 import { io } from "./io.js"
 import { attemptTransition, isAttemptTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
-import { RunID } from "./schema.js"
+import { StopInput, SupersedeInput } from "./schema.js"
 import { readJson } from "./store.js"
 import { setState } from "./tasks.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
-
-const StopInput = Schema.Struct({
-  run: RunID,
-})
-
-const SupersedeInput = Schema.Struct({
-  run: RunID,
-  reason: Schema.String.check(Schema.isMinLength(10), Schema.isMaxLength(500)),
-  waitMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(120000))),
-})
 
 const STOP_BUSY_MESSAGE = "Child is working; call shutdown_request then wait, or supersede."
 
@@ -89,11 +79,8 @@ async function waitForNotWorking(root: string, runID: string, waitMs: number): P
   return current
 }
 
-export async function stopHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(StopInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid stop input.")
-  const args = decoded.value
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const child = await loadRun(root, args.run)
@@ -114,11 +101,8 @@ export async function stopHandler(ctx: Context, input: unknown, caller: TeamCall
   return fail("E_BUSY", STOP_BUSY_MESSAGE)
 }
 
-export async function supersedeHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+export async function supersedeHandler(ctx: Context, args: SupersedeInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(SupersedeInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid supersede input.")
-  const args = decoded.value
   const waitMs = args.waitMs ?? 30000
   const reason = args.reason
   const stored = await loadRun(root, caller.run.id)

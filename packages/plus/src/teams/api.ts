@@ -43,13 +43,35 @@ import {
 } from "./run.js"
 import {
   Brief,
+  CheckInput,
+  CheckpointInput,
+  DiffInput,
+  ExaCodeSearchInput,
+  FollowupInput,
+  GetContextInput,
   Head,
+  IntegrateInput,
+  ListInput,
+  MetricsInput,
+  PlanHandoffInput,
   Policy,
+  PrepareInput,
   Report,
+  ResumeInput,
+  ReviewInput,
   RunID,
+  SetChecksInput,
+  ShutdownRequestInput,
+  StatusInput,
+  StopInput,
+  SupersedeInput,
+  TavilyExtractInput,
+  TavilySearchInput,
+  WaitInput,
   budgetExhaustion,
   toolError,
   validateChecks,
+  validateSummary,
   type Check,
 } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
@@ -75,61 +97,40 @@ export interface TeamCaller {
 }
 
 export interface TeamApi {
-  readonly delegate: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly finish: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly followup: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly review: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly integrate: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly checkpoint: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly set_checks: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly supersede: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly shutdown_request: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly stop: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly resume: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly prepare: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly plan_handoff: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly status: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly wait: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly diff: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly list: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly get_context: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly check: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly metrics: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly exa_code_search: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly tavily_search: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly tavily_extract: (input: unknown, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly delegate: (input: Brief, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly finish: (input: Report, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly followup: (input: FollowupInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly review: (input: ReviewInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly integrate: (input: IntegrateInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly checkpoint: (input: CheckpointInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly set_checks: (input: SetChecksInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly supersede: (input: SupersedeInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly shutdown_request: (input: ShutdownRequestInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly stop: (input: StopInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly resume: (input: ResumeInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly prepare: (input: PrepareInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly plan_handoff: (input: PlanHandoffInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly status: (input: StatusInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly wait: (input: WaitInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly diff: (input: DiffInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly list: (input: ListInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly get_context: (input: GetContextInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly check: (input: CheckInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly metrics: (input: MetricsInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly exa_code_search: (input: ExaCodeSearchInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly tavily_search: (input: TavilySearchInput, caller: TeamCaller) => Promise<TeamApiResult>
+  readonly tavily_extract: (input: TavilyExtractInput, caller: TeamCaller) => Promise<TeamApiResult>
 }
 
 // Policy file loading lands later; the gates read bounds and effort budgets
 // from the schema defaults (members 12, inFlight 4, maxDepth 3, brief 6000).
 const policy = Schema.decodeUnknownSync(Policy)({})
 
-const CheckpointInput = Schema.Struct({
-  expectedHead: Head,
-  files: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
-  message: Schema.String.check(Schema.isMaxLength(300)),
-})
-
-const StatusInput = Schema.Struct({
-  runs: Schema.optional(Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20))),
-})
-
-const WaitInput = Schema.Struct({
-  runs: Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
-  timeoutMs: Schema.optional(Schema.Number),
-  until: Schema.optional(Schema.Literals(["settled", "idle"])),
-})
-
-const CheckInput = Schema.Struct({
-  id: Schema.String.check(Schema.isMinLength(1)),
-})
-
-const GetContextInput = Schema.Struct({})
-
 const PATHS_MESSAGE =
-  `Implementers need scope.paths (files or dir/* they may edit). accepted: ["packages/plus/src/*","packages/plus/test/*"]`
+  "Implementers need scope.paths (files or dir/* they may edit)."
 const PATHS_ACCEPTED = ["packages/plus/src/*", "packages/plus/test/*"]
-const PLANNERS_MESSAGE = `Planners may delegate only to opus-orchestrator or sol-orchestrator. accepted: {"role":"opus-orchestrator",...}`
+const PLANNERS_MESSAGE = "Planners may delegate only to opus-orchestrator or sol-orchestrator."
+const PLANNERS_ACCEPTED = { role: "opus-orchestrator" }
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
 const COMMIT_MESSAGE_RE = /^(feat|fix|docs|chore|refactor|test)(\([^)]+\))?: /
 
@@ -204,19 +205,16 @@ function toDelegateModelRef(wanted: { readonly providerID: string; readonly mode
   })
 }
 
-async function delegateHandler(ctx: Context, state: PlusState, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(Brief)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid delegate input.")
-  const brief = decoded.value
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
 
   const callerKind = kindOf(parent.role)
   if (!callerKind.ok)
-    return fail("E_ROLE", PLANNERS_MESSAGE, { role: "opus-orchestrator" })
+    return fail("E_ROLE", PLANNERS_MESSAGE, PLANNERS_ACCEPTED)
   const targetKind = kindOf(brief.role)
-  if (!targetKind.ok) return fail("E_ROLE", PLANNERS_MESSAGE, { role: "opus-orchestrator" })
+  if (!targetKind.ok) return fail("E_ROLE", PLANNERS_MESSAGE, PLANNERS_ACCEPTED)
   if ((await depthOf(root, parent)) >= policy.bounds.maxDepth)
     return fail(
       "E_ROLE",
@@ -224,7 +222,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: unknown, c
       `report blocked with needs=[{kind:"decision"}]`,
     )
   if (callerKind.kind === "planner" && !policy.roles.planner.delegateTo.includes(brief.role))
-    return fail("E_ROLE", PLANNERS_MESSAGE, { role: "opus-orchestrator" })
+    return fail("E_ROLE", PLANNERS_MESSAGE, PLANNERS_ACCEPTED)
   if (callerKind.kind === "orchestrator" && !policy.roles.orchestrator.delegateTo.includes(brief.role)) {
     const first = policy.roles.orchestrator.delegateTo[0] ?? "muse-implementer"
     return fail("E_ROLE", `Role "${brief.role}" is not allowed for orchestrator. accepted: {"role":"${first}",...}`, {
@@ -270,7 +268,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: unknown, c
     return fail("E_PATHS", PATHS_MESSAGE, PATHS_ACCEPTED)
 
   if (brief.role === "spark-implementer" && (brief.reason?.trim() === "" || brief.reason === undefined || paths.length > 5 || brief.checks.length !== 1))
-    return fail("E_SPARK", `spark-implementer needs reason, ≤5 paths and exactly one check. accepted: {...}`, {
+    return fail("E_SPARK", "spark-implementer needs reason, ≤5 paths and exactly one check.", {
       reason: "...",
       paths: ["src/a.ts"],
       checks: 1,
@@ -316,7 +314,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: unknown, c
     )
   }
 
-  const signature = signatureOf(input)
+  const signature = signatureOf(brief)
   const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(brief.requestID)}.json`)
   const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
   if (replay?.signature !== undefined) {
@@ -458,11 +456,9 @@ async function delegateHandler(ctx: Context, state: PlusState, input: unknown, c
   return succeeded(output)
 }
 
-async function finishHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(Report)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid finish input.")
-  const args = decoded.value
+  validateSummary(args.summary)
   const stored = await loadRun(root, caller.run.id)
   if (stored === undefined) return fail("E_INTERNAL", `Unknown run "${caller.run.id}".`, caller.run.id)
   const last = stored.attempts[stored.attempts.length - 1]
@@ -519,14 +515,6 @@ async function finishHandler(input: unknown, caller: TeamCaller): Promise<TeamAp
       [{ kind: "path", detail: "packages/core/src/x.ts is outside scope; needed to add the export" }],
     )
 
-  const lineCount = args.summary.split("\n").length
-  if (lineCount > 15)
-    return fail(
-      "E_SUMMARY",
-      `summary is ${lineCount} lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.`,
-      "a summary of ≤15 lines",
-    )
-
   const commits = await loadCommits(worktree, stored.base)
   const reportChecks = (await receiptsAt(root, stored.id, head))
     .map((receipt) => ({ id: receipt.id, passed: receipt.passed, head: receipt.head, at: receipt.at }))
@@ -574,11 +562,8 @@ async function finishHandler(input: unknown, caller: TeamCaller): Promise<TeamAp
   return succeeded(body)
 }
 
-async function checkpointHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(CheckpointInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid checkpoint input.")
-  const args = decoded.value
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   const key = await realpath(record.directory).catch(() => record.directory)
@@ -634,24 +619,19 @@ async function checkpointHandler(input: unknown, caller: TeamCaller): Promise<Te
   })
 }
 
-async function statusHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function statusHandler(args: StatusInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(StatusInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid status input.")
   const stored = await loadRun(root, caller.run.id)
   const self = stored ?? caller.run
   const all = await listRuns(root)
-  const ids = decoded.value.runs ?? [self.id, ...all.filter((record) => record.parent === self.id).map((record) => record.id)]
+  const ids = args.runs ?? [self.id, ...all.filter((record) => record.parent === self.id).map((record) => record.id)]
   const entries = []
   for (const id of ids) entries.push(await statusOf(root, id))
   return succeeded(entries)
 }
 
-async function waitHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(WaitInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid wait input.")
-  const args = decoded.value
   const timeoutMs = args.timeoutMs ?? 60000
   if (!Number.isInteger(timeoutMs) || timeoutMs < 10000)
     return fail("E_TIMEOUT_MIN", `timeoutMs ${String(args.timeoutMs)} is below the 10000ms floor.`, { timeoutMs: 10000 })
@@ -698,10 +678,8 @@ async function waitHandler(ctx: Context, input: unknown, caller: TeamCaller): Pr
   return succeeded({ settled: [], timedOut: true, stillOpen: [...args.runs], overBudget: await overBudgetIds(root, args.runs) })
 }
 
-async function getContextHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(GetContextInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid get_context input.")
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   const raw = await readJson<unknown>(path.join(root, "runs", record.id, "brief.json"))
@@ -756,15 +734,13 @@ async function getContextHandler(input: unknown, caller: TeamCaller): Promise<Te
   })
 }
 
-async function checkHandler(input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+async function checkHandler(args: CheckInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(CheckInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid check input.")
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   const assigned = await readChecks(root, record.id)
   try {
-    return succeeded(await run(root, record.id, decoded.value.id, assigned, record.directory))
+    return succeeded(await run(root, record.id, args.id, assigned, record.directory))
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }

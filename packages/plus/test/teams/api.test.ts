@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
 import { Session } from "@opencode/schema/session"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -11,6 +11,7 @@ import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { lastReceipt } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { Brief, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
 
 // Real temp git repositories plus a real temp state root (scoped
@@ -114,8 +115,8 @@ function callerFor(record: RunRecord): TeamCaller {
   return { sessionID: String(record.sessionID ?? "ses_unknown"), agent: record.role, run: record }
 }
 
-function delegateInput(overrides?: Record<string, unknown>): Record<string, unknown> {
-  return {
+function delegateInput(overrides?: Record<string, unknown>): Brief {
+  return Schema.decodeUnknownSync(Brief)({
     requestID: "req-1",
     role: "muse-implementer",
     objective: "Fix the agent filter in the query module so scoped listing works as documented.",
@@ -123,7 +124,11 @@ function delegateInput(overrides?: Record<string, unknown>): Record<string, unkn
     scope: { paths: ["packages/plus/src/*"] },
     checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/unit.test.ts"] }],
     ...overrides,
-  }
+  })
+}
+
+function finishInput(input: Partial<typeof Report.Encoded> & Pick<typeof Report.Encoded, "status" | "summary">): Report {
+  return Schema.decodeUnknownSync(Report)(input)
 }
 
 function required<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -131,9 +136,10 @@ function required<T>(result: { ok: true; value: T } | { ok: false; error: unknow
   return result.value
 }
 
-function rejected(result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }): {
+function rejected(result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; accepted?: unknown } }): {
   code: string
   message: string
+  accepted?: unknown
 } {
   if (result.ok) throw new Error(`expected failure, got ${JSON.stringify(result.value)}`)
   return result.error
@@ -254,9 +260,8 @@ test("delegate rejects E_PATHS when an implementer commit has no paths", async (
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
       const error = rejected(await api.delegate(delegateInput({ scope: { paths: [] } }), callerFor(parent)))
       expect(error.code).toBe("E_PATHS")
-      expect(error.message).toBe(
-        `Implementers need scope.paths (files or dir/* they may edit). accepted: ["packages/plus/src/*","packages/plus/test/*"]`,
-      )
+      expect(error.message).toBe("Implementers need scope.paths (files or dir/* they may edit).")
+      expect(error.accepted).toEqual(["packages/plus/src/*", "packages/plus/test/*"])
     } finally {
       await removeRepo(repo.dir)
     }
@@ -423,7 +428,7 @@ test("finish done with a green check records the report and commits", async () =
     try {
       const child = await finishChild(root, repo, PASSING_TEST)
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const value = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child))) as {
+      const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         head: string
         reportPath: string
         commits: Array<{ sha: string; subject: string }>
@@ -447,7 +452,7 @@ test("finish done with a red check fails E_CHECKS_RED", async () => {
     try {
       const child = await finishChild(root, repo, FAILING_TEST)
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const error = rejected(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       expect(error.code).toBe("E_CHECKS_RED")
       expect(error.message).toContain("Cannot report done: checks red at HEAD")
       expect(error.message).toContain("[t]")
@@ -470,7 +475,7 @@ test("finish runs a stale check instead of refusing it", async () => {
       await git(repo.dir, ["commit", "-m", "docs: extra notes"])
       const head = await git(repo.dir, ["rev-parse", "HEAD"])
       expect(head).not.toBe(checked.head)
-      const value = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child))) as {
+      const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         head: string
       }
       expect(value.head).toBe(head)
@@ -502,7 +507,7 @@ test("finish re-runs a dirty-tree receipt at the commit and fails E_CHECKS_RED w
       await git(repo.dir, ["commit", "-m", "test: add unit test"])
       const head = await git(repo.dir, ["rev-parse", "HEAD"])
       expect(head).not.toBe(checked.head)
-      const error = rejected(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       expect(error.code).toBe("E_CHECKS_RED")
       const receipt = await lastReceipt(root, child.id, "t")
       if (receipt === undefined) throw new Error("missing receipt after finish re-run")
@@ -526,7 +531,7 @@ test("finish done moves run.state to idle and status reports it", async () => {
     try {
       const child = await finishChild(root, repo, PASSING_TEST)
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const value = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child))) as {
+      const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         head: string
       }
       expect(value.head).toBeDefined()
@@ -555,7 +560,7 @@ test("finish blocked without needs fails E_NEEDS", async () => {
       const child = childInRepo("w-aaaaaaaaaaaaaaaa", repo)
       await saveRun(root, child)
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const error = rejected(await api.finish({ status: "blocked", summary: "Stuck on scope." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "blocked", summary: "Stuck on scope." }), callerFor(child)))
       expect(error.code).toBe("E_NEEDS")
     } finally {
       await removeRepo(repo.dir)
@@ -664,7 +669,7 @@ test("wait returns the settled report for an already-terminal attempt", async ()
       await saveRun(root, { ...parent, children: [child.id] })
       const sessions = recordSession()
       const api = createTeamApi(context({ session: sessions.domain }), createState())
-      const finished = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child)))
+      const finished = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       expect(finished).toBeDefined()
       const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000 }, callerFor(parent))) as {
         settled: Array<{ run: string; attemptState: string; report: { status: string; summary: string; path: string } | null }>
@@ -731,7 +736,7 @@ test("finish done with an unstaged modification names the full path in E_DIRTY",
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "src", "greeting.ts"), "export const greeting = 'hello'\n")
-      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
         "Worktree has uncommitted changes in [src/greeting.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
@@ -751,7 +756,7 @@ test("finish done with an untracked file names the full path in E_DIRTY", async 
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "src", "untracked.ts"), "export const extra = 1\n")
-      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
         "Worktree has uncommitted changes in [src/untracked.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
@@ -771,7 +776,7 @@ test("finish done with a spaced path names the full path in E_DIRTY", async () =
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "src", "with space.ts"), "export const spaced = 1\n")
-      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
         "Worktree has uncommitted changes in [src/with space.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
@@ -942,7 +947,7 @@ test("finish ignores Plus project.json but still reports real untracked files", 
       const child = childInRepo("w-3333333333333333", repo)
       await saveRun(root, child)
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const value = required(await api.finish({ status: "done", summary: "Filter fixed and covered." }, callerFor(child))) as {
+      const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         dirty: boolean
         dirtyFiles: string[]
       }
@@ -954,7 +959,7 @@ test("finish ignores Plus project.json but still reports real untracked files", 
       const child2 = childInRepo("w-4444444444444444", repo)
       await saveRun(root, child2)
       await fs.writeFile(path.join(repo.dir, "real-untracked.txt"), "real\n")
-      const error = rejected(await api.finish({ status: "done", summary: "Greeting updated." }, callerFor(child2)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child2)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toContain("real-untracked.txt")
       expect(error.message).not.toContain(".opencodeplus")
@@ -972,7 +977,7 @@ test("finish done succeeds with an untracked Plus project.json and passing assig
       await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
       await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const value = required(await api.finish({ status: "done", summary: "Completed task with passing check." }, callerFor(child))) as {
+      const value = required(await api.finish(finishInput({ status: "done", summary: "Completed task with passing check." }), callerFor(child))) as {
         head: string
         reportPath: string
         dirty: boolean
@@ -1005,7 +1010,7 @@ test("finish reports modified tracked project.json as dirty", async () => {
       await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":2,"protectedAgents":["new"]}\n`)
 
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const error = rejected(await api.finish({ status: "done", summary: "Modified tracked project." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Modified tracked project." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toContain(".opencodeplus/project.json")
     } finally {
@@ -1025,7 +1030,7 @@ test("finish reports new untracked file under .opencodeplus as dirty", async () 
       await saveRun(root, child)
 
       const api = createTeamApi(context({ session: recordSession().domain }), createState())
-      const error = rejected(await api.finish({ status: "done", summary: "Added untracked config." }, callerFor(child)))
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Added untracked config." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toContain(".opencodeplus/agent.json")
     } finally {

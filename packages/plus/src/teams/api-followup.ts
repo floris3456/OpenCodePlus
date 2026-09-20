@@ -16,18 +16,10 @@ import {
   transition,
   type RunRecord,
 } from "./run.js"
-import { FollowupBudget, RunID, toolError } from "./schema.js"
+import { FollowupInput, toolError } from "./schema.js"
 import { atomicJson, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
-
-const FollowupInput = Schema.Struct({
-  run: RunID,
-  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
-  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)),
-  delivery: Schema.optional(Schema.Literals(["now", "queue"])),
-  budget: Schema.optional(FollowupBudget),
-})
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -57,11 +49,8 @@ function signatureOf(input: unknown): string {
   return createHash("sha256").update(stable(rest), "utf8").digest("hex")
 }
 
-export async function followupHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+export async function followupHandler(ctx: Context, args: FollowupInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(FollowupInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid followup input.")
-  const args = decoded.value
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const child = await loadRun(root, args.run)
@@ -86,7 +75,7 @@ export async function followupHandler(ctx: Context, input: unknown, caller: Team
       { previous: "latest" },
     )
 
-  const signature = signatureOf(input)
+  const signature = signatureOf(args)
   const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(args.requestID)}.json`)
   const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
   if (replay?.signature !== undefined) {

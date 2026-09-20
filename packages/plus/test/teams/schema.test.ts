@@ -5,24 +5,46 @@ import {
   AttemptStates,
   Brief,
   BudgetOverBy,
+  CheckInput,
+  CheckpointInput,
+  DiffInput,
+  ExaCodeSearchInput,
   FollowupBudget,
+  FollowupInput,
+  GetContextInput,
+  IntegrateInput,
+  ListInput,
   MergeState,
   MergeStates,
+  MetricsInput,
+  PlanHandoffInput,
   Policy,
+  PrepareInput,
   Report,
   ReportStatus,
   ReportStatuses,
+  ResumeInput,
+  ReviewInput,
   RunID,
   RunState,
   RunStates,
+  SetChecksInput,
+  ShutdownRequestInput,
+  StatusInput,
+  StopInput,
+  SupersedeInput,
   TaskID,
   TaskState,
   TaskStates,
+  TavilyExtractInput,
+  TavilySearchInput,
   ToolError,
+  WaitInput,
   budgetExhaustion,
   delegatedRoles,
   toolError,
   validateChecks,
+  validateSummary,
   type Check,
 } from "../../src/teams/schema.js"
 
@@ -86,11 +108,46 @@ function caught(fn: () => unknown): Promise<unknown> {
   )
 }
 
-test("Report.summary with 16 lines is rejected with E_SUMMARY", async () => {
-  expect(Option.isNone(Schema.decodeUnknownOption(Report)({ status: "done", summary: lines(16) }))).toBe(true)
-  const thrown = await caught(() => Schema.decodeUnknownSync(Report)({ status: "done", summary: lines(16) }))
-  expect(String(thrown)).toContain("E_SUMMARY")
-  expect(Schema.decodeUnknownSync(Report)({ status: "done", summary: lines(15) }).status).toBe("done")
+test("validateSummary rejects summary with 16 lines with E_SUMMARY", async () => {
+  const thrown = await caught(() => validateSummary(lines(16)))
+  expect(thrown).toMatchObject({
+    code: "E_SUMMARY",
+    message: "summary is 16 lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
+    accepted: "a summary of ≤15 lines",
+  })
+  expect(() => validateSummary(lines(15))).not.toThrow()
+})
+
+test("teams/schema exports every tool input schema as the single source", () => {
+  const toolSchemas = [
+    Brief,
+    Report,
+    FollowupInput,
+    ReviewInput,
+    IntegrateInput,
+    CheckpointInput,
+    SetChecksInput,
+    SupersedeInput,
+    ShutdownRequestInput,
+    StopInput,
+    ResumeInput,
+    PrepareInput,
+    PlanHandoffInput,
+    StatusInput,
+    WaitInput,
+    DiffInput,
+    ListInput,
+    GetContextInput,
+    CheckInput,
+    MetricsInput,
+    ExaCodeSearchInput,
+    TavilySearchInput,
+    TavilyExtractInput,
+  ]
+  expect(toolSchemas).toHaveLength(23)
+  for (const s of toolSchemas) {
+    expect(Schema.isSchema(s)).toBe(true)
+  }
 })
 
 const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }

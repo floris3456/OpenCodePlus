@@ -10,6 +10,7 @@ import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek } from "../../src/teams/inbox.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { FollowupInput } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -94,13 +95,13 @@ function callerFor(record: RunRecord): TeamCaller {
   return { sessionID: String(record.sessionID ?? "ses_unknown"), agent: record.role, run: record }
 }
 
-function followupInput(overrides?: Record<string, unknown>): Record<string, unknown> {
+function followupInput(overrides?: Record<string, unknown>): FollowupInput {
   return {
     run: "w-aaaaaaaaaaaaaaaa",
     requestID: "req-1",
     prompt: "Clarify the blocked need: scope paths now include docs/*, continue in place.",
     ...overrides,
-  }
+  } as FollowupInput
 }
 
 function required<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {

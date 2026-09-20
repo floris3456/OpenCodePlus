@@ -1,21 +1,15 @@
 import path from "node:path"
 import { readdir } from "node:fs/promises"
 import type { Context } from "@opencode/plugin/effect/plugin"
-import { Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { drain, enqueue } from "./merge.js"
 import type { MergeContext } from "./merge.js"
 import { gitRaw } from "./git.js"
 import { loadRun } from "./run.js"
-import { Head, RunID } from "./schema.js"
+import { IntegrateInput } from "./schema.js"
 import type { Check } from "./schema.js"
 import { readJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
-
-const IntegrateInput = Schema.Struct({
-  run: RunID,
-  expectedParentHead: Head,
-})
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -54,12 +48,9 @@ async function latestReport(root: string, runID: string): Promise<{ n: number; s
   return best
 }
 
-export async function integrateHandler(ctx: Context, input: unknown, caller: TeamCaller): Promise<TeamApiResult> {
+export async function integrateHandler(ctx: Context, args: IntegrateInput, caller: TeamCaller): Promise<TeamApiResult> {
   void ctx
   const root = teamsDataDir()
-  const decoded = Schema.decodeUnknownOption(IntegrateInput)(input)
-  if (Option.isNone(decoded)) return fail("E_INPUT", "Invalid integrate input.")
-  const args = decoded.value
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const child = await loadRun(root, args.run)
