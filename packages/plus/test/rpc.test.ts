@@ -9,7 +9,7 @@ import path from "node:path"
 import { applySessionModel, createHandlers, createState, type PlusState } from "../src/index.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type SplitRecord } from "../src/instructions/model.js"
-import { globalRecordsPath } from "../src/instructions/paths.js"
+import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { enable } from "../src/project.js"
@@ -156,13 +156,17 @@ function record(item: string, overrides?: Partial<Plus.SnapshotCustomizationReco
   }
 }
 
-function show(snapshot: Plus.Snapshot, input: { id: string; view?: "resolved" }): { text: string } {
+function show(snapshot: Plus.Snapshot, input: { id: string; view?: "resolved"; agent?: string }): { text: string } {
   const nodes = expandedTree({
     items: snapshot.items.map(itemOf),
     records: snapshot.records.map(recordOf),
     agents: snapshot.agents,
   })
-  const row = nodes.find((node) => node.id === input.id || node.address?.item === input.id)
+  const row = nodes.find(
+    (node) =>
+      node.id === input.id ||
+      (node.address?.item === input.id && (input.agent === undefined || node.address?.agent === input.agent)),
+  )
   if (row?.address === undefined) throw new Error(`missing row address for ${input.id}`)
   const item = snapshot.items.find((candidate) => candidate.id === row.address?.item)
   if (item === undefined) throw new Error(`missing item for ${input.id}`)
@@ -177,6 +181,7 @@ function show(snapshot: Plus.Snapshot, input: { id: string; view?: "resolved" })
   return { text: resolved.text }
 }
 
+// Synchronous read is required because the transform callback executes synchronously.
 function readProjectMcp(project: string): [string, { type: "remote"; url: string; disabled?: boolean }][] {
   const target = path.join(project, ".opencode", "opencode.json")
   if (!fsSync.existsSync(target)) return []
@@ -1928,7 +1933,19 @@ test("agent delete shadowing guard keeps global records when project agent is de
 test("base delete drops customizations so re-created base resolves new body", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      agents: [agentInfo("alpha", "upstream role")],
+      session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+    }),
+    createState(),
+  )
 
   await Effect.runPromise(
     handlers["base.create"]({ id: "custom", title: "Custom Base", text: "Original base." }, throwingContext({})),
@@ -1946,8 +1963,6 @@ test("base delete drops customizations so re-created base resolves new body", as
         expectedGlobalRevision: snapshot.globalRevision,
         records: [
           record("base:custom", {
-            level: "defaults",
-            agent: null,
             text: "RESURRECTED BASE",
             basedOn: baseItem!.fingerprint,
           }),
@@ -1959,11 +1974,11 @@ test("base delete drops customizations so re-created base resolves new body", as
   expect(mutated.ok).toBe(true)
   expect(
     mutated.snapshot.records.some(
-      (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom",
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom" && r.level === "project",
     ),
   ).toBe(true)
 
-  const shownBefore = show(mutated.snapshot, { id: "base:custom", view: "resolved" })
+  const shownBefore = show(mutated.snapshot, { id: "base:custom", view: "resolved", agent: "alpha" })
   expect(shownBefore.text).toBe("RESURRECTED BASE")
 
   const deleted = await Effect.runPromise(handlers["base.delete"]({ id: "custom" }, throwingContext({})))
@@ -1972,9 +1987,12 @@ test("base delete drops customizations so re-created base resolves new body", as
 
   const stored = await load(project)
   const remainingStored = stored.records.filter(
-    (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom",
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom" && r.level === "project",
   )
   expect(remainingStored).toHaveLength(0)
+
+  const projectText = await Bun.file(projectRecordsPath(project)).text().catch(() => "")
+  expect(projectText).not.toContain("base:custom")
 
   const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const remainingSnapshot = snapshotAfterDelete.records.filter(
@@ -1994,7 +2012,7 @@ test("base delete drops customizations so re-created base resolves new body", as
     ),
   ).toBe(false)
 
-  const shownAfter = show(snapshotAfterRecreate, { id: "base:custom", view: "resolved" })
+  const shownAfter = show(snapshotAfterRecreate, { id: "base:custom", view: "resolved", agent: "alpha" })
   expect(shownAfter.text).toBe("Brand new second base.")
   expect(shownAfter.text).not.toBe("RESURRECTED BASE")
 })
@@ -2002,7 +2020,19 @@ test("base delete drops customizations so re-created base resolves new body", as
 test("instruction delete drops customizations so re-created instruction resolves new body", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
+  await fs.mkdir(path.dirname(agentPath), { recursive: true })
+  await Bun.write(agentPath, "upstream role")
+
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      agents: [agentInfo("alpha", "upstream role")],
+      session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+    }),
+    createState(),
+  )
 
   const created = await Effect.runPromise(
     handlers["instruction.create"]({ name: "AGENTS.md", text: "Original instruction." }, throwingContext({})),
@@ -2021,8 +2051,6 @@ test("instruction delete drops customizations so re-created instruction resolves
         expectedGlobalRevision: snapshot.globalRevision,
         records: [
           record("system:AGENTS.md", {
-            level: "defaults",
-            agent: null,
             text: "RESURRECTED INSTR",
             basedOn: instrItem!.fingerprint,
           }),
@@ -2034,11 +2062,11 @@ test("instruction delete drops customizations so re-created instruction resolves
   expect(mutated.ok).toBe(true)
   expect(
     mutated.snapshot.records.some(
-      (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md",
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md" && r.level === "project",
     ),
   ).toBe(true)
 
-  const shownBefore = show(mutated.snapshot, { id: "system:AGENTS.md", view: "resolved" })
+  const shownBefore = show(mutated.snapshot, { id: "system:AGENTS.md", view: "resolved", agent: "alpha" })
   expect(shownBefore.text).toBe("RESURRECTED INSTR")
 
   const deleted = await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
@@ -2047,9 +2075,12 @@ test("instruction delete drops customizations so re-created instruction resolves
 
   const stored = await load(project)
   const remainingStored = stored.records.filter(
-    (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md",
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md" && r.level === "project",
   )
   expect(remainingStored).toHaveLength(0)
+
+  const projectText = await Bun.file(projectRecordsPath(project)).text().catch(() => "")
+  expect(projectText).not.toContain("system:AGENTS.md")
 
   const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const remainingSnapshot = snapshotAfterDelete.records.filter(
@@ -2069,7 +2100,7 @@ test("instruction delete drops customizations so re-created instruction resolves
     ),
   ).toBe(false)
 
-  const shownAfter = show(snapshotAfterRecreate, { id: "system:AGENTS.md", view: "resolved" })
+  const shownAfter = show(snapshotAfterRecreate, { id: "system:AGENTS.md", view: "resolved", agent: "alpha" })
   expect(shownAfter.text).toBe("Brand new second instruction.\n")
   expect(shownAfter.text).not.toBe("RESURRECTED INSTR")
 })
