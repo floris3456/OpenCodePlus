@@ -749,6 +749,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "base.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeItemRecords(directory, freshLoaded, `base:${result.id}`)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
@@ -808,6 +811,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "instruction.invalid" as const, message: result.message, data: { name: result.id, reason: result.message } },
         }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeItemRecords(directory, freshLoaded, result.id)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({
         directory,
@@ -856,6 +862,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "mcp.invalid" as const, message: result.message, data: { name: result.name, reason: result.message } },
         }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeItemRecords(directory, freshLoaded, `mcp:${result.name}`)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       const removedConfig = await mcpConfigTarget(directory)
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "mcp.remove", target: removedConfig, summary: `mcp.remove ${result.name}` })

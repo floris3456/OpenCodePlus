@@ -2,16 +2,19 @@ import { afterEach, expect, test } from "bun:test"
 import type { Rpc } from "@opencode/schema/rpc"
 import { Schema } from "effect"
 import { Effect, Exit } from "effect"
+import fsSync from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { applySessionModel, createHandlers, createState, type PlusState } from "../src/index.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
-import { fingerprint } from "../src/instructions/model.js"
+import { fingerprint, resolve, scopesOf, type CustomizationRecord, type SplitRecord } from "../src/instructions/model.js"
+import { globalRecordsPath } from "../src/instructions/paths.js"
+import { load } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, mcpHarness, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -151,6 +154,37 @@ function record(item: string, overrides?: Partial<Plus.SnapshotCustomizationReco
     updated: UPDATED,
     ...overrides,
   }
+}
+
+function show(snapshot: Plus.Snapshot, input: { id: string; view?: "resolved" }): { text: string } {
+  const nodes = expandedTree({
+    items: snapshot.items.map(itemOf),
+    records: snapshot.records.map(recordOf),
+    agents: snapshot.agents,
+  })
+  const row = nodes.find((node) => node.id === input.id || node.address?.item === input.id)
+  if (row?.address === undefined) throw new Error(`missing row address for ${input.id}`)
+  const item = snapshot.items.find((candidate) => candidate.id === row.address?.item)
+  if (item === undefined) throw new Error(`missing item for ${input.id}`)
+  const customizations = snapshot.records
+    .filter((r): r is Plus.SnapshotCustomizationRecord => r.type === "customization")
+    .map((r) => recordOf(r) as CustomizationRecord)
+  const splits = snapshot.records
+    .filter((r): r is Plus.SnapshotSplitRecord => r.type === "split")
+    .map((r) => recordOf(r) as SplitRecord)
+  const scopes = scopesOf(snapshot.agents)
+  const resolved = resolve({ upstream: item, records: customizations, splits, scopes, address: row.address })
+  return { text: resolved.text }
+}
+
+function readProjectMcp(project: string): [string, { type: "remote"; url: string; disabled?: boolean }][] {
+  const target = path.join(project, ".opencode", "opencode.json")
+  if (!fsSync.existsSync(target)) return []
+  const text = fsSync.readFileSync(target, "utf8")
+  if (text.trim().length === 0) return []
+  const doc = JSON.parse(text)
+  const servers = doc?.mcp?.servers ?? {}
+  return Object.entries(servers) as [string, { type: "remote"; url: string; disabled?: boolean }][]
 }
 
 test("gated methods fail with project.disabled when project mode is off", async () => {
@@ -1889,4 +1923,259 @@ test("agent delete shadowing guard keeps global records when project agent is de
   if (snapshotGlobalRecords[0].type === "customization") {
     expect(snapshotGlobalRecords[0].text).toBe("Global override.")
   }
+})
+
+test("base delete drops customizations so re-created base resolves new body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  await Effect.runPromise(
+    handlers["base.create"]({ id: "custom", title: "Custom Base", text: "Original base." }, throwingContext({})),
+  )
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const baseItem = snapshot.items.find((item) => item.id === "base:custom")
+  expect(baseItem).toBeDefined()
+  expect(baseItem?.text).toBe("Original base.")
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          record("base:custom", {
+            level: "defaults",
+            agent: null,
+            text: "RESURRECTED BASE",
+            basedOn: baseItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(
+    mutated.snapshot.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom",
+    ),
+  ).toBe(true)
+
+  const shownBefore = show(mutated.snapshot, { id: "base:custom", view: "resolved" })
+  expect(shownBefore.text).toBe("RESURRECTED BASE")
+
+  const deleted = await Effect.runPromise(handlers["base.delete"]({ id: "custom" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "custom" })
+  expectRpcBody(deleted)
+
+  const stored = await load(project)
+  const remainingStored = stored.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom",
+  )
+  expect(remainingStored).toHaveLength(0)
+
+  const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const remainingSnapshot = snapshotAfterDelete.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom",
+  )
+  expect(remainingSnapshot).toHaveLength(0)
+  expect(snapshotAfterDelete.items.some((item) => item.id === "base:custom")).toBe(false)
+
+  await Effect.runPromise(
+    handlers["base.create"]({ id: "custom", title: "Custom Base", text: "Brand new second base." }, throwingContext({})),
+  )
+
+  const snapshotAfterRecreate = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterRecreate.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom",
+    ),
+  ).toBe(false)
+
+  const shownAfter = show(snapshotAfterRecreate, { id: "base:custom", view: "resolved" })
+  expect(shownAfter.text).toBe("Brand new second base.")
+  expect(shownAfter.text).not.toBe("RESURRECTED BASE")
+})
+
+test("instruction delete drops customizations so re-created instruction resolves new body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  const created = await Effect.runPromise(
+    handlers["instruction.create"]({ name: "AGENTS.md", text: "Original instruction." }, throwingContext({})),
+  )
+  expect(created.id).toBe("system:AGENTS.md")
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const instrItem = snapshot.items.find((item) => item.id === "system:AGENTS.md")
+  expect(instrItem).toBeDefined()
+  expect(instrItem?.text).toBe("Original instruction.\n")
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          record("system:AGENTS.md", {
+            level: "defaults",
+            agent: null,
+            text: "RESURRECTED INSTR",
+            basedOn: instrItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(
+    mutated.snapshot.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md",
+    ),
+  ).toBe(true)
+
+  const shownBefore = show(mutated.snapshot, { id: "system:AGENTS.md", view: "resolved" })
+  expect(shownBefore.text).toBe("RESURRECTED INSTR")
+
+  const deleted = await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
+  expect(deleted.id).toBe("system:AGENTS.md")
+  expectRpcBody(deleted)
+
+  const stored = await load(project)
+  const remainingStored = stored.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md",
+  )
+  expect(remainingStored).toHaveLength(0)
+
+  const snapshotAfterDelete = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const remainingSnapshot = snapshotAfterDelete.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md",
+  )
+  expect(remainingSnapshot).toHaveLength(0)
+  expect(snapshotAfterDelete.items.some((item) => item.id === "system:AGENTS.md")).toBe(false)
+
+  await Effect.runPromise(
+    handlers["instruction.create"]({ name: "AGENTS.md", text: "Brand new second instruction." }, throwingContext({})),
+  )
+
+  const snapshotAfterRecreate = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterRecreate.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md",
+    ),
+  ).toBe(false)
+
+  const shownAfter = show(snapshotAfterRecreate, { id: "system:AGENTS.md", view: "resolved" })
+  expect(shownAfter.text).toBe("Brand new second instruction.\n")
+  expect(shownAfter.text).not.toBe("RESURRECTED INSTR")
+})
+
+test("mcp remove drops customizations from global store so re-created mcp resolves new body", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+
+  const baseMcp = mcpHarness([])
+  const mcp = {
+    ...baseMcp.domain,
+    transform: (callback: Parameters<typeof baseMcp.domain.transform>[0]) =>
+      baseMcp.domain.transform((editor) => {
+        const servers = new Map(readProjectMcp(project))
+        callback({
+          ...editor,
+          list: () => Array.from(servers.entries()),
+          get: (name: string) => servers.get(name),
+        })
+      }),
+  }
+  const ctx = context({
+    location: fullContext({ directory: project }).location,
+    agent: agentHarness([]).domain,
+    skill: skillHarness([]).domain,
+    tool: toolHarness([]).domain,
+    mcp,
+  })
+  const handlers = createHandlers(ctx, createState())
+
+  const added = await Effect.runPromise(
+    handlers["mcp.add"](
+      { name: "fetch", config: { type: "remote", url: "https://example.com/mcp" } },
+      throwingContext({}),
+    ),
+  )
+  expect(added).toEqual({ name: "fetch" })
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const mcpItem = snapshot.items.find((item) => item.id === "mcp:fetch")
+  expect(mcpItem).toBeDefined()
+  expect(mcpItem?.text).toBe(JSON.stringify({ type: "remote", url: "https://example.com/mcp" }))
+
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          record("mcp:fetch", {
+            level: "defaults",
+            agent: null,
+            text: "RESURRECTED MCP",
+            basedOn: mcpItem!.fingerprint,
+          }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(
+    mutated.snapshot.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "mcp:fetch" && r.level === "defaults",
+    ),
+  ).toBe(true)
+
+  const shownBefore = show(mutated.snapshot, { id: "mcp:fetch", view: "resolved" })
+  expect(shownBefore.text).toBe("RESURRECTED MCP")
+
+  const removed = await Effect.runPromise(handlers["mcp.remove"]({ name: "fetch" }, throwingContext({})))
+  expect(removed).toEqual({ name: "fetch" })
+  expectRpcBody(removed)
+
+  const stored = await load(project)
+  const remainingGlobalRecords = stored.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "mcp:fetch" && r.level === "defaults",
+  )
+  expect(remainingGlobalRecords).toHaveLength(0)
+
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  expect(globalText).not.toContain("mcp:fetch")
+
+  const snapshotAfterRemove = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const remainingSnapshot = snapshotAfterRemove.records.filter(
+    (r) => (r.type === "customization" || r.type === "split") && r.item === "mcp:fetch",
+  )
+  expect(remainingSnapshot).toHaveLength(0)
+  expect(snapshotAfterRemove.items.some((item) => item.id === "mcp:fetch")).toBe(false)
+
+  await Effect.runPromise(
+    handlers["mcp.add"](
+      { name: "fetch", config: { type: "remote", url: "https://different.example.com/mcp" } },
+      throwingContext({}),
+    ),
+  )
+
+  const snapshotAfterRecreate = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    snapshotAfterRecreate.records.some(
+      (r) => (r.type === "customization" || r.type === "split") && r.item === "mcp:fetch",
+    ),
+  ).toBe(false)
+
+  const shownAfter = show(snapshotAfterRecreate, { id: "mcp:fetch", view: "resolved" })
+  const expectedNewText = JSON.stringify({ type: "remote", url: "https://different.example.com/mcp" })
+  expect(shownAfter.text).toBe(expectedNewText)
+  expect(shownAfter.text).not.toBe("RESURRECTED MCP")
 })
