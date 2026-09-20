@@ -401,6 +401,7 @@ export interface CustomizationRecord {
   readonly type: "customization"
   readonly level: Level
   readonly agent: string | null
+  readonly team?: { readonly level: Level; readonly team: string }
   readonly item: string
   readonly section: string | null
   readonly text?: string
@@ -415,6 +416,7 @@ export interface SplitRecord {
   readonly type: "split"
   readonly level: Level
   readonly agent: string | null
+  readonly team?: { readonly level: Level; readonly team: string }
   readonly item: string
   readonly boundaries: readonly Boundary[]
   readonly updated: string
@@ -430,6 +432,7 @@ export interface ModelRecord {
   readonly type: "model"
   readonly level: Level
   readonly agent: string | null
+  readonly team?: { readonly level: Level; readonly team: string }
   readonly providerID: string
   readonly modelID: string
   readonly variant?: string
@@ -443,6 +446,7 @@ export interface RuleRecord {
   readonly type: "rule"
   readonly level: Level
   readonly agent: string | null
+  readonly team?: { readonly level: Level; readonly team: string }
   readonly tool: string
   readonly id: string
   readonly label: string
@@ -528,6 +532,8 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
 | `team.addAgent` | `{ level, team, id, template?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
 | `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
+| `team.delete` | `{ level, team }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid` |
+| `team.list` | `void` | `TeamListOutput` | `project.disabled` |
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
@@ -908,14 +914,11 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
 - Row ids (same string in the TUI filter, tool calls, the log, and error
   messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
   shared Defaults row), `section:<level>:<agent|''>:<itemId>:<sectionId>`,
-  `agent:<level>:<id>`, `team:<level>:<name>`, with item ids
+  `agent:<level>:<id>`, `team:<level>:<name>`, `team:<level>:<name>:<member>`,
+  `team:<level>:<name>:special`, `team:<level>:<name>:special:<id>`, with
+  group prefix `group:<level>:<team>/:special:<id>:<group>`, and item ids
   `model:<providerID>/<modelID>[@<variant>]` and
   `perm:<toolId>:<ruleId>`. `<level>` is `project`,
-  `global`, or `defaults`.
-- Row ids (same string in the TUI filter, tool calls, the log, and error
-  messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
-  shared Defaults row), `section:<level>:<agent|''>:<itemId>:<sectionId>`,
-  `agent:<level>:<id>`, `team:<level>:<name>`. `<level>` is `project`,
   `global`, or `defaults`.
 - Guards: writes for agents listed in `protectedAgents` fail with
   `agent.protected`; unknown ids fail with `row.unknown`. A no-op or a

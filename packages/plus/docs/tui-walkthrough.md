@@ -240,3 +240,29 @@ arrows move · left/right expand · enter edit · space toggle · a add · s spl
 ```
 
 **Proves:** Tool rows are non-file items that do not offer or bind the `d delete` action.
+
+---
+
+# Round 3 Shipped Surface
+
+The Round 3 integration extends the Instructions TUI and Composer experience with team lifecycle, team-scoped agent customization, and active-team interaction:
+
+## 1. Team Deletion and Defaults Refusal
+- **Project/Global Team Deletion:** Pressing `d delete` on an on-disk project or global team row (`team:<level>:<team>`) displays a confirmation dialog naming the team name, member count, and enabled state (`Delete project team "<team>" and its N member file(s)? ... This cannot be undone.`). Confirming deletes the team directory on disk via `team.delete`, unlinks all member files, uninstalls members if enabled, removes any stored `TeamRecord`, and removes the row from the tree with status `Deleted team <team>`.
+- **Defaults Refusal:** Shipped built-in teams (`Defaults → Teams → <team>`) never offer `d delete` on the hint line (`actions.remove === false`), and pressing `d` shows an honest status refusal toast (`"<team>" cannot be deleted: team "<team>" is built in`) without opening a dialog.
+
+## 2. Team-Scoped Special Group
+- **Structure:** Every team row expands to its member rows followed by a dedicated `Special` group (`team:<level>:<team>:special`). Expanding `Special` reveals the five special agents (`general`, `explore`, `compaction`, `title`, `summary`, id `team:<level>:<team>:special:<id>`), each hosting the standard five agent groups (Models, Tools, Base, Skills, System with prefix `group:<level>:<team>/:special:<id>:<group>`).
+- **Team-Scoped Customizations:** Customizations (overrides, section exclusions, model selections, perm rules) made under a team-scoped special agent persist with a `team: { level, team }` record field in `records.jsonl`. These overrides apply dynamically to the host special agents only while that team is enabled, restoring upstream baselines when the team is disabled.
+
+## 3. Agent Selector Categories and Active-Team Cycling
+- **Categorized Selector (`ctrl+x a`):** The agent selection palette groups agents under category headers: regular agents first under `Agents`, followed by active and enabled teams under `Team: <name> (<level>)`.
+- **Active-Team Cycling:** Selecting any member of a team activates that team. When a team is active, the status line reflects the active team (`· team <name>`), and the cycling shortcut (`agent.cycle`, Shift+Tab or configured key) confines movement exclusively to that team's members.
+- **Normal Cycling:** Selecting a regular agent under `Agents` (such as `build` or `plan`) clears the active team: the `· team` indicator leaves the status line and cycling returns to cycling normal agents only. Disabling the active team also clears active state.
+
+## 4. Team Monitor Composer Tab
+- **Composer Tab Registration:** Pressing `Down` in a started chat reveals a fourth `Team` tab alongside the built-in `Subagents`, `Shell`, and `Terminals` tabs.
+- **Active Team Overview:** When a team is active, navigating to `Team` (`Right` ×3) displays the team members along with their execution mode, configured model, and session status (`idle` for active chat session owner, `none` when no session exists).
+- **Direct Agent Switch:** Pressing `Enter` on any member without an existing session switches the current composer session agent to that member.
+- **Inactive Fallback:** When no team is active, the tab renders the fallback notice: `No active team — select one with ctrl+x a`. Built-in composer navigation (`escape` to close, `left` to return to prior tabs) is fully preserved.
+
