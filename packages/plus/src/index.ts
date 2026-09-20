@@ -628,6 +628,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { path: removed.path },
           },
         }
+      const stored = await load(directory)
+      const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      await removeAgentRecords(directory, loaded, validated.id, input.scope)
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
@@ -2100,6 +2103,41 @@ async function removeTeamRecord(
   })
   if (retried.ok)
     return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
+  return { ok: false }
+}
+
+async function removeAgentRecords(
+  directory: string,
+  loaded: LoadedStores,
+  agent: string,
+  level: Level,
+): Promise<{ ok: true; changed: boolean } | { ok: false }> {
+  const isTarget = (record: StoredRecord) =>
+    (record.type === "customization" || record.type === "split") && record.agent === agent && record.level === level
+  const attempt = (records: readonly StoredRecord[]) => {
+    const existing = records.find(isTarget)
+    if (existing === undefined) return undefined
+    return records.filter((record) => !isTarget(record)) as readonly StoredRecord[]
+  }
+  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
+    level === "project" ? changed.project : changed.global
+  const first = attempt(loaded.records)
+  if (first === undefined) return { ok: true, changed: false }
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: first,
+  })
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed) }
+  const fresh = await load(directory)
+  const second = attempt(fresh.records)
+  if (second === undefined) return { ok: true, changed: false }
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: second,
+  })
+  if (retried.ok) return { ok: true, changed: changedOf(retried.changed) }
   return { ok: false }
 }
 
