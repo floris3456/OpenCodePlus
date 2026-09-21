@@ -10,7 +10,7 @@
 - `src/tool.ts` stores canonical Location registrations, derives LLM definitions, executes tools, and normalizes model content and images.
 - Built-in tool plugins live in `tool/plugin`.
 
-Do not add a second executable entry type, registry-owned executor, authorization callback, output-path callback, or legacy normalization path.
+Do not add a second executable entry type, registry-owned executor, producer-supplied authorization callback, output-path callback, or legacy normalization path. `executeTool` runs the single authorization gate immediately before the tool executor.
 
 ## Construction
 
@@ -49,9 +49,9 @@ Type safety ends at registration. The registry validates model input and declare
 
 ## Permissions
 
-The registry has no `Permission.Service` dependency and performs no execution authorization. Registration options may attach a permission action solely to preserve whole-tool definition filtering. Most registrations default to their effective name; `edit`, `write`, and `patch` use the shared `edit` action.
+The registry has no `Permission.Service` layer dependency: it reads `Permission.Service` from the calling fiber with `Effect.serviceOption` because `Permission.node` depends on the unbound `Location.node`, and taking the dependency would make every graph that builds tools bind a Location. Session work runs under `Instance.provide`, making the service ambient; when absent, the gate refuses the call rather than bypassing authorization. Execution authorization is partitioned by tool origin: plugin tools are authorized before execution by the gate in `executeTool`, whereas built-in leaves and MCP tools (`tool/mcp.ts`) authorize themselves at their leaves (gating those at the registry would prompt twice). Registration options may attach a permission action solely to preserve whole-tool definition filtering. Most registrations default to their effective name; `edit`, `write`, and `patch` use the shared `edit` action.
 
-Tool filtering is catalog visibility, not execution authorization. A call still executes the captured tool's leaf policy if it reaches execution.
+Tool filtering is catalog visibility, not execution authorization. When a call reaches execution, plugin tools are additionally authorized by the execution gate, while built-in and MCP tools execute their captured leaf policy.
 
 ## Output
 
