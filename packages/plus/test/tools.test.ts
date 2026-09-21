@@ -1,10 +1,9 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
 import { Deferred, Effect, Exit } from "effect"
-import { appendFileSync, writeFileSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -1991,19 +1990,35 @@ test("instructions_set on a team-special row persists team-scoped record", async
 // prefix; long strings become a clearly labeled projection.
 
 const ROUND3_TEXT_LIMIT = 200
-// The check harness bounds the transcript it returns and keeps its tail, so the
-// same labeled lines are also written here, one file per test process under the
-// disposable run scratch root. The first capture truncates, later ones append.
-const round3LogFile = path.join(process.env.TMPDIR ?? os.tmpdir(), "round3-instructions-output.log")
-let round3LogStarted = false
+// The check harness truncates the head of a run's stdout but keeps stderr
+// whole, so each labeled line is printed on both streams: console.log as the
+// test runs and one console.error block when this file finishes. No assertion
+// reads either.
+const round3Lines: string[] = []
 
 function round3Capture(label: string, value: unknown, project: string): void {
   const line = `[round3] ${label} ${JSON.stringify(round3Value(value, project))}`
+  round3Lines.push(line)
   console.log(line)
-  if (round3LogStarted) appendFileSync(round3LogFile, `${line}\n`)
-  else {
-    round3LogStarted = true
-    writeFileSync(round3LogFile, `${line}\n`)
+}
+
+afterAll(() => {
+  for (const line of round3Lines) console.error(line)
+})
+
+// The assembled view lists every visible system, tool and skill text. The
+// round-trip needs the row identity, so keep that and the visible ids and
+// replace the assembled bodies with this labeled projection.
+function round3ShowValue(step: { readonly name: string }, shown: Record<string, unknown>): unknown {
+  if (step.name !== "agent") return shown
+  return {
+    id: shown.id,
+    view: shown.view,
+    agent: shown.agent,
+    systemEntries: Array.isArray(shown.system) ? shown.system.length : 0,
+    toolIds: Array.isArray(shown.tools) ? (shown.tools as readonly { id?: unknown }[]).map((tool) => tool.id) : [],
+    skillIds: Array.isArray(shown.skills) ? (shown.skills as readonly { id?: unknown }[]).map((skill) => skill.id) : [],
+    projection: "assembled text bodies replaced by their ids and a system entry count",
   }
 }
 
@@ -2160,7 +2175,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
     expect(shown).toMatchObject({ id: step.id, ...(step.show?.expect ?? {}) })
     round3Capture(
       `round-trip ${step.name}: show`,
-      { request: { id: step.id, view: step.show?.view ?? "resolved" }, output: shown },
+      { request: { id: step.id, view: step.show?.view ?? "resolved" }, output: round3ShowValue(step, shown) },
       project,
     )
     if (step.showFail !== undefined) {
