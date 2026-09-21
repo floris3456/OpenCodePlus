@@ -78,7 +78,11 @@ test("a non-AGENTS.md name is refused with instruction.invalid and no file is wr
   }
 })
 
-test("a valid creation appears in a real instructions.snapshot as system:AGENTS.md", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
+// rows, their apply, or instruction.create/delete are skipped, not deleted, so
+// the rework re-enables them with the feature.
+test.skip("a valid creation appears in a real instructions.snapshot as system:AGENTS.md", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
@@ -93,7 +97,7 @@ test("a valid creation appears in a real instructions.snapshot as system:AGENTS.
   expect(item?.text).toContain("Follow the guide.")
 })
 
-test("AGENTS.md outside the session ancestor path is refused, on the path it is accepted and discovered", async () => {
+test.skip("AGENTS.md outside the session ancestor path is refused, on the path it is accepted and discovered", async () => {
   const { project } = await tempRoot()
   const nested = path.join(project, "nested")
   await fs.mkdir(nested, { recursive: true })
@@ -129,7 +133,7 @@ test("AGENTS.md outside the session ancestor path is refused, on the path it is 
   expect(item?.text).toContain("Nested guide.")
 })
 
-test("traversal, empty, NUL, and duplicate refusals still hold", async () => {
+test.skip("traversal, empty, NUL, and duplicate refusals still hold", async () => {
   const { root, project } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())

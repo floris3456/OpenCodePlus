@@ -212,8 +212,10 @@ test("gated methods fail with project.disabled when project mode is off", async 
   await expectDeclaredError(handlers["skill.delete"]({ id: "x" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["base.create"]({ id: "x", title: "X", text: "y" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["base.delete"]({ id: "x" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["instruction.create"]({ name: "x", text: "y" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["instruction.delete"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
+  // OpenCodePlus: instruction.create/delete are disabled pending the Context
+  // catalogue and refuse with instruction.invalid before the project gate.
+  await expectDeclaredError(handlers["instruction.create"]({ name: "x", text: "y" }, throwingContext(captured)), captured, "instruction.invalid")
+  await expectDeclaredError(handlers["instruction.delete"]({ name: "x" }, throwingContext(captured)), captured, "instruction.invalid")
   await expectDeclaredError(handlers["mcp.add"]({ name: "x", config: { type: "remote", url: "https://x.test" } }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["mcp.remove"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["team.create"]({ level: "project", team: "x" }, throwingContext(captured)), captured, "project.disabled")
@@ -1245,7 +1247,11 @@ test("base delete removes a user template, refuses missing, and refuses builtins
   await expectDeclaredError(handlers["base.delete"]({ id: "gpt" }, throwingContext(builtin)), builtin, "base.invalid")
 })
 
-test("instruction create writes a project file core discovery picks up and raises declared errors", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
+// rows, their apply, or instruction.create/delete are skipped, not deleted, so
+// the rework re-enables them with the feature.
+test.skip("instruction create writes a project file core discovery picks up and raises declared errors", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
@@ -1261,7 +1267,7 @@ test("instruction create writes a project file core discovery picks up and raise
   await expectDeclaredError(handlers["instruction.create"]({ name: "../evil", text: "x" }, throwingContext(invalid)), invalid, "instruction.invalid")
 })
 
-test("instruction delete removes the project file, refuses traversal, and raises declared errors", async () => {
+test.skip("instruction delete removes the project file, refuses traversal, and raises declared errors", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
@@ -2022,7 +2028,7 @@ test("base delete drops customizations so re-created base resolves new body", as
   expect(shownAfter.text).not.toBe("RESURRECTED BASE")
 })
 
-test("instruction delete drops customizations so re-created instruction resolves new body", async () => {
+test.skip("instruction delete drops customizations so re-created instruction resolves new body", async () => {
   const { project } = await tempRoot()
   await enable(project)
 

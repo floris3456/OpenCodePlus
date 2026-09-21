@@ -21,7 +21,7 @@ import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, roleUpdates, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
-import { registerInstructionTools } from "./tools.js"
+import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
 import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
@@ -769,6 +769,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createInstruction: async (input) => {
       const directory = ctx.location.directory
+      // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue
+      // (instructions/discover.ts). The handler body below is kept for the rework.
+      if (INSTRUCTIONS_DISABLED)
+        return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -801,6 +805,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     deleteInstruction: async (input) => {
       const directory = ctx.location.directory
+      // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue.
+      if (INSTRUCTIONS_DISABLED)
+        return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -2015,6 +2022,10 @@ interface LoadedStores {
   readonly records: readonly StoredRecord[]
   readonly protectedAgents: readonly string[]
 }
+
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (instructions/discover.ts). Flip to false together with restoring the rows.
+const INSTRUCTIONS_DISABLED = true
 
 function disabledMessage(directory: string): string {
   return `Project mode is not enabled for ${directory}`

@@ -592,7 +592,11 @@ test("a custom-system agent keeps its own system[0]", async () => {
   expect(event.system[0]?.text).toBe("my own prompt")
 })
 
-test("per-file instructions drop or replace one part by canonical path", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
+// rows, their apply, or instruction.create/delete are skipped, not deleted, so
+// the rework re-enables them with the feature.
+test.skip("per-file instructions drop or replace one part by canonical path", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-canonical-"))
   applyRoots.push(parent)
   const root = path.join(parent, "repo")
@@ -973,7 +977,7 @@ afterEach(async () => {
   await Promise.all(applyRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-test("disabling the global instruction file removes that part, not the project one", async () => {
+test.skip("disabling the global instruction file removes that part, not the project one", async () => {
   // DEFECT C: discovery yields location-relative ids (see
   // test/discover.test.ts "instruction files follow core order": "system:AGENTS.md"
   // for the session file, "system:../AGENTS.md"-style for ancestors, and a long

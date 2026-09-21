@@ -564,7 +564,11 @@ test("system:role is one per agent with scoped agents and order 0", async () => 
   expect(roles[1]).toMatchObject({ text: "beta prompt", agents: ["beta"], order: 0 })
 })
 
-test("instruction files follow core order: global first, then nearest-to-farthest", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
+// rows, their apply, or instruction.create/delete are skipped, not deleted, so
+// the rework re-enables them with the feature.
+test.skip("instruction files follow core order: global first, then nearest-to-farthest", async () => {
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const project = await tempDir("plus-discover-")
@@ -589,7 +593,7 @@ test("instruction files follow core order: global first, then nearest-to-farthes
   expect(files[0].text).toBe("global instructions\n")
 })
 
-test("descendant instruction files are not inventory", async () => {
+test.skip("descendant instruction files are not inventory", async () => {
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const project = await tempDir("plus-discover-")

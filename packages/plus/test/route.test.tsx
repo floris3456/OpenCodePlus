@@ -769,7 +769,11 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
   }
 })
 
-test("created project instruction deletes through instruction.delete and the row disappears", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
+// rows, their apply, or instruction.create/delete are skipped, not deleted, so
+// the rework re-enables them with the feature.
+test.skip("created project instruction deletes through instruction.delete and the row disappears", async () => {
   // End to end through the production path: real instruction.create writes
   // <project>/AGENTS.md, real instructions.snapshot discovers it with
   // project-owned group, the route renders it with a d binding, d calls the

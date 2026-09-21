@@ -396,13 +396,16 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   const skillBody = "Take notes."
   const baseTitle = "Custom.txt"
   const baseText = "custom base"
-  const instructionText = "Follow the guide."
+  // const instructionText = "Follow the guide."
   const mcpConfig = { type: "remote", url: "https://example.test" }
   process.env.OPENCODE_CONFIG_DIR = toolConfig
   await runOk(toolCreate, { kind: "agent", id: "helper", prompt: agentPrompt, fields: agentFields })
   await runOk(toolCreate, { kind: "skill", name: "notes2", body: skillBody })
   await runOk(toolCreate, { kind: "base", id: "custom", title: baseTitle, text: baseText })
-  await runOk(toolCreate, { kind: "instruction", name: "AGENTS.md", text: instructionText })
+  // OpenCodePlus: create kind:"instruction" is disabled pending the Context
+  // catalogue (src/instructions/discover.ts); the api path below stays skipped too
+  // so both sides write the same files.
+  // await runOk(toolCreate, { kind: "instruction", name: "AGENTS.md", text: instructionText })
   await runOk(toolCreate, { kind: "mcp", name: "search", config: mcpConfig })
   process.env.OPENCODE_CONFIG_DIR = apiConfig
   const apiAgent = await apiApi.createAgent({ scope: "project", id: "helper", prompt: agentPrompt, fields: agentFields })
@@ -411,8 +414,8 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   if (!apiSkill.ok) throw new Error(`api createSkill failed: ${apiSkill.error.message}`)
   const apiBase = await apiApi.createBase({ id: "custom", title: baseTitle, text: baseText })
   if (!apiBase.ok) throw new Error(`api createBase failed: ${apiBase.error.message}`)
-  const apiInstruction = await apiApi.createInstruction({ name: "AGENTS.md", text: instructionText })
-  if (!apiInstruction.ok) throw new Error(`api createInstruction failed: ${apiInstruction.error.message}`)
+  // const apiInstruction = await apiApi.createInstruction({ name: "AGENTS.md", text: instructionText })
+  // if (!apiInstruction.ok) throw new Error(`api createInstruction failed: ${apiInstruction.error.message}`)
   const apiMcp = await apiApi.addMcp({ name: "search", config: { ...mcpConfig } })
   if (!apiMcp.ok) throw new Error(`api addMcp failed: ${apiMcp.error.message}`)
   async function collectProjectFiles(project: string): Promise<Map<string, string>> {
@@ -495,7 +498,7 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   expect(toolProjectFiles.get(skillKey) ?? "").toContain("name: notes2")
   expect(toolBaseFiles.get("custom.txt") ?? "").toBe(baseText)
   expect(toolBaseFiles.get("index.json") ?? "").toContain(baseTitle)
-  expect(toolProjectFiles.get("AGENTS.md") ?? "").toContain(instructionText)
+  // expect(toolProjectFiles.get("AGENTS.md") ?? "").toContain(instructionText)
   const mcpKey = [...toolProjectFiles.keys()].find((key) => key.endsWith("opencode.json"))
   if (mcpKey === undefined) throw new Error("missing mcp config file")
   expect(toolProjectFiles.get(mcpKey) ?? "").toContain("https://example.test")
@@ -561,7 +564,11 @@ test("delete base removes a user template and its file is gone", async () => {
   expect(await Bun.file(createdPath).exists()).toBe(false)
 })
 
-test("delete instruction removes the project file", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
+// rows, their apply, or instruction.create/delete are skipped, not deleted, so
+// the rework re-enables them with the feature.
+test.skip("delete instruction removes the project file", async () => {
   const { api, tools, project } = await freshFixture()
   await runOk(need(tools, "instructions_create"), { kind: "instruction", name: "AGENTS.md", text: "guide" })
   const afterInstruction = await snapshotOf(api)

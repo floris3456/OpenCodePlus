@@ -425,46 +425,47 @@ test("file operations log to the owning store, team toggles log their level, fai
   expect(await globalLines()).toHaveLength(0)
 
   await Effect.runPromise(handlers["skill.create"]({ name: "routerskill", body: "Take notes." }, throwingContext({})))
-  await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})))
+  // OpenCodePlus: instruction.create/delete are disabled pending the Context
+  // catalogue (src/instructions/discover.ts); their two log lines are gone.
+  // await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})))
   await Effect.runPromise(
     handlers["mcp.add"]({ name: "routerserver", config: { type: "remote", url: "https://example.test" } }, throwingContext({})),
   )
-  expect(await projectLines(project)).toHaveLength(4)
-  const mcp = JSON.parse((await projectLines(project))[3] ?? "")
+  expect(await projectLines(project)).toHaveLength(3)
+  const mcp = JSON.parse((await projectLines(project))[2] ?? "")
   expect(mcp.op).toBe("mcp.add")
   expect(mcp.target.endsWith(path.join(".opencode", "opencode.json"))).toBe(true)
 
   await Effect.runPromise(handlers["base.create"]({ id: "routerbase", title: "Router.txt", text: "router base" }, throwingContext({})))
   expect(await globalLines()).toHaveLength(1)
   expect(JSON.parse((await globalLines())[0] ?? "")).toMatchObject({ op: "base.create", target: userBaseFile("routerbase") })
-  expect(await projectLines(project)).toHaveLength(4)
+  expect(await projectLines(project)).toHaveLength(3)
 
   await Effect.runPromise(handlers["agent.delete"]({ scope: "project", id: "router" }, throwingContext({})))
-  await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
-  expect(await projectLines(project)).toHaveLength(6)
-  expect(JSON.parse((await projectLines(project))[4] ?? "").op).toBe("agent.delete")
-  expect(JSON.parse((await projectLines(project))[5] ?? "").op).toBe("instruction.delete")
+  // await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
+  expect(await projectLines(project)).toHaveLength(4)
+  expect(JSON.parse((await projectLines(project))[3] ?? "").op).toBe("agent.delete")
 
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
   expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
-  expect(await projectLines(project)).toHaveLength(7)
-  expect(JSON.parse((await projectLines(project))[6] ?? "")).toMatchObject({ op: "team.setEnabled", target: "team:project:crew" })
+  expect(await projectLines(project)).toHaveLength(5)
+  expect(JSON.parse((await projectLines(project))[4] ?? "")).toMatchObject({ op: "team.setEnabled", target: "team:project:crew" })
   // An unchanged toggle is a no-op and logs nothing.
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
-  expect(await projectLines(project)).toHaveLength(7)
+  expect(await projectLines(project)).toHaveLength(5)
   // Failures and refusals log nothing.
   await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "dup", prompt: "x" }, throwingContext({})))
-  expect(await projectLines(project)).toHaveLength(8)
+  expect(await projectLines(project)).toHaveLength(6)
   const duplicate: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["agent.create"]({ scope: "project", id: "dup", prompt: "y" }, throwingContext(duplicate)),
     duplicate,
     "agent.exists",
   )
-  expect(await projectLines(project)).toHaveLength(8)
+  expect(await projectLines(project)).toHaveLength(6)
 })
 
 test("instructions.log returns entries newest-first and honours where, limit, and offset", async () => {

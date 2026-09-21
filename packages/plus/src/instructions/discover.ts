@@ -75,7 +75,15 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const ruleRecords = input.ruleRecords ?? []
   const sources = await resolveAgentSources(directory, agents, input.activeBase)
   const bodies = await readAgentBodies(sources)
-  const instructions = await discoverInstructionFiles(directory, projectDirectory)
+  // OpenCodePlus: AGENTS.md handling is DISABLED for now. Native opencode applies
+  // AGENTS.md files itself (session-start upward walk plus read-time descendant
+  // discovery); Plus used to mirror the ambient set as `system:<path>` rows under
+  // every agent so they could be overridden or toggled per agent. That surface is
+  // being reworked as part of the Context catalogue. Until then no AGENTS.md rows
+  // exist, so nothing here shows, overrides or toggles them; the seeded
+  // OPENCODEPLUS.md teaching row is unaffected. Re-enable by restoring the call.
+  // const instructions = await discoverInstructionFiles(directory, projectDirectory)
+  const instructions: { path: string; text: string }[] = []
   const teaching = await readTeachingFile()
   const mcp = mcpInventory(servers, input.records)
   const upstream = await upstreamModels(sources, agents, modelBaselines)

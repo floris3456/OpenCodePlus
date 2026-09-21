@@ -36,6 +36,10 @@ import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
 const namespace = "instructions"
+// OpenCodePlus: AGENTS.md rows and their create/delete are disabled pending the
+// Context catalogue (instructions/discover.ts carries the full note).
+export const INSTRUCTION_DISABLED =
+  "instruction.disabled: AGENTS.md handling in OpenCodePlus is disabled for now; native opencode applies AGENTS.md files. Being reworked with the Context catalogue."
 const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
 
@@ -1066,13 +1070,16 @@ function createRow(
       return { output: created.value }
     }
     if (input.kind === "instruction") {
-      if (input.name === undefined || input.text === undefined)
-        return yield* Effect.fail(new Tool.Error({ message: "create instruction requires name and text" }))
-      const created = yield* Effect.promise(() =>
-        api.createInstruction({ name: input.name as string, text: input.text as string, actor }),
-      )
-      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      // OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+      // (see instructions/discover.ts). Native opencode owns AGENTS.md until then.
+      return yield* Effect.fail(new Tool.Error({ message: INSTRUCTION_DISABLED }))
+      // if (input.name === undefined || input.text === undefined)
+      //   return yield* Effect.fail(new Tool.Error({ message: "create instruction requires name and text" }))
+      // const created = yield* Effect.promise(() =>
+      //   api.createInstruction({ name: input.name as string, text: input.text as string, actor }),
+      // )
+      // if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      // return { output: created.value }
     }
     if (input.kind === "mcp") {
       if (input.name === undefined || input.config === undefined)

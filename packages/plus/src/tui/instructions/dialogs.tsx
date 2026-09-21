@@ -44,7 +44,9 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
           { title: "Agent", value: "agent" },
           { title: "Base prompt", value: "base" },
           { title: "Skill", value: "skill" },
-          { title: "Instruction", value: "instruction" },
+          // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue
+          // (instructions/discover.ts). Restore with the rows.
+          // { title: "Instruction", value: "instruction" },
           { title: "MCP server", value: "mcp" },
           { title: "Team", value: "team" },
           { title: "Model", value: "model" },
