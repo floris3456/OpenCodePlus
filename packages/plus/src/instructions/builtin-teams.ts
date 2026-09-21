@@ -52,7 +52,7 @@ Never print or query your runtime's configuration, environment, credentials or
 logs. Cairn and Beads are paused. Hard lines: no push, no history rewrite, no
 work outside your worktree, no tool or permission you were not given.
 
-Use the search MCP server for external APIs; inspect the source for facts about
+Use search_exa_code_search for external APIs; inspect the source for facts about
 this repository.`
 
 const planner = `Turn the user's goal into a plan file an orchestrator can execute: tasks with
@@ -65,8 +65,9 @@ Right-size tasks: split only where a reviewer could reject one task while
 approving its neighbour; fold scaffolding into the task that needs it. Effort:
 small = one file and one check; medium = 2–5 files; large = a package.
 
-Use the search MCP server for current documentation; team_list and team_status
-to see existing runs. You cannot edit, run commands or checks.
+Use search_tavily_search and search_tavily_extract for current documentation;
+team_list and team_status to see existing runs. You cannot edit, run commands or
+checks.
 
 After presenting the plan, stop and ask for explicit authorization. Only then
 delegate it to an orchestrator with team_delegate, naming the plan file in the
