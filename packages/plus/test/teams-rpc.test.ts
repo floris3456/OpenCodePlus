@@ -3,6 +3,7 @@ import { Effect, Exit, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { loadRun, saveRun, type RunRecord } from "../src/teams/run.js"
 import { formatMarkdown, parseFrontmatter } from "../src/agents/files.js"
 import { agentBody } from "../src/instructions/discover.js"
 import { parseTeamFields } from "../src/instructions/teams-apply.js"
@@ -11,8 +12,7 @@ import { fingerprint } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructions/teams.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
-import { loadRun, saveRun, type RunRecord } from "../src/teams/run.js"
-import { enable } from "../src/project.js"
+import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
 
@@ -30,13 +30,18 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-async function tempRoot(): Promise<{ project: string; teamsRoot: string }> {
+async function tempRoot(): Promise<{ project: string }> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-teams-rpc-"))
   roots.push(root)
-  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "share")
-  return { project: path.join(root, "project"), teamsRoot: teamsDataDir() }
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  // Project mode resolves upward, so an ancestor of TMPDIR can be enabled
+  // (the development workspace is). The fixture writes its own explicit
+  // disabled marker; tests that need project mode call enable(project).
+  await disable(project)
+  return { project }
 }
 
 async function writeTeamAgent(teamDir: string, id: string, body = "role"): Promise<string> {
@@ -1341,7 +1346,8 @@ function makeRunRecord(overrides: Partial<RunRecord> & { id: string }): RunRecor
 }
 
 test("team.runs.list returns namespace runs, sorted lastUsed desc, with all 9 fields, and all:false hides superseded/reaped", async () => {
-  const { project, teamsRoot } = await tempRoot()
+  const { project } = await tempRoot()
+  const teamsRoot = teamsDataDir()
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -1404,7 +1410,8 @@ test("team.runs.list returns namespace runs, sorted lastUsed desc, with all 9 fi
 })
 
 test("team.runs.stop stops any run in the namespace without owner check, reconciles dead, preserves terminal, and fails E_BUSY when working", async () => {
-  const { project, teamsRoot } = await tempRoot()
+  const { project } = await tempRoot()
+  const teamsRoot = teamsDataDir()
   const ctx = fullContext({
     directory: project,
     session: { interrupt: () => Effect.succeed({ interrupted: true }) },
