@@ -23,7 +23,7 @@ import { apply, roleUpdates, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
-import { reconcile } from "./teams/lifecycle.js"
+import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
@@ -100,6 +100,9 @@ export default Plugin.define({
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
       yield* watchHostEvents(ctx, state)
+      // One tick, one place: dead-run reconciliation (and later GC) runs here
+      // and nowhere else, cancelled with the plugin scope.
+      yield* startSweep(ctx, teamsDataDir())
     }),
 })
 
@@ -3046,10 +3049,6 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
       Effect.catchCause((cause) => Effect.logWarning("plus team tooling install failed", { cause }).pipe(Effect.as([] as Registration[]))),
     )
     state.teamTooling = [...state.teamTooling, ...installed]
-    yield* Effect.promise(() => reconcile(ctx, teamsDataDir())).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("plus team reconcile failed", { cause }).pipe(Effect.as([] as string[]))),
-      Effect.asVoid,
-    )
   })
 }
 
@@ -3869,9 +3868,23 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )
+  // A team run's state follows its host session: idle, failed and interrupted
+  // turns settle the attempt and hand the inbox over without any tool call.
+  const runs = ctx.event.subscribe().pipe(
+    Stream.filter((event) => SessionRunEvents.has(event.type)),
+    Stream.runForEach((event) =>
+      Effect.promise(() => onSessionEvent(ctx, teamsDataDir(), event)).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus team session event failed", { cause, type: event.type })),
+        Effect.asVoid,
+      ),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
   return Effect.gen(function* () {
     yield* refresh
     yield* sessions
+    yield* runs
   })
 }
 

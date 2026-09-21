@@ -9,7 +9,10 @@ import { errCode, io } from "./io.js"
 
 export const DEFAULT_INBOX_UNREAD_BYTES = 262144
 
-export const InboxKind = Schema.Literals(["brief", "followup", "notify", "shutdown", "system"])
+// child.settled is its own kind so a parent can tell an owned child's outcome
+// from any other notify; it is synthetic like notify and system, so a parent
+// reads a batch of settlements as one text.
+export const InboxKind = Schema.Literals(["brief", "followup", "notify", "shutdown", "system", "child.settled"])
 export type InboxKind = typeof InboxKind.Type
 
 export const InboxItem = Schema.Struct({
@@ -152,21 +155,21 @@ export async function take(root: string, runID: string): Promise<InboxItem[]> {
   })
 }
 
-/** Partitions items into synthetic (notify + system), prompts (brief + followup), and shutdown. */
+/** Partitions items into synthetic (notify + system + child.settled), prompts (brief + followup), and shutdown. */
 export function partition(items: InboxItem[]): InboxPartition {
   const sorted = [...items].sort((a, b) => a.id.localeCompare(b.id))
   const synthetic: InboxItem[] = []
   const prompts: InboxItem[] = []
   const shutdown: InboxItem[] = []
   for (const item of sorted) {
-    if (item.kind === "notify" || item.kind === "system") synthetic.push(item)
+    if (item.kind === "notify" || item.kind === "system" || item.kind === "child.settled") synthetic.push(item)
     else if (item.kind === "brief" || item.kind === "followup") prompts.push(item)
     else if (item.kind === "shutdown") shutdown.push(item)
   }
   return { synthetic, prompts, shutdown }
 }
 
-/** Joins all pending notify and system items into ONE text, one line per item in ULID order. */
+/** Joins all pending synthetic items into ONE text, one line per item in ULID order. */
 export function batchNotify(items: InboxItem[]): { text: string; taken: InboxItem[] } {
   const split = partition(items)
   const text = split.synthetic.map((i) => i.text.replace(/\r?\n$/, "")).join("\n")

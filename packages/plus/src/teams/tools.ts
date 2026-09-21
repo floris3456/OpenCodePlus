@@ -41,7 +41,8 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 
 const DelegateDescription = "Start a bounded task in a new isolated worktree. One call = one run."
 const FinishDescription = "Declare an outcome for the current attempt.\nDone, blocked, or needs-context with evidence the parent verifies."
-const FollowupDescription = "Send a correction to an owned child.\nQueue it for idle delivery, or deliver now when the child is idle."
+const FollowupDescription =
+  "Send a correction to an owned child.\nThe default queue delivers it as a new attempt when the child next goes idle; delivery:\"now\" needs an already idle child and fails E_BUSY otherwise."
 const ReviewDescription = "Claim completion and request independent verification.\nRuns stale checks first, then starts a reviewer run."
 const IntegrateDescription = "Enqueue a child's completed commit into the merge queue.\nLands synchronously when the queue is empty and the parent is clean."
 const CheckpointDescription = "Commit only intended files in your own worktree after checking expected HEAD."
@@ -52,8 +53,10 @@ const StopDescription = "Stop an idle owned child.\nWorking children fail E_BUSY
 const ResumeDescription = "Resume a stopped or dead owned child.\nDead registrations are probed once and replaced when not live."
 const PrepareDescription = "Install worktree dependencies from a frozen bun.lock.\nRetained for repos without an after_create hook."
 const PlanHandoffDescription = "Validate a plan file and start an orchestrator with it.\nRequires authorization:true after the human approved the plan."
-const StatusDescription = "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; never acknowledges."
-const WaitDescription = "Wait for child runs to settle or go idle.\nReturns settled, timedOut, stillOpen and overBudget lists."
+const StatusDescription =
+  "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; never acknowledges, but shows what wait acknowledged as acked."
+const WaitDescription =
+  "Wait for child runs to settle or go idle.\nReturns settled, acknowledged, timedOut, stillOpen and overBudget lists; acknowledges owned outcomes unless ack:false."
 const DiffDescription = "Show a run's worktree diff against a ref or base.\nLarge patches truncate to maxBytes with truncated:true."
 const ListDescription = "List runs in this namespace, optionally filtered.\nHidden states (superseded, reaped) need all:true. Read-only."
 const GetContextDescription = "Load your brief, checks, siblings, inbox and budget.\nCall first, then execute the Brief."

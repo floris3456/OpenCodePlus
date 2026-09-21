@@ -9,6 +9,7 @@ import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek } from "../../src/teams/inbox.js"
+import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { FollowupInput } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
@@ -451,6 +452,41 @@ test("two queued followups to a working child keep the current attempt", async (
     const kept = await loadRun(root, child.id)
     expect(kept?.attempts).toHaveLength(1)
     expect(await peek(root, child.id)).toHaveLength(2)
+  })
+})
+
+test("a followup queued to a working child is delivered as a new attempt when it goes idle", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-6666666666666666", {
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const api = createTeamApi(ctx, createState())
+    const queued = required(
+      await api.followup(
+        followupInput({ run: child.id, requestID: "queue-idle-handoff", prompt: "Continue in place: also cover the empty list." }),
+        callerFor(parent),
+      ),
+    ) as { attempt: number; state: string }
+    expect(queued).toEqual({ attempt: 1, state: "queued" })
+    expect(sessions.prompted).toHaveLength(0)
+    // The child's host session going idle is the whole handoff: no further
+    // call by either side.
+    await onSessionEvent(ctx, root, { type: "session.idle", properties: { sessionID: String(child.sessionID) } })
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.sessionID).toBe(child.sessionID)
+    expect(sessions.prompted[0]?.text).toContain("also cover the empty list")
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("working")
+    expect(moved?.attempts).toHaveLength(2)
+    expect(moved?.attempts[0]?.state).toBe("no_report")
+    expect(moved?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
+    expect(await peek(root, child.id)).toEqual([])
   })
 })
 

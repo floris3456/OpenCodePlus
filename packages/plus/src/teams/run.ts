@@ -17,6 +17,11 @@ export interface AttemptRecord {
   trigger: string
   prompt?: string
   endedAt?: string
+  /** Inbox item ids already delivered as this attempt's prompt, so the idle
+   * drain never prompts the same followup twice. */
+  inbox?: string[]
+  /** The parent was told this attempt settled; it is told exactly once. */
+  notified?: boolean
 }
 
 export interface HistoryEntry {
@@ -347,6 +352,29 @@ export function attemptTransition(run: RunRecord, to: AttemptState, ctx?: Attemp
   }
   const attempts = [...run.attempts.slice(0, -1), updated]
   return { ...run, attempts, lastUsed: at }
+}
+
+// Walk a non-terminal attempt forward to finishing so a caller can mark it
+// terminal. Only the queued → admitted → streaming → finishing chain is legal
+// here; a terminal attempt is refused before this runs.
+export function toFinishing(run: RunRecord): RunRecord {
+  const last = run.attempts[run.attempts.length - 1]
+  if (last === undefined) return run
+  let next = run
+  if (last.state === "queued") next = attemptTransition(next, "admitted", "admit")
+  const admitted = next.attempts[next.attempts.length - 1]
+  if (admitted !== undefined && admitted.state === "admitted") next = attemptTransition(next, "streaming", "first_event")
+  const streaming = next.attempts[next.attempts.length - 1]
+  if (streaming !== undefined && streaming.state === "streaming") next = attemptTransition(next, "finishing", "finish")
+  return next
+}
+
+/** Records inbox item ids against the last attempt as already prompted. */
+export function recordInboxDelivery(run: RunRecord, ids: readonly string[]): RunRecord {
+  const last = run.attempts[run.attempts.length - 1]
+  if (last === undefined || ids.length === 0) return run
+  const updated: AttemptRecord = { ...last, inbox: [...(last.inbox ?? []), ...ids] }
+  return { ...run, attempts: [...run.attempts.slice(0, -1), updated] }
 }
 
 /** 02 §1 stall rule: min(baseMs * 2^(n-1), maxMs). */

@@ -11,6 +11,7 @@ import {
   isAttemptTerminal,
   isTerminal,
   loadRun,
+  recordInboxDelivery,
   saveRun,
   startAttempt,
   transition,
@@ -122,14 +123,17 @@ async function followupQueue(
     const record = budget === undefined ? current : { ...current, budget: { ...budget } }
     if (budget !== undefined) await saveRun(root, record)
     await put(root, childID, { kind: "followup", from: parent.id, text })
-    // Delivery to a working child happens when it next goes idle; the sweeper that performs that handoff is not implemented yet (step 6).
+    // The child's own session.idle drains this into a new attempt
+    // (lifecycle.onSessionIdle); neither side acts again.
     const last = record.attempts[record.attempts.length - 1]
     const output = { attempt: last?.n ?? 0, state: "queued" }
     await atomicJson(requestPath, { signature, output, run: childID })
     return succeeded(output)
   }
-  await put(root, childID, { kind: "followup", from: parent.id, text })
-  const admitted = await admitIdleChild(ctx, root, current, text, budget)
+  // An idle child is prompted now, so the item it was prompted with is
+  // recorded as delivered and the idle drain will not repeat it.
+  const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
+  const admitted = await admitIdleChild(ctx, root, current, text, budget, queued.id)
   const done = admitted.attempts[admitted.attempts.length - 1]
   const output = { attempt: done?.n ?? 1, state: "admitted" }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -179,12 +183,14 @@ async function admitIdleChild(
   current: RunRecord,
   text: string,
   budget: FollowupBudgetInput,
+  itemID?: string,
 ): Promise<RunRecord> {
   const open = current.attempts[current.attempts.length - 1]
   const started = open === undefined || isAttemptTerminal(open.state) ? startAttempt(current, { trigger: "followup", prompt: text }) : current
   const queued = started.attempts[started.attempts.length - 1]
   const admitted = queued !== undefined && queued.state === "queued" ? attemptTransition(started, "admitted", "admit") : started
-  const budgeted = budget === undefined ? admitted : { ...admitted, budget: { ...budget } }
+  const delivered = itemID === undefined ? admitted : recordInboxDelivery(admitted, [itemID])
+  const budgeted = budget === undefined ? delivered : { ...delivered, budget: { ...budget } }
   const working = budgeted.state === "idle" ? transition(budgeted, "working", "prompt") : budgeted
   if (working.sessionID === null) throw toolError("E_INTERNAL", `Run ${working.id} has no session to prompt.`, working.id)
   const previous = current

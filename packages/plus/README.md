@@ -110,6 +110,37 @@ Guards: writes for agents listed in `.opencodeplus/project.json` `protectedAgent
 
 Log format is `Plus.LogEntry` (`src/rpc.ts`): `{ ts, actor: { type: tui|tool, agent?, sessionID?, messageID? }, op, target, summary, revision }`. Project writes append to `<project>/.opencodeplus/instructions/log.jsonl`, global/defaults writes to `<configDir>/opencodeplus/instructions/log.jsonl`. The log's own `where` grammar is small: a bare word matches over op, target, summary, and actor agent; keyed tokens are `actor:tui|tool`, `agent:<text>`, `op:<text>`, `target:<prefix>`, `session:<text>`, `since:<instant>` / `before:<instant>` (ISO date or `<n><s|m|h|d|w>` age).
 
+## Team runs
+
+Team tools live in `src/teams` and are registered for every Plus instance, with
+or without project mode. A run's state follows its host session rather than the
+agent's good manners: `index.ts` subscribes to `session.idle`,
+`session.execution.failed` and `session.execution.interrupted`, maps the
+session to its run, and `teams/lifecycle.ts` settles the attempt, moves the run
+to `idle`, notifies the parent once and hands the pending inbox to the session
+as one new attempt.
+
+- A child whose model turn ends is `idle` whether or not it called
+  `team_finish`; its attempt is `no_report` when it did not. `team_stop`,
+  `team_wait until:"idle"` and `team_followup delivery:"now"` therefore work
+  with no tool call from the child.
+- `team_followup` with the default `delivery:"queue"` against a working child
+  is delivered when that child next goes idle, as a new attempt.
+  `delivery:"now"` against a working child refuses with `E_BUSY` and
+  `accepted: {"delivery":"queue"}`.
+- A settled child puts one `child.settled` item in its parent's inbox naming
+  the run, the attempt, the report status and the report path. It is sent once
+  (`notified` on the attempt). An idle parent is prompted with it now; a
+  working parent gets it through its own idle handoff.
+- `team_wait` acknowledges the outcomes of owned children unless `ack:false`,
+  and names them in `acknowledged`. `team_status` reports the same receipt as
+  `acked: { attempt, at }` and never acknowledges anything itself.
+- One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
+  2000 ms) carries dead-run reconciliation, forked on the plugin scope so it
+  stops with the plugin.
+
+The binding contract for the tool surface is `SPEC.md`.
+
 ## Fork touch surface
 
 Every place core changed for this feature, and why the plugin API could not do it:
