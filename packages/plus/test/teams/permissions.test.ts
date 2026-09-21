@@ -3,27 +3,45 @@
 // project-level override changes the answer. No permission hook exists to
 // test any more.
 import { afterEach, beforeEach, expect, test } from "bun:test"
+import { Effect } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createHandlers, createState } from "../../src/index.js"
 import { apply } from "../../src/instructions/apply.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
 import { fingerprint, type CustomizationRecord } from "../../src/instructions/model.js"
+import { enable } from "../../src/project.js"
+import { teamTools } from "../../src/teams/policy.js"
 import { saveRun } from "../../src/teams/run.js"
 import type { RunRecord } from "../../src/teams/run.js"
-import { agentHarness, agentInfo, context } from "../harness.js"
+import { agentHarness, agentInfo, context, fullContext } from "../harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
 let dir = ""
+const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorDataHome = process.env.XDG_DATA_HOME
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "teams-policy-rows-"))
 })
 
 afterEach(async () => {
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = priorDataHome
   await rm(dir, { recursive: true, force: true })
 })
+
+function throwingContext(): { error: (type: string, message: string, data?: unknown) => never } {
+  return {
+    error: (type, message, data) => {
+      throw data === undefined ? { type, message } : { type, message, data }
+    },
+  }
+}
 
 function makeRun(overrides?: Partial<RunRecord>): RunRecord {
   const now = new Date().toISOString()
@@ -193,6 +211,50 @@ test("a planner role emits an ask row on team.delegate", async () => {
   const permissions = await permissionsAfterApply("fable-planner", items)
   expect(has(permissions, "team.delegate", "*", "ask")).toBe(true)
   expect(has(permissions, "team.delegate", "*", "deny")).toBe(false)
+})
+
+// The producer tests above hand teamPolicyItems a member list. Only the live
+// path decides that list, and it decides it again on every publish: the second
+// publish re-discovers a host that now reports each installed member back as an
+// ordinary defaults agent. Read the end of the path — what /api/agent shows.
+test("a published member carries its native denies and ceiling while a non-member carries the namespace deny", async () => {
+  process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
+  process.env.XDG_DATA_HOME = join(dir, "data")
+  const project = join(dir, "project")
+  await enable(project)
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "upstream")],
+    tools: teamTools.map((name) => ({
+      id: name,
+      description: `team ${name}`,
+      options: { namespace: "team", permission: `team.${name}` },
+    })),
+  })
+  const handlers = createHandlers(ctx, createState())
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext()),
+  )
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext()))
+
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const permissionsOf = (id: string) => listed.data.find((entry) => String(entry.id) === id)?.permissions ?? []
+  const member = permissionsOf("gemini-implementer")
+  expect(member.length).toBeGreaterThan(0)
+  expect(has(member, "shell", "*", "deny")).toBe(true)
+  expect(has(member, "question", "*", "deny")).toBe(true)
+  expect(has(member, "external_directory", "*", "deny")).toBe(true)
+  expect(has(member, "subagent", "*", "deny")).toBe(true)
+  expect(has(member, "task", "*", "deny")).toBe(true)
+  expect(has(member, "read", "*.key", "deny")).toBe(true)
+  expect(has(member, "search_tavily_*", "*", "deny")).toBe(true)
+  // Out of the implementer ceiling, so denied; in it, so never denied.
+  expect(has(member, "team.delegate", "*", "deny")).toBe(true)
+  expect(has(member, "team.checkpoint", "*", "deny")).toBe(false)
+  // A member is never hidden from the namespace it belongs to.
+  expect(has(member, "team.*", "*", "deny")).toBe(false)
+
+  expect(has(permissionsOf("build"), "team.*", "*", "deny")).toBe(true)
 })
 
 test("a child run for a planner role overrides ask to deny on team.delegate", async () => {

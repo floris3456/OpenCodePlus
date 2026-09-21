@@ -399,7 +399,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
+      const discovered = await discoverAll(ctx, loaded, state, builtins)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
       const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
@@ -430,7 +430,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             ? ("global" as const)
             : undefined
       if (staleStore !== undefined) {
-        const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
+        const discovered = await discoverAll(ctx, loaded, state, builtins)
         const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
         const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
         return {
@@ -449,7 +449,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       })
       if (!saved.ok) {
         const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
-        const discovered = await discoverAll(ctx, refreshed, state.baselines, state.modelBaselines)
+        const discovered = await discoverAll(ctx, refreshed, state, builtins)
         const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
         const outputIds = await snapshotOutputIds(directory, discovered, refreshed, builtins, state.teamOutputIds)
         return {
@@ -494,7 +494,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
+      const discovered = await discoverAll(ctx, loaded, state, builtins)
       const result = await assembled({
         ctx,
         agent: input.agent,
@@ -2799,28 +2799,51 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
 async function discoverAll(
   ctx: Context,
   loaded: LoadedStores,
-  baselines: ReadonlyMap<string, PromptBaseline>,
-  modelBaselines?: ReadonlyMap<string, ModelBaseline>,
+  state: PlusState,
+  builtins: readonly BuiltinTeam[],
 ): Promise<Discovered> {
   const resolved = await resolveBaseTemplates(ctx)
   const discovered = await discover({
     ctx,
     records: customizationsOf(loaded.records),
-    baselines,
+    baselines: state.baselines,
     baseTemplates: resolved.templates,
     activeBase: (agent) => resolved.active(agent),
     modelRecords: modelsOf(loaded.records),
     ruleRecords: rulesOf(loaded.records),
-    ...(modelBaselines === undefined ? {} : { modelBaselines }),
+    modelBaselines: state.modelBaselines,
   })
-  return { ...discovered, items: [...discovered.items, ...(await teamPolicyRows(ctx, loaded, discovered))] }
+  return {
+    ...discovered,
+    items: [...discovered.items, ...(await teamPolicyRows(ctx, loaded, discovered, builtins, state.teamOutputIds))],
+  }
 }
 
 // Team role rules join the inventory here, where the enabled teams are
 // already resolvable: the tree lists them, the query engine filters them and
 // apply installs whatever they resolve to, exactly like a discovered row.
-async function teamPolicyRows(ctx: Context, loaded: LoadedStores, discovered: Discovered): Promise<Item[]> {
-  const members = await resolveAllTeamAgents(ctx.location.directory, loaded.records.filter(isTeamRecord), discovered.agents)
+//
+// Members must resolve against the same filtered view the publish path builds,
+// never the raw discovery: once Plus has installed a member, the host reports
+// it back as an ordinary unbacked defaults agent, and resolveTeams would read
+// that echo as a shadowing regular of equal rank and drop every member. Plus
+// ownership (recorded ids, else the shipped-body match) is what tells the two
+// apart; approximating it by id would let a team member beat a genuine host
+// built-in of the same name.
+async function teamPolicyRows(
+  ctx: Context,
+  loaded: LoadedStores,
+  discovered: Discovered,
+  builtins: readonly BuiltinTeam[],
+  owned: ReadonlyMap<string, TeamOwnership>,
+): Promise<Item[]> {
+  const outputIds = await snapshotOutputIds(ctx.location.directory, discovered, loaded, builtins, owned)
+  const members = await resolveAllTeamAgents(
+    ctx.location.directory,
+    loaded.records.filter(isTeamRecord),
+    filteredPublishAgents(discovered.agents, outputIds),
+    builtins,
+  )
   if (members.length === 0) return []
   return teamPolicyItems(policyMembersOf(members.map((agent) => agent.id)), await liveRunScopes(teamsDataDir()))
 }
@@ -3238,7 +3261,7 @@ function publishFresh(
 ): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
-      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state.baselines, state.modelBaselines))
+      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state, builtins))
       // A newer publish already won; this read is stale, so leave the applied
       // registrations and the last emitted revision untouched.
       if (state.projectRevision !== undefined && stored.projectRevision < state.projectRevision) return discovered
