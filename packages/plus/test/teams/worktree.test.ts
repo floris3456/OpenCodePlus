@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
-import { create, list, orphans, remove, slug, stamp } from "../../src/teams/worktree.js"
+import { create, list, orphans, ownedRoot, remove, slug, stamp } from "../../src/teams/worktree.js"
 import { git, gitRaw } from "../../src/teams/git.js"
 
 let scratch = ""
@@ -76,13 +76,42 @@ describe("worktree manager", () => {
     const after = await list(repoRoot)
     expect(after.length).toBe(before.length + 1)
     expect(after.map((e) => e.path)).toContain(c.dir)
-    expect(await orphans(repoRoot, [])).toContain(c.dir)
-    expect(await orphans(repoRoot, [c.dir])).not.toContain(c.dir)
+    expect(await orphans(repoRoot, ownedRoot(wsRoot, "opencode"), [])).toContain(c.dir)
+    expect(await orphans(repoRoot, ownedRoot(wsRoot, "opencode"), [c.dir])).not.toContain(c.dir)
     await remove(stateDir, c.dir, { repoRoot, repoKey: "opencode" })
     expect(await exists(c.dir)).toBe(false)
     const gone = await list(repoRoot)
     expect(gone.length).toBe(before.length)
     expect(gone.map((e) => e.path)).not.toContain(c.dir)
+  })
+
+  // GC force-removes every path orphans() reports, so a checkout of the same
+  // repository that the team did not create must never be reported.
+  test("orphans never reports a worktree outside the team's own root", async () => {
+    const mine = await create(stateDir, {
+      repoRoot,
+      repoKey: "opencode",
+      role: "implementer",
+      name: slug("bounds", "w-eeee0005"),
+      base,
+      workspaceRoot: wsRoot,
+      projectDirectory: repoRoot,
+    })
+    const outside = join(scratch, "dev-checkout")
+    await git(repoRoot, ["worktree", "add", "-b", "dev/own-work", outside, base])
+    await writeFile(join(outside, "uncommitted.txt"), "work in progress\n")
+    try {
+      const found = await orphans(repoRoot, ownedRoot(wsRoot, "opencode"), [])
+      // The unclaimed team worktree is still an orphan; the developer's is not.
+      expect(found).toContain(mine.dir)
+      expect(found).not.toContain(outside)
+      expect(await exists(join(outside, "uncommitted.txt"))).toBe(true)
+      // Nor does a team root that happens to be a path prefix of it.
+      expect(await orphans(repoRoot, join(scratch, "dev"), [])).toEqual([])
+    } finally {
+      await git(repoRoot, ["worktree", "remove", "--force", outside])
+      await remove(stateDir, mine.dir, { repoRoot, repoKey: "opencode" })
+    }
   })
 
   test("create with an unknown base throws E_BASE", async () => {

@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises"
+import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
@@ -24,7 +24,7 @@ import {
 } from "./run.js"
 import { Policy, parseDuration } from "./schema.js"
 import { readJson } from "./store.js"
-import { orphans, remove } from "./worktree.js"
+import { orphans, ownedRoot, remove } from "./worktree.js"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -305,16 +305,22 @@ function renderInbox(items: readonly InboxItem[]): string {
 // The one periodic tick of the team runtime: everything that must happen
 // without a tool call runs from here. T6 adds gc(root, policy) to this
 // function; nothing else schedules periodic team work.
-export async function sweep(ctx: Context, root: string): Promise<string[]> {
+export async function sweep(ctx: Context, root: string): Promise<SweepResult> {
   const dead = await reconcile(ctx, root)
-  await gc(root, policy)
-  return dead
+  return { dead, gc: await gc(root, policy) }
+}
+
+export interface SweepResult {
+  dead: string[]
+  gc: GcResult
 }
 
 export interface GcResult {
   reaped: string[]
   skippedDirty: string[]
   orphansRemoved: string[]
+  /** Runs whose worktree removal failed; they keep their state and worktree. */
+  removeFailed: string[]
 }
 
 export async function gc(root: string, customPolicy?: Policy): Promise<GcResult> {
@@ -380,6 +386,7 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
 
   const reaped: string[] = []
   const skippedDirty: string[] = []
+  const removeFailed: string[] = []
 
   // 4. Reap stale stopped / superseded runs
   for (const record of allRuns) {
@@ -423,27 +430,20 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
       }
     }
 
-    // Remove worktree
-    if (repoRoot && record.directory) {
-      try {
-        await remove(root, record.directory, {
-          repoRoot,
-          repoKey: record.repoKey,
-          force: isSuperseded,
-        })
-      } catch {
-        // Safe to ignore removal errors
-      }
+    // A run is only reaped once its directory is verifiably gone: `git
+    // worktree remove` fails on a locked worktree, and a record saved as
+    // reaped/removed would both lie and drop out of the orphan scan's
+    // knownDirs below.
+    if (!(await removeWorktree(root, record, repoRoot, isSuperseded))) {
+      removeFailed.push(record.id)
+      continue
     }
 
-    let updated: RunRecord = { ...record, worktree: "removed" }
-    if (canTransition(updated.state, "reaped", "gc")) {
-      updated = transition(updated, "reaped", "gc")
-    } else {
-      updated.state = "reaped"
-    }
-    updated.worktree = "removed"
-    await saveSafe(root, updated)
+    const cleared: RunRecord = { ...record, worktree: "removed" }
+    await saveSafe(
+      root,
+      canTransition(cleared.state, "reaped", "gc") ? transition(cleared, "reaped", "gc") : { ...cleared, state: "reaped" },
+    )
     reaped.push(record.id)
   }
 
@@ -459,7 +459,7 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
         }
       }
     }
-    const orphanList = await orphans(repoRoot, knownDirs).catch(() => [] as string[])
+    const orphanList = await orphans(repoRoot, ownedRoot(root, repoKey), knownDirs).catch(() => [] as string[])
     for (const orphanPath of orphanList) {
       try {
         await remove(root, orphanPath, { repoRoot, repoKey, force: true })
@@ -470,7 +470,33 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
     }
   }
 
-  return { reaped, skippedDirty, orphansRemoved }
+  return { reaped, skippedDirty, orphansRemoved, removeFailed }
+}
+
+// True when the run's worktree directory is gone afterwards, whether it was
+// already absent or this call removed it. `remove` rejecting is not enough to
+// report a removal, and succeeding is not required if the directory is absent.
+async function removeWorktree(
+  root: string,
+  record: RunRecord,
+  repoRoot: string | undefined,
+  force: boolean,
+): Promise<boolean> {
+  if (record.directory === "" || !(await onDisk(record.directory))) return true
+  if (repoRoot === undefined) return false
+  await Effect.runPromise(
+    io(() => remove(root, record.directory, { repoRoot, repoKey: record.repoKey, force })).pipe(Effect.ignore),
+  )
+  return !(await onDisk(record.directory))
+}
+
+function onDisk(dir: string): Promise<boolean> {
+  return Effect.runPromise(
+    io(() => stat(dir)).pipe(
+      Effect.as(true),
+      Effect.catchIf(() => true, () => Effect.succeed(false)),
+    ),
+  )
 }
 
 /** Runs sweep now and then every tickMs until the plugin scope closes. */

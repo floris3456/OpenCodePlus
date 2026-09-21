@@ -146,7 +146,11 @@ get one row per native action (`shell`, `question`, `external_directory`,
 one row turning Tavily off on the `search` MCP server while code search stays.
 While a run is live, that run's `scope.paths` become a
 `perm:edit:run:<runID>` row on the child, allowing the scope, denying
-everything else, and never allowing `.git/**` or `.opencodeplus/**`.
+everything else, and never allowing `.git/**` or `.opencodeplus/**`. A rule
+belongs to an agent and not to a session, so when one role has several live
+runs the rows state the **union** of their `scope.paths` — each run keeps its
+own listable row (`instructions_list where:"run:<id>"`) and its text names the
+shared union, rather than the last run silently taking the others' scope away.
 
 Team tools appear only under the Teams catalogue. An agent that is not a
 member of an enabled team gets a `team.*` wildcard deny, so it sees no
@@ -204,9 +208,18 @@ as one new attempt.
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
   Superseded worktrees are removed with `--force`; dirty stopped worktrees are skipped and
   marked `worktree: "dirty"`.
-- Orphan worktrees not claimed by any active run are pruned on the same sweep tick.
+- A run is reported `reaped` only when its worktree is really gone. A removal that fails — a
+  git-locked worktree is the usual case — leaves the run's state and `worktree` value alone,
+  keeps it claimed so the orphan scan skips it, and names it in the pass's `removeFailed`
+  instead of `reaped`; a later tick reaps it once removal works. One GC pass returns
+  `{ reaped, skippedDirty, orphansRemoved, removeFailed }`, and `sweep` returns it as
+  `{ dead, gc }`.
+- Orphan worktrees are pruned on the same sweep tick, but only **inside the team's own
+  worktree root for that repository** (`<teams data dir>/worktrees/<repoKey>`, where
+  `team_delegate` creates them). Any other worktree of the same repository — your own
+  checkout of it — is never a candidate and is never removed.
 - `team_list` and `team_status` indicate worktree state (`present`, `removed`, or `dirty`)
-  for each run.
+  for each run; `team_status` reports it beside its live `dirty` read.
 
 The binding contract for the tool surface is `SPEC.md`.
 

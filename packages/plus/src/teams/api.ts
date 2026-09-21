@@ -1009,6 +1009,9 @@ async function statusOf(root: string, id: string) {
     base: record.base,
     dirty: dirtyFiles.length > 0,
     branch: record.branch,
+    // The same value `list` reports: `dirty` above is a live git read, while
+    // this is the record's own account of whether the worktree still exists.
+    worktree: record.worktree ?? "present",
     checks,
     report:
       stored === undefined

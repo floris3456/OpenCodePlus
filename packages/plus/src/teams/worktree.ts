@@ -1,5 +1,5 @@
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { isAbsolute, join, relative } from "node:path"
 import { Effect } from "effect"
 import { read, type ProjectConfig } from "../project.js"
 import { git, gitRaw } from "./git.js"
@@ -92,9 +92,15 @@ function ensureProjectConfig(dir: string, projectDirectory: string): Promise<voi
   )
 }
 
+// The one directory the team owns for a repository: every worktree `create`
+// makes lives under it, and it is the only area `orphans` may report.
+export function ownedRoot(workspaceRoot: string, repoKey: string): string {
+  return join(workspaceRoot, "worktrees", repoKey)
+}
+
 export async function create(root: string, opts: CreateOptions): Promise<Created> {
   const ts = stamp()
-  const dir = join(opts.workspaceRoot, "worktrees", opts.repoKey, opts.role, `${opts.name}-${ts}`)
+  const dir = join(ownedRoot(opts.workspaceRoot, opts.repoKey), opts.role, `${opts.name}-${ts}`)
   const branch = `team/${opts.role}/${opts.name}-${ts}`
   return lock(root, "repo", opts.repoKey, async () => {
     const verify = await gitRaw(opts.repoRoot, ["rev-parse", "--verify", `${opts.base}^{commit}`])
@@ -189,22 +195,28 @@ export async function list(repoRoot: string): Promise<WorktreeEntry[]> {
   return entries
 }
 
-// Listed worktree paths (excluding the main checkout) not in `knownDirs`,
-// compared by `realpath`.
-export async function orphans(repoRoot: string, knownDirs: string[]): Promise<string[]> {
+// Listed worktree paths under `owned` (never the main checkout) that are not
+// in `knownDirs`, compared by `realpath`. The boundary is taken as an argument
+// rather than left to the caller because GC force-removes what this returns:
+// a repository's other worktrees — a developer's own checkouts of it — are
+// not the team's to delete.
+export async function orphans(repoRoot: string, owned: string, knownDirs: string[]): Promise<string[]> {
   const entries = await list(repoRoot)
   const mainReal = await real(repoRoot)
+  const ownedReal = await real(owned)
   const known = new Set<string>()
   for (const d of knownDirs) known.add(await real(d))
   const result: string[] = []
-  let mainSkipped = false
-  for (const [i, e] of entries.entries()) {
+  for (const e of entries) {
     const key = await real(e.path)
-    if (!mainSkipped && (key === mainReal || i === 0)) {
-      mainSkipped = true
-      continue
-    }
+    if (key === mainReal) continue
+    if (!under(ownedReal, key)) continue
     if (!known.has(key)) result.push(e.path)
   }
   return result
+}
+
+function under(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate)
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
 }

@@ -191,6 +191,35 @@ test("a live run contributes an edit-scope row that allows scope.paths and denie
   ])
 })
 
+// A permission rule belongs to an agent, so two live runs of one role cannot
+// hold separate scopes: what they must NOT do is take each other's away.
+test("two live runs of one role resolve to the union of their scope.paths", async () => {
+  await saveRun(dir, makeRun({ id: "w-0000000000000003", paths: ["a.ts"] }))
+  await saveRun(dir, makeRun({ id: "w-0000000000000004", paths: ["b.ts"] }))
+  const runs = await liveRunScopes(dir)
+  expect(runs.map((run) => run.id)).toEqual(["w-0000000000000003", "w-0000000000000004"])
+  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), runs)
+  for (const id of ["w-0000000000000003", "w-0000000000000004"]) {
+    const row = items.find((item) => item.id === `perm:edit:run:${id}`)
+    expect(row?.runID).toBe(id)
+    expect(row?.text).toContain("share one edit scope")
+    expect(row?.text).toContain("[a.ts, b.ts]")
+  }
+  const permissions = await permissionsAfterApply("muse-implementer", items)
+  expect(permissions.filter((rule) => rule.action === "edit")).toEqual([
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "a.ts", effect: "allow" },
+    { action: "edit", resource: "b.ts", effect: "allow" },
+    { action: "edit", resource: ".git/**", effect: "deny" },
+    { action: "edit", resource: ".opencodeplus/**", effect: "deny" },
+  ])
+  const { evaluate } = await import("../../../core/src/permission.js")
+  expect(evaluate("edit", "a.ts", permissions).effect).toBe("allow")
+  expect(evaluate("edit", "b.ts", permissions).effect).toBe("allow")
+  expect(evaluate("edit", ".git/config", permissions).effect).toBe("deny")
+  expect(evaluate("edit", "elsewhere.ts", permissions).effect).toBe("deny")
+})
+
 test("a superseded run contributes no edit-scope row", async () => {
   await saveRun(dir, makeRun({ state: "superseded" }))
   expect(await liveRunScopes(dir)).toEqual([])

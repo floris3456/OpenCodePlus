@@ -334,6 +334,34 @@ test("team_status naming runs from a no-run orchestrator session bootstraps a ro
   })
 })
 
+// Item 19 is about the REGISTERED tool, which calls its own statusOf: assert
+// through the tool seam, not through the query module's exported one.
+test("team_status reports each run's worktree state through the registered tool", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const session = "ses_team_status_worktree"
+    const caller = makeRun("w-5555555555555555", "sol-orchestrator", session)
+    const removed: RunRecord = {
+      ...makeRun("w-6666666666666666", "muse-implementer", "ses_team_status_removed"),
+      parent: caller.id,
+      worktree: "removed",
+    }
+    const live = { ...makeRun("w-7777777777777777", "muse-implementer", "ses_team_status_present"), parent: caller.id }
+    await saveRun(root, caller)
+    await saveRun(root, removed)
+    await saveRun(root, live)
+    const tools = await registeredTools()
+    const output = (await runSuccess(
+      need(tools, "team_status"),
+      { runs: [removed.id, live.id] },
+      toolContext(session, "sol-orchestrator"),
+    )) as Array<Record<string, unknown>>
+    expect(output.map((entry) => [entry.run, entry.worktree])).toEqual([
+      [removed.id, "removed"],
+      [live.id, "present"],
+    ])
+  })
+})
+
 test("the instructions namespace still registers alongside team", async () => {
   const created = fixture()
   const state = createState()
