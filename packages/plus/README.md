@@ -248,6 +248,19 @@ as one new attempt.
     `tool.execute.after` hook. `"denied"` comes from the `tool.execute.after` observer, and only
     for refusals that are not `Permission.CorrectedError`, i.e. rule denials, for which no
     permission request ever existed. The split writes exactly one line per refused call.
+  - State is per invocation, never per CallID: under Code Mode one `execute` runs every inner team
+    tool against the same `Tool.Context`, so two calls can share one CallID and messageID. In-flight
+    state is a FIFO queue keyed by `(sessionID, messageID, CallID)`, each call claims its own entry,
+    and the reply observer writes the line for the invocation its request named — so a sibling that
+    completes first cannot consume a pending call's refusal line.
+- Project mode resolves **upward**: `project.read(directory)` walks parent directories to the nearest
+  `.opencodeplus/project.json`, so any session below an enabled checkout reads the same project.
+- Team worktrees are not Plus projects: `team_delegate` writes no `.opencodeplus/project.json` into a
+  child worktree, and removal is a plain `git worktree remove`. The child's run records the parent's
+  project directory as `projectDirectory`, and Plus activation for the child session resolves project
+  mode through that directory (the worktree itself sits outside the parent's tree).
+- `worktree.create` returns the canonical directory and creates its parent chain before `git worktree
+  add`, so the first delegate in a brand-new data root hands the host a directory it can `realpath`.
 
 The binding contract for the tool surface is `SPEC.md`.
 

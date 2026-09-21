@@ -24,6 +24,7 @@ import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
+import { byDirectory } from "./teams/run.js"
 import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
@@ -3077,12 +3078,24 @@ async function deleteInstruction(input: { projectDirectory: string; name: string
 
 function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
   return Effect.gen(function* () {
-    const config = yield* Effect.promise(() => read(ctx.location.directory))
+    // A run session's worktree is outside its parent's tree, so project mode
+    // cannot be found by walking up from the worktree. The run record names the
+    // project directory its delegate ran from; every other Location resolves
+    // from its own directory, upward (project.read).
+    const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
+    const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) return
     yield* ensureTooling(ctx, state)
-    const stored = yield* Effect.promise(() => loadCurrent(ctx.location.directory))
+    const stored = yield* Effect.promise(() => loadCurrent(directory))
     yield* publishFresh(ctx, state, stored)
   })
+}
+
+// The directory a Location activates against: the project directory recorded by
+// the run that owns this worktree, else the Location's own directory.
+export async function activationDirectory(directory: string): Promise<string> {
+  const run = await byDirectory(teamsDataDir(), directory)
+  return run?.projectDirectory ?? directory
 }
 
 // Tooling (teaching instruction/skill plus the instructions tool namespace)
@@ -4049,7 +4062,9 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
 
 function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.gen(function* () {
-    const directory = ctx.location.directory
+    // Same resolution as activate: a host refresh in a run's worktree must not
+    // deactivate the tooling activation just installed (see activationDirectory).
+    const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
     const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) {
       yield* deactivate(state)

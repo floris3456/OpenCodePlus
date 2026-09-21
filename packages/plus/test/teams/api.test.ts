@@ -6,13 +6,14 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
-import { createState } from "../../src/index.js"
+import { activationDirectory, createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { lastReceipt } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { read } from "../../src/project.js"
 
 // Real temp git repositories plus a real temp state root (scoped
 // XDG_DATA_HOME redirect, restored afterwards). The session domain is a
@@ -187,9 +188,64 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(sessions.prompted).toHaveLength(1)
       expect(sessions.prompted[0]?.sessionID).toBe(value.session)
       expect(sessions.prompted[0]?.text).toContain("Fix the agent filter in the query module")
-      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(true)
-      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
-      expect(await git(value.directory, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
+      // The child worktree carries no copied project config: it is activated
+      // through the parent directory recorded on its run (item 13).
+      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      expect(await git(value.directory, ["status", "--porcelain"])).toBe("")
+      expect(persisted?.projectDirectory).toBe(repo.dir)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("delegate activates the child through the parent project, with no copy", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      // Parent runs in a Plus project; the child worktree is outside its tree.
+      // (enable() itself resolves upward, so write the parent's own file.)
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "project.json"),
+        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+      )
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_project",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "project-1" }), callerFor(parent))) as {
+        run: string
+        session: string
+        directory: string
+      }
+      // The child carries no project config at all...
+      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      // ...and the activation seam resolves the parent's project through the
+      // run record the delegate wrote, so Plus activates in the child worktree
+      // with the parent's protectedAgents, not a copy and not a stray ancestor.
+      const child = await loadRun(root, value.run)
+      expect(child?.projectDirectory).toBe(repo.dir)
+      const activation = await activationDirectory(value.directory)
+      expect(activation).toBe(repo.dir)
+      expect(await read(activation)).toEqual({ version: 1, protectedAgents: ["muse-implementer"] })
+      // Item 13 evidence: no copy in the child, activation through the record.
+      console.log(
+        `[T5 item 13] child ${value.directory}\n  child/.opencodeplus/project.json exists: false\n` +
+          `  run.projectDirectory: ${String(child?.projectDirectory)}\n` +
+          `  activationDirectory(child): ${activation}\n` +
+          `  project.read(activation): ${JSON.stringify(await read(activation))}`,
+      )
+      // The recorded directory is the worktree the child's session opened in.
+      expect(child?.directory).toBe(value.directory)
+      expect((sessions.created[0] as { location: { directory: string } }).location.directory).toBe(value.directory)
     } finally {
       await removeRepo(repo.dir)
     }

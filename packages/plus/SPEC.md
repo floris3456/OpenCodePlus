@@ -1100,11 +1100,11 @@ Each `tool.call` audit entry contains:
   - `"asked:deny"`: Tool call required human confirmation (`ask`) and the human rejected it in the TUI, with or without feedback; `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
 
 Which component writes which outcome, and why exactly one line is written per gated call:
-- `"allowed"` and `"asked:allow"` are written by `runGated`, which runs only once the call is authorized. The `"asked:allow"` form is used when `permission.asked` named this tool CallID as its `source.id` and the user replied `once` or `always`.
-- `"asked:deny"` is written by the `permission.replied` observer, when a reply of `reject` arrives for a request ID it mapped to a team call at `permission.asked`. It owns **both** human rejections: with feedback (core's `CorrectedError`) and without feedback (core's `DeclinedError`, a deliberate defect that never becomes a typed `Tool.Error`, so no `tool.execute.after` hook fires for it and the reply event is the call's only trace). A request ID is mapped once and dropped on its first reply, so a repeated or cascaded reply for the same request writes nothing further.
+- `"allowed"` and `"asked:allow"` are written by `runGated`, which runs only once the call is authorized. The `"asked:allow"` form is used when `permission.asked` named this invocation as its `source` (same session, message and tool CallID) and the user replied `once` or `always`.
+- `"asked:deny"` is written by the `permission.replied` observer, when a reply of `reject` arrives for a request ID it mapped to a team invocation at `permission.asked`. It owns **both** human rejections: with feedback (core's `CorrectedError`) and without feedback (core's `DeclinedError`, a deliberate defect that never becomes a typed `Tool.Error`, so no `tool.execute.after` hook fires for it and the reply event is the call's only trace). A request ID is mapped once and dropped on its first reply, so a repeated or cascaded reply for the same request writes nothing further.
 - `"denied"` is written by the `tool.execute.after` observer, and only for a permission refusal whose cause is not `Permission.CorrectedError` — that is, a `deny` rule refusing at call time, for which core creates no permission request and therefore publishes no `permission.replied` event.
 - The three writers are disjoint by construction: an authorized call reaches only `runGated`, a rule denial reaches only `tool.execute.after`, and a human rejection is written only from the reply. A rejection with feedback is the single refusal both observers see, and `tool.execute.after` recognises its `Permission.CorrectedError` cause and leaves that line to the reply observer.
-- Both are observers. They record outcomes and never decide them: neither writes permissions nor registers a `permission.evaluate` hook, and both read state scoped to the `registerTeamTools` registration (the in-flight call per tool CallID, the asked CallIDs, and the request ID → CallID map), never a module global.
+- Both are observers. They record outcomes and never decide them: neither writes permissions nor registers a `permission.evaluate` hook, and both read state scoped to the `registerTeamTools` registration, never a module global. The state is a FIFO queue of in-flight invocations keyed by `(sessionID, messageID, tool CallID)`, plus a request ID → invocation map. Under Code Mode one `execute` runs many team tools against the same `Tool.Context` — one CallID and one messageID — so each invocation claims its own queue entry: a sibling that completes first can neither overwrite nor consume a pending call's state, and the reply observer writes the line for the invocation its request named. An invocation with no queued entry (no `execute.before` hook fired) keeps local state instead.
 
 ### Run state follows the host session (`teams/lifecycle.ts`)
 
@@ -1155,6 +1155,33 @@ It returns `{ dead, gc }` — the reconciled dead run ids and the pass's whole
   candidates: another worktree of the same repository (a developer's own checkout) is never a candidate
   and is never removed. The temporary merge area (`<owned>/merge`) is also excluded: a live merge worktree
   is owned by the merge in flight, not by a run record.
+
+### Project mode resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
+
+- `project.read(directory)` resolves **upward**: it walks parent directories until it finds a
+  `.opencodeplus/project.json` or reaches the filesystem root, and the nearest config wins. A session
+  opened below an enabled checkout therefore reads the same project, and `project.status` reports
+  `enabled: true` for it. A directory with no config anywhere in its ancestry stays disabled. `enable`
+  returns the resolved config unchanged when one already exists upward and otherwise writes
+  `.opencodeplus/project.json` in the directory it was given; `disable` deletes only that directory's
+  own file.
+- `worktree.create` resolves the new directory to an absolute path, creates its parent chain before
+  `git worktree add` runs, and returns the `realpath` of the created directory. A brand-new data root
+  has no `worktrees/` yet: the first `delegate` must hand the host a directory that
+  `FileSystem.realPath(location.directory)` can resolve, and a data root reached through a symlink must
+  not yield two names for one worktree.
+- Team worktrees are **not** Plus projects. `create` writes no `.opencodeplus/project.json` into them
+  (there is no inherited copy, and no default file), and `worktree.remove` is a plain
+  `git worktree remove` with no config special case. A `project.json` that is tracked in the repository
+  arrives with the checkout and is left alone.
+- `delegate` records `projectDirectory` on the child's `run.json`: the parent run's recorded
+  `projectDirectory`, else the parent's own `directory`. The root-run bootstrap records the Location's
+  own directory. Activation for a run's session cannot walk up from the worktree — the worktree is
+  outside the parent's tree — so `activationDirectory(directory)` (`index.ts`) returns the recorded
+  `projectDirectory` when `teams/run.ts` `byDirectory` finds the run that owns the Location, else the
+  Location's own directory; `activate` and `refreshFromHost` both resolve through it, and
+  `project.read` then reads the parent's project config. `byDirectory` compares canonical paths, so a
+  symlinked or relative data root still matches its run.
 
 ## §11 Tools, log, and query
 

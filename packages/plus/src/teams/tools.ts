@@ -52,21 +52,89 @@ const CheckDescription = "Run one assigned focused check in your worktree.\nUnkn
 
 // One team tool call in flight, remembered at `tool.execute.before` so a refusal
 // seen on the event stream can be audited with the same actor, session and
-// duration the call itself would have reported.
+// duration the call itself would have reported. Under Code Mode one `execute`
+// runs many inner calls against the SAME Tool.Context — one CallID, one
+// messageID — so state is queued per (session, message, CallID) and every
+// invocation claims its own entry: two calls that share a CallID can neither
+// overwrite nor consume each other's state.
 interface TeamCall {
   readonly tool: string
   readonly sessionID: string
+  readonly messageID: string
   readonly agent: string
   readonly start: number
+  /** A permission request named this call. */
+  asked: boolean
+  /** The tool body took this entry. */
+  claimed: boolean
+  /** A permission request already owns this entry. */
+  bound: boolean
+}
+
+interface AskedCall {
+  readonly key: string
+  readonly call: TeamCall
 }
 
 interface TeamAuditState {
-  readonly calls: Map<string, TeamCall>
-  readonly askedCallIds: Set<string>
-  readonly askedRequests: Map<string, string>
+  readonly calls: Map<string, TeamCall[]>
+  readonly askedRequests: Map<string, AskedCall>
 }
 
 const PermissionEvents: Set<string> = new Set([Permission.Event.Asked.type, Permission.Event.Replied.type])
+
+function callKey(sessionID: string, messageID: string, callID: string): string {
+  return `${sessionID}\u0000${messageID}\u0000${callID}`
+}
+
+function queueCall(state: TeamAuditState, key: string, call: TeamCall): void {
+  state.calls.set(key, [...(state.calls.get(key) ?? []), call])
+}
+
+function dropCall(state: TeamAuditState, key: string, call: TeamCall): void {
+  const left = (state.calls.get(key) ?? []).filter((entry) => entry !== call)
+  if (left.length === 0) state.calls.delete(key)
+  else state.calls.set(key, left)
+}
+
+// The first queued entry of this tool that no body has taken yet. Two
+// concurrent invocations of one tool that share a CallID get distinct entries.
+function claimCall(state: TeamAuditState, key: string, tool: string): TeamCall | undefined {
+  const call = (state.calls.get(key) ?? []).find((entry) => entry.tool === tool && !entry.claimed)
+  if (call !== undefined) call.claimed = true
+  return call
+}
+
+// A refusal seen on the after hook never ran the body, so it owns an unclaimed
+// entry; removing it here is what keeps a later sibling's cleanup from taking it.
+function takeCall(state: TeamAuditState, key: string, tool: string): TeamCall | undefined {
+  const call = (state.calls.get(key) ?? []).find((entry) => entry.tool === tool && !entry.claimed)
+  if (call !== undefined) dropCall(state, key, call)
+  return call
+}
+
+// Team tool permissions are `team.<name>` (teamOptions below); the tool id is
+// `team_<name>`.
+function toolOfAction(action: unknown): string | undefined {
+  if (typeof action !== "string" || !action.startsWith(`${namespace}.`)) return undefined
+  return `team_${action.slice(namespace.length + 1)}`
+}
+
+function bindAsked(
+  state: TeamAuditState,
+  request: { id: string; sessionID: string; action?: string; source: { id: string; messageID: string } },
+): void {
+  const key = callKey(request.sessionID, request.source.messageID, request.source.id)
+  const entries = state.calls.get(key) ?? []
+  const tool = toolOfAction(request.action)
+  const call =
+    entries.find((entry) => !entry.bound && (tool === undefined || entry.tool === tool)) ??
+    entries.find((entry) => !entry.bound)
+  if (call === undefined) return
+  call.bound = true
+  call.asked = true
+  state.askedRequests.set(request.id, { key, call })
+}
 
 function appendToolCall(line: {
   run: string | null
@@ -105,20 +173,16 @@ function handleExecuteAfter(
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     if (!event.tool.startsWith("team_")) return
-    const callId = String(event.id)
-    if (event.status !== "error") {
-      state.calls.delete(callId)
-      state.askedCallIds.delete(callId)
-      return
-    }
+    if (event.status !== "error") return
+    const key = callKey(String(event.sessionID), String(event.messageID), String(event.id))
     // Leave the call state alone for a rejection with feedback: the replied
     // observer owns that line and still needs it, and the two observers reach
     // this call in no guaranteed order.
     if ((event.error.error as { _tag?: string } | undefined)?._tag === "Permission.CorrectedError") return
-
-    const call = state.calls.get(callId)
-    state.calls.delete(callId)
-    state.askedCallIds.delete(callId)
+    // Only a call whose body never ran still has an entry here; a body that ran
+    // wrote its own line in runGated and dropped the entry, so a sibling sharing
+    // the CallID is never mistaken for this one.
+    const call = takeCall(state, key, event.tool)
     if (!isPermissionError(event.error)) return
 
     const sessionID = String(event.sessionID)
@@ -138,11 +202,18 @@ function handleExecuteAfter(
 }
 
 function rememberAsked(data: unknown, state: TeamAuditState): void {
-  const request = data as { id?: string; source?: { type?: string; id?: string } } | undefined
-  if (request?.source?.type !== "tool" || typeof request.source.id !== "string") return
-  state.askedCallIds.add(request.source.id)
-  if (typeof request.id === "string" && state.calls.has(request.source.id))
-    state.askedRequests.set(request.id, request.source.id)
+  const request = data as
+    | { id?: unknown; sessionID?: unknown; action?: unknown; source?: { type?: unknown; id?: unknown; messageID?: unknown } }
+    | undefined
+  if (request?.source?.type !== "tool") return
+  if (typeof request.id !== "string" || typeof request.sessionID !== "string") return
+  if (typeof request.source.id !== "string" || typeof request.source.messageID !== "string") return
+  bindAsked(state, {
+    id: request.id,
+    sessionID: request.sessionID,
+    ...(typeof request.action === "string" ? { action: request.action } : {}),
+    source: { id: request.source.id, messageID: request.source.messageID },
+  })
 }
 
 // The only trace a rejection WITHOUT feedback leaves: core answers it with
@@ -155,25 +226,22 @@ function handleReplied(data: unknown, state: TeamAuditState): Effect.Effect<void
   return Effect.gen(function* () {
     const replied = data as { requestID?: string; reply?: string } | undefined
     if (typeof replied?.requestID !== "string") return
-    const callId = state.askedRequests.get(replied.requestID)
-    if (callId === undefined) return
+    const asked = state.askedRequests.get(replied.requestID)
+    if (asked === undefined) return
     state.askedRequests.delete(replied.requestID)
     if (replied.reply !== "reject") return
-    const call = state.calls.get(callId)
-    if (call === undefined) return
-    state.calls.delete(callId)
-    state.askedCallIds.delete(callId)
+    dropCall(state, asked.key, asked.call)
 
-    const found = yield* Effect.promise(() => bySession(teamsDataDir(), call.sessionID))
+    const found = yield* Effect.promise(() => bySession(teamsDataDir(), asked.call.sessionID))
 
     yield* appendToolCall({
       run: found?.id ?? null,
-      actor: call.agent,
-      sessionID: call.sessionID,
-      tool: call.tool,
+      actor: asked.call.agent,
+      sessionID: asked.call.sessionID,
+      tool: asked.call.tool,
       ok: false,
       code: "E_PERMISSION",
-      durationMs: Date.now() - call.start,
+      durationMs: Date.now() - asked.call.start,
       outcome: "asked:deny",
     })
   })
@@ -196,11 +264,17 @@ async function installHook(ctx: Context, state: TeamAuditState): Promise<Registr
       const beforeReg = yield* Effect.suspend(() =>
         ctx.tool.hook("execute.before", (event) => {
           if (event.tool.startsWith("team_")) {
-            state.calls.set(String(event.id), {
+            const sessionID = String(event.sessionID)
+            const messageID = String(event.messageID)
+            queueCall(state, callKey(sessionID, messageID, String(event.id)), {
               tool: event.tool,
-              sessionID: String(event.sessionID),
+              sessionID,
+              messageID,
               agent: String(event.agent),
               start: Date.now(),
+              asked: false,
+              claimed: false,
+              bound: false,
             })
           }
           return Effect.void
@@ -260,9 +334,8 @@ async function listenPermissionEvents(ctx: Context, state: TeamAuditState): Prom
 
 export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
   const state: TeamAuditState = {
-    calls: new Map<string, TeamCall>(),
-    askedCallIds: new Set<string>(),
-    askedRequests: new Map<string, string>(),
+    calls: new Map<string, TeamCall[]>(),
+    askedRequests: new Map<string, AskedCall>(),
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
@@ -402,7 +475,6 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       yield* hookReg.dispose
       yield* eventReg.dispose
       state.calls.clear()
-      state.askedCallIds.clear()
       state.askedRequests.clear()
     }),
   }
@@ -423,20 +495,31 @@ function runGated<A>(
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
-    const callId = String(toolCtx.id)
-    const start = state.calls.get(callId)?.start ?? Date.now()
+    const messageID = String(toolCtx.messageID)
+    const key = callKey(sessionID, messageID, String(toolCtx.id))
+    // Claim this invocation's own before-hook state. Under Code Mode every inner
+    // call shares one CallID, so the queue entry is the only per-invocation
+    // identity available; a call with no entry keeps a local one.
+    const mine: TeamCall = claimCall(state, key, `team_${name}`) ?? {
+      tool: `team_${name}`,
+      sessionID,
+      messageID,
+      agent,
+      start: Date.now(),
+      asked: false,
+      claimed: true,
+      bound: false,
+    }
     const auditState: { run: string | null } = { run: null }
     const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState).pipe(
       Effect.map((result) => ({ ok: true as const, output: result.output })),
       Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
     )
-    const durationMs = Date.now() - start
+    const durationMs = Date.now() - mine.start
     const ok = settled.ok
     const code = settled.ok ? null : codeOf(settled.message)
-    const wasAsked = state.askedCallIds.has(callId)
-    state.askedCallIds.delete(callId)
-    state.calls.delete(callId)
-    const outcome: ToolCallOutcome = wasAsked ? "asked:allow" : "allowed"
+    dropCall(state, key, mine)
+    const outcome: ToolCallOutcome = mine.asked ? "asked:allow" : "allowed"
     yield* appendToolCall({
       run: auditState.run,
       actor: agent,
@@ -510,6 +593,7 @@ function runGatedInner<A>(
             createdAt: now,
             lastUsed: now,
             sessionID,
+            projectDirectory: directory,
             configDigest: null,
             history: [],
           },

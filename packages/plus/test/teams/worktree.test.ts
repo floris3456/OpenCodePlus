@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { create, list, orphans, ownedRoot, remove, slug, stamp } from "../../src/teams/worktree.js"
@@ -56,6 +56,52 @@ describe("slug and stamp", () => {
 })
 
 describe("worktree manager", () => {
+  // The first `delegate` in a brand-new data root hands the host a worktree
+  // location: core resolves it with `FileSystem.realPath(location.directory)`,
+  // which fails with NotFound when the path does not exist as given. `create`
+  // must therefore return an absolute, canonical directory whose parents exist,
+  // not the joined string it happened to compute.
+  test("the first create in a brand-new root returns the real directory", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "teams-wt-fresh-"))
+    try {
+      const repo = join(tmp, "repo")
+      await mkdir(repo, { recursive: true })
+      await git(repo, ["init", "-b", "main"])
+      await git(repo, ["config", "user.email", "teams@test.local"])
+      await git(repo, ["config", "user.name", "teams"])
+      await writeFile(join(repo, "README.md"), "fixture\n")
+      await git(repo, ["add", "README.md"])
+      await git(repo, ["commit", "-m", "chore: fixture commit"])
+      const head = await git(repo, ["rev-parse", "HEAD"])
+      // A data root reached through a symlink, as a system temp dir or a lab
+      // home can be; nothing under it exists yet, not even worktrees/.
+      const realData = join(tmp, "data")
+      await mkdir(realData, { recursive: true })
+      const linkedData = join(tmp, "link")
+      await symlink(realData, linkedData)
+      const ws = join(linkedData, "ws")
+      const st = join(tmp, "state")
+      const name = slug("first", "w-1a2b3c4d")
+      const c = await create(st, {
+        repoRoot: repo,
+        repoKey: "opencode",
+        role: "implementer",
+        name,
+        base: head,
+        workspaceRoot: ws,
+      })
+      expect(await exists(c.dir)).toBe(true)
+      // This is the first-delegate failure in one assertion: a directory the
+      // caller cannot realpath is a directory the host cannot open a session in.
+      expect(c.dir).toBe(await realpath(c.dir))
+      expect(c.dir).toBe(join(await realpath(ws), "worktrees", "opencode", "implementer", basename(c.dir)))
+      expect(await git(repo, ["rev-parse", `${c.branch}^{commit}`])).toBe(head)
+      await remove(st, c.dir, { repoRoot: repo, repoKey: "opencode" })
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+    }
+  })
+
   test("create / list / orphans / remove round trip", async () => {
     const name = slug("probe", "w-1111aaaa2222bbbb")
     const before = await list(repoRoot)
@@ -66,7 +112,6 @@ describe("worktree manager", () => {
       name,
       base,
       workspaceRoot: wsRoot,
-      projectDirectory: repoRoot,
     })
     expect(c.dir).toMatch(/worktrees\/opencode\/implementer\/[a-z0-9]{3,10}-[0-9]{8}-[0-9]{4}$/)
     const suffix = basename(c.dir)
@@ -95,7 +140,6 @@ describe("worktree manager", () => {
       name: slug("bounds", "w-eeee0005"),
       base,
       workspaceRoot: wsRoot,
-      projectDirectory: repoRoot,
     })
     const outside = join(scratch, "dev-checkout")
     await git(repoRoot, ["worktree", "add", "-b", "dev/own-work", outside, base])
@@ -124,7 +168,6 @@ describe("worktree manager", () => {
         name: slug("badbase", "w-dddd0004"),
         base: "no-such-branch",
         workspaceRoot: wsRoot,
-        projectDirectory: repoRoot,
       },
     ).then(
       () => null,
@@ -141,7 +184,7 @@ describe("worktree manager", () => {
     try {
       const err = await create(
         stateDir,
-        { repoRoot, repoKey: "opencode", role: "implementer", name: nm, base, workspaceRoot: wsRoot, projectDirectory: repoRoot },
+        { repoRoot, repoKey: "opencode", role: "implementer", name: nm, base, workspaceRoot: wsRoot },
       ).then(
         () => null,
         (e) => e as { code?: string },
@@ -165,7 +208,6 @@ describe("worktree manager", () => {
         name: slug("alpha", "w-aaaa0001"),
         base,
         workspaceRoot: wsRoot,
-        projectDirectory: repoRoot,
       }),
       create(stateDir, {
         repoRoot,
@@ -174,7 +216,6 @@ describe("worktree manager", () => {
         name: slug("beta", "w-bbbb0002"),
         base,
         workspaceRoot: wsRoot,
-        projectDirectory: repoRoot,
       }),
     ])
     expect(a.dir).not.toBe(b.dir)
@@ -184,7 +225,7 @@ describe("worktree manager", () => {
 })
 
 describe("worktree plus project", () => {
-  test("create inherits protectedAgents and keeps git status clean", async () => {
+  test("create leaves no project config in the child worktree", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "teams-wt-proj-"))
     try {
       const repo = join(tmp, "repo")
@@ -208,19 +249,19 @@ describe("worktree plus project", () => {
         name: slug("inherit", "w-aaaa1111"),
         base: head,
         workspaceRoot: ws,
-        projectDirectory: repo,
       })
-      const raw = await Bun.file(join(c.dir, ".opencodeplus", "project.json")).text()
-      const parsed = JSON.parse(raw) as { version: number; protectedAgents: string[] }
-      expect(parsed).toEqual({ version: 1, protectedAgents })
-      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
-      expect(await git(c.dir, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
+      // The child is not a Plus project of its own: activation for its session
+      // reads the parent directory the run records, so nothing is copied here.
+      expect(await exists(join(c.dir, ".opencodeplus"))).toBe(false)
+      expect(await git(c.dir, ["status", "--porcelain"])).toBe("")
+      // The parent's own config still decides the parent's project mode.
+      expect(JSON.parse(await Bun.file(join(repo, ".opencodeplus", "project.json")).text())).toEqual({ version: 1, protectedAgents })
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }
   })
 
-  test("create with no parent config writes the default and keeps git status clean", async () => {
+  test("a parent without a project config still hands the child no file", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "teams-wt-def-"))
     try {
       const repo = join(tmp, "repo")
@@ -241,19 +282,19 @@ describe("worktree plus project", () => {
         name: slug("default", "w-bbbb2222"),
         base: head,
         workspaceRoot: ws,
-        projectDirectory: repo,
       })
-      const raw = await Bun.file(join(c.dir, ".opencodeplus", "project.json")).text()
-      expect(JSON.parse(raw)).toEqual({ version: 1, protectedAgents: [] })
-      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
-      expect(await git(c.dir, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
+      // No default is written either: there is no copy, so no invented config.
+      expect(await exists(join(c.dir, ".opencodeplus"))).toBe(false)
+      expect(await git(c.dir, ["status", "--porcelain"])).toBe("")
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }
   })
 
-  test("create leaves a tracked project.json unmodified and keeps the tree clean", async () => {
-    const tmp = await mkdtemp(join(tmpdir(), "teams-wt-track-"))
+  // `remove` is a plain `git worktree remove`: nothing Plus wrote has to be
+  // deleted first, and a tracked project.json is part of the checkout itself.
+  test("remove is a plain git worktree remove with no config special case", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "teams-wt-remove-"))
     try {
       const repo = join(tmp, "repo")
       const ws = join(tmp, "ws")
@@ -268,6 +309,8 @@ describe("worktree plus project", () => {
       await git(repo, ["add", "README.md", ".opencodeplus/project.json"])
       await git(repo, ["commit", "-m", "chore: track project config"])
       const head = await git(repo, ["rev-parse", "HEAD"])
+      // The working tree diverges from HEAD; the tracked copy in the child is
+      // the committed one and must not block a non-force removal.
       await writeFile(join(repo, ".opencodeplus", "project.json"), `${JSON.stringify({ version: 1, protectedAgents: ["modified-agent"] }, null, 2)}\n`)
       const c = await create(st, {
         repoRoot: repo,
@@ -276,11 +319,14 @@ describe("worktree plus project", () => {
         name: slug("tracked", "w-cccc3333"),
         base: head,
         workspaceRoot: ws,
-        projectDirectory: repo,
       })
-      const raw = await Bun.file(join(c.dir, ".opencodeplus", "project.json")).text()
-      expect(JSON.parse(raw)).toEqual({ version: 1, protectedAgents: ["orig-agent"] })
+      expect(JSON.parse(await Bun.file(join(c.dir, ".opencodeplus", "project.json")).text())).toEqual({
+        version: 1,
+        protectedAgents: ["orig-agent"],
+      })
       expect(await git(c.dir, ["status", "--porcelain"])).toBe("")
+      await remove(st, c.dir, { repoRoot: repo, repoKey: "opencode" })
+      expect(await exists(c.dir)).toBe(false)
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }
@@ -314,7 +360,6 @@ describe("worktree plus project", () => {
         name: slug("cfg", "w-ffff6666"),
         base: head,
         workspaceRoot: ws,
-        projectDirectory: repo,
       })
       const afterWorktree = await gitRaw(repo, ["config", "--get", "extensions.worktreeConfig"])
       expect(afterWorktree.code).not.toBe(0)

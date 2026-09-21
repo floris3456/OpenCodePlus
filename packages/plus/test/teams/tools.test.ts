@@ -363,6 +363,7 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
       expect(stored?.role).toBe("sol-orchestrator")
       expect(stored?.directory).toBe(repoDir)
       expect(stored?.sessionID).toBe("ses_team_root_001")
+      expect(stored?.projectDirectory).toBe(repoDir)
       expect(stored?.base).toBe(head)
       expect(stored?.head).toBe(head)
       expect(stored?.paths).toEqual([])
@@ -1245,6 +1246,112 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     expect(denyLine?.outcome).toBe("denied")
     expect(denyLine?.run).toBe(implRunID)
     expect(denyLine?.actor).toBe("muse-implementer")
+
+    const v = await verify(root)
+    expect(v.ok).toBe(true)
+  })
+})
+
+// Under Code Mode one `execute` runs every inner call against one Tool.Context,
+// so two team tools share one CallID and one messageID. The per-call audit
+// state is keyed on (session, message, CallID) and queued, so a sibling that
+// completes first cannot consume the pending call's refusal line.
+test("two Code Mode calls that share one CallID write two distinct audit lines", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const sessionID = "ses_shared_call_id"
+    const plannerRun: RunRecord = {
+      ...makeRun("main-sharedcall0001", "fable-planner", sessionID),
+      kind: "main",
+    }
+    await saveRun(root, plannerRun)
+
+    const tc = testToolContext()
+    const api = createTeamApi(tc.ctx, createState())
+    await registerTeamTools(tc.ctx, api)
+
+    const rules: Permission.Ruleset = [
+      { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
+    ]
+    const { service: permService, pendingRequests } = makeTestPermissionService(rules, tc.emit)
+
+    // One Code Mode `execute` context: same CallID, same messageID, same agent.
+    const shared: Tool.Context = {
+      sessionID: Session.ID.make(sessionID),
+      agent: Agent.ID.make("fable-planner"),
+      messageID: SessionMessage.ID.make("msg_codemode_shared"),
+      id: Tool.CallID.make("call_codemode_shared"),
+      progress: () => Effect.void,
+    }
+
+    const brief = Schema.decodeUnknownSync(Brief)({
+      requestID: "r-shared-1",
+      role: "sol-orchestrator",
+      reason: "3 independent packages, each needs its own workers",
+      objective: "Delegate while a sibling team call shares the same CallID.",
+      deliverable: { kind: "commit" as const },
+      scope: { paths: ["packages/plus/src/*"] },
+      checks: [{ id: "c1", argv: ["bun", "test", "test/a.test.ts"] }],
+    })
+
+    // Call 1 waits on the human's answer.
+    const delegateFiber = Effect.runFork(
+      executeGated(need(tc.tools, "team_delegate"), brief, shared, permService, tc.triggerHook),
+    )
+    while (pendingRequests().length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    const request = pendingRequests()[0]!
+    expect(request.source?.id).toBe("call_codemode_shared")
+    expect(request.source?.messageID).toBe("msg_codemode_shared")
+
+    // Call 2 completes under the same CallID while call 1 still waits.
+    const status = await Effect.runPromise(
+      executeGated(need(tc.tools, "team_status"), {}, shared, permService, tc.triggerHook),
+    )
+    expect(status).toBeDefined()
+
+    // Call 1 is rejected with feedback: both observers fire for it.
+    await Effect.runPromise(
+      permService.reply({
+        requestID: request.id,
+        reply: "reject",
+        message: "Permission denied: operator rejected delegate",
+      }),
+    )
+    const denied = await Effect.runPromise(
+      Fiber.join(delegateFiber).pipe(
+        Effect.map(() => ({ ok: true as const, message: "" })),
+        Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
+      ),
+    )
+    expect(denied.ok).toBe(false)
+    expect(denied.message).toContain("Permission denied")
+
+    await settledToolCalls(root, (line) => line.tool === "team_delegate")
+    const calls = (await auditLines(root)).filter((line) => line.kind === "tool.call")
+    expect(calls.map((line) => [line.tool, line.outcome, line.ok, line.sessionID, line.run])).toEqual([
+      ["team_status", "allowed", true, sessionID, plannerRun.id],
+      ["team_delegate", "asked:deny", false, sessionID, plannerRun.id],
+    ])
+    // Item 11 evidence: the two lines one shared CallID produced.
+    console.log(
+      `[T5 item 11] shared CallID "call_codemode_shared" →\n` +
+        calls
+          .map(
+            (line) =>
+              `  ${JSON.stringify({
+                tool: line.tool,
+                outcome: line.outcome,
+                ok: line.ok,
+                code: line.code,
+                actor: line.actor,
+                sessionID: line.sessionID,
+                run: line.run,
+                seq: line.seq,
+              })}`,
+          )
+          .join("\n"),
+    )
 
     const v = await verify(root)
     expect(v.ok).toBe(true)

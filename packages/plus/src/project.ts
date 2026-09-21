@@ -19,7 +19,7 @@ function filePath(directory: string): string {
   return path.join(directory, ".opencodeplus", "project.json")
 }
 
-export async function read(directory: string): Promise<ProjectConfig | undefined> {
+async function readAt(directory: string): Promise<ProjectConfig | undefined> {
   const file = Bun.file(filePath(directory))
   const exists = await file.exists()
   if (!exists) return undefined
@@ -27,17 +27,33 @@ export async function read(directory: string): Promise<ProjectConfig | undefined
   return Option.getOrUndefined(decodeProjectConfig(text))
 }
 
+// Project mode resolves upward: the nearest `.opencodeplus/project.json` at or
+// above `directory` decides. A session opened in a subdirectory, and any
+// location inside an enabled checkout, therefore reads the same project as the
+// repository root. A team worktree outside the parent's tree carries no copy of
+// its own and is activated through the run record's `projectDirectory` instead.
+export async function read(directory: string): Promise<ProjectConfig | undefined> {
+  let current = path.resolve(directory)
+  for (;;) {
+    const config = await readAt(current)
+    if (config !== undefined) return config
+    const parent = path.dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+}
+
 export async function enable(directory: string): Promise<ProjectConfig> {
   const existing = await read(directory)
   if (existing) return existing
-  const targetPath = filePath(directory)
+  const targetPath = filePath(path.resolve(directory))
   await fs.mkdir(path.dirname(targetPath), { recursive: true })
   await Bun.write(targetPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n")
   return DEFAULT_CONFIG
 }
 
 export async function disable(directory: string): Promise<void> {
-  const targetPath = filePath(directory)
+  const targetPath = filePath(path.resolve(directory))
   const file = Bun.file(targetPath)
   const exists = await file.exists()
   if (!exists) return

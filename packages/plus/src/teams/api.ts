@@ -348,7 +348,6 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     name: slug(taskID ?? brief.requestID, childID),
     base: baseSha,
     workspaceRoot: root,
-    projectDirectory: parent.directory,
   })
 
   // The child run is a session in this same process, created directly in its
@@ -385,6 +384,9 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       createdAt: now,
       lastUsed: now,
       sessionID: String(child.id),
+      // The child worktree is outside the parent's tree and carries no copied
+      // project.json; its session activates Plus through this directory.
+      projectDirectory: parent.projectDirectory ?? parent.directory,
       configDigest: null,
       history: [],
     },
