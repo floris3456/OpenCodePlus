@@ -152,8 +152,17 @@ as one new attempt.
   and names them in `acknowledged`. `team_status` reports the same receipt as
   `acked: { attempt, at }` and never acknowledges anything itself.
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
-  2000 ms) carries dead-run reconciliation, forked on the plugin scope so it
-  stops with the plugin.
+  2000 ms) carries dead-run reconciliation and worktree garbage collection (`gc`),
+  forked on the plugin scope so it stops with the plugin.
+- Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
+  run record, reports and receipts intact while marking `worktree: "removed"`.
+- Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
+  open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
+  Superseded worktrees are removed with `--force`; dirty stopped worktrees are skipped and
+  marked `worktree: "dirty"`.
+- Orphan worktrees not claimed by any active run are pruned on the same sweep tick.
+- `team_list` and `team_status` indicate worktree state (`present`, `removed`, or `dirty`)
+  for each run.
 
 The binding contract for the tool surface is `SPEC.md`.
 

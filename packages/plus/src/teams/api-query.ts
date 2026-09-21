@@ -4,7 +4,7 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { git } from "./git.js"
 import { kindOf } from "./policy.js"
 import { isTerminal, loadRun, type RunRecord } from "./run.js"
-import { ListInput } from "./schema.js"
+import { ListInput, toolError } from "./schema.js"
 import { readJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
@@ -67,6 +67,29 @@ async function entryOf(root: string, record: RunRecord) {
     head,
     branch: record.branch,
     directory: record.directory,
+    worktree: record.worktree ?? "present",
+    reportStatus: await latestReportStatus(root, record.id),
+    lastUsed: record.lastUsed,
+    runtime: runtimeOf(record),
+  }
+}
+
+export async function statusOf(root: string, id: string) {
+  const record = await loadRun(root, id)
+  if (record === undefined) {
+    throw toolError("E_UNKNOWN_RUN", `Run ${id} not found in this namespace.`, "a run id from list{}")
+  }
+  const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
+  return {
+    run: record.id,
+    role: record.role,
+    state: record.state,
+    task: record.task,
+    parent: record.parent,
+    head,
+    branch: record.branch,
+    directory: record.directory,
+    worktree: record.worktree ?? "present",
     reportStatus: await latestReportStatus(root, record.id),
     lastUsed: record.lastUsed,
     runtime: runtimeOf(record),
