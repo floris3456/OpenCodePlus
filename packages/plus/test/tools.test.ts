@@ -11,7 +11,8 @@ import { createPlusApi, createState, createHandlers } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
 import { enable } from "../src/project.js"
-import { projectLogPath, projectTeamsPath, teachingFilePath, teachingSkillId } from "../src/instructions/paths.js"
+import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId } from "../src/instructions/paths.js"
+import { load } from "../src/instructions/store.js"
 import { globalDefaultsTeamsPath } from "../src/instructions/teams.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
@@ -225,21 +226,6 @@ async function runFail(tool: Tool.Info & { readonly id: string }, input: unknown
   )
   if (outcome.ok) throw new Error(`expected tool failure, got success: ${JSON.stringify(outcome.result)}`)
   return outcome.error
-}
-
-// Success or refusal without asserting which: row-kind checks use it where
-// both outcomes are legitimate (an entity row refuses the view, not the row).
-async function runOutcome(
-  tool: Tool.Info & { readonly id: string },
-  input: unknown,
-): Promise<{ ok: true; output: unknown } | { ok: false; message: string }> {
-  const outcome = await Effect.runPromise(
-    tool.execute(input, toolContext()).pipe(
-      Effect.map((result) => ({ ok: true as const, output: (result as { output: unknown }).output })),
-      Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
-    ),
-  )
-  return outcome
 }
 
 function need(tools: Map<string, Tool.Info & { readonly id: string }>, id: string): Tool.Info & { readonly id: string } {
@@ -2037,6 +2023,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
     readonly kind: TreeNodeKind
     readonly status: string
     readonly show?: { readonly view?: string; readonly expect?: Record<string, unknown> }
+    readonly showFail?: string
     readonly gone?: boolean
   }[] = [
     {
@@ -2104,15 +2091,19 @@ test("every enabled create kind returns the row id show and delete accept, and d
       item: "newbie",
       kind: "team",
       status: "Deleted team member newbie",
+      show: { expect: { kind: "member", level: "project", team: "crew", member: "newbie", registered: false } },
+      showFail: "diff",
       gone: true,
     },
     {
       name: "team",
-      input: { kind: "team", team: "squad", level: "project" },
+      input: { kind: "team", team: " squad ", level: "project" },
       id: "team:project:squad",
       item: "squad",
       kind: "team",
       status: "Deleted team squad",
+      show: { expect: { kind: "team", level: "project", team: "squad", enabled: false, members: [] } },
+      showFail: "sections",
       gone: true,
     },
   ]
@@ -2124,17 +2115,15 @@ test("every enabled create kind returns the row id show and delete accept, and d
     const row = await known(step.id)
     if (row === undefined) throw new Error(`create ${step.name} did not put ${step.id} in the tree`)
     expect(row.kind).toBe(step.kind)
-    const shown = await runOutcome(show, {
+    const shown = (await runOk(show, {
       id: step.id,
       ...(step.show?.view === undefined ? {} : { view: step.show.view }),
-    })
-    if (step.show?.expect !== undefined) {
-      if (!shown.ok) throw new Error(`show ${step.name} failed: ${shown.message}`)
-      expect(shown.output).toMatchObject(step.show.expect)
-    } else if (!shown.ok) {
-      // Agent, team and member rows carry no address, so show refuses the view
-      // for that kind of row; it must never refuse the row itself.
-      expect(shown.message).not.toContain("row.unknown")
+    })) as Record<string, unknown>
+    expect(shown).toMatchObject({ id: step.id, ...(step.show?.expect ?? {}) })
+    if (step.showFail !== undefined) {
+      const refused = await runFail(show, { id: step.id, view: step.showFail })
+      expect(refused.message).toContain("view.unsupported")
+      expect(refused.message).not.toContain("row.unknown")
     }
     const deleted = (await runOk(del, { id: step.id, confirm: true })) as { status: string }
     expect(deleted.status).toBe(step.status)
@@ -2155,28 +2144,43 @@ test("create returns the created level's model and rule row, not the identical D
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
   const del = need(tools, "instructions_delete")
 
   // Project and global rows need agents that live at those levels.
   await runOk(create, { kind: "agent", id: "proj", prompt: "proj role", scope: "project" })
   await runOk(create, { kind: "agent", id: "glob", prompt: "glob role", scope: "global" })
 
-  // No agent and no level: a shared row, canonical only in the Defaults
-  // catalogue, so that is the row id and the record's level.
-  const sharedModel = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2" })) as {
+  // A model with no agent and no level keeps the original validation.
+  const invalidModel = await runFail(create, { kind: "model", providerID: "acme", modelID: "nova-2" })
+  expect(invalidModel.message).toContain("create model requires agent for project|global levels")
+
+  // An explicit defaults model with no agent is the shared Defaults row.
+  const sharedModel = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults" })) as {
     id: string
     item: string
     level: string
     agent: string | null
   }
   expect(sharedModel).toMatchObject({ id: "item:defaults::model:acme/nova-2", item: "model:acme/nova-2", level: "defaults", agent: null })
+
+  // A shared rule (no agent, no level) keeps the original project storage and
+  // resolves through its visible Defaults row.
   const sharedRule = (await runOk(create, { kind: "rule", tool: "shell", id: "shared-rule", label: "Shared", patterns: ["git push *"] })) as {
     id: string
     item: string
     level: string
     agent: string | null
   }
-  expect(sharedRule).toMatchObject({ id: "item:defaults::perm:shell:shared-rule", item: "perm:shell:shared-rule", level: "defaults", agent: null })
+  expect(sharedRule).toMatchObject({ id: "item:defaults::perm:shell:shared-rule", item: "perm:shell:shared-rule", level: "project", agent: null })
+  const shownShared = (await runOk(show, { id: sharedRule.id })) as { tool: string; rule: string }
+  expect(shownShared).toMatchObject({ tool: "shell", rule: "shared-rule" })
+  const storedShared = (await load(project)).records.find((record) => record.type === "rule" && record.id === "shared-rule")
+  expect(storedShared).toMatchObject({ level: "project", agent: null })
+  expect(await Bun.file(projectRecordsPath(project)).text()).toContain('"id":"shared-rule"')
+  const sharedGlobalPath = globalRecordsPath()
+  const sharedGlobalText = (await Bun.file(sharedGlobalPath).exists()) ? await Bun.file(sharedGlobalPath).text() : ""
+  expect(sharedGlobalText).not.toContain('"id":"shared-rule"')
 
   // The same model and rule at project and global levels return their own
   // rows even though the Defaults row with the same item already exists.
@@ -2189,12 +2193,33 @@ test("create returns the created level's model and rule row, not the identical D
   const globalRule = (await runOk(create, { kind: "rule", tool: "shell", id: "glob-rule", label: "Glob", patterns: ["glob *"], level: "global", agent: "glob" })) as { id: string }
   expect(globalRule.id).toBe("item:global:glob:perm:shell:glob-rule")
 
+  // Each write persisted at its own store: the global rule lands in the global
+  // records file, the shared and project rules in the project file.
+  const storedGlobalRule = (await load(project)).records.find((record) => record.type === "rule" && record.id === "glob-rule")
+  expect(storedGlobalRule).toMatchObject({ level: "global", agent: "glob" })
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  const projectText = await Bun.file(projectRecordsPath(project)).text()
+  expect({ globalRule: globalText.includes('"id":"glob-rule"'), projectRule: projectText.includes('"id":"glob-rule"') }).toEqual({
+    globalRule: true,
+    projectRule: false,
+  })
+
   for (const id of [sharedModel.id, sharedRule.id, projectModel.id, globalModel.id, projectRule.id, globalRule.id]) {
     const snapshot = await snapshotOf(api)
     if (!expandedTree(memoFromSnapshot(snapshot)).some((node) => node.id === id)) throw new Error(`missing created row ${id}`)
     const deleted = (await runOk(del, { id, confirm: true })) as { status: string }
     expect(deleted.status).toContain("Removed")
   }
+  // Delete of the returned id removed the written records.
+  const remaining = (await load(project)).records.filter((record) => record.type === "model" || record.type === "rule")
+  expect(remaining.some((record) => record.type === "rule" && record.id === "shared-rule")).toBe(false)
+  expect(remaining.some((record) => record.type === "rule" && record.id === "proj-rule")).toBe(false)
+  expect(remaining.some((record) => record.type === "rule" && record.id === "glob-rule")).toBe(false)
+  expect(
+    remaining.some(
+      (record) => record.type === "model" && record.providerID === "acme" && record.modelID === "nova-2" && record.agent !== null,
+    ),
+  ).toBe(false)
   const after = await snapshotOf(api)
   // The pre-split catalogue migration copies the first shared Defaults row
   // written into a new store into the Teams catalogue (store.ts
@@ -2210,6 +2235,7 @@ test("create kind member adds members at project and defaults level and returns 
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate" }] }]
   const ctx = fullContext({
     directory: project,
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const api = createPlusApi(ctx, createState(), { builtins: registry })
@@ -2219,12 +2245,13 @@ test("create kind member adds members at project and defaults level and returns 
   const show = need(tools, "instructions_show")
   const del = need(tools, "instructions_delete")
 
-  // Colon team names and nested member ids both round-trip: the row id keeps
-  // its colons and delete resolves the longest team prefix.
+  // Colon team names and nested member ids both round-trip, and a padded team
+  // name is normalized exactly as team.addAgent normalizes it, so the write and
+  // the row lookup agree.
   await runOk(create, { kind: "team", team: "crew:one", level: "project" })
   const member = (await runOk(create, {
     kind: "member",
-    team: "crew:one",
+    team: " crew:one ",
     level: "project",
     id: "nested/beta",
     prompt: "beta role",
@@ -2234,10 +2261,44 @@ test("create kind member adds members at project and defaults level and returns 
   const memberPath = path.join(projectTeamsPath(project), "crew:one", "nested", "beta.md")
   expect(await Bun.file(memberPath).text()).toContain("beta role")
 
+  // The member entity view and its subtree: the team is disabled, so the host
+  // has not registered the member; enabling the team registers it.
+  const disabledView = (await runOk(show, { id: member.id })) as Record<string, unknown>
+  expect(disabledView).toMatchObject({ kind: "member", level: "project", team: "crew:one", member: "nested/beta", registered: false })
+  const recordView = (await runOk(show, { id: member.id, view: "record" })) as { record: Record<string, unknown> }
+  expect(recordView.record).toMatchObject({ kind: "member", team: "crew:one", member: "nested/beta" })
+  const subtree = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const memberRows = subtree.filter((node) => node.id.includes("nested/beta")).map((node) => node.id)
+  const subtreeTool = "item:project:crew:one/:nested/beta:tool:shell"
+  expect(memberRows).toContain("group:project:crew:one/:nested/beta:tools")
+  expect(memberRows).toContain(subtreeTool)
+  const toggled = (await runOk(need(tools, "instructions_set"), { id: subtreeTool, state: "off" })) as { status: string }
+  expect(toggled.status).toBe('Disabled "shell"')
+  const enabled = await api.setTeamEnabled({ level: "project", team: "crew:one", enabled: true, actor: { type: "tui" } })
+  if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
+  const enabledView = (await runOk(show, { id: member.id })) as Record<string, unknown>
+  expect(enabledView).toMatchObject({ kind: "member", registered: true })
+
+  // A global member created through a padded team name.
+  await runOk(create, { kind: "team", team: "gcrew", level: "global" })
+  const globalMember = (await runOk(create, {
+    kind: "member",
+    team: " gcrew ",
+    level: "global",
+    id: "gmember",
+    prompt: "global member role",
+  })) as { id: string; item: string }
+  expect(globalMember.id).toBe("team:global:gcrew:gmember")
+  expect(globalMember.item).toBe("gmember")
+  const globalMemberPath = path.join(globalTeamsPath(), "gcrew", "gmember.md")
+  expect(await Bun.file(globalMemberPath).text()).toContain("global member role")
+  const globalView = (await runOk(show, { id: globalMember.id })) as Record<string, unknown>
+  expect(globalView).toMatchObject({ kind: "member", level: "global", team: "gcrew", member: "gmember" })
+
   // Defaults level writes the same overlay the TUI writes for a built-in team.
   const overlay = (await runOk(create, {
     kind: "member",
-    team: "ship",
+    team: " ship ",
     level: "defaults",
     id: "rookie",
     prompt: "rookie role",
@@ -2248,13 +2309,15 @@ test("create kind member adds members at project and defaults level and returns 
   expect(await Bun.file(overlayPath).text()).toContain("rookie role")
   const snapshot = await snapshotOf(api)
   expect(snapshot.teams?.find((team) => team.team === "ship")).toMatchObject({ overlay: ["rookie"] })
-
-  const shown = await runOutcome(show, { id: member.id })
-  if (!shown.ok) expect(shown.message).not.toContain("row.unknown")
+  const overlayShown = (await runOk(show, { id: overlay.id })) as Record<string, unknown>
+  expect(overlayShown).toMatchObject({ kind: "member", level: "defaults", team: "ship", member: "rookie" })
 
   const removedMember = (await runOk(del, { id: member.id, confirm: true })) as { status: string }
   expect(removedMember.status).toBe("Deleted team member nested/beta")
   expect(await Bun.file(memberPath).exists()).toBe(false)
+  const removedGlobal = (await runOk(del, { id: globalMember.id, confirm: true })) as { status: string }
+  expect(removedGlobal.status).toBe("Deleted team member gmember")
+  expect(await Bun.file(globalMemberPath).exists()).toBe(false)
   const removedOverlay = (await runOk(del, { id: overlay.id, confirm: true })) as { status: string }
   expect(removedOverlay.status).toBe("Deleted team member rookie")
   expect(await Bun.file(overlayPath).exists()).toBe(false)
@@ -2333,6 +2396,7 @@ test("create kind team passes the template to team.create and produces the templ
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
 
   const created = (await runOk(create, { kind: "team", team: "mine", level: "project", template: "review" })) as {
     id: string
@@ -2340,6 +2404,14 @@ test("create kind team passes the template to team.create and produces the templ
     enabled: boolean
   }
   expect(created).toMatchObject({ id: "team:project:mine", item: "mine", enabled: false })
+  const shownTeam = (await runOk(show, { id: created.id })) as Record<string, unknown>
+  expect(shownTeam).toMatchObject({
+    kind: "team",
+    level: "project",
+    team: "mine",
+    enabled: false,
+    members: ["editor", "reviewer"],
+  })
   const snapshot = await snapshotOf(api)
   expect(snapshot.teams?.find((team) => team.team === "mine")).toEqual({
     level: "project",

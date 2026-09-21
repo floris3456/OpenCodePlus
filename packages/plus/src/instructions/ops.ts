@@ -215,6 +215,61 @@ export function createdMemberRow(input: MemoInput, level: Level, team: string, m
   return node === undefined ? undefined : { id: node.id, item: member }
 }
 
+// ---------------------------------------------------------------------------
+// Team and member row entities
+//
+// Team (`team:<level>:<team>`, depth 2) and member (`team:<level>:<team>:<member>`,
+// depth 3) rows carry no item address, so show renders the entity these rows
+// stand for instead of a resolved text. The team is found the same way
+// removalPlan resolves it: by the row's own id, so colon team names pick the
+// real team rather than an id prefix, and a member row belongs to the team
+// that lists it.
+
+export type TeamRowEntity =
+  | {
+      readonly kind: "team"
+      readonly level: Level
+      readonly team: string
+      readonly enabled: boolean
+      readonly members: readonly string[]
+      readonly overlay?: readonly string[]
+    }
+  | {
+      readonly kind: "member"
+      readonly level: Level
+      readonly team: string
+      readonly member: string
+      readonly registered: boolean
+    }
+
+export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity | undefined {
+  if (node.kind !== "team") return undefined
+  const memo = memoOfInput(input)
+  const teams = (input.teams ?? memo.ctx.teams) as readonly TeamInput[]
+  const exact = teams.find((candidate) => node.id === `team:${candidate.level}:${candidate.team}`)
+  if (exact !== undefined && node.depth === 2)
+    return {
+      kind: "team",
+      level: exact.level,
+      team: exact.team,
+      enabled: exact.enabled,
+      members: [...exact.agents],
+      ...(exact.overlay === undefined ? {} : { overlay: [...exact.overlay] }),
+    }
+  if (node.depth !== 3) return undefined
+  const parent = teams.find((candidate) =>
+    candidate.agents.some((member) => node.id === `team:${candidate.level}:${candidate.team}:${member}`),
+  )
+  if (parent === undefined) return undefined
+  return {
+    kind: "member",
+    level: parent.level,
+    team: parent.team,
+    member: node.label,
+    registered: memo.ctx.agents.some((agent) => agent.id === node.label),
+  }
+}
+
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
   const matches = items.filter((entry) => entry.id === address.item)
   const owner = address.agent

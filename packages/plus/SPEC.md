@@ -1240,7 +1240,13 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `label`, `patterns`, `keywords`, `provenance`, `custom`, `enabled`,
   `source`, plus a scrub preview: `scrub.hidden` lines would drop,
   `scrub.preview` shows up to 3; plus `message` when the rule has one — a
-  user rule's own text or the curated one it ships). `assembled` renders the full effective prompt and accepts agent
+  user rule's own text or the curated one it ships). Team and member rows
+  carry no item address: `resolved` (default) returns the entity
+  (`{ kind: "team", level, team, enabled, members, overlay? }` or
+  `{ kind: "member", level, team, member, registered }`, where `registered`
+  says whether the host currently registers that agent) and `record` returns
+  the same entity nested under `record`; every other view fails with
+  `view.unsupported`. `assembled` renders the full effective prompt and accepts agent
   row ids only (`agent:<level>:<id>`); any other id fails with
   `view.unsupported`. `record` returns the raw override including `pin`
   when set. `diff` returns two unified diffs (original→mine and
@@ -1270,18 +1276,21 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `create` with `kind: "member"` needs `team` + `level` + `id` + `prompt` and
   calls `team.addAgent`, so `level: "defaults"` writes the same Defaults
   overlay the TUI writes and `template`/`fields` are the agent fields
-  `kind: "agent"` takes. `create` with `kind: "model"` needs `providerID` +
-  `modelID` (`variant`/`level`/`agent` optional); a model with no `agent` is
-  shared and defaults to the `defaults` level, while an agent-qualified model
-  defaults to `project` and requires an `agent` for project/global levels.
-  `create` with `kind: "rule"` needs `tool` + `id` + `label` + `patterns`
-  (patterns are core wildcards, not regex); `message` is the optional refusal
-  text the model reads; a rule with no `agent` is shared and defaults to the
-  `defaults` level. The returned row is resolved through the same tree the
-  TUI shows, at the created level and owner: a project or global create is
-  never reported as the identical Defaults row, and a shared create returns
-  the canonical visible Defaults catalogue row (`item:defaults::…`, or
-  `item:defaults:/teams:…` for `catalogue: "teams"`). A create whose row
+  `kind: "agent"` takes; the team name is trimmed exactly as `team.addAgent`
+  trims it before the row is resolved. `create` with `kind: "model"` needs
+  `providerID` + `modelID` (`variant`/`level`/`agent` optional); `level`
+  defaults to `project` and project/global levels require an `agent`, so a
+  model with no `agent` is only the shared Defaults row when `level` is
+  explicitly `defaults`. `create` with `kind: "rule"` needs `tool` + `id` +
+  `label` + `patterns` (patterns are core wildcards, not regex); `message` is
+  the optional refusal text the model reads; `level` defaults to `project` and
+  a rule with no `agent` is stored at that requested level. The returned row is
+  resolved through the same tree the TUI shows: an agent-qualified create is
+  resolved at its own level and owner, never reported as the identical Defaults
+  row, and a shared (`agent: null`) rule is resolved through its canonical
+  visible Defaults catalogue row (`item:defaults::…`, or
+  `item:defaults:/teams:…` for `catalogue: "teams"`) while the record keeps its
+  requested level. A create whose row
   cannot be found fails with `create.failed` and does not invent an id; file-
   derived rows (skills, MCP servers) are given a short window for the host's
   watcher to publish them before that failure. `create` takes an optional

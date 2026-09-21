@@ -24,6 +24,7 @@ import {
   setEnabled,
   setPin,
   teamPlan,
+  teamRowEntity,
   toggle,
   unknownRowRefusal,
   type CreatedRow,
@@ -65,8 +66,9 @@ const ListDescription =
   "Fields select the projection, sort orders rows, limit defaults to 40. Reads never refuse for protection."
 
 const ShowDescription =
-  "Read one row: resolved text (default), diff, record, sections, or an agent's assembled view.\n" +
+  "Read one row: resolved text (default), diff, record, sections, an entity, or an agent's assembled view.\n" +
   "Views: resolved (default), upstream, mine, diff, record, sections, assembled (agent rows only).\n" +
+  "Team and member rows carry no text: resolved returns the entity (level, team, enabled/members, or member registered), record nests it under record.\n" +
   "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary."
 
 const SetDescription =
@@ -88,7 +90,7 @@ const CreateDescription =
   "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled),\n" +
   "member (team+level+id+prompt, template/fields optional; level defaults writes the Defaults overlay),\n" +
   "model (providerID+modelID, variant/level/agent optional),\n" +
-  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads).\n" +
+  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
   "base/instruction/mcp create one file both catalogues list, so catalogue does not change what is written."
@@ -918,6 +920,18 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const memo = memoFromSnapshot(snapshot)
     const node = findRow(memo, id)
     if (node === undefined) return yield* Effect.fail(unknownError(id))
+    if (node.kind === "team") {
+      // Team and member rows carry no item address, so resolved/record render
+      // the entity these rows stand for; every other view stays refused.
+      const entity = teamRowEntity(memo, node)
+      if (entity === undefined) return yield* Effect.fail(unknownError(id))
+      if (view !== "resolved" && view !== "record")
+        return yield* Effect.fail(
+          new Tool.Error({ message: `view.unsupported: ${view} view is not available for team rows (got ${id})` }),
+        )
+      if (view === "record") return { output: { id, view, record: entity } }
+      return { output: { id, view, ...entity } }
+    }
     if (node.address === undefined)
       return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view needs an addressed row (got ${id})` }))
     const address = node.address
@@ -1170,7 +1184,9 @@ function createRow(
     }
     if (input.kind === "member") {
       const level = input.level
-      const team = input.team
+      const team = input.team?.trim()
+      // team.addAgent validates and trims the team name itself, so the lookup
+      // resolves the same name the write used.
       if (team === undefined || level === undefined || input.id === undefined || input.prompt === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create member requires team, level, id, and prompt" }))
       const snapshot = yield* snapshotOrFail(api)
@@ -1198,12 +1214,10 @@ function createRow(
     if (input.kind === "model") {
       if (input.providerID === undefined || input.modelID === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create model requires providerID and modelID" }))
-      const rawAgent = input.agent?.trim() ?? ""
-      // A model with no agent is a shared Defaults row (the only level shared
-      // rows resolve at); an agent-qualified model defaults to the project.
-      const level = input.level ?? input.scope ?? (rawAgent.length === 0 || rawAgent === "_" ? "defaults" : "project")
+      const level = input.level ?? input.scope ?? "project"
       if (level !== "project" && level !== "global" && level !== "defaults")
         return yield* Effect.fail(new Tool.Error({ message: "create model requires level project|global|defaults" }))
+      const rawAgent = input.agent?.trim() ?? ""
       if (level !== "defaults" && rawAgent.length === 0)
         return yield* Effect.fail(new Tool.Error({ message: "create model requires agent for project|global levels" }))
       const agent = level === "defaults" && (rawAgent.length === 0 || rawAgent === "_") ? null : rawAgent
@@ -1241,12 +1255,10 @@ function createRow(
     if (input.kind === "rule") {
       if (input.tool === undefined || input.id === undefined || input.label === undefined || input.patterns === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create rule requires tool, id, label, and patterns" }))
-      const rawAgent = input.agent?.trim() ?? ""
-      // A rule with no agent is a shared Defaults row (the only level shared
-      // rows resolve at); an agent-qualified rule defaults to the project.
-      const level = input.level ?? input.scope ?? (rawAgent.length === 0 || rawAgent === "_" ? "defaults" : "project")
+      const level = input.level ?? input.scope ?? "project"
       if (level !== "project" && level !== "global" && level !== "defaults")
         return yield* Effect.fail(new Tool.Error({ message: "create rule requires level project|global|defaults" }))
+      const rawAgent = input.agent?.trim() ?? ""
       const agent = rawAgent.length === 0 || rawAgent === "_" ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
       if (agent !== null && snapshot.protectedAgents.includes(agent))
@@ -1267,12 +1279,14 @@ function createRow(
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       // The row is resolved at the written level and owner, so a project or
-      // global rule is never reported as an inherited Defaults row.
+      // global rule is never reported as an inherited Defaults row. A shared
+      // rule keeps its requested storage level but its only visible row is the
+      // shared Defaults catalogue row, so that row is the returned id.
       const row = yield* createdRowOrFail(
         api,
         (memo) =>
           createdItemRow(memo, {
-            level: created.value.level,
+            level: created.value.agent === null ? "defaults" : created.value.level,
             agent: created.value.agent,
             item: permItemId(created.value.tool, created.value.id),
             ...catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
