@@ -152,6 +152,19 @@ runs the rows state the **union** of their `scope.paths` — each run keeps its
 own listable row (`instructions_list where:"run:<id>"`) and its text names the
 shared union, rather than the last run silently taking the others' scope away.
 
+A rule may carry a **message**, and a refused agent reads it instead of the
+generic `Permission denied: <action>`. The edit-scope rows carry the two texts
+the old permission hook sent — `"<pattern>" is outside your scope.paths
+[…]. Report it in needs=[{kind:"path"...}].` and `"<pattern>" is
+version-control or paused-tool state and is never editable, even inside
+scope.paths […]. …` — the native denies say `shell is not available to
+<member>; run checks with team_check` (and `<action> is not available to
+<member>` for the rest), and a ceiling deny says `team_<tool> is outside the
+<kind> ceiling`. A rule answers for a pattern rather than for one call, so the
+quoted subject is the rule's own resource. An `ask` rule's message arrives as
+`metadata.message` on the permission request, which is what the TUI shows when
+it asks.
+
 Team tools appear only under the Teams catalogue. An agent that is not a
 member of an enabled team gets a `team.*` wildcard deny, so it sees no
 `team_*` tool and no `tools.team.*` catalog entry in any chat — the answer to

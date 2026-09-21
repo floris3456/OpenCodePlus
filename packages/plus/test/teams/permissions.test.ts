@@ -184,11 +184,46 @@ test("a live run contributes an edit-scope row that allows scope.paths and denie
   const permissions = await permissionsAfterApply("muse-implementer", items)
   const editRules = permissions.filter((rule) => rule.action === "edit")
   expect(editRules).toEqual([
-    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "*", effect: "deny", message: OUTSIDE_SCOPE },
     { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
-    { action: "edit", resource: ".git/**", effect: "deny" },
-    { action: "edit", resource: ".opencodeplus/**", effect: "deny" },
+    { action: "edit", resource: ".git/**", effect: "deny", message: forbiddenState(".git/**") },
+    { action: "edit", resource: ".opencodeplus/**", effect: "deny", message: forbiddenState(".opencodeplus/**") },
   ])
+})
+
+// The refusals the round-1 permission hook sent are the rules' own words now,
+// so a denied edit still tells the agent what its scope is and what to do.
+// Source: docs/team-v2/acceptance/2026-09-18-live-rounds.md R2, hook commit
+// c63cf4b4 "fix(plus): explain team scope denials to the agent".
+const OUTSIDE_SCOPE = `"*" is outside your scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`
+
+function forbiddenState(resource: string): string {
+  return `"${resource}" is version-control or paused-tool state and is never editable, even inside scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`
+}
+
+test("the rules a denial comes from carry the message the model reads", async () => {
+  await saveRun(dir, makeRun())
+  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir))
+  const permissions = await permissionsAfterApply("muse-implementer", items)
+  const { evaluate } = await import("../../../core/src/permission.js")
+
+  // Edit scope: the two round-1 texts, verbatim but for the quoted subject.
+  expect(evaluate("edit", "outside/other.ts", permissions).message).toBe(OUTSIDE_SCOPE)
+  expect(evaluate("edit", ".git/HEAD", permissions).message).toBe(forbiddenState(".git/**"))
+  expect(evaluate("edit", "packages/plus/src/index.ts", permissions).message).toBeUndefined()
+
+  // Native denies name the role and, for shell, what to run instead.
+  expect(evaluate("shell", "bun test", permissions).message).toBe(
+    "shell is not available to muse-implementer; run checks with team_check",
+  )
+  expect(evaluate("question", "*", permissions).message).toBe("question is not available to muse-implementer")
+  expect(evaluate("read", "secret.key", permissions).message).toBe(
+    `read "*.key" is not available to muse-implementer`,
+  )
+
+  // Ceiling denies name the tool and the ceiling it is outside of.
+  expect(evaluate("team.delegate", "*", permissions).message).toBe("team_delegate is outside the implementer ceiling")
+  expect(evaluate("team.checkpoint", "*", permissions).effect).not.toBe("deny")
 })
 
 // A permission rule belongs to an agent, so two live runs of one role cannot
@@ -206,12 +241,29 @@ test("two live runs of one role resolve to the union of their scope.paths", asyn
     expect(row?.text).toContain("[a.ts, b.ts]")
   }
   const permissions = await permissionsAfterApply("muse-implementer", items)
+  // A rule belongs to the agent, so the messages name the union too: what the
+  // rules really allow is what the agent is told.
   expect(permissions.filter((rule) => rule.action === "edit")).toEqual([
-    { action: "edit", resource: "*", effect: "deny" },
+    {
+      action: "edit",
+      resource: "*",
+      effect: "deny",
+      message: `"*" is outside your scope.paths [a.ts, b.ts]. Report it in needs=[{kind:"path"...}].`,
+    },
     { action: "edit", resource: "a.ts", effect: "allow" },
     { action: "edit", resource: "b.ts", effect: "allow" },
-    { action: "edit", resource: ".git/**", effect: "deny" },
-    { action: "edit", resource: ".opencodeplus/**", effect: "deny" },
+    {
+      action: "edit",
+      resource: ".git/**",
+      effect: "deny",
+      message: `".git/**" is version-control or paused-tool state and is never editable, even inside scope.paths [a.ts, b.ts]. Report it in needs=[{kind:"path"...}].`,
+    },
+    {
+      action: "edit",
+      resource: ".opencodeplus/**",
+      effect: "deny",
+      message: `".opencodeplus/**" is version-control or paused-tool state and is never editable, even inside scope.paths [a.ts, b.ts]. Report it in needs=[{kind:"path"...}].`,
+    },
   ])
   const { evaluate } = await import("../../../core/src/permission.js")
   expect(evaluate("edit", "a.ts", permissions).effect).toBe("allow")

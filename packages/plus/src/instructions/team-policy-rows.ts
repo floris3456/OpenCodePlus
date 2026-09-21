@@ -122,10 +122,20 @@ function nativeRows(member: PolicyMember): Item[] {
       enabled: permissive.get(action) === true,
       policy: {
         on: resources.map((resource) => rule(action, resource, "allow")),
-        off: resources.map((resource) => rule(action, resource, "deny")),
+        off: resources.map((resource) => rule(action, resource, "deny", nativeDenyMessage(action, resource, member.id))),
       },
     }),
   )
+}
+
+// What the agent is told when a native deny stops it. The subject is the rule's
+// own resource, because a rule answers for a pattern and not for one call: a
+// whole-action deny names the action, a resource-scoped one names the resource
+// it covers. Shell carries the one thing an implementer needs to hear next.
+function nativeDenyMessage(action: string, resource: string, role: string): string {
+  const subject = resource === "*" ? action : `${action} "${resource}"`
+  const hint = action === "shell" ? "; run checks with team_check" : ""
+  return `${subject} is not available to ${role}${hint}`
 }
 
 // The role's tool ceiling. Only the tools OUTSIDE it get a row: a member sees
@@ -145,7 +155,10 @@ function ceilingRows(member: PolicyMember): Item[] {
         permAction: `team.${tool}`,
         patterns: ["*"],
         enabled: false,
-        policy: { on: [rule(`team.${tool}`, "*", "allow")], off: [rule(`team.${tool}`, "*", "deny")] },
+        policy: {
+          on: [rule(`team.${tool}`, "*", "allow")],
+          off: [rule(`team.${tool}`, "*", "deny", `team_${tool} is outside the ${member.kind} ceiling`)],
+        },
       }),
     )
 }
@@ -201,10 +214,13 @@ function runScopeRow(run: PolicyRun, peers: readonly PolicyRun[]): Item {
   const kind = kindOf(run.role)
   const overrideRules: PolicyRule[] =
     isChild && kind.ok && kind.kind === "planner" ? [rule("team.delegate", "*", "deny")] : []
+  const allowed = [...new Set(peers.flatMap((peer) => peer.paths))].join(", ")
   const editRules: PolicyRule[] = [
-    ...(peers[0]?.id === run.id ? [rule("edit", "*", "deny")] : []),
+    ...(peers[0]?.id === run.id ? [rule("edit", "*", "deny", outsideScopeMessage("*", allowed))] : []),
     ...run.paths.map((path) => rule("edit", path, "allow")),
-    ...(peers[peers.length - 1]?.id === run.id ? editForbidden.map((path) => rule("edit", path, "deny")) : []),
+    ...(peers[peers.length - 1]?.id === run.id
+      ? editForbidden.map((path) => rule("edit", path, "deny", forbiddenStateMessage(path, allowed)))
+      : []),
   ]
   return row({
     id: `perm:edit:run:${run.id}`,
@@ -242,8 +258,25 @@ function scopeGuidance(run: PolicyRun, peers: readonly PolicyRun[]): string {
   return `${own}${shared}Version-control and paused-tool state is ${forbidden}. Report anything else in needs=[{kind:"path"...}].`
 }
 
-function rule(action: string, resource: string, effect: PolicyRule["effect"]): PolicyRule {
-  return { action, resource, effect }
+// The two refusals the round-1 permission hook sent, word for word, now carried
+// by the rules themselves (recovered from the R2 acceptance record in
+// docs/team-v2/acceptance/2026-09-18-live-rounds.md, hook commit c63cf4b4
+// "fix(plus): explain team scope denials to the agent"). The hook saw the file
+// the agent had asked for; a rule answers for a pattern, so the quoted subject
+// is the rule's own resource and every other word is unchanged. `allowed` is
+// the union of the role's live scopes, which is what the agent's rules really
+// permit.
+function outsideScopeMessage(resource: string, allowed: string): string {
+  return `"${resource}" is outside your scope.paths [${allowed}]. Report it in needs=[{kind:"path"...}].`
+}
+
+function forbiddenStateMessage(resource: string, allowed: string): string {
+  const scope = allowed.length > 0 ? `, even inside scope.paths [${allowed}]` : ""
+  return `"${resource}" is version-control or paused-tool state and is never editable${scope}. Report it in needs=[{kind:"path"...}].`
+}
+
+function rule(action: string, resource: string, effect: PolicyRule["effect"], message?: string): PolicyRule {
+  return { action, resource, effect, ...(message === undefined ? {} : { message }) }
 }
 
 function row(input: {
