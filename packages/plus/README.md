@@ -135,7 +135,7 @@ Row ids name one row everywhere: the TUI filter, tool calls, log targets, and er
 
 `<level>` is `project`, `global`, or `defaults`.
 
-Guards: a write whose actor is a tool cannot change a row belonging to an agent listed in `.opencodeplus/project.json` `protectedAgents` — through the tools, the RPC, or `instructions.mutate` — and fails with `agent.protected`; the TUI writes those rows normally. `delete` needs `confirm: true`; no tool enables or disables project mode; every successful write is logged with actor `tool`.
+Guards: a write whose actor is a tool cannot change a row belonging to an agent listed in `.opencodeplus/project.json` `protectedAgents` — through the tools, the RPC, or `instructions.mutate` — and fails with `agent.protected`; the TUI writes those rows normally. The guard covers the item-record cascade as well: deleting a rule, skill, base template or MCP server as a tool actor is refused when any protected agent holds a customization or split for that item, and the refusal is decided before anything is written. `delete` needs `confirm: true`; no tool enables or disables project mode; every successful write is logged with actor `tool`.
 
 Log format is `Plus.LogEntry` (`src/rpc.ts`): `{ ts, actor: { type: tui|tool, agent?, sessionID?, messageID? }, op, target, summary, revision }`. Project writes append to `<project>/.opencodeplus/instructions/log.jsonl`, global/defaults writes to `<configDir>/opencodeplus/instructions/log.jsonl`. The log's own `where` grammar is small: a bare word matches over op, target, summary, and actor agent; keyed tokens are `actor:tui|tool`, `agent:<text>`, `op:<text>`, `target:<prefix>`, `session:<text>`, `since:<instant>` / `before:<instant>` (ISO date or `<n><s|m|h|d|w>` age).
 
