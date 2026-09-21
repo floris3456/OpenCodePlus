@@ -61,9 +61,8 @@ API widening). Tests cover:
 - fields forwarding: the same tool run records the `team.addAgent` request
   through a delegating recorder (the real handler still writes the file) and
   asserts the request carries `fields`, `prompt`, `level`, `team`, and the
-  `tool` actor. Rendering those fields into the member file is the
-  member-fields API change's responsibility; the tool's forwarding is proven
-  here.
+  `tool` actor. `team.addAgent` renders those fields into the member file; the
+  forwarding contract is what this test pins.
 
 ## End-state item 3 — create, show, delete round-trip
 
