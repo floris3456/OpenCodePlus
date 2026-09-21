@@ -4,6 +4,9 @@ import { Mcp } from "@opencode/schema/mcp"
 import { Deferred, Effect } from "effect"
 import { fileURLToPath } from "node:url"
 import { runRegistration } from "../instructions/apply.js"
+import { searchKeysDir } from "./keys.js"
+
+export { searchKeysDir } from "./keys.js"
 
 export async function resolveSearchBinPath(): Promise<string> {
   const tsPath = fileURLToPath(new URL("./bin.ts", import.meta.url))
@@ -41,6 +44,9 @@ export async function registerSearchMcp(
       new Mcp.LocalConfig({
         type: "local",
         command: [process.execPath, resolvedBinPath],
+        environment: {
+          OPENCODEPLUS_SEARCH_KEYS_DIR: searchKeysDir(),
+        },
       }),
     )
   })

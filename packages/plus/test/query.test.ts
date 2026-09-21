@@ -145,8 +145,31 @@ test("group filters by upstream item group", () => {
 
 test("server matches the mcp server", () => {
   expect(ids("server:sample")).toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("server:sample")).toContain("item:defaults::mcp:sample")
   expect(ids("server:sample")).not.toContain(bash)
   expect(ids("server:nope")).toHaveLength(0)
+})
+
+test("server:search returns mcp:search row and its tool rows", () => {
+  const searchInput = {
+    agents: agents(),
+    teams: teams(),
+    items: [
+      makeItem({ id: "mcp:search", kind: "mcp", group: "none", title: "search" }),
+      makeItem({ id: "tool:search_exa_code_search", kind: "tool", group: "mcp", server: "search", title: "exa_code_search" }),
+      makeItem({ id: "tool:search_tavily_search", kind: "tool", group: "mcp", server: "search", title: "tavily_search" }),
+      makeItem({ id: "tool:bash", kind: "tool", group: "native", title: "bash" }),
+      makeItem({ id: "mcp:other", kind: "mcp", group: "none", title: "other" }),
+    ],
+    records: [],
+  }
+  const result = query(searchInput, { where: "server:search" })
+  const resultIds = result.rows.map((r) => r.id)
+  expect(resultIds).toContain("item:defaults::mcp:search")
+  expect(resultIds).toContain("item:project:Implementer:tool:search_exa_code_search")
+  expect(resultIds).toContain("item:project:Implementer:tool:search_tavily_search")
+  expect(resultIds).not.toContain("item:defaults::mcp:other")
+  expect(resultIds.some((id) => id.includes("tool:bash"))).toBe(false)
 })
 
 test("level scopes rows to their level", () => {

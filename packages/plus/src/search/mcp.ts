@@ -1,12 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { readKey } from "./keys.js"
 
 function result(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] }
 }
 
 export async function tavily(endpoint: "search" | "extract", body: unknown) {
-  const key = process.env.TAVILY_API_KEY
+  const key = await readKey("tavily")
   if (!key) throw new Error("TAVILY_API_KEY is not set in the host environment")
   const res = await fetch(`https://api.tavily.com/${endpoint}`, {
     method: "POST",
@@ -19,7 +20,7 @@ export async function tavily(endpoint: "search" | "extract", body: unknown) {
 }
 
 export async function exaSearch(body: unknown) {
-  const key = process.env.EXA_API_KEY
+  const key = await readKey("exa")
   if (!key) throw new Error("EXA_API_KEY is not set in the host environment")
   const res = await fetch("https://api.exa.ai/search", {
     method: "POST",

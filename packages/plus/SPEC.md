@@ -1186,7 +1186,7 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
 ```
 
 - `list` returns the matching row ids (default projection `id, badges,
-  source, tokens`; `limit` defaults to 40). `show` defaults to view
+  source, tokens`; `limit` defaults to 40). Filters (`where`) support `server:<name>`, which matches both the `mcp:<name>` server row and its tool rows (e.g. `where: "server:search"` returns `mcp:search` and all search tools). `show` defaults to view
   `resolved`. On a perm row any view returns the rule view (`tool`, `rule`,
   `label`, `patterns`, `keywords`, `provenance`, `custom`, `enabled`,
   `source`, plus a scrub preview: `scrub.hidden` lines would drop,
@@ -1445,7 +1445,7 @@ Plus ships a built-in search MCP server providing Exa code search and Tavily web
 
 On activation (`activate` / `ensureTooling`), Plus reads `ctx.mcp.transform` to check for an existing MCP server named `search`:
 - When absent (`editor.get("search") === undefined`), Plus registers its search server:
-  `editor.set("search", new Mcp.LocalConfig({ type: "local", command: [process.execPath, <path to bin.ts|bin.js>] }))`
+  `editor.set("search", new Mcp.LocalConfig({ type: "local", command: [process.execPath, <path to bin.ts|bin.js>], environment: { OPENCODEPLUS_SEARCH_KEYS_DIR: <XDG_DATA_HOME>/opencode/opencodeplus/search } }))`
   and reloads MCP via `ctx.mcp.reload()`. The registration is tracked and disposes cleanly on deactivation.
 - When present, Plus leaves the existing configuration untouched and logs `search MCP already configured; not replacing`.
 
@@ -1492,13 +1492,17 @@ When registered under the `search` server name, core exposes them to models with
 
 ### Authentication and error handling
 
-API keys are read at call time from the process environment:
-- `EXA_API_KEY` for `exa_code_search`
-- `TAVILY_API_KEY` for `tavily_search` and `tavily_extract`
+API keys are read at call time:
+1. From key files under `$OPENCODEPLUS_SEARCH_KEYS_DIR/<name>.key` (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, with file mode `0600` strictly enforced, value trimmed).
+2. Falling back to process environment variables:
+   - `EXA_API_KEY` for `exa_code_search`
+   - `TAVILY_API_KEY` for `tavily_search` and `tavily_extract`
 
-Keys are never written to any config file, row, test fixture, log, or commit.
+Keys are never written to any config file, row, test fixture, log, report, or commit.
 
-If a key is unset or empty, the tool returns a formatted tool error result rather than crashing or returning empty content:
+If a key file has insecure permissions (mode not `0600`), the tool call returns an error result.
+
+If a key is missing from both the key file and the host environment, the tool returns a formatted tool error result rather than crashing or returning empty content:
 - Missing `EXA_API_KEY`: `{ error: "EXA_API_KEY is not set in the host environment" }` with `isError: true`
 - Missing `TAVILY_API_KEY`: `{ error: "TAVILY_API_KEY is not set in the host environment" }` with `isError: true`
 
