@@ -565,11 +565,11 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `project.disable` | `void` | `Status` | — |
 | `instructions.snapshot` | `void` | `Snapshot` | `project.disabled` |
 | `instructions.refresh` | `void` | `Snapshot` | `project.disabled` |
-| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records }` | `MutateResult` | `project.disabled` |
+| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `project.disabled`, `agent.protected` |
 | `instructions.assembled` | `{ agent }` | `Assembled` | `project.disabled`, `agent.unknown` |
-| `agent.create` | `{ scope, id, template?, fields?, prompt }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid` |
-| `agent.rename` | `{ scope, from, to }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid` |
-| `agent.delete` | `{ scope, id }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid` |
+| `agent.create` | `{ scope, id, template?, fields?, prompt, actor? }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `agent.delete` | `{ scope, id, actor? }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` |
 | `skill.create` | `{ name, body }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
 | `skill.import` | `{ path }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
 | `skill.delete` | `{ id }` | `SkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` |
@@ -579,20 +579,20 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
 | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
-| `team.create` | `{ level, team, template? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
+| `team.create` | `{ level, team, template?, actor? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
-| `team.addAgent` | `{ level, team, id, template?, fields?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
-| `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
-| `team.delete` | `{ level, team }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid` |
+| `team.addAgent` | `{ level, team, id, template?, fields?, prompt, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
+| `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` |
 | `team.list` | `void` | `TeamListOutput` | `project.disabled` |
 | `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
 | `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `E_BUSY`, `run.unknown` |
-| `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
-| `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
+| `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` |
+| `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
-| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords?, message? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid` |
-| `rule.remove` | `{ level, agent, tool, id }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid` |
-| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords?, message? }` | `RuleRef` | `project.disabled`, `rule.invalid` |
+| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` |
+| `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` |
+| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` |
 
 `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
 `RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
@@ -609,9 +609,16 @@ trimmed, a blank one clears the stored text, and an omitted one on
 `rule.update` preserves it. Curated-identity
 policy: a stored record whose `tool` + `id` matches a curated rule is treated
 as an override of that curated rule. This is accepted reserved-identity
-semantics, not an unconditional compatibility guarantee. `updateRule`
-and `removeRule` share one `ruleProtectedRefusal` guard: protection follows
-the matched record's owner, not the caller's row address.
+semantics, not an unconditional compatibility guarantee. `rule.add`,
+`rule.update`, and `rule.remove` share one `refuseProtectedForTool` guard:
+the protected-agent refusal is decided at the PlusApi boundary from the
+request's `actor`, so a tool-originated write is refused whichever surface
+forwarded it (tools, the RPC, or a direct API call), while a missing actor —
+the TUI — is never refused. Protection follows the row's effective owner: on
+an update the matched record's owner, not the caller's row address; on an
+add the requested `agent`. The declared error is `agent.protected` with
+`{ agent, id?, reason }`, and the reason text is the same
+`agent.protected: row belongs to protected agent "<id>"` the tools raise.
 
 Events: `project.changed`, `instructions.changed`, `teams.changed`.
 
@@ -1327,8 +1334,13 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `perm:<toolId>:<ruleId>`. `<level>` is `project`,
   `global`, or `defaults`. Every id that resolved before the catalogue split
   still resolves and still means the Agents catalogue.
-- Guards: writes for agents listed in `protectedAgents` fail with
-  `agent.protected`; unknown ids fail with `row.unknown`. A no-op or a
+- Guards: a write whose actor is a tool cannot change a row belonging to an
+  agent listed in `protectedAgents`, through any surface — the tool wrappers,
+  the RPC, or `instructions.mutate` with a caller-supplied actor — and fails
+  with `agent.protected` (`{ agent, id?, reason }`); a missing actor is the
+  TUI and never refuses. `instructions.mutate` decides from the changed rows
+  only, so carrying a protected agent's unchanged records in a full-snapshot
+  mutate is not a refusal. Unknown ids fail with `row.unknown`. A no-op or a
   refusal writes nothing and logs nothing.
 
 ### Applying Code Mode rows (`apply.ts`, `model.ts`)
@@ -1524,7 +1536,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 | error | meaning |
 | `row.unknown` | no row has that id; `list` again for the current id |
 | `create.failed` | the write landed but its row is not in the tree; re-read with `instructions_list` |
-| `agent.protected` | that agent is in `protectedAgents` |
+| `agent.protected` | that agent is in `protectedAgents` and the write's actor is a tool; data is `{ agent, id?, reason }` |
 | `delete.unconfirmed` | retry with `confirm: true` |
 | `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; native opencode applies AGENTS.md files |
 | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |

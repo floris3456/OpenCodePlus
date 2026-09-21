@@ -1475,3 +1475,111 @@ test("team.runs.stop stops any run in the namespace without owner check, reconci
   )
   expect(unknown.current?.message).toContain("not found")
 })
+
+test("team.addAgent and team.removeAgent refuse a tool actor on a protected member and allow the TUI", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  const memberFile = path.join(projectTeamsPath(project), "crew", "alpha.md")
+
+  const addRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role", actor: { type: "tool" } }, throwingContext(addRefused)),
+    addRefused,
+    "agent.protected",
+  )
+  expect(addRefused.current?.message).toContain('protected agent "alpha"')
+  expect(await Bun.file(memberFile).exists()).toBe(false)
+
+  const added = await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role" }, throwingContext({})),
+  )
+  expect(added.id).toBe("alpha")
+  expect(await Bun.file(memberFile).exists()).toBe(true)
+
+  const removeRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.removeAgent"]({ level: "project", team: "crew", id: "alpha", actor: { type: "tool" } }, throwingContext(removeRefused)),
+    removeRefused,
+    "agent.protected",
+  )
+  expect(await Bun.file(memberFile).exists()).toBe(true)
+
+  const removed = await Effect.runPromise(
+    handlers["team.removeAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
+  )
+  expect(removed.id).toBe("alpha")
+  expect(await Bun.file(memberFile).exists()).toBe(false)
+})
+
+test("team.delete refuses a tool actor when the team contains a protected member and deletes for the TUI", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role" }, throwingContext({})),
+  )
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+
+  const refused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.delete"]({ level: "project", team: "crew", actor: { type: "tool" } }, throwingContext(refused)),
+    refused,
+    "agent.protected",
+  )
+  expect(refused.current?.message).toContain('protected agent "alpha"')
+  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
+
+  const deleted = await Effect.runPromise(
+    handlers["team.delete"]({ level: "project", team: "crew" }, throwingContext({})),
+  )
+  expect(deleted).toEqual({ level: "project", team: "crew", removedMembers: 1 })
+  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
+})
+
+test("team.create with a template refuses a tool actor cloning a protected member and seeds for the TUI", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const registry = [
+    {
+      name: "review",
+      members: [
+        { id: "alpha", body: "alpha body" },
+        { id: "editor", body: "editor body" },
+      ],
+    },
+  ]
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  const teamDir = path.join(projectTeamsPath(project), "mine")
+
+  const refused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.create"]({ level: "project", team: "mine", template: "review", actor: { type: "tool" } }, throwingContext(refused)),
+    refused,
+    "agent.protected",
+  )
+  expect(refused.current?.message).toContain('protected agent "alpha"')
+  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
+  expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(false)
+
+  const created = await Effect.runPromise(
+    handlers["team.create"]({ level: "project", team: "mine", template: "review" }, throwingContext({})),
+  )
+  expect(created).toEqual({ level: "project", team: "mine", enabled: false })
+  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
+  expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(true)
+})

@@ -1436,7 +1436,7 @@ async function logLines(project: string): Promise<string[]> {
   return text.split("\n").filter((line) => line.length > 0)
 }
 
-test("removeRule refuses a protected owner's rule with no write and no log", async () => {
+test("removeRule refuses a protected owner's rule for a tool actor and lets the TUI remove it", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -1449,19 +1449,27 @@ test("removeRule refuses a protected owner's rule with no write and no log", asy
   const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
   if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
   const beforeLogs = await logLines(project)
-  // Direct API with the owner's own address still refuses: protection follows
-  // the matched record, not the caller's row address.
-  const refused = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tui" } })
+  // A tool actor is refused even at the owner's own address: protection is
+  // decided at the API boundary, not by the row the caller addressed.
+  const refused = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tool" } })
   expect(refused.ok).toBe(false)
   if (refused.ok) throw new Error("expected removeRule refusal")
-  expect(refused.error.code).toBe("rule.invalid")
+  expect(refused.error.code).toBe("agent.protected")
   expect(refused.error.message).toContain("agent.protected")
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
   expect(await logLines(project)).toEqual(beforeLogs)
+  // The TUI writes the same row through the same boundary.
+  const tui = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
+  expect(tui.ok).toBe(true)
+  if (!tui.ok) throw new Error(`removeRule failed: ${tui.error.message}`)
+  expect(tui.value).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
+  const gone = await snapshotOf(api)
+  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
+  expect((await logLines(project)).length).toBeGreaterThan(beforeLogs.length)
 })
 
-test("rule.remove RPC from another agent's row refuses with no write and no log (TUI state.ts path)", async () => {
+test("rule.remove RPC from another agent's row refuses a tool actor and lets the TUI remove it", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -1480,8 +1488,6 @@ test("rule.remove RPC from another agent's row refuses with no write and no log 
   )
   if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
   const beforeLogs = await logLines(project)
-  // state.ts remove() forwards the selected row address verbatim:
-  // `plus["rule.remove"]({ level: address.level, agent: address.agent, ... })`.
   const handlers = createHandlers(ctx, state)
   const captured: { current?: { type: string; message: string } } = {}
   const throwing = {
@@ -1492,16 +1498,28 @@ test("rule.remove RPC from another agent's row refuses with no write and no log 
   }
   const exit = await Effect.runPromiseExit(
     handlers["rule.remove"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
+      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", actor: { type: "tool" } },
       throwing,
     ),
   )
   expect(Exit.isFailure(exit)).toBe(true)
-  expect(captured.current?.type).toBe("rule.invalid")
+  expect(captured.current?.type).toBe("agent.protected")
   expect(captured.current?.message).toContain("agent.protected")
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
   expect(await logLines(project)).toEqual(beforeLogs)
+  // state.ts forwards the selected row address verbatim with no actor: a
+  // missing actor means the TUI, so the same call succeeds.
+  const tui = await Effect.runPromise(
+    handlers["rule.remove"](
+      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
+      throwing,
+    ),
+  )
+  expect(tui).toEqual({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom" })
+  const gone = await snapshotOf(api)
+  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
+  expect((await logLines(project)).length).toBeGreaterThan(beforeLogs.length)
 })
 
 test("updating a protected agent's custom rule through another agent's row is refused (tools API)", async () => {
@@ -1531,7 +1549,7 @@ test("updating a protected agent's custom rule through another agent's row is re
   expect(kept.label).toBe("Custom")
 })
 
-test("rule.update RPC from another agent's row refuses with no write and no log", async () => {
+test("rule.update RPC from another agent's row refuses a tool actor and lets the TUI write", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -1560,18 +1578,44 @@ test("rule.update RPC from another agent's row refuses with no write and no log"
   }
   const exit = await Effect.runPromiseExit(
     handlers["rule.update"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
+      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
       throwing,
     ),
   )
   expect(Exit.isFailure(exit)).toBe(true)
-  expect(captured.current?.type).toBe("rule.invalid")
+  expect(captured.current?.type).toBe("agent.protected")
   expect(captured.current?.message).toContain("agent.protected")
   const after = await snapshotOf(api)
   const kept = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
   if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
   expect(kept.label).toBe("Custom")
   expect(await logLines(project)).toEqual(beforeLogs)
+  // Exact capture for the T3 evidence document: the tool-actor refusal this
+  // real handler produced and the storage it left untouched. The check
+  // harness truncates stdout but keeps stderr whole. No assertion reads it.
+  console.error(
+    "T3 rule.update refusal:",
+    JSON.stringify({ refused: captured.current, storedLabel: kept.label, logLinesUnchanged: (await logLines(project)).length === beforeLogs.length }),
+  )
+  // The TUI path (no actor) writes the same row through the same boundary.
+  const tui = await Effect.runPromise(
+    handlers["rule.update"](
+      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
+      throwing,
+    ),
+  )
+  expect(tui).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked" })
+  const written = await snapshotOf(api)
+  const edited = written.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
+  if (edited === undefined || edited.type !== "rule") throw new Error("expected edited rule")
+  expect(edited.label).toBe("Hacked")
+  expect(await logLines(project)).not.toEqual(beforeLogs)
+  // Exact capture for the T3 evidence document: the same handler writing the
+  // row for a TUI caller and appending the log line. No assertion reads it.
+  console.error(
+    "T3 rule.update tui write:",
+    JSON.stringify({ written: edited.label, logLinesAppended: (await logLines(project)).length > beforeLogs.length }),
+  )
 })
 
 test("updateRule creates a custom override for a curated row and updates it with a log line", async () => {

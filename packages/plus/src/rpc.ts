@@ -400,6 +400,10 @@ export const CreateAgentInput = Schema.Struct({
   template: Schema.optionalKey(Schema.String),
   fields: Schema.optionalKey(CreateAgentFields),
   prompt: Schema.String,
+  // Who performed the write. Callers omit the key when unknown (an explicit
+  // undefined fails JSON encoding); the handler treats a missing actor as
+  // { type: "tui" }, and a tool actor is refused for protected agents.
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.CreateAgentInput" })
 
 export interface AgentRef extends Schema.Schema.Type<typeof AgentRef> {}
@@ -413,6 +417,7 @@ export const RenameAgentInput = Schema.Struct({
   scope: FileScope,
   from: Schema.String,
   to: Schema.String,
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.RenameAgentInput" })
 
 export interface RenameAgentResult extends Schema.Schema.Type<typeof RenameAgentResult> {}
@@ -426,6 +431,7 @@ export interface DeleteAgentInput extends Schema.Schema.Type<typeof DeleteAgentI
 export const DeleteAgentInput = Schema.Struct({
   scope: FileScope,
   id: Schema.String,
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.DeleteAgentInput" })
 
 export interface CreateSkillInput extends Schema.Schema.Type<typeof CreateSkillInput> {}
@@ -526,6 +532,7 @@ export const CreateTeamInput = Schema.Struct({
   level: TeamLevel,
   team: Schema.String,
   template: Schema.optionalKey(Schema.String),
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.CreateTeamInput" })
 
 // Adding an agent to a team writes `<teamdir>/<id>.md` (project/global) or
@@ -542,6 +549,7 @@ export const TeamAddAgentInput = Schema.Struct({
   template: Schema.optionalKey(Schema.String),
   fields: Schema.optionalKey(CreateAgentFields),
   prompt: Schema.String,
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.TeamAddAgentInput" })
 
 export interface TeamRemoveAgentInput extends Schema.Schema.Type<typeof TeamRemoveAgentInput> {}
@@ -549,12 +557,14 @@ export const TeamRemoveAgentInput = Schema.Struct({
   level: TeamLevel,
   team: Schema.String,
   id: Schema.String,
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.TeamRemoveAgentInput" })
 
 export interface DeleteTeamInput extends Schema.Schema.Type<typeof DeleteTeamInput> {}
 export const DeleteTeamInput = Schema.Struct({
   level: TeamLevel,
   team: Schema.String,
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.DeleteTeamInput" })
 
 export interface DeleteTeamResult extends Schema.Schema.Type<typeof DeleteTeamResult> {}
@@ -668,6 +678,17 @@ export const AgentUnknown = Schema.Struct({
   agent: Schema.String,
 }).annotate({ identifier: "Plus.AgentUnknown" })
 
+// A write whose actor is a tool addressed a row owned by an agent listed in
+// `protectedAgents`. `id` names the addressed row or input when it differs
+// from the protected agent id. Only tool-originated writes refuse; TUI writes
+// are unaffected.
+export interface AgentProtected extends Schema.Schema.Type<typeof AgentProtected> {}
+export const AgentProtected = Schema.Struct({
+  agent: Schema.String,
+  id: Schema.optionalKey(Schema.String),
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.AgentProtected" })
+
 export interface SkillExists extends Schema.Schema.Type<typeof SkillExists> {}
 export const SkillExists = Schema.Struct({
   id: Schema.String,
@@ -770,6 +791,7 @@ export const ModelAddInput = Schema.Struct({
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.ModelAddInput" })
 
 export interface ModelRemoveInput extends Schema.Schema.Type<typeof ModelRemoveInput> {}
@@ -781,6 +803,7 @@ export const ModelRemoveInput = Schema.Struct({
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.ModelRemoveInput" })
 
 export interface ModelRef extends Schema.Schema.Type<typeof ModelRef> {}
@@ -852,6 +875,7 @@ export const RuleAddInput = Schema.Struct({
   patterns: Schema.Array(Schema.String),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
   message: Schema.optionalKey(Schema.String),
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.RuleAddInput" })
 
 export interface RuleRemoveInput extends Schema.Schema.Type<typeof RuleRemoveInput> {}
@@ -860,6 +884,7 @@ export const RuleRemoveInput = Schema.Struct({
   agent: Schema.NullOr(Schema.String),
   tool: Schema.String,
   id: Schema.String,
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.RuleRemoveInput" })
 
 export interface RuleUpdateInput extends Schema.Schema.Type<typeof RuleUpdateInput> {}
@@ -872,6 +897,7 @@ export const RuleUpdateInput = Schema.Struct({
   patterns: Schema.Array(Schema.String),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
   message: Schema.optionalKey(Schema.String),
+  actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.RuleUpdateInput" })
 
 export interface RuleRef extends Schema.Schema.Type<typeof RuleRef> {}
@@ -1015,6 +1041,9 @@ const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ ide
 const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
 const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
 const PortableAgentUnknown = Schema.toStandardSchemaV1(AgentUnknown.annotate({ identifier: "Plus.AgentUnknown" }))
+const PortableAgentProtected = Schema.toStandardSchemaV1(
+  AgentProtected.annotate({ identifier: "Plus.AgentProtected" }),
+)
 const PortableSkillExists = Schema.toStandardSchemaV1(SkillExists.annotate({ identifier: "Plus.SkillExists" }))
 const PortableSkillMissing = Schema.toStandardSchemaV1(SkillMissing.annotate({ identifier: "Plus.SkillMissing" }))
 const PortableSkillInvalid = Schema.toStandardSchemaV1(SkillInvalid.annotate({ identifier: "Plus.SkillInvalid" }))
@@ -1094,6 +1123,7 @@ export const Definition = Rpc.define({
       output: PortableMutateResult,
       errors: {
         "project.disabled": PortableProjectDisabled,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "instructions.log": {
@@ -1118,6 +1148,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "agent.exists": PortableAgentExists,
         "agent.invalid": PortableAgentInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "agent.rename": {
@@ -1128,6 +1159,7 @@ export const Definition = Rpc.define({
         "agent.missing": PortableAgentMissing,
         "agent.exists": PortableAgentExists,
         "agent.invalid": PortableAgentInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "agent.delete": {
@@ -1137,6 +1169,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "agent.missing": PortableAgentMissing,
         "agent.invalid": PortableAgentInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "skill.create": {
@@ -1228,6 +1261,7 @@ export const Definition = Rpc.define({
         "team.exists": PortableTeamExists,
         "team.invalid": PortableTeamInvalid,
         "team.create": PortableTeamCreate,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "team.setEnabled": {
@@ -1248,6 +1282,7 @@ export const Definition = Rpc.define({
         "team.invalid": PortableTeamInvalid,
         "agent.exists": PortableAgentExists,
         "agent.invalid": PortableAgentInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "team.removeAgent": {
@@ -1258,6 +1293,7 @@ export const Definition = Rpc.define({
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
         "agent.invalid": PortableAgentInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "team.delete": {
@@ -1267,6 +1303,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "team.list": {
@@ -1296,6 +1333,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "model.exists": PortableModelExists,
         "model.invalid": PortableModelInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "model.remove": {
@@ -1305,6 +1343,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "model.missing": PortableModelMissing,
         "model.invalid": PortableModelInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "catalog.models": {
@@ -1321,6 +1360,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "rule.exists": PortableRuleExists,
         "rule.invalid": PortableRuleInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "rule.remove": {
@@ -1330,6 +1370,7 @@ export const Definition = Rpc.define({
         "project.disabled": PortableProjectDisabled,
         "rule.missing": PortableRuleMissing,
         "rule.invalid": PortableRuleInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
     "rule.update": {
@@ -1338,6 +1379,7 @@ export const Definition = Rpc.define({
       errors: {
         "project.disabled": PortableProjectDisabled,
         "rule.invalid": PortableRuleInvalid,
+        "agent.protected": PortableAgentProtected,
       },
     },
   },
