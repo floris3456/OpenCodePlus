@@ -1,6 +1,6 @@
 # Teams tools round 2 — walkthrough
 
-This document records live verification of the round-2 end state on the integrated branch at HEAD `d670443512e54676d9fcd087bfdf5691fb5d60cd`. Everything marked LIVE was driven through the real OpenCodePlus TUI with pilotty in a throwaway lab home under `run/tmp-build/tui-lab-r2` (never the human's server on port 40374, never `~/.config/opencode`). `EXA_API_KEY` / `TAVILY_API_KEY` reached the lab only through the process environment.
+This document records live verification of the round-2 end state on the integrated branch at HEAD `0823d8833682db15da59b212808efddcace3744e`. Everything marked LIVE was driven through the real OpenCodePlus TUI with pilotty in a throwaway lab home under `run/tmp-build/tui-lab-r2` (never the human's server on port 40374, never `~/.config/opencode`). `EXA_API_KEY` / `TAVILY_API_KEY` reached the lab only through the process environment. Later sections record work done after that first draft; every hash in this document is the hash that was current when the capture was taken.
 
 ## Table of Contents
 
@@ -53,6 +53,25 @@ Allow once → the call proceeds into the handler (this attempt was then rejecte
 The prompt appears again on every subsequent call while the rule says `ask` — it is not a once-per-session question.
 
 Note for readers: the gate covers plugin-origin tools. MCP tools were deliberately left to the assert they already perform at their own leaf (`packages/core/src/tool/mcp.ts:59-71`, same action, `resources: ["*"]`, `save: ["*"]`); gating them twice would prompt twice for one call. Built-in tools are untouched and still assert exactly once at their leaf.
+
+### Item 1, precisely
+
+Item 1 of the plan says a deny "refuses it with `Permission denied: <action>`".
+That is exactly what happens when a **rule** denies. It is not what happens
+when a **human presses Reject without feedback**: core deliberately turns a
+plain decline into a defect that interrupts the assistant turn, so the model
+receives nothing at all rather than a refusal string
+(`packages/core/src/permission.ts`, the "deliberate defect tunnel" comment
+around :237-248). That behaviour is pre-existing, intentional, and was not
+changed this round — changing it would have meant rewriting core's decline
+contract and the tests that pin it.
+
+So item 1 is met in full for rule denials and for allow, allow-and-save and
+ask-blocks-execution; for a human Reject without feedback the round preserves
+core's interruption instead of inventing a refusal string. This is recorded as
+a deviation from the plan's literal wording, not as a claim of compliance.
+A human Reject **is** now recorded in the team audit chain — see "Item 12 —
+the refusal captures" below.
 
 ---
 
@@ -190,10 +209,118 @@ Audit `outcome` values and how each is reached:
 | --- | --- | --- |
 | `allowed` | `runGated` | rules resolved to allow; no request was created |
 | `asked:allow` | `runGated` | rules said ask and the human allowed |
-| `denied` | the `tool.execute.after` observer | a rule denied at call time; the handler never ran |
-| `asked:deny` | the `tool.execute.after` observer | the human declined **with feedback** |
+| `asked:deny` | the `permission.replied` observer | the human rejected — **with or without feedback** |
+| `denied` | the `tool.execute.after` observer | a rule denied at call time; core created no request, so no reply was published |
 
-A decline with no feedback is, by core's pre-existing design, a defect that interrupts the assistant turn rather than a tool error, so no `tool.execute.after` fires for it and the model receives nothing. We observed exactly that in the TUI: choosing Reject ended the turn with `interrupted`. It is recorded here rather than papered over. That outcome is observable through `Permission.Event.Replied` with `reply: "reject"`.
+The two observers are disjoint by construction: `execute.after` returns early
+when the failure's cause is a `Permission.CorrectedError`, which is the one
+refusal both of them can see, so exactly one line is written per refused call.
+`packages/plus/SPEC.md` and `packages/plus/README.md` carry the same table.
+
+---
+
+## Item 12 — the refusal captures (LIVE)
+
+The first draft of this document described the refusal paths in prose and by
+test name. A reviewer correctly called that an absent deliverable. Here are the
+captures.
+
+**A human Reject, in the TUI.** A `fable-planner` asked to delegate; the gate
+raised the prompt; the human chose Reject with no feedback:
+
+```
+     ✗ team_delegate [requestID=lab-rejection-test-001, role=opus-orchestrator,
+       objective=Lab test: respond to the prompt "say hi" so the parent can observe
+       how an orchestrator handles an out-of-scope, plan-less request., prompt=say hi,
+       reason=lab test of rejection]
+     Fable-Planner · claude-fable-5-1 · 55.5s · 102.9 tok/s · interrupted
+```
+
+The turn ends `interrupted` and the model is given nothing — core's decline
+contract, unchanged. What is new is the line below.
+
+**The same rejection in the audit chain**, read live from the lab's
+`teams/audit.log` immediately afterwards:
+
+```
+{'seq': 1, 'kind': 'run.created', 'run': 'main-a469efcdb0734d1e'}
+{'seq': 2, 'kind': 'tool.call', 'actor': 'fable-planner', 'tool': 'team_get_context', 'ok': True,  'code': None,          'outcome': 'allowed',    'durationMs': 13}
+{'seq': 3, 'kind': 'tool.call', 'actor': 'fable-planner', 'tool': 'team_delegate',    'ok': False, 'code': 'E_PERMISSION', 'outcome': 'asked:deny', 'durationMs': 44989}
+```
+
+Seq 3 is the refusal the first review found missing: a plain Reject, no
+feedback, now recorded with `E_PERMISSION` and `asked:deny`, and the 45-second
+duration is the human deciding. This is the live proof of the fix, not a test.
+
+**A rule denial and its model-facing text.** This one needs no screen and is
+proven in-process against the real handlers, in
+`packages/plus/test/teams/tools.test.ts` › "partial deny: ceiling-denied team
+tool refuses at call time with E_PERMISSION and writes outcome: denied". The
+tool stays in the catalogue, the handler is never reached, the model reads the
+denying rule's own words —
+
+```
+team_delegate is outside the implementer ceiling
+```
+
+— and the audit line written is:
+
+```
+{'kind': 'tool.call', 'tool': 'team_delegate', 'ok': False, 'code': 'E_PERMISSION', 'outcome': 'denied'}
+```
+
+Labelled honestly: the two captures above are live; this third one is an
+in-process real-handler test, which the plan permits for proofs that need no
+screen.
+
+---
+
+## Item 7 — both catalogues, from instructions_list (LIVE)
+
+The earlier catalogue evidence in this document came from
+`instructions.snapshot`. Item 7 asks for the rows under **both** catalogues, so
+here is real `instructions_list` output, driven by a team member in the lab:
+
+```
+Agents catalogue:
+┌────────────────────────────────────────────┬───────────┬──────────────────────┐
+│ Raw id                                     │ Catalogue │ Agent                │
+├────────────────────────────────────────────┼───────────┼──────────────────────┤
+│ item:defaults::tool:search_tavily_search   │ Agents    │ shared Defaults ('') │
+└────────────────────────────────────────────┴───────────┴──────────────────────┘
+
+Teams catalogue:
+┌────────────────────────────────────────┬───────────┬──────────────────────────┐
+│ Raw id                                 │ Catalogue │ Agent                    │
+├────────────────────────────────────────┼───────────┼──────────────────────────┤
+│ item:defaults:/teams:tool:             │ Teams     │ shared Defaults (/teams) │
+│ search_exa_code_search                 │           │                          │
+├────────────────────────────────────────┼───────────┼──────────────────────────┤
+│ item:defaults:/teams:tool:             │ Teams     │ shared Defaults (/teams) │
+│ search_tavily_extract                  │           │                          │
+├────────────────────────────────────────┼───────────┼──────────────────────────┤
+│ item:defaults:/teams:tool:             │ Teams     │ shared Defaults (/teams) │
+│ search_tavily_search                   │           │                          │
+└────────────────────────────────────────┴───────────┴──────────────────────────┘
+```
+
+and the same agent's summary of the full fan-out:
+
+```
+kind:item item:tool namespace:search returns 186 item rows in total (372
+including :whole sections): 96 in the Agents catalogue, 90 in the Teams
+catalogue. The three tools are replicated for every agent at every level — e.g.
+item:project:build:tool:search_tavily_search, item:global:plan:tool:…,
+item:defaults:fable-planner:tool:… (Agents), and team-member rows like
+item:defaults:opencodeplus-team/:fable-planner:tool:search_tavily_search,
+item:defaults:review/:reviewer:tool:…, item:defaults:starter/:special:general:tool:… (Teams).
+```
+
+One oddity the same run surfaced, recorded for a later round: the filter
+`item:mcp server:search` returns 0 rows while `item:mcp search` finds the 4
+rows, so `server:` does not match the MCP row itself — it appears to apply only
+to tool rows under a server. Pre-existing filter behaviour, untouched by this
+round.
 
 ---
 
@@ -216,104 +343,69 @@ The first delegate attempt in the lab failed with `E_INTERNAL: NotFound: FileSys
 
 ---
 
-## Final verification (T5)
+# Final verification (T5)
 
-The plan's item 13 asks for `astra-reviewer` to verify items 1-12, "or you
-performed that review under the rule in 'Review' and said so". Both happened,
-and this section says exactly which is which.
+An `astra-reviewer` verified this branch independently. It reviewed twice.
 
-### What the independent reviewer established
+**First review** (at `aa2defb6`) settled `blocked` on procedure: the
+orchestrator did not supply the plan's "Expected end state", and a stale
+tooling bundle had left `team_review` unable to accept an attachment. It still
+reviewed the substance and raised two findings, both since fixed: an ordinary
+human Reject never reached the audit chain, and this document overstated what a
+resource-narrow deny does.
 
-An `astra-reviewer` run reviewed the branch at `aa2defb6`. It settled
-`blocked` on one point of procedure — the orchestrator did not supply the
-plan's "Expected end state", and the review tool accepts no attachment — so it
-declined to assign the fourteen numbered verdicts. It did complete a
-substantive review and reported, in its own words:
+**Second review** (at `6d6d6f98`, with the plan attached) assigned all fourteen
+verdicts. Eleven passed. Three did not, and its three findings were:
 
-- all seven owner check receipts green at a clean HEAD, with no source changes
-  during the checks;
-- the core seam is minimal: "the gate adds one import and composes
-  authorization immediately before execution. This is appropriately small for
-  upstream merging";
-- the MCP judgement is sound: "existing MCP tools authorize at their leaf
-  before calling the server (`packages/core/src/tool/mcp.ts:59-73`). Leaving
-  them out of the new plugin gate preserves enforcement without duplicate
-  prompts";
-- an absent ambient permission service refuses plugin execution;
-- the generated client diff is "optional `message` fields consistent with
-  schema generation";
-- "no permission-decision hook or `agent.permissions` write appears under
-  `packages/plus/src/teams`";
-- the audit observer "observes without changing permission decisions. Its
-  state is created per registration and cleared on disposal";
-- on the refusal texts: "quoting the rule's resource is a reasonable
-  preservation of the refusal template's meaning. It is not byte-identical to
-  the previous per-call rendered text."
+1. **error** — item 4 was not met for MCP tools:
+   `packages/core/src/tool/mcp.ts` replaced every non-`ToolFailure` with
+   `Unable to execute <tool>`, so a message-bearing rule denial reached the
+   model as a generic error. **Fixed**: that mapper now passes through a
+   `BlockedError`'s `reason` when the rule carried one, and a
+   `CorrectedError`'s feedback, and otherwise keeps the generic text byte for
+   byte. Five new tests in `packages/core/test/mcp.test.ts` drive the **real**
+   MCP leaf. The model-facing strings are now: a deny rule with a message →
+   that message; a deny rule without one → `Unable to execute <tool>`; a
+   non-permission failure → `Unable to execute <tool>`; a decline with
+   feedback → the feedback; a plain decline → nothing, it stays a defect.
+2. **error** — item 12's captures were missing from this document.
+   **Fixed**: see "Item 12 — the refusal captures" and "Item 7 — both
+   catalogues" above.
+3. **warning** — the audit-writer table here contradicted the implementation.
+   **Fixed**: see the corrected table above.
 
-It raised two findings, both fixed before this section was written:
+The reviewer also judged, independently, that leaving MCP authorization at its
+own leaf is correct and avoids duplicate prompts; that item 2 holds on the
+action-narrow reading and that this document now describes resource-narrow
+denies accurately; that the core seam is minimal and appropriate for a fork
+that must keep merging upstream; that no permission-decision hook or
+`agent.permissions` write exists under `packages/plus/src/teams`; and that the
+audit observers observe without deciding, with registration-local state.
 
-1. **error** — an ordinary human Reject without feedback never wrote the
-   promised `asked:deny` audit line, because the only refusal writer was the
-   `tool.execute.after` observer and core turns a plain decline into a defect
-   that never reaches it. Fixed: a `permission.replied` observer now owns both
-   human rejections, `execute.after` owns only the rule-denial case, and a new
-   test drives a real reject-with-no-message through the real gate and asserts
-   exactly one `asked:deny` line with a verifying chain.
-2. **warning** — this walkthrough claimed a resource-narrow deny refuses every
-   plugin call. It does not: the gate asserts the literal resource `"*"`, and a
-   rule whose resource is `restricted/*` never matches it. Decision 3 above was
-   rewritten to state that precisely.
+It also noted two things worth carrying forward: preserving core's
+no-feedback-Reject interruption is right, but item 1's literal wording does not
+describe it (recorded under "Item 1, precisely" above); and the whole core diff
+is not literally two files, because T2 necessarily changed
+`packages/core/src/permission.ts` and `packages/core/src/tool/AGENTS.md` was
+updated to stop contradicting the new gate.
 
-After those fixes the review channel would not accept a re-review — three
-attempts returned `Re-review needs completed findings, their previous review
-ID, and a changed commit`, because the previous review settled `blocked`
-rather than completing. Under the plan's rule ("If no review has settled … or
-the reviewer cannot start, perform the T5 brief yourself, write it as the last
-section of the walkthrough, and say so"), the orchestrator assigned the
-fourteen verdicts. They are below, and they are the orchestrator's own, not an
-independent reviewer's.
-
-### Verdicts at HEAD `6ccf84a3`
-
-| # | Verdict | Evidence |
-| --- | --- | --- |
-| 1 | pass | Live: the TUI raises "△ Permission required / Call tool team.delegate" and waits; allow runs the call; the prompt returns on the next call. `core-gate` › "asks for a plugin tool, runs it on allow, and saves the action on always" covers allow-and-save against the real Permission service. |
-| 2 | pass, on the action-narrow reading | `core-gate` › "refuses a denied plugin tool at call time while it is still in the catalog" denies action `x.*` against the real service and asserts the tool is still advertised. A resource-narrow deny does not match the asserted `"*"` and so does not refuse — stated in Decision 3, not claimed as met. |
-| 3 | pass | `core-gate` 160 pass at this HEAD, including `tool-execute.test.ts` and `tool-registry.test.ts` unchanged; "leaves a built-in tool to its own single assert" and "leaves a MCP tool to its own single assert" pin exactly one assert with unchanged resources. |
-| 4 | pass | `Permission.Rule.message` is optional in schema; `core-gate` › "refuses with the denying rule's own message when it carries one" and "carries an asking rule's message as request metadata"; `plus-rules` › "the rules a denial comes from carry the message the model reads". The round-1 texts return word for word except the quoted subject (Decision 4). |
-| 5 | pass | `packages/client/src/promise/generated/types.ts:440` carries `message?: string`; produced by `bun run generate`; `bun run check:generated` exits 0. |
-| 6 | pass | `packages/plus/src/search/{mcp,bin,register}.ts`; input schemas match the build seat's server; keys read from the environment at call time; the registered row's `text` contains only the bun binary and the script path. |
-| 7 | pass | Live: MCP panel "search Connected"; `mcp:search` and the three `tool:search_*` rows in the snapshot, grouped `mcp` under namespace `search`; `/api/agent` shows Tavily denied for implementers, reviewer and scout and Exa allowed for all; "search MCP already configured; not replacing" on the leave-alone path. |
-| 8 | pass | Live: `{"error":"TAVILY_API_KEY is not set in the host environment"}` and the Exa equivalent, both `isError: true`, from the shipped server spawned with the variables unset. |
-| 9 | pass | Live audit chain: `team_status` `allowed`; `run.created w-7a2e1b5f49f28c0a`; `team_delegate ok:true outcome asked:allow durationMs 121720`. `asked:deny` and `denied` are covered by `team-gate` against the real gate. |
-| 10 | pass | `/api/agent` resolves `team.delegate` to `ask` only for the two planner roles; `plus-rules` › "effective permission at /api/agent for a child session is never ask"; live, the child `opus-orchestrator` called `team_get_context` and `team_finish` with `outcome: allowed` and no request created. |
-| 11 | pass | `team-gate` › "partial deny: ceiling-denied team tool refuses at call time with E_PERMISSION and writes outcome: denied" — the tool is visible, the handler never runs, the model reads the rule's own ceiling message, and the audit line is written. |
-| 12 | pass | This document. |
-| 13 | orchestrator-performed | This section, under the plan's stated rule; the independent reviewer's substantive conclusions are quoted above. |
-| 14 | pass | No deferred items. |
-
-### Checks at this HEAD
-
-| check | result |
-| --- | --- |
-| `core-gate` | 160 pass, 0 fail |
-| `core-typecheck` | exit 0 |
-| `plus-rules` | 90 pass, 0 fail |
-| `plus-search` | 7 pass, 0 fail |
-| `team-gate` | 59 pass, 0 fail |
-| `plus-instructions` | 178 pass, 0 fail |
-| `plus-typecheck` | exit 0 |
-
-### Weaknesses a later round should close
+## Weaknesses recorded for a later round
 
 - The plus-side rejection test drives that file's `Permission.Interface`
   double rather than a core-built `Permission.Service` layer, because
   `packages/plus` deliberately does not depend on `@opencode/core`. Core's own
-  `tool-permission-gate.test.ts` pins the real service's decline semantics.
+  `tool-permission-gate.test.ts` and `mcp.test.ts` pin the real service.
 - Under Code Mode several inner team calls can share one tool CallID, so the
-  per-call audit state can collide. Pre-existing; unchanged this round.
+  per-call audit state can collide. Pre-existing.
 - If the `execute.before` hook fails to register, a human rejection is not
   audited at all. Both hooks register together and a failure is logged at warn.
+- `instructions_list`'s `server:` filter does not match an `mcp:` row.
+- `packages/core/test/mcp.test.ts` › "terminates MCP descendants after the
+  wrapper exits successfully" spawns `node`, which does not exist on this
+  build host, so it failed at spawn before any assertion. Its existing
+  `win32` skip guard was extended with `!Bun.which("node")`, matching four
+  precedents in the same package (`sh`, `bash`, `hg`). The assertion is
+  untouched and the test still runs wherever `node` exists.
 - A first delegate in a brand-new lab home failed with
   `E_INTERNAL: NotFound: FileSystem.realPath` on the run's worktree directory;
   a later delegate in the same lab succeeded. Worktree provisioning is
