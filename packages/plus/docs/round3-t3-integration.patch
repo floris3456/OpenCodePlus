@@ -1,10 +1,14 @@
-# Applied: round-3 T3 integration patch
+# Retained deliberately: round-3 T3 integration patch marker
 
-This path held the temporary `round3-t3-integration.patch`. It has been fully
-replayed onto the integrated sources at this commit (see
-`docs/round3-t3-evidence.md` for the guard map and citations). The content is
-still retrievable from the base commit in git history.
+This path is a terminal evidence tombstone for the applied T3 replay. It is
+not a pending patch and it is not awaiting removal.
 
-The implementer toolset exposes no filesystem delete primitive, so this path
-remains tracked as a placeholder; `git rm packages/plus/docs/round3-t3-integration.patch`
-finishes the removal.
+- The patch content was replayed in full onto the integrated sources; no patch
+  remains to apply.
+- The applied implementation lives in `packages/plus/src/index.ts` (guards and
+  error declared in `packages/plus/src/rpc.ts`).
+- The evidence record, guard map and check receipts live in
+  `packages/plus/docs/round3-t3-evidence.md`.
+- The original patch content remains retrievable from git history.
+
+No further action is required.
