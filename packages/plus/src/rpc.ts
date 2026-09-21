@@ -864,6 +864,11 @@ export const ModelInvalid = Schema.Struct({
 // matches one character. For shell the resource is the parsed command text,
 // so `git *` also matches a bare `git`. `message` is the optional refusal
 // text the model reads in place of the generic denial; blank clears it.
+// `catalogue` on `rule.add` picks where a new shared (`agent: null`) rule
+// lands; on `rule.update` it names the addressed row's catalogue, which a
+// first write (a curated/mined override) materialises into. A matched
+// existing rule keeps the catalogue and team it was stored with, so editing
+// a message never moves a Teams rule into the Agents catalogue.
 export interface RuleAddInput extends Schema.Schema.Type<typeof RuleAddInput> {}
 export const RuleAddInput = Schema.Struct({
   level: Level,
@@ -891,6 +896,7 @@ export interface RuleUpdateInput extends Schema.Schema.Type<typeof RuleUpdateInp
 export const RuleUpdateInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  catalogue: Schema.optionalKey(Catalogue),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,

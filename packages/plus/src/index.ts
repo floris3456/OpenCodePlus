@@ -1673,6 +1673,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         type: "rule",
         level: existing === undefined ? input.level : existing.level,
         agent: existing === undefined ? input.agent : existing.agent,
+        // A matched record keeps its stored catalogue and team: editing a
+        // Teams rule's message must not move it into the Agents catalogue
+        // (and the team scope must survive too). With no match the row is a
+        // first write at the caller's address, so the address catalogue
+        // decides the new row (agent-qualified rows stay keyless).
+        ...(existing === undefined
+          ? catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) })
+          : {
+              ...(existing.catalogue === undefined ? {} : { catalogue: existing.catalogue }),
+              ...(existing.team === undefined ? {} : { team: existing.team }),
+            }),
         tool: validated.tool,
         id: validated.id,
         label: validated.label,

@@ -1117,6 +1117,81 @@ test("rule.add and rule.update accept an optional refusal message at the RPC bou
   )
 })
 
+test("rule.update keeps a matched Teams rule's catalogue on a message edit and materialises the addressed catalogue for a new override", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const added = await Effect.runPromise(
+    handlers["rule.add"](
+      {
+        level: "defaults",
+        agent: null,
+        catalogue: "teams",
+        tool: "shell",
+        id: "round3-team-edit",
+        label: "Round3 team edit",
+        patterns: ["printf round3-team-edit"],
+        message: "Round3 team edit refuses.",
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(added).toMatchObject({ level: "defaults", agent: null, tool: "shell", id: "round3-team-edit" })
+
+  // The lab edit: same tool/id, message revised, address silent about the
+  // catalogue. The stored Teams identity must survive.
+  const revised = await Effect.runPromise(
+    handlers["rule.update"](
+      {
+        level: "defaults",
+        agent: null,
+        tool: "shell",
+        id: "round3-team-edit",
+        label: "Round3 team edit",
+        patterns: ["printf round3-team-edit"],
+        message: "Round3 team edit revised.",
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(revised).toMatchObject({ level: "defaults", agent: null, tool: "shell", id: "round3-team-edit" })
+
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const stored = snapshot.records.find((record) => record.type === "rule" && record.id === "round3-team-edit")
+  expect(stored).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "Round3 team edit revised." })
+
+  // A first write through update (an override of a curated/mined row with no
+  // stored record) lands in the catalogue the caller addressed...
+  await Effect.runPromise(
+    handlers["rule.update"](
+      {
+        level: "defaults",
+        agent: null,
+        catalogue: "teams",
+        tool: "shell",
+        id: "git-push",
+        label: "No push",
+        patterns: ["git push *"],
+        message: "no pushes in this team",
+      },
+      throwingContext({}),
+    ),
+  )
+  // ...while an Agents-catalogue first write stays keyless: absence is absence.
+  await Effect.runPromise(
+    handlers["rule.update"](
+      { level: "defaults", agent: null, tool: "shell", id: "git-pull", label: "No pull", patterns: ["git pull *"] },
+      throwingContext({}),
+    ),
+  )
+  const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const teamsOverride = after.records.find((record) => record.type === "rule" && record.id === "git-push")
+  expect(teamsOverride).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "no pushes in this team" })
+  const agentsOverride = after.records.find((record) => record.type === "rule" && record.id === "git-pull")
+  expect(agentsOverride?.catalogue).toBeUndefined()
+  expect(Object.keys(agentsOverride ?? {}).includes("catalogue")).toBe(false)
+})
+
 test("skill delete drops item-addressed customizations so re-created skill resolves new body", async () => {
   const { project } = await tempRoot()
   await enable(project)

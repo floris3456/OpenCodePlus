@@ -2032,6 +2032,149 @@ test("perm rows hang directly off the tool and enter opens the rule editor", asy
   }
 })
 
+test("a on a Defaults Teams tool row creates the rule in the Teams catalogue", async () => {
+  const snapshot = createSnapshot({
+    items: [
+      {
+        id: "tool:shell",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "shell",
+        text: "run shell commands",
+        enabled: true,
+        fingerprint: "fp-shell",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+    dialogs: { selects: ["rule"], prompts: ["No force pushes", "git push --force *", "", "force pushes are not allowed here"] },
+  })
+  try {
+    await gotoDefaultsInventory(fixture, "Tools", "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "shell")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
+    expect(fixture.fake.ruleAdds[0]).toMatchObject({
+      level: "defaults",
+      agent: null,
+      catalogue: "teams",
+      tool: "shell",
+      label: "No force pushes",
+      message: "force pushes are not allowed here",
+    })
+    // The shared Defaults row addressed the scope: the only select is the
+    // Section/Permission-rule choice.
+    expect(fixture.fake.dialogSelects.length).toBe(1)
+    expect(fixture.fake.dialogPrompts.map((entry) => entry[0])).toEqual([
+      "Rule label",
+      "Rule patterns",
+      "Rule keywords",
+      "Message shown on refusal (optional)",
+    ])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("enter on a Defaults Teams perm row sends the Teams catalogue with rule.update", async () => {
+  const snapshot = createSnapshot({
+    items: [
+      {
+        id: "tool:shell",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "shell",
+        text: "run shell commands",
+        enabled: true,
+        fingerprint: "fp-shell",
+      },
+      {
+        id: "perm:shell:git-push",
+        kind: "perm" as const,
+        group: "none" as const,
+        title: "Git push",
+        text: "Git push\ngit push *",
+        enabled: true,
+        fingerprint: "fp-push",
+        permTool: "shell",
+        ruleId: "git-push",
+        patterns: ["git push *"],
+        keywords: ["git push"],
+        provenance: [],
+      },
+    ],
+  })
+  const liveSnapshots: Snapshot[] = [snapshot]
+  const ruleUpdates: {
+    level: string
+    agent: string | null
+    catalogue?: string
+    tool: string
+    id: string
+    label: string
+    patterns: string[]
+    message?: string
+  }[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["No force pushes", "git push --force *", "", "force pushes are not allowed here"] },
+    render: (context) => {
+      const rpc = context.client.rpc(Definition)
+      const wired = {
+        ...rpc,
+        "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
+        "instructions.refresh": async () => liveSnapshots[liveSnapshots.length - 1],
+        "rule.update": async (input: { level: "project" | "global" | "defaults"; agent: string | null; catalogue?: "agents" | "teams"; tool: string; id: string; label: string; patterns: string[]; keywords?: string[]; message?: string }) => {
+          ruleUpdates.push({
+            level: input.level,
+            agent: input.agent,
+            ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
+            tool: input.tool,
+            id: input.id,
+            label: input.label,
+            patterns: [...input.patterns],
+            ...(input.message === undefined ? {} : { message: input.message }),
+          })
+          return { level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label }
+        },
+      }
+      context.client.rpc = (() => wired) as unknown as typeof context.client.rpc
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
+  try {
+    await gotoDefaultsInventory(fixture, "Tools", "Teams")
+    await expand(fixture)
+    await moveTo(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "shell")
+    await expand(fixture)
+    await moveTo(fixture, "Git push")
+    expect(dispatch(fixture, "return")).toBe(true)
+    await fixture.waitForFrame(() => ruleUpdates.length === 1)
+    expect(ruleUpdates[0]).toMatchObject({
+      level: "defaults",
+      agent: null,
+      catalogue: "teams",
+      tool: "shell",
+      id: "git-push",
+      label: "No force pushes",
+      message: "force pushes are not allowed here",
+    })
+    expect(ruleUpdates[0]?.patterns).toEqual(["git push --force *"])
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("detail pane e starts text editing on a tool row but not on a permission rule", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],

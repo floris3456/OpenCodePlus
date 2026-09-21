@@ -597,13 +597,19 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  // Level/agent come from the tool item row or the perm row itself (their own
-  // address); otherwise undefined so the caller prompts. Tool rows address
-  // tool:<id>, perm rows address perm:<tool>:<rule>.
-  function scopeFromToolOrPermRow(node: TreeNode | undefined): { level: "project" | "global" | "defaults"; agent: string | null } | undefined {
+  // Level/agent/catalogue come from the tool item row or the perm row itself
+  // (their own address); otherwise undefined so the caller prompts. Tool rows
+  // address tool:<id>, perm rows address perm:<tool>:<rule>. A shared row
+  // inherits its address catalogue so adding from a Teams row writes a Teams
+  // rule; an agent-qualified row never gains one (catalogueField semantics),
+  // so only the `agent === null` form forwards it.
+  function scopeFromToolOrPermRow(
+    node: TreeNode | undefined,
+  ): { level: "project" | "global" | "defaults"; agent: string | null; catalogue?: "agents" | "teams" } | undefined {
     if (node === undefined || node.kind !== "item" || node.address === undefined) return undefined
     if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:")) return undefined
-    return { level: node.address.level, agent: node.address.agent }
+    const catalogue = node.address.agent === null ? node.address.catalogue : undefined
+    return { level: node.address.level, agent: node.address.agent, ...(catalogue === undefined ? {} : { catalogue }) }
   }
 
   function toolFromToolOrPermRow(node: TreeNode | undefined): string | undefined {
@@ -626,6 +632,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     const scoped = scopeFromToolOrPermRow(node)
     let level: "project" | "global" | "defaults" | undefined = scoped?.level
     let agent: string | null | undefined = scoped?.agent
+    const catalogue = scoped?.catalogue
     let tool = toolFromToolOrPermRow(node)
     if (tool === undefined) {
       const rawTool = await context.ui.dialog.prompt({ title: "Rule tool", placeholder: "shell" })
@@ -721,7 +728,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (level === undefined || agent === undefined) return
     try {
       const ref = await plus["rule.add"](
-        { level, agent, tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
+        { level, agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
         { location: context.location },
       )
       if (disposed) return
@@ -749,6 +756,11 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
       return
     }
+    // The row's own catalogue rides along for the upsert path: editing a
+    // curated or mined Teams row materialises its override in the Teams
+    // catalogue. A matched record keeps its stored identity server-side, and
+    // an agent-qualified row never gains a catalogue.
+    const catalogue = address.agent === null ? address.catalogue : undefined
     const snapshot = state.snapshot()
     const current = snapshot?.items.find((entry) => entry.id === address.item)
     const tool = current?.permTool ?? parsed.tool
@@ -809,7 +821,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     const message = rawMessage.trim()
     try {
       const ref = await plus["rule.update"](
-        { level: address.level, agent: address.agent, tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
+        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
         { location: context.location },
       )
       if (disposed) return
