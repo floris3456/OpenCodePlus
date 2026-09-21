@@ -9,9 +9,9 @@ present-tense descriptions of the source, not a history.
 
 | Surface | Registered at | Contents |
 | --- | --- | --- |
-| `instructions` namespace | `packages/plus/src/index.ts:3245` | 8 tools (`packages/plus/src/tools.ts:231`–`packages/plus/src/tools.ts:403`) |
-| `search` MCP server | `packages/plus/src/index.ts:3246` | 3 tools (`packages/plus/src/search/mcp.ts:36`–`packages/plus/src/search/mcp.ts:112`) |
-| `team` namespace | `packages/plus/src/index.ts:3271` | 14 tools (`packages/plus/src/teams/tools.ts:343`–`packages/plus/src/teams/tools.ts:468`) |
+| `instructions` namespace | `packages/plus/src/index.ts:3324` | 8 tools (`packages/plus/src/tools.ts:231`–`packages/plus/src/tools.ts:403`) |
+| `search` MCP server | `packages/plus/src/index.ts:3325` | 3 tools (`packages/plus/src/search/mcp.ts:36`–`packages/plus/src/search/mcp.ts:112`) |
+| `team` namespace | `packages/plus/src/index.ts:3350` | 14 tools (`packages/plus/src/teams/tools.ts:343`–`packages/plus/src/teams/tools.ts:468`) |
 
 - `instructions` declares `editor.namespace({ name: "instructions", … })`
   (`packages/plus/src/tools.ts:230`) with shared options
@@ -115,7 +115,7 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 | --- | --- | --- |
 | `project.disabled:` | Plus is not active for the directory | `packages/plus/src/tools.ts:400`, `packages/plus/src/tools.ts:410` |
 | `row.unknown:` | No tree row matches the id | `packages/plus/src/tools.ts:425` |
-| `agent.protected:` | The row belongs to a protected agent | `packages/plus/src/tools.ts:429` |
+| `agent.protected:` | The addressed row belongs to a protected agent, or a delete cascade would drop such a row | `packages/plus/src/tools.ts:429`, `packages/plus/src/index.ts:2420` |
 | `delete.unconfirmed:` | `delete` was called without `confirm:true` | `packages/plus/src/tools.ts:369` |
 | `view.unsupported:` | The view is not available for that row kind | `packages/plus/src/tools.ts:923`, `packages/plus/src/tools.ts:947` |
 | `create.failed:` | The created row is not visible in the tree | `packages/plus/src/tools.ts:1342` |
@@ -187,7 +187,7 @@ exist only at `defaults` (`packages/plus/src/instructions/tree.ts:486`–
 `team:<level>:<team>`, `model:<level>:<agent|''>:<provider>/<model>[@<variant>]`,
 `rule:<level>:<agent|''>:<tool>:<id>`, or
 `item|section:<level>:<agent|''>:<itemId>[:<sectionId>]`
-(`packages/plus/src/index.ts:2592`–`packages/plus/src/index.ts:2604`).
+(`packages/plus/src/index.ts:2674`–`packages/plus/src/index.ts:2683`).
 
 ## 4. `instructions.create` kinds and returned ids
 
@@ -254,9 +254,9 @@ whose text begins `instruction.disabled:` and names the Context catalogue
 rework (`packages/plus/src/tools.ts:59`, `packages/plus/src/tools.ts:1166`). The
 handlers `instruction.create` and `instruction.delete` return code
 `instruction.invalid` carrying the same text while `INSTRUCTIONS_DISABLED` is
-`true` (`packages/plus/src/index.ts:2143`, `packages/plus/src/index.ts:795`–
-`packages/plus/src/index.ts:800`, `packages/plus/src/index.ts:831`–
-`packages/plus/src/index.ts:835`). The remaining eight kinds create, and each
+`true` (`packages/plus/src/index.ts:2197`, `packages/plus/src/index.ts:814`–
+`packages/plus/src/index.ts:815`, `packages/plus/src/index.ts:849`–
+`packages/plus/src/index.ts:850`). The remaining eight kinds create, and each
 returned `id` round-trips through `show`, `set` and `delete` with no
 `row.unknown` (`packages/plus/src/tools.ts:94`,
 `packages/plus/src/tools.ts:1113`–`packages/plus/src/tools.ts:1314`).
@@ -570,9 +570,27 @@ and on agent/member/model/rule creates
 (`packages/plus/src/tools.ts:284`, `packages/plus/src/tools.ts:375`). The API
 boundary applies the same rule to every write that arrives with a tool actor,
 including `instructions.mutate` with a caller-supplied actor
-(`packages/plus/src/index.ts:2339`–`packages/plus/src/index.ts:2356`); a
+(`packages/plus/src/index.ts:2400`–`packages/plus/src/index.ts:2410`); a
 missing actor normalizes to `{ type: "tui" }` and is never refused
-(`packages/plus/src/index.ts:2583`).
+(`packages/plus/src/index.ts:2661`).
+
+A delete whose actor is a tool is also refused when the handler's item-record
+cascade would drop a `customization` or `split` belonging to a protected agent,
+even though the addressed row itself is unprotected or shared. The guard is
+`refuseProtectedItemCascade` (`packages/plus/src/index.ts:2420`); it returns
+the same `agent.protected` refusal and runs before anything is written. It
+covers four handlers — `rule.remove`
+(`packages/plus/src/index.ts:1645`–`packages/plus/src/index.ts:1650`),
+`skill.delete` (`packages/plus/src/index.ts:728`), `base.delete`
+(`packages/plus/src/index.ts:783`) and `mcp.remove`
+(`packages/plus/src/index.ts:908`); the tool-facing `PlusApi` reaches all four
+with a tool actor through `instructions_delete`. The RPC inputs for
+`skill.delete`, `base.delete` and `mcp.remove` carry no `actor`, so the RPC
+boundary normalizes to `tui` and this refusal is unreachable over the wire for
+those three; `rule.remove`'s RPC input does carry an optional `actor`. The
+instruction-delete cascade is not guarded because the handler returns
+`instruction.invalid` first while `INSTRUCTIONS_DISABLED` is `true`
+(`packages/plus/src/index.ts:2197`).
 
 ## 8. RPC methods
 
@@ -630,13 +648,13 @@ by `lastUsed` descending (`packages/plus/src/teams/api-query.ts:166`–
 `packages/plus/src/teams/api-query.ts:176`,
 `packages/plus/src/teams/api-query.ts:20`). Its handler passes `{ all }`
 straight through
-(`packages/plus/src/index.ts:2038`–`packages/plus/src/index.ts:2042`).
+(`packages/plus/src/index.ts:2092`–`packages/plus/src/index.ts:2096`).
 `team.runs.stop` is the human stop: idle runs are interrupted and moved
 `stopping` → `stopped`, a `working` run fails `E_BUSY`, a `dead` run is
 reconciled to `stopped`, and a `stopped`/`stopping`/terminal run answers with
 its current state
 (`packages/plus/src/teams/api-lifecycle.ts:80`–`packages/plus/src/teams/api-lifecycle.ts:103`,
-`packages/plus/src/index.ts:2044`).
+`packages/plus/src/index.ts:2098`).
 
 ## 9. Team composer tab
 
