@@ -1,0 +1,1443 @@
+diff --git a/packages/plus/README.md b/packages/plus/README.md
+index e656d2efd..1fe5ca6ff 100644
+--- a/packages/plus/README.md
++++ b/packages/plus/README.md
+@@ -123,7 +123,7 @@ Row ids name one row everywhere: the TUI filter, tool calls, log targets, and er
+ 
+ `<level>` is `project`, `global`, or `defaults`.
+ 
+-Guards: writes for agents listed in `.opencodeplus/project.json` `protectedAgents` are refused; `delete` needs `confirm: true`; no tool enables or disables project mode; every successful write is logged with actor `tool`.
++Guards: a write whose actor is a tool cannot change a row belonging to an agent listed in `.opencodeplus/project.json` `protectedAgents` — through the tools, the RPC, or `instructions.mutate` — and fails with `agent.protected`; the TUI writes those rows normally. `delete` needs `confirm: true`; no tool enables or disables project mode; every successful write is logged with actor `tool`.
+ 
+ Log format is `Plus.LogEntry` (`src/rpc.ts`): `{ ts, actor: { type: tui|tool, agent?, sessionID?, messageID? }, op, target, summary, revision }`. Project writes append to `<project>/.opencodeplus/instructions/log.jsonl`, global/defaults writes to `<configDir>/opencodeplus/instructions/log.jsonl`. The log's own `where` grammar is small: a bare word matches over op, target, summary, and actor agent; keyed tokens are `actor:tui|tool`, `agent:<text>`, `op:<text>`, `target:<prefix>`, `session:<text>`, `since:<instant>` / `before:<instant>` (ISO date or `<n><s|m|h|d|w>` age).
+ 
+diff --git a/packages/plus/SPEC.md b/packages/plus/SPEC.md
+index 26ca7a0d8..536a7d6ee 100644
+--- a/packages/plus/SPEC.md
++++ b/packages/plus/SPEC.md
+@@ -565,11 +565,11 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
+ | `project.disable` | `void` | `Status` | — |
+ | `instructions.snapshot` | `void` | `Snapshot` | `project.disabled` |
+ | `instructions.refresh` | `void` | `Snapshot` | `project.disabled` |
+-| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records }` | `MutateResult` | `project.disabled` |
++| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `project.disabled`, `agent.protected` |
+ | `instructions.assembled` | `{ agent }` | `Assembled` | `project.disabled`, `agent.unknown` |
+-| `agent.create` | `{ scope, id, template?, fields?, prompt }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid` |
+-| `agent.rename` | `{ scope, from, to }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid` |
+-| `agent.delete` | `{ scope, id }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid` |
++| `agent.create` | `{ scope, id, template?, fields?, prompt, actor? }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected` |
++| `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
++| `agent.delete` | `{ scope, id, actor? }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` |
+ | `skill.create` | `{ name, body }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
+ | `skill.import` | `{ path }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
+ | `skill.delete` | `{ id }` | `SkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` |
+@@ -579,18 +579,18 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
+ | `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
+ | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
+ | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
+-| `team.create` | `{ level, team, template? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
++| `team.create` | `{ level, team, template?, actor? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` |
+ | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
+-| `team.addAgent` | `{ level, team, id, template?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
+-| `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
+-| `team.delete` | `{ level, team }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid` |
++| `team.addAgent` | `{ level, team, id, template?, prompt, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` |
++| `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
++| `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` |
+ | `team.list` | `void` | `TeamListOutput` | `project.disabled` |
+-| `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
+-| `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
++| `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` |
++| `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` |
+ | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
+-| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords?, message? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid` |
+-| `rule.remove` | `{ level, agent, tool, id }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid` |
+-| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords?, message? }` | `RuleRef` | `project.disabled`, `rule.invalid` |
++| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` |
++| `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` |
++| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` |
+ 
+ `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
+ `RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
+@@ -607,9 +607,16 @@ trimmed, a blank one clears the stored text, and an omitted one on
+ `rule.update` preserves it. Curated-identity
+ policy: a stored record whose `tool` + `id` matches a curated rule is treated
+ as an override of that curated rule. This is accepted reserved-identity
+-semantics, not an unconditional compatibility guarantee. `updateRule`
+-and `removeRule` share one `ruleProtectedRefusal` guard: protection follows
+-the matched record's owner, not the caller's row address.
++semantics, not an unconditional compatibility guarantee. `rule.add`,
++`rule.update`, and `rule.remove` share one `refuseProtectedForTool` guard:
++the protected-agent refusal is decided at the PlusApi boundary from the
++request's `actor`, so a tool-originated write is refused whichever surface
++forwarded it (tools, the RPC, or a direct API call), while a missing actor —
++the TUI — is never refused. Protection follows the row's effective owner: on
++an update the matched record's owner, not the caller's row address; on an
++add the requested `agent`. The declared error is `agent.protected` with
++`{ agent, id?, reason }`, and the reason text is the same
++`agent.protected: row belongs to protected agent "<id>"` the tools raise.
+ 
+ Events: `project.changed`, `instructions.changed`, `teams.changed`.
+ 
+@@ -1262,8 +1269,13 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
+   `perm:<toolId>:<ruleId>`. `<level>` is `project`,
+   `global`, or `defaults`. Every id that resolved before the catalogue split
+   still resolves and still means the Agents catalogue.
+-- Guards: writes for agents listed in `protectedAgents` fail with
+-  `agent.protected`; unknown ids fail with `row.unknown`. A no-op or a
++- Guards: a write whose actor is a tool cannot change a row belonging to an
++  agent listed in `protectedAgents`, through any surface — the tool wrappers,
++  the RPC, or `instructions.mutate` with a caller-supplied actor — and fails
++  with `agent.protected` (`{ agent, id?, reason }`); a missing actor is the
++  TUI and never refuses. `instructions.mutate` decides from the changed rows
++  only, so carrying a protected agent's unchanged records in a full-snapshot
++  mutate is not a refusal. Unknown ids fail with `row.unknown`. A no-op or a
+   refusal writes nothing and logs nothing.
+ 
+ ### Applying Code Mode rows (`apply.ts`, `model.ts`)
+@@ -1458,7 +1470,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): {
+ 
+ | error | meaning |
+ | `row.unknown` | no row has that id; `list` again for the current id |
+-| `agent.protected` | that agent is in `protectedAgents` |
++| `agent.protected` | that agent is in `protectedAgents` and the write's actor is a tool; data is `{ agent, id?, reason }` |
+ | `delete.unconfirmed` | retry with `confirm: true` |
+ | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
+ | `project.disabled` | project mode is off and no tool changes that |
+diff --git a/packages/plus/docs/round3-t3-evidence.md b/packages/plus/docs/round3-t3-evidence.md
+new file mode 100644
+index 000000000..5590b1810
+--- /dev/null
++++ b/packages/plus/docs/round3-t3-evidence.md
+@@ -0,0 +1,143 @@
++# T3 evidence — protected agents are protected at the API boundary
++
++Status: implemented on this branch. The code and test commit is
++`3f8c3890e16e6f77eb0039f8b06305351588347a` (tree
++`7b691db4d711951b561cc9735053be8614bd118d`); the receipts below were captured
++from the assigned checks at that commit. This file lands in the following
++commit, so the branch tip differs from that commit only by this document.
++
++## What changed
++
++- `packages/plus/src/rpc.ts:640` declares the `Plus.AgentProtected` error
++  `{ agent, id?, reason }`, with `id` reserved for a row/input id distinct
++  from the protected agent. `rpc.ts:980` wraps it for the portable client and
++  every guarded method lists it under `errors` (`rpc.ts:1062`-`1305`).
++- `packages/plus/src/rpc.ts` adds an optional `actor` to `CreateAgentInput`,
++  `RenameAgentInput`, `DeleteAgentInput`, `CreateTeamInput`,
++  `TeamAddAgentInput`, `TeamRemoveAgentInput`, `DeleteTeamInput`,
++  `ModelAddInput`, `ModelRemoveInput`, `RuleAddInput`, `RuleRemoveInput`, and
++  `RuleUpdateInput`. `MutateInput.actor` already existed. A missing actor is
++  the TUI; only `{ type: "tool" }` is refused.
++- `packages/plus/src/index.ts:2301` adds one helper,
++  `refuseProtectedForTool(actor, agentId, config)`. It returns the declared
++  error when the actor is a tool and the addressed owner is listed in
++  `protectedAgents`, and `undefined` otherwise. The refusal message is the
++  same text the tool wrappers raise:
++  `agent.protected: row belongs to protected agent "<id>"`.
++- `packages/plus/src/index.ts` replaces the old unconditional
++  `ruleProtectedRefusal` and the unconditional `agent.create` check with the
++  helper.
++
++## Guard map
++
++| write | owner checked | `index.ts` line |
++| --- | --- | --- |
++| `instructions.mutate` | first changed record's `agent` (team records skipped) | 452 |
++| `agent.create` | requested id | 550 |
++| `agent.rename` | `from` id | 607 |
++| `agent.rename` | `to` id | 609 |
++| `agent.delete` | requested id | 645 |
++| `team.create` with a template | first protected template member | 936 |
++| `team.addAgent` | member id | 1074 |
++| `team.removeAgent` | member id | 1163 |
++| `team.delete` | first protected member of the discovered team | 1245 |
++| `model.add` | `agent` (null = shared row, allowed) | 1371 |
++| `model.remove` | `agent` | 1464 |
++| `rule.add` | requested `agent` | 1530 |
++| `rule.remove` | matched record's owner | 1610 |
++| `rule.update` | matched record's owner, else the requested `agent` (the upsert only adopts the caller's address when nothing matched) | 1656 |
++
++Model activation is a `model` record with `active: true` sent through
++`instructions.mutate`, so the mutate row above covers add/remove/activate.
++`instructions.mutate` compares `deltaRows(loaded.records, proposedRecords)`:
++a full-snapshot mutate that carries a protected agent's records back unchanged
++is a no-op, not a refusal.
++
++## Test receipts
++
++Assigned check `protected`
++(`bun test test/rpc.test.ts test/tools.test.ts test/teams-rpc.test.ts`,
++cwd `packages/plus`) at commit `3f8c3890`, exit code 0 — excerpt of the lines
++that exercise T3, verbatim from the run:
++
++```
++(pass) protected agents refuse tool-actor agent writes at the RPC boundary and allow TUI writes [8.93ms]
++(pass) protected agents refuse tool-actor model add/remove at the RPC boundary and allow TUI writes [4.48ms]
++(pass) protected agents refuse tool-actor rule writes at the RPC boundary and allow TUI writes [3.96ms]
++(pass) instructions.mutate refuses a tool actor changing a protected agent's row and allows unchanged carries and TUI writes [3.17ms]
++(pass) team.addAgent and team.removeAgent refuse a tool actor on a protected member and allow the TUI [4.13ms]
++(pass) team.delete refuses a tool actor when the team contains a protected member and deletes for the TUI [4.88ms]
++(pass) team.create with a template refuses a tool actor cloning a protected member and seeds for the TUI [2.35ms]
++(pass) protectedAgents refusal on a write [9.95ms]
++(pass) protected agent creation refuses before writing a file or log line [1.92ms]
++(pass) deleting a protected agent's custom rule through another agent's row is refused [21.70ms]
++(pass) removeRule refuses a protected owner's rule for a tool actor and lets the TUI remove it [7.30ms]
++(pass) rule.remove RPC from another agent's row refuses a tool actor and lets the TUI remove it [6.18ms]
++(pass) updating a protected agent's custom rule through another agent's row is refused (tools API) [21.17ms]
++(pass) rule.update RPC from another agent's row refuses a tool actor and lets the TUI write [12.05ms]
++```
++
++Run tail, verbatim:
++
++```
++ 140 pass
++ 4 skip
++ 0 fail
++ 1120 expect() calls
++Ran 144 tests across 3 files. [1.65s]
++```
++
++Assigned check `typecheck` (`bun run typecheck`, cwd `packages/plus`) at the
++same commit, exit code 0:
++
++```
++$ tsgo --noEmit -p tsconfig.test.json
++```
++
++## What the tests prove
++
++- `test/rpc.test.ts` "protected agents refuse tool-actor agent writes…":
++  `agent.create` with a tool actor fails `agent.protected` with the exact
++  message and leaves `<project>/.opencode/agent/alpha.md` absent; the same
++  call without an actor writes it. `agent.delete` and both `agent.rename`
++  directions are refused for a tool actor with the source file and the target
++  path unchanged, while the TUI rename and delete succeed.
++- `test/rpc.test.ts` "protected agents refuse tool-actor model add/remove…":
++  the refused `model.add` leaves `records` empty; the TUI add persists; the
++  refused `model.remove` leaves the model record present; the TUI remove
++  deletes it.
++- `test/rpc.test.ts` "protected agents refuse tool-actor rule writes…":
++  refused `rule.add`/`rule.update`/`rule.remove` leave the stored label
++  unchanged and the record present; the TUI add/edit/remove through another
++  agent's row succeed with the owner staying `alpha`.
++- `test/rpc.test.ts` "instructions.mutate refuses a tool actor…": a tool
++  mutate carrying the protected row unchanged succeeds as a no-op; the same
++  tool mutate with `text: "second"` fails `agent.protected` and the stored
++  text stays `"first"`; the TUI mutate writes `"second"`.
++- `test/teams-rpc.test.ts` covers `team.addAgent`, `team.removeAgent`,
++  `team.delete`, and `team.create` with a template: each tool-actor call is
++  refused with `agent.protected` and writes no member file, and the same call
++  without an actor succeeds.
++- `test/tools.test.ts` "removeRule refuses a protected owner's rule for a tool
++  actor and lets the TUI remove it" and the `rule.remove`/`rule.update` RPC
++  tests assert the refusal type `agent.protected` in the throwing context
++  double, the exact log-file prefix unchanged across the refusal
++  (`logLines(project)` equality), and the TUI call then writing the row and
++  appending a log line. The pre-existing tool-wrapper tests
++  (`protectedAgents refusal on a write`, `protected agent creation refuses
++  before writing a file or log line`, `deleting a protected agent's custom
++  rule…`, `updating a protected agent's custom rule…`) are unchanged and
++  still pass, so the early tool refusal and its error text are preserved.
++
++No capture above is a mock: every case drives the real handlers
++(`createHandlers`/`createPlusApi`) against a temporary project directory and
++asserts stored files, snapshot records, and the append-only log.
++
++## Boundaries respected
++
++- T2's `message` field semantics are untouched: the `message` key on
++  `RuleAddInput`/`RuleUpdateInput` and `RuleRecord` is unchanged; the T2
++  message tests (`rule.add and rule.update accept an optional refusal
++  message…`, `updateRule … message`) still pass.
++- T6 search keys and the `server:search` query filter are untouched.
++- No file outside `packages/plus` was modified for this task.
+\ No newline at end of file
+diff --git a/packages/plus/src/index.ts b/packages/plus/src/index.ts
+index 37ba7667a..4c30c200d 100644
+--- a/packages/plus/src/index.ts
++++ b/packages/plus/src/index.ts
+@@ -116,6 +116,7 @@ export type RefreshResult = SnapshotResult
+ export type MutateResult =
+   | { ok: true; value: Plus.MutateResult }
+   | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
++  | { ok: false; error: { code: "agent.protected"; message: string; data: Plus.AgentProtected } }
+ 
+ export type LogResult =
+   | { ok: true; value: Plus.LogOutput }
+@@ -138,6 +139,7 @@ export type CreateAgentResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type RenameAgentResult =
+@@ -149,6 +151,7 @@ export type RenameAgentResult =
+         | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
+         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type DeleteAgentResult =
+@@ -159,6 +162,7 @@ export type DeleteAgentResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
+         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type CreateSkillResult =
+@@ -262,6 +266,7 @@ export type CreateTeamResult =
+         | { code: "team.exists"; message: string; data: Plus.TeamExists }
+         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+         | { code: "team.create"; message: string; data: Plus.TeamCreate }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type AddTeamAgentResult =
+@@ -274,6 +279,7 @@ export type AddTeamAgentResult =
+         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
+         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type RemoveTeamAgentResult =
+@@ -285,6 +291,7 @@ export type RemoveTeamAgentResult =
+         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type DeleteTeamResult =
+@@ -295,6 +302,7 @@ export type DeleteTeamResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type ListTeamsResult =
+@@ -309,6 +317,7 @@ export type AddModelResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "model.exists"; message: string; data: Plus.ModelExists }
+         | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type RemoveModelResult =
+@@ -319,6 +328,7 @@ export type RemoveModelResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "model.missing"; message: string; data: Plus.ModelMissing }
+         | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type CatalogModelsResult =
+@@ -333,6 +343,7 @@ export type AddRuleResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "rule.exists"; message: string; data: Plus.RuleExists }
+         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type RemoveRuleResult =
+@@ -343,6 +354,7 @@ export type RemoveRuleResult =
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "rule.missing"; message: string; data: Plus.RuleMissing }
+         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export type UpdateRuleResult =
+@@ -352,6 +364,7 @@ export type UpdateRuleResult =
+       error:
+         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
++        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+     }
+ 
+ export interface PlusApi {
+@@ -424,6 +437,20 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+       const stored = await load(directory)
+       const loaded = { ...stored, protectedAgents: config.protectedAgents }
++      const records: StoredRecord[] = [
++        ...input.records.map(toRecord),
++        ...loaded.records.filter((record) => record.type === "team"),
++      ]
++      // T3: a tool actor may not change a protected agent's row through a
++      // mutate either, no matter which level or row kind it addresses. Only
++      // changed rows count: a caller that carries a protected agent's records
++      // back unchanged (the normal full-snapshot mutate) is not refused.
++      const protectedRow = deltaRows(loaded.records, records).find(
++        (record): record is Exclude<StoredRecord, TeamRecord> =>
++          record.type !== "team" && record.agent !== null && config.protectedAgents.includes(record.agent),
++      )
++      const refusal = refuseProtectedForTool(input.actor, protectedRow?.agent, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const staleStore =
+         input.expectedRevision !== loaded.projectRevision
+           ? ("project" as const)
+@@ -439,10 +466,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds) },
+         }
+       }
+-      const records: StoredRecord[] = [
+-        ...input.records.map(toRecord),
+-        ...loaded.records.filter((record) => record.type === "team"),
+-      ]
+       const saved = await save(directory, {
+         expectedProjectRevision: loaded.projectRevision,
+         expectedGlobalRevision: loaded.globalRevision,
+@@ -524,15 +547,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           ok: false as const,
+           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+         }
+-      if (config.protectedAgents.includes(validated.id))
+-        return {
+-          ok: false as const,
+-          error: {
+-            code: "agent.invalid" as const,
+-            message: `agent.protected: row belongs to protected agent "${validated.id}"`,
+-            data: { id: input.id, reason: `agent.protected: row belongs to protected agent "${validated.id}"` },
+-          },
+-        }
++      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const seed = input.template === undefined ? undefined : await readTemplate(ctx, directory, input.template as string)
+       if (input.template !== undefined && seed === undefined)
+         return {
+@@ -588,6 +604,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           ok: false as const,
+           error: { code: "agent.invalid" as const, message: to.reason, data: { id: input.to, reason: to.reason } },
+         }
++      const fromRefusal = refuseProtectedForTool(input.actor, from.id, config)
++      if (fromRefusal !== undefined) return { ok: false as const, error: fromRefusal }
++      const toRefusal = refuseProtectedForTool(input.actor, to.id, config)
++      if (toRefusal !== undefined) return { ok: false as const, error: toRefusal }
+       const renamed = await rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id })
+       if (!renamed.ok && renamed.reason === "missing-source")
+         return {
+@@ -622,6 +642,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           ok: false as const,
+           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+         }
++      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const removed = await remove({ scope: input.scope, projectDirectory: directory, id: validated.id })
+       if (!removed.ok)
+         return {
+@@ -908,6 +930,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
+         }
+       }
++      // Seeding from a template copies every member file, so a tool actor may
++      // not clone a protected member into a new team.
++      const protectedMember = template?.members.find((member) => config.protectedAgents.includes(member.id))
++      const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
+       const ensured = await fs.mkdir(root, { recursive: true }).then(
+         () => ({ ok: true as const }),
+@@ -1044,6 +1071,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           ok: false as const,
+           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+         }
++      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       if (input.id === "special")
+         return {
+           ok: false as const,
+@@ -1131,6 +1160,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           ok: false as const,
+           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
+         }
++      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const known = await discoverTeams(input.level, directory, builtins)
+       const found = known.find((team) => team.team === validatedTeam.team)
+       if (found === undefined)
+@@ -1210,6 +1241,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+           ok: false as const,
+           error: { code: "team.unknown" as const, message: `Unknown team ${validated.team}`, data: { level: input.level, team: validated.team } },
+         }
++      const protectedMember = found.agents.find((member) => config.protectedAgents.includes(member.id))
++      const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const teamsRoot = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
+       const teamDir = path.join(teamsRoot, validated.team)
+       let realTeamDir: string
+@@ -1334,6 +1368,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+       const config = await read(directory)
+       if (config === undefined)
+         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
++      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const validated = validateModelRef(input.providerID, input.modelID, input.variant)
+       if (!validated.ok)
+         return {
+@@ -1425,6 +1461,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+       const config = await read(directory)
+       if (config === undefined)
+         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
++      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const validated = validateModelRef(input.providerID, input.modelID, input.variant)
+       if (!validated.ok)
+         return {
+@@ -1489,6 +1527,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+       const config = await read(directory)
+       if (config === undefined)
+         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
++      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
+       if (!validated.ok)
+         return {
+@@ -1567,12 +1607,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+             data: { level: input.level, agent: input.agent, tool: validated.tool, id: validated.id },
+           },
+         }
+-      const protectedRefusal = ruleProtectedRefusal(loaded.protectedAgents, existing)
+-      if (protectedRefusal !== undefined)
+-        return {
+-          ok: false as const,
+-          error: { code: "rule.invalid" as const, message: protectedRefusal, data: { tool: validated.tool, id: validated.id, reason: protectedRefusal } },
+-        }
++      const refusal = refuseProtectedForTool(input.actor, existing.agent, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       const next = loaded.records.filter((record) => record !== existing)
+       const saved = await saveRuleRecords(directory, loaded, next)
+       if (!saved.ok) {
+@@ -1613,12 +1649,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
+       const existing = loaded.records.find(
+         (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+       )
+-      const refusal = ruleProtectedRefusal(loaded.protectedAgents, existing)
+-      if (refusal !== undefined)
+-        return {
+-          ok: false as const,
+-          error: { code: "rule.invalid" as const, message: refusal, data: { tool: validated.tool, id: validated.id, reason: refusal } },
+-        }
++      // The written row keeps the matched record's owner on an update (the
++      // upsert only adopts the caller's address when no record matched), so
++      // protection follows that effective owner, not the caller's row address.
++      const owner = existing === undefined ? input.agent : existing.agent
++      const refusal = refuseProtectedForTool(input.actor, owner, config)
++      if (refusal !== undefined) return { ok: false as const, error: refusal }
+       // A message present in the update wins, including blank, which clears
+       // the stored one. Absent leaves it alone, so a label/pattern edit
+       // through `set` never drops a rule's message.
+@@ -1714,7 +1750,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+     "instructions.mutate": (input, context) =>
+       Effect.gen(function* () {
+         const result = yield* Effect.promise(() => api.mutate(input))
+-        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
++        if (!result.ok) {
++          if (result.error.code === "project.disabled")
++            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
++          return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
++        }
+         return result.value
+       }),
+     "instructions.log": (input, context) =>
+@@ -1741,6 +1781,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "agent.exists")
+             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1755,6 +1797,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
+           if (result.error.code === "agent.exists")
+             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1767,6 +1811,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "agent.missing")
+             return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1889,6 +1935,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("team.exists", result.error.message, result.error.data))
+           if (result.error.code === "team.invalid")
+             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("team.create", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1917,6 +1965,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+           if (result.error.code === "agent.exists")
+             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1931,6 +1981,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+           if (result.error.code === "team.invalid")
+             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1943,6 +1995,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "team.unknown")
+             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1963,6 +2017,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "model.exists")
+             return yield* Effect.fail(context.error("model.exists", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1975,6 +2031,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "model.missing")
+             return yield* Effect.fail(context.error("model.missing", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1987,6 +2045,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "rule.exists")
+             return yield* Effect.fail(context.error("rule.exists", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -1999,6 +2059,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+           if (result.error.code === "rule.missing")
+             return yield* Effect.fail(context.error("rule.missing", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -2009,6 +2071,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
+         if (!result.ok) {
+           if (result.error.code === "project.disabled")
+             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
++          if (result.error.code === "agent.protected")
++            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
+         }
+         return result.value
+@@ -2227,16 +2291,23 @@ function validateRuleIdentity(
+   return { ok: true, tool: trimmedTool, id: trimmedId }
+ }
+ 
+-// Shared protected-agent guard for rule writes: protection follows the matched
+-// record's owner, not the caller's row address, so a protected agent's custom
+-// rule cannot be deleted or updated through another agent's globally displayed
+-// row. Both removeRule and updateRule call this at the same PlusApi boundary
+-// so the tools API, the RPC, and the TUI all inherit it.
+-function ruleProtectedRefusal(protectedAgents: readonly string[], existing: RuleRecord | undefined): string | undefined {
+-  if (existing === undefined) return undefined
+-  if (existing.agent !== null && protectedAgents.includes(existing.agent))
+-    return `agent.protected: row belongs to protected agent "${existing.agent}"`
+-  return undefined
++// T3: protection is decided at the API boundary, not only in the tool
++// wrappers. A tool-originated write that addresses a protected agent's row is
++// refused no matter which surface forwarded it (tools, the RPC, or
++// instructions.mutate with a caller-supplied actor). A missing actor means the
++// TUI, and TUI writes are never refused. `agentId` is the owner of the row
++// being written (null for shared rows). Returns the declared error the caller
++// must fail with, or undefined when the write may proceed.
++function refuseProtectedForTool(
++  actor: Plus.Actor | undefined,
++  agentId: string | null | undefined,
++  config: { readonly protectedAgents: readonly string[] },
++): { code: "agent.protected"; message: string; data: Plus.AgentProtected } | undefined {
++  if (normalizeActor(actor).type !== "tool") return undefined
++  if (agentId === null || agentId === undefined || agentId === "") return undefined
++  if (!config.protectedAgents.includes(agentId)) return undefined
++  const reason = `agent.protected: row belongs to protected agent "${agentId}"`
++  return { code: "agent.protected" as const, message: reason, data: { agent: agentId, reason } }
+ }
+ 
+ function validateModelRef(
+diff --git a/packages/plus/src/rpc.ts b/packages/plus/src/rpc.ts
+index 0127ac7e1..2fee36496 100644
+--- a/packages/plus/src/rpc.ts
++++ b/packages/plus/src/rpc.ts
+@@ -400,6 +400,10 @@ export const CreateAgentInput = Schema.Struct({
+   template: Schema.optionalKey(Schema.String),
+   fields: Schema.optionalKey(CreateAgentFields),
+   prompt: Schema.String,
++  // Who performed the write. Callers omit the key when unknown (an explicit
++  // undefined fails JSON encoding); the handler treats a missing actor as
++  // { type: "tui" }, and a tool actor is refused for protected agents.
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.CreateAgentInput" })
+ 
+ export interface AgentRef extends Schema.Schema.Type<typeof AgentRef> {}
+@@ -413,6 +417,7 @@ export const RenameAgentInput = Schema.Struct({
+   scope: FileScope,
+   from: Schema.String,
+   to: Schema.String,
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.RenameAgentInput" })
+ 
+ export interface RenameAgentResult extends Schema.Schema.Type<typeof RenameAgentResult> {}
+@@ -426,6 +431,7 @@ export interface DeleteAgentInput extends Schema.Schema.Type<typeof DeleteAgentI
+ export const DeleteAgentInput = Schema.Struct({
+   scope: FileScope,
+   id: Schema.String,
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.DeleteAgentInput" })
+ 
+ export interface CreateSkillInput extends Schema.Schema.Type<typeof CreateSkillInput> {}
+@@ -526,6 +532,7 @@ export const CreateTeamInput = Schema.Struct({
+   level: TeamLevel,
+   team: Schema.String,
+   template: Schema.optionalKey(Schema.String),
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.CreateTeamInput" })
+ 
+ // Adding an agent to a team writes `<teamdir>/<id>.md` (project/global) or
+@@ -540,6 +547,7 @@ export const TeamAddAgentInput = Schema.Struct({
+   id: Schema.String,
+   template: Schema.optionalKey(Schema.String),
+   prompt: Schema.String,
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.TeamAddAgentInput" })
+ 
+ export interface TeamRemoveAgentInput extends Schema.Schema.Type<typeof TeamRemoveAgentInput> {}
+@@ -547,12 +555,14 @@ export const TeamRemoveAgentInput = Schema.Struct({
+   level: TeamLevel,
+   team: Schema.String,
+   id: Schema.String,
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.TeamRemoveAgentInput" })
+ 
+ export interface DeleteTeamInput extends Schema.Schema.Type<typeof DeleteTeamInput> {}
+ export const DeleteTeamInput = Schema.Struct({
+   level: TeamLevel,
+   team: Schema.String,
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.DeleteTeamInput" })
+ 
+ export interface DeleteTeamResult extends Schema.Schema.Type<typeof DeleteTeamResult> {}
+@@ -622,6 +632,17 @@ export const AgentUnknown = Schema.Struct({
+   agent: Schema.String,
+ }).annotate({ identifier: "Plus.AgentUnknown" })
+ 
++// A write whose actor is a tool addressed a row owned by an agent listed in
++// `protectedAgents`. `id` names the addressed row or input when it differs
++// from the protected agent id. Only tool-originated writes refuse; TUI writes
++// are unaffected.
++export interface AgentProtected extends Schema.Schema.Type<typeof AgentProtected> {}
++export const AgentProtected = Schema.Struct({
++  agent: Schema.String,
++  id: Schema.optionalKey(Schema.String),
++  reason: Schema.String,
++}).annotate({ identifier: "Plus.AgentProtected" })
++
+ export interface SkillExists extends Schema.Schema.Type<typeof SkillExists> {}
+ export const SkillExists = Schema.Struct({
+   id: Schema.String,
+@@ -724,6 +745,7 @@ export const ModelAddInput = Schema.Struct({
+   providerID: Schema.String,
+   modelID: Schema.String,
+   variant: Schema.optionalKey(Schema.String),
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.ModelAddInput" })
+ 
+ export interface ModelRemoveInput extends Schema.Schema.Type<typeof ModelRemoveInput> {}
+@@ -735,6 +757,7 @@ export const ModelRemoveInput = Schema.Struct({
+   providerID: Schema.String,
+   modelID: Schema.String,
+   variant: Schema.optionalKey(Schema.String),
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.ModelRemoveInput" })
+ 
+ export interface ModelRef extends Schema.Schema.Type<typeof ModelRef> {}
+@@ -806,6 +829,7 @@ export const RuleAddInput = Schema.Struct({
+   patterns: Schema.Array(Schema.String),
+   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+   message: Schema.optionalKey(Schema.String),
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.RuleAddInput" })
+ 
+ export interface RuleRemoveInput extends Schema.Schema.Type<typeof RuleRemoveInput> {}
+@@ -814,6 +838,7 @@ export const RuleRemoveInput = Schema.Struct({
+   agent: Schema.NullOr(Schema.String),
+   tool: Schema.String,
+   id: Schema.String,
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.RuleRemoveInput" })
+ 
+ export interface RuleUpdateInput extends Schema.Schema.Type<typeof RuleUpdateInput> {}
+@@ -826,6 +851,7 @@ export const RuleUpdateInput = Schema.Struct({
+   patterns: Schema.Array(Schema.String),
+   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+   message: Schema.optionalKey(Schema.String),
++  actor: Schema.optionalKey(Actor),
+ }).annotate({ identifier: "Plus.RuleUpdateInput" })
+ 
+ export interface RuleRef extends Schema.Schema.Type<typeof RuleRef> {}
+@@ -951,6 +977,9 @@ const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ ide
+ const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
+ const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
+ const PortableAgentUnknown = Schema.toStandardSchemaV1(AgentUnknown.annotate({ identifier: "Plus.AgentUnknown" }))
++const PortableAgentProtected = Schema.toStandardSchemaV1(
++  AgentProtected.annotate({ identifier: "Plus.AgentProtected" }),
++)
+ const PortableSkillExists = Schema.toStandardSchemaV1(SkillExists.annotate({ identifier: "Plus.SkillExists" }))
+ const PortableSkillMissing = Schema.toStandardSchemaV1(SkillMissing.annotate({ identifier: "Plus.SkillMissing" }))
+ const PortableSkillInvalid = Schema.toStandardSchemaV1(SkillInvalid.annotate({ identifier: "Plus.SkillInvalid" }))
+@@ -1030,6 +1059,7 @@ export const Definition = Rpc.define({
+       output: PortableMutateResult,
+       errors: {
+         "project.disabled": PortableProjectDisabled,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "instructions.log": {
+@@ -1054,6 +1084,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "agent.exists": PortableAgentExists,
+         "agent.invalid": PortableAgentInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "agent.rename": {
+@@ -1064,6 +1095,7 @@ export const Definition = Rpc.define({
+         "agent.missing": PortableAgentMissing,
+         "agent.exists": PortableAgentExists,
+         "agent.invalid": PortableAgentInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "agent.delete": {
+@@ -1073,6 +1105,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "agent.missing": PortableAgentMissing,
+         "agent.invalid": PortableAgentInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "skill.create": {
+@@ -1164,6 +1197,7 @@ export const Definition = Rpc.define({
+         "team.exists": PortableTeamExists,
+         "team.invalid": PortableTeamInvalid,
+         "team.create": PortableTeamCreate,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "team.setEnabled": {
+@@ -1184,6 +1218,7 @@ export const Definition = Rpc.define({
+         "team.invalid": PortableTeamInvalid,
+         "agent.exists": PortableAgentExists,
+         "agent.invalid": PortableAgentInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "team.removeAgent": {
+@@ -1194,6 +1229,7 @@ export const Definition = Rpc.define({
+         "team.unknown": PortableTeamUnknown,
+         "team.invalid": PortableTeamInvalid,
+         "agent.invalid": PortableAgentInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "team.delete": {
+@@ -1203,6 +1239,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "team.unknown": PortableTeamUnknown,
+         "team.invalid": PortableTeamInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "team.list": {
+@@ -1219,6 +1256,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "model.exists": PortableModelExists,
+         "model.invalid": PortableModelInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "model.remove": {
+@@ -1228,6 +1266,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "model.missing": PortableModelMissing,
+         "model.invalid": PortableModelInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "catalog.models": {
+@@ -1244,6 +1283,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "rule.exists": PortableRuleExists,
+         "rule.invalid": PortableRuleInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "rule.remove": {
+@@ -1253,6 +1293,7 @@ export const Definition = Rpc.define({
+         "project.disabled": PortableProjectDisabled,
+         "rule.missing": PortableRuleMissing,
+         "rule.invalid": PortableRuleInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+     "rule.update": {
+@@ -1261,6 +1302,7 @@ export const Definition = Rpc.define({
+       errors: {
+         "project.disabled": PortableProjectDisabled,
+         "rule.invalid": PortableRuleInvalid,
++        "agent.protected": PortableAgentProtected,
+       },
+     },
+   },
+diff --git a/packages/plus/test/rpc.test.ts b/packages/plus/test/rpc.test.ts
+index cc1a270fd..06dd53d4b 100644
+--- a/packages/plus/test/rpc.test.ts
++++ b/packages/plus/test/rpc.test.ts
+@@ -2257,3 +2257,269 @@ test("mcp remove drops customizations from global store so re-created mcp resolv
+   expect(shownAfter.text).toBe(expectedNewText)
+   expect(shownAfter.text).not.toBe("RESURRECTED MCP")
+ })
++
++test("protected agents refuse tool-actor agent writes at the RPC boundary and allow TUI writes", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  // enable() writes the default config; put a protected agent in it.
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const handlers = createHandlers(fullContext({ directory: project }), createState())
++  const agentFile = (id: string) => path.join(project, ".opencode", "agent", `${id}.md`)
++
++  // agent.create: a tool actor is refused and writes nothing.
++  const createRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "role", actor: { type: "tool" } }, throwingContext(createRefused)),
++    createRefused,
++    "agent.protected",
++  )
++  expect(createRefused.current?.message).toBe('agent.protected: row belongs to protected agent "alpha"')
++  expect(createRefused.current?.data).toMatchObject({ agent: "alpha" })
++  expect(await Bun.file(agentFile("alpha")).exists()).toBe(false)
++
++  // The TUI writes the same agent through the same boundary.
++  const created = await Effect.runPromise(
++    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "role" }, throwingContext({})),
++  )
++  expect(created.id).toBe("alpha")
++  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
++  const other = await Effect.runPromise(
++    handlers["agent.create"]({ scope: "project", id: "beta", prompt: "role" }, throwingContext({})),
++  )
++  expect(other.id).toBe("beta")
++
++  // agent.delete: refused for a tool actor, file stays.
++  const deleteRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["agent.delete"]({ scope: "project", id: "alpha", actor: { type: "tool" } }, throwingContext(deleteRefused)),
++    deleteRefused,
++    "agent.protected",
++  )
++  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
++
++  // agent.rename from a protected id: refused, source intact.
++  const fromRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2", actor: { type: "tool" } }, throwingContext(fromRefused)),
++    fromRefused,
++    "agent.protected",
++  )
++  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
++  expect(await Bun.file(agentFile("alpha2")).exists()).toBe(false)
++
++  // agent.rename to a protected id: refused, nothing written at the target.
++  const toRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["agent.rename"]({ scope: "project", from: "beta", to: "alpha", actor: { type: "tool" } }, throwingContext(toRefused)),
++    toRefused,
++    "agent.protected",
++  )
++  expect(await Bun.file(agentFile("beta")).exists()).toBe(true)
++  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
++
++  // The TUI renames and deletes the protected agent's file.
++  const renamed = await Effect.runPromise(
++    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2" }, throwingContext({})),
++  )
++  expect(renamed).toEqual({ from: "alpha", to: "alpha2", path: agentFile("alpha2") })
++  const deleted = await Effect.runPromise(
++    handlers["agent.delete"]({ scope: "project", id: "alpha2" }, throwingContext({})),
++  )
++  expect(deleted.id).toBe("alpha2")
++  expect(await Bun.file(agentFile("alpha2")).exists()).toBe(false)
++})
++
++test("protected agents refuse tool-actor model add/remove at the RPC boundary and allow TUI writes", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const handlers = createHandlers(
++    fullContext({ directory: project, models: [modelInfo("acme", "nova-2")] }),
++    createState(),
++  )
++
++  const refused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["model.add"](
++      { level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2", actor: { type: "tool" } },
++      throwingContext(refused),
++    ),
++    refused,
++    "agent.protected",
++  )
++  const afterRefusedAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  expect(afterRefusedAdd.records).toEqual([])
++
++  const added = await Effect.runPromise(
++    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
++  )
++  expect(added).toMatchObject({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" })
++
++  const removeRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["model.remove"](
++      { level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2", actor: { type: "tool" } },
++      throwingContext(removeRefused),
++    ),
++    removeRefused,
++    "agent.protected",
++  )
++  const kept = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  expect(kept.records.some((record) => record.type === "model" && record.agent === "alpha")).toBe(true)
++
++  const removed = await Effect.runPromise(
++    handlers["model.remove"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
++  )
++  expect(removed).toMatchObject({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" })
++  const gone = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  expect(gone.records).toEqual([])
++})
++
++test("protected agents refuse tool-actor rule writes at the RPC boundary and allow TUI writes", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const handlers = createHandlers(
++    fullContext({
++      directory: project,
++      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
++    }),
++    createState(),
++  )
++
++  const addRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["rule.add"](
++      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tool" } },
++      throwingContext(addRefused),
++    ),
++    addRefused,
++    "agent.protected",
++  )
++  expect((await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))).records).toEqual([])
++
++  const added = await Effect.runPromise(
++    handlers["rule.add"](
++      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"] },
++      throwingContext({}),
++    ),
++  )
++  expect(added).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom" })
++
++  const updateRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["rule.update"](
++      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
++      throwingContext(updateRefused),
++    ),
++    updateRefused,
++    "agent.protected",
++  )
++  const survived = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  const kept = survived.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
++  if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
++  expect(kept.label).toBe("Custom")
++
++  // The TUI edits the same rule through another agent's row; the owner stays alpha.
++  const edited = await Effect.runPromise(
++    handlers["rule.update"](
++      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Tui edit", patterns: ["danger *"] },
++      throwingContext({}),
++    ),
++  )
++  expect(edited).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Tui edit" })
++
++  const removeRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["rule.remove"]({ level: "project", agent: "beta", tool: "shell", id: "custom", actor: { type: "tool" } }, throwingContext(removeRefused)),
++    removeRefused,
++    "agent.protected",
++  )
++  const stillThere = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  expect(stillThere.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
++
++  const removed = await Effect.runPromise(
++    handlers["rule.remove"]({ level: "project", agent: "beta", tool: "shell", id: "custom" }, throwingContext({})),
++  )
++  expect(removed).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
++  const gone = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
++})
++
++test("instructions.mutate refuses a tool actor changing a protected agent's row and allows unchanged carries and TUI writes", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const handlers = createHandlers(fullContext({ directory: project }), createState())
++
++  const seeded = await Effect.runPromise(
++    handlers["instructions.mutate"](
++      { expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" })] },
++      throwingContext({}),
++    ),
++  )
++  expect(seeded.ok).toBe(true)
++  if (!seeded.ok) throw new Error("expected seed mutate to succeed")
++  const warm = await Effect.runPromise(handlers["instructions.mutate"]({ expectedRevision: seeded.revision, expectedGlobalRevision: seeded.globalRevision, records: seeded.snapshot.records }, throwingContext({})))
++  expect(warm.ok).toBe(true)
++  if (!warm.ok) throw new Error("expected warm mutate to succeed")
++  const before = warm.snapshot
++
++  // A tool mutate that carries the protected row unchanged is a no-op, not a
++  // refusal: only the delta counts.
++  const carried = await Effect.runPromise(
++    handlers["instructions.mutate"](
++      { expectedRevision: before.revision, expectedGlobalRevision: before.globalRevision, records: before.records, actor: { type: "tool" } },
++      throwingContext({}),
++    ),
++  )
++  expect(carried.ok).toBe(true)
++  if (!carried.ok) throw new Error("expected carried mutate to succeed")
++
++  const row = before.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
++  if (row === undefined || row.type !== "customization") throw new Error("expected seeded customization")
++  const refused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["instructions.mutate"](
++      {
++        expectedRevision: before.revision,
++        expectedGlobalRevision: before.globalRevision,
++        records: [{ ...row, text: "second" }],
++        actor: { type: "tool" },
++      },
++      throwingContext(refused),
++    ),
++    refused,
++    "agent.protected",
++  )
++  expect(refused.current?.data).toMatchObject({ agent: "alpha" })
++  const afterRefusal = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
++  const kept = afterRefusal.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
++  if (kept === undefined || kept.type !== "customization") throw new Error("expected surviving customization")
++  expect(kept.text).toBe("first")
++
++  // The TUI writes the same change through the same boundary.
++  const tui = await Effect.runPromise(
++    handlers["instructions.mutate"](
++      { expectedRevision: before.revision, expectedGlobalRevision: before.globalRevision, records: [{ ...row, text: "second" }] },
++      throwingContext({}),
++    ),
++  )
++  expect(tui.ok).toBe(true)
++  if (!tui.ok) throw new Error("expected TUI mutate to succeed")
++  const afterTui = tui.snapshot.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
++  if (afterTui === undefined || afterTui.type !== "customization") throw new Error("expected written customization")
++  expect(afterTui.text).toBe("second")
++})
+diff --git a/packages/plus/test/teams-rpc.test.ts b/packages/plus/test/teams-rpc.test.ts
+index 1add8fac8..73895e389 100644
+--- a/packages/plus/test/teams-rpc.test.ts
++++ b/packages/plus/test/teams-rpc.test.ts
+@@ -1305,3 +1305,111 @@ test("enable team with special override reaches host agent.system and agent.mode
+   expect(exploreRestored?.model).toBeUndefined()
+   expect(state.activeModels.get("explore")).toBeUndefined()
+ })
++
++test("team.addAgent and team.removeAgent refuse a tool actor on a protected member and allow the TUI", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
++  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
++  const memberFile = path.join(projectTeamsPath(project), "crew", "alpha.md")
++
++  const addRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role", actor: { type: "tool" } }, throwingContext(addRefused)),
++    addRefused,
++    "agent.protected",
++  )
++  expect(addRefused.current?.message).toContain('protected agent "alpha"')
++  expect(await Bun.file(memberFile).exists()).toBe(false)
++
++  const added = await Effect.runPromise(
++    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role" }, throwingContext({})),
++  )
++  expect(added.id).toBe("alpha")
++  expect(await Bun.file(memberFile).exists()).toBe(true)
++
++  const removeRefused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["team.removeAgent"]({ level: "project", team: "crew", id: "alpha", actor: { type: "tool" } }, throwingContext(removeRefused)),
++    removeRefused,
++    "agent.protected",
++  )
++  expect(await Bun.file(memberFile).exists()).toBe(true)
++
++  const removed = await Effect.runPromise(
++    handlers["team.removeAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
++  )
++  expect(removed.id).toBe("alpha")
++  expect(await Bun.file(memberFile).exists()).toBe(false)
++})
++
++test("team.delete refuses a tool actor when the team contains a protected member and deletes for the TUI", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
++  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
++  await Effect.runPromise(
++    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role" }, throwingContext({})),
++  )
++  const teamDir = path.join(projectTeamsPath(project), "crew")
++
++  const refused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["team.delete"]({ level: "project", team: "crew", actor: { type: "tool" } }, throwingContext(refused)),
++    refused,
++    "agent.protected",
++  )
++  expect(refused.current?.message).toContain('protected agent "alpha"')
++  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
++
++  const deleted = await Effect.runPromise(
++    handlers["team.delete"]({ level: "project", team: "crew" }, throwingContext({})),
++  )
++  expect(deleted).toEqual({ level: "project", team: "crew", removedMembers: 1 })
++  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
++})
++
++test("team.create with a template refuses a tool actor cloning a protected member and seeds for the TUI", async () => {
++  const { project } = await tempRoot()
++  await enable(project)
++  await Bun.write(
++    path.join(project, ".opencodeplus", "project.json"),
++    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
++  )
++  const registry = [
++    {
++      name: "review",
++      members: [
++        { id: "alpha", body: "alpha body" },
++        { id: "editor", body: "editor body" },
++      ],
++    },
++  ]
++  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
++  const teamDir = path.join(projectTeamsPath(project), "mine")
++
++  const refused: { current?: CapturedError } = {}
++  await expectDeclaredError(
++    handlers["team.create"]({ level: "project", team: "mine", template: "review", actor: { type: "tool" } }, throwingContext(refused)),
++    refused,
++    "agent.protected",
++  )
++  expect(refused.current?.message).toContain('protected agent "alpha"')
++  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
++  expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(false)
++
++  const created = await Effect.runPromise(
++    handlers["team.create"]({ level: "project", team: "mine", template: "review" }, throwingContext({})),
++  )
++  expect(created).toEqual({ level: "project", team: "mine", enabled: false })
++  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
++  expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(true)
++})
+diff --git a/packages/plus/test/tools.test.ts b/packages/plus/test/tools.test.ts
+index 1ccbe8eca..64498f74c 100644
+--- a/packages/plus/test/tools.test.ts
++++ b/packages/plus/test/tools.test.ts
+@@ -1420,7 +1420,7 @@ async function logLines(project: string): Promise<string[]> {
+   return text.split("\n").filter((line) => line.length > 0)
+ }
+ 
+-test("removeRule refuses a protected owner's rule with no write and no log", async () => {
++test("removeRule refuses a protected owner's rule for a tool actor and lets the TUI remove it", async () => {
+   const { project } = await tempProject()
+   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+   const ctx = fullContext({
+@@ -1433,19 +1433,27 @@ test("removeRule refuses a protected owner's rule with no write and no log", asy
+   const added = await api.addRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tui" } })
+   if (!added.ok) throw new Error(`addRule failed: ${added.error.message}`)
+   const beforeLogs = await logLines(project)
+-  // Direct API with the owner's own address still refuses: protection follows
+-  // the matched record, not the caller's row address.
+-  const refused = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tui" } })
++  // A tool actor is refused even at the owner's own address: protection is
++  // decided at the API boundary, not by the row the caller addressed.
++  const refused = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tool" } })
+   expect(refused.ok).toBe(false)
+   if (refused.ok) throw new Error("expected removeRule refusal")
+-  expect(refused.error.code).toBe("rule.invalid")
++  expect(refused.error.code).toBe("agent.protected")
+   expect(refused.error.message).toContain("agent.protected")
+   const after = await snapshotOf(api)
+   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+   expect(await logLines(project)).toEqual(beforeLogs)
++  // The TUI writes the same row through the same boundary.
++  const tui = await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
++  expect(tui.ok).toBe(true)
++  if (!tui.ok) throw new Error(`removeRule failed: ${tui.error.message}`)
++  expect(tui.value).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
++  const gone = await snapshotOf(api)
++  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
++  expect((await logLines(project)).length).toBeGreaterThan(beforeLogs.length)
+ })
+ 
+-test("rule.remove RPC from another agent's row refuses with no write and no log (TUI state.ts path)", async () => {
++test("rule.remove RPC from another agent's row refuses a tool actor and lets the TUI remove it", async () => {
+   const { project } = await tempProject()
+   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+   const ctx = fullContext({
+@@ -1464,8 +1472,6 @@ test("rule.remove RPC from another agent's row refuses with no write and no log
+   )
+   if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+   const beforeLogs = await logLines(project)
+-  // state.ts remove() forwards the selected row address verbatim:
+-  // `plus["rule.remove"]({ level: address.level, agent: address.agent, ... })`.
+   const handlers = createHandlers(ctx, state)
+   const captured: { current?: { type: string; message: string } } = {}
+   const throwing = {
+@@ -1476,16 +1482,28 @@ test("rule.remove RPC from another agent's row refuses with no write and no log
+   }
+   const exit = await Effect.runPromiseExit(
+     handlers["rule.remove"](
+-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
++      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", actor: { type: "tool" } },
+       throwing,
+     ),
+   )
+   expect(Exit.isFailure(exit)).toBe(true)
+-  expect(captured.current?.type).toBe("rule.invalid")
++  expect(captured.current?.type).toBe("agent.protected")
+   expect(captured.current?.message).toContain("agent.protected")
+   const after = await snapshotOf(api)
+   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+   expect(await logLines(project)).toEqual(beforeLogs)
++  // state.ts forwards the selected row address verbatim with no actor: a
++  // missing actor means the TUI, so the same call succeeds.
++  const tui = await Effect.runPromise(
++    handlers["rule.remove"](
++      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
++      throwing,
++    ),
++  )
++  expect(tui).toEqual({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom" })
++  const gone = await snapshotOf(api)
++  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
++  expect((await logLines(project)).length).toBeGreaterThan(beforeLogs.length)
+ })
+ 
+ test("updating a protected agent's custom rule through another agent's row is refused (tools API)", async () => {
+@@ -1515,7 +1533,7 @@ test("updating a protected agent's custom rule through another agent's row is re
+   expect(kept.label).toBe("Custom")
+ })
+ 
+-test("rule.update RPC from another agent's row refuses with no write and no log", async () => {
++test("rule.update RPC from another agent's row refuses a tool actor and lets the TUI write", async () => {
+   const { project } = await tempProject()
+   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+   const ctx = fullContext({
+@@ -1544,18 +1562,31 @@ test("rule.update RPC from another agent's row refuses with no write and no log"
+   }
+   const exit = await Effect.runPromiseExit(
+     handlers["rule.update"](
+-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
++      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
+       throwing,
+     ),
+   )
+   expect(Exit.isFailure(exit)).toBe(true)
+-  expect(captured.current?.type).toBe("rule.invalid")
++  expect(captured.current?.type).toBe("agent.protected")
+   expect(captured.current?.message).toContain("agent.protected")
+   const after = await snapshotOf(api)
+   const kept = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
+   if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
+   expect(kept.label).toBe("Custom")
+   expect(await logLines(project)).toEqual(beforeLogs)
++  // The TUI path (no actor) writes the same row through the same boundary.
++  const tui = await Effect.runPromise(
++    handlers["rule.update"](
++      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
++      throwing,
++    ),
++  )
++  expect(tui).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked" })
++  const written = await snapshotOf(api)
++  const edited = written.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
++  if (edited === undefined || edited.type !== "rule") throw new Error("expected edited rule")
++  expect(edited.label).toBe("Hacked")
++  expect(await logLines(project)).not.toEqual(beforeLogs)
+ })
+ 
+ test("updateRule creates a custom override for a curated row and updates it with a log line", async () => {
