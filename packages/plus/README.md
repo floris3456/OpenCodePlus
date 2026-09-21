@@ -119,6 +119,7 @@ Row ids name one row everywhere: the TUI filter, tool calls, log targets, and er
 - `group:<level>:<team>/:special:<id>:<group>` — one of the five groups under a team-scoped special agent
 - `model:<providerID>/<modelID>` (optionally `@<variant>`) — the `<itemId>` of a model row
 - `perm:<toolId>:<ruleId>` (the rule id keeps any extra `:` it contains) — the `<itemId>` of a permission row
+- `perm:<action>:team-role`, `perm:read:team-role`, `perm:team_<tool>:role-ceiling`, `perm:search:team-tavily`, `perm:edit:run:<runID>` — the `<itemId>`s of a team member's rule rows (see **Team rules are rows**). Filter the run-scoped one with `run:<id>`.
 
 `<level>` is `project`, `global`, or `defaults`.
 
@@ -126,10 +127,43 @@ Guards: writes for agents listed in `.opencodeplus/project.json` `protectedAgent
 
 Log format is `Plus.LogEntry` (`src/rpc.ts`): `{ ts, actor: { type: tui|tool, agent?, sessionID?, messageID? }, op, target, summary, revision }`. Project writes append to `<project>/.opencodeplus/instructions/log.jsonl`, global/defaults writes to `<configDir>/opencodeplus/instructions/log.jsonl`. The log's own `where` grammar is small: a bare word matches over op, target, summary, and actor agent; keyed tokens are `actor:tui|tool`, `agent:<text>`, `op:<text>`, `target:<prefix>`, `session:<text>`, `since:<instant>` / `before:<instant>` (ISO date or `<n><s|m|h|d|w>` age).
 
+## Team rules are rows
+
+What a team member may do is not written onto the agent by the team code — it
+is a set of instructions rows, so you can see it, edit it and override it like
+anything else in the tree. `teams/policy.ts` states the role ceiling and the
+native answers as data; `instructions/team-policy-rows.ts` turns them into
+`perm:` rows under each member; `instructions/apply.ts` installs whatever those
+rows resolve to. No file under `src/teams` pushes permissions onto an agent or
+registers a permission hook.
+
+The rows sit in a `Policy` group under the member's `Tools` group. Each one
+carries both sides of its answer, so toggling it is meaningful in both
+directions: on installs an explicit allow, off installs the deny. Per role you
+get one row per native action (`shell`, `question`, `external_directory`,
+`subagent`, `task`, and `read` for keys/env/credentials), one row per team tool
+**outside** the role's ceiling, and — for implementers, reviewers and scouts —
+one row turning Tavily off on the `search` MCP server while code search stays.
+While a run is live, that run's `scope.paths` become a
+`perm:edit:run:<runID>` row on the child, allowing the scope, denying
+everything else, and never allowing `.git/**` or `.opencodeplus/**`.
+
+Team tools appear only under the Teams catalogue. An agent that is not a
+member of an enabled team gets a `team.*` wildcard deny, so it sees no
+`team_*` tool and no `tools.team.*` catalog entry in any chat — the answer to
+"why can't build call this" is that build never had it, not `E_NOT_ACTOR`.
+
 ## Team runs
 
 Team tools live in `src/teams` and are registered for every Plus instance, with
-or without project mode. A run's state follows its host session rather than the
+or without project mode. The namespace holds fourteen tools that all work —
+`delegate`, `finish`, `followup`, `integrate`, `checkpoint`, `set_checks`,
+`supersede`, `stop`, `status`, `wait`, `get_context`, `diff`, `list` and
+`check`. Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
+read-only `git diff` of your own run or one of your children, truncated to
+`maxBytes` (default 200000) with `truncated: true`.
+
+A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.idle`,
 `session.execution.failed` and `session.execution.interrupted`, maps the
 session to its run, and `teams/lifecycle.ts` settles the attempt, moves the run

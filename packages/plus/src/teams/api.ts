@@ -394,6 +394,12 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const streaming = attemptTransition(admitted, "streaming", "first_event")
   await saveRun(root, streaming)
 
+  // The child's edit scope is an instructions row derived from this record,
+  // so the record must be published before the child is prompted. Asking the
+  // host to reload agents republishes Plus through the same event a file edit
+  // uses; a host without the seam just ignores it.
+  await Effect.runPromise(ctx.agent.reload().pipe(Effect.ignore))
+
   const latest = await loadRun(root, parent.id)
   if (latest !== undefined && !latest.children.includes(childID))
     await saveRun(root, { ...latest, children: [...latest.children, childID], lastUsed: now }).catch(() => undefined)

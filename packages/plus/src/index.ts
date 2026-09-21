@@ -3279,7 +3279,10 @@ function publishFresh(
       state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
       state.cachedScopes = { global: new Set(publishScopes.global), defaults: new Set(publishScopes.defaults) }
       const fingerprint = JSON.stringify({
-        items: view.items.filter((item) => item.kind !== "perm"),
+        // Mined perm rows are view-time only and stay out, but team policy
+        // rows are derived state that must move the fingerprint: a run
+        // starting or settling changes what a member may edit.
+        items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined),
         agents: view.agents,
         servers: discovered.servers,
         records: stored.records,
@@ -3788,7 +3791,7 @@ async function fingerprintPublish(
   const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
   const { specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, records)
   return JSON.stringify({
-    items: view.items.filter((item) => item.kind !== "perm"),
+    items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined),
     agents: view.agents,
     servers: discovered.servers,
     records,
