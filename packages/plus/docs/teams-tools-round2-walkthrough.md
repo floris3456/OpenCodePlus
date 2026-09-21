@@ -281,28 +281,36 @@ The earlier catalogue evidence in this document came from
 `instructions.snapshot`. Item 7 asks for the rows under **both** catalogues, so
 here is real `instructions_list` output, driven by a team member in the lab:
 
-```
-Agents catalogue:
-┌────────────────────────────────────────────┬───────────┬──────────────────────┐
-│ Raw id                                     │ Catalogue │ Agent                │
-├────────────────────────────────────────────┼───────────┼──────────────────────┤
-│ item:defaults::tool:search_tavily_search   │ Agents    │ shared Defaults ('') │
-└────────────────────────────────────────────┴───────────┴──────────────────────┘
+The four `instructions_list` calls the agent made:
 
-Teams catalogue:
-┌────────────────────────────────────────┬───────────┬──────────────────────────┐
-│ Raw id                                 │ Catalogue │ Agent                    │
-├────────────────────────────────────────┼───────────┼──────────────────────────┤
-│ item:defaults:/teams:tool:             │ Teams     │ shared Defaults (/teams) │
-│ search_exa_code_search                 │           │                          │
-├────────────────────────────────────────┼───────────┼──────────────────────────┤
-│ item:defaults:/teams:tool:             │ Teams     │ shared Defaults (/teams) │
-│ search_tavily_extract                  │           │                          │
-├────────────────────────────────────────┼───────────┼──────────────────────────┤
-│ item:defaults:/teams:tool:             │ Teams     │ shared Defaults (/teams) │
-│ search_tavily_search                   │           │                          │
-└────────────────────────────────────────┴───────────┴──────────────────────────┘
 ```
+instructions.list [where=kind:item item:tool namespace:search catalogue:agents agent:_, limit=50]
+instructions.list [where=kind:item item:tool namespace:search catalogue:teams  agent:_, limit=50]
+instructions.list [where=kind:item item:mcp catalogue:agents, limit=50]
+instructions.list [where=kind:item item:mcp catalogue:teams,  limit=50]
+```
+
+and the eight raw row ids they returned:
+
+```
+Agents:
+- item:defaults::mcp:search
+- item:defaults::tool:search_exa_code_search
+- item:defaults::tool:search_tavily_extract
+- item:defaults::tool:search_tavily_search
+
+Teams:
+- item:defaults:/teams:mcp:search
+- item:defaults:/teams:tool:search_exa_code_search
+- item:defaults:/teams:tool:search_tavily_extract
+- item:defaults:/teams:tool:search_tavily_search
+```
+
+The keyless id form (`item:defaults::…`) is the Agents catalogue and the
+`/teams` form is the Teams catalogue, so the MCP row and all three of its tool
+rows are present under both. The per-role narrowing for these same tools is
+the `/api/agent` table earlier in this document — Tavily denied for
+implementers, the reviewer and the scout; Exa allowed for everyone.
 
 and the same agent's summary of the full fan-out:
 
@@ -401,11 +409,17 @@ updated to stop contradicting the new gate.
   audited at all. Both hooks register together and a failure is logged at warn.
 - `instructions_list`'s `server:` filter does not match an `mcp:` row.
 - `packages/core/test/mcp.test.ts` › "terminates MCP descendants after the
-  wrapper exits successfully" spawns `node`, which does not exist on this
-  build host, so it failed at spawn before any assertion. Its existing
-  `win32` skip guard was extended with `!Bun.which("node")`, matching four
-  precedents in the same package (`sh`, `bash`, `hg`). The assertion is
-  untouched and the test still runs wherever `node` exists.
+  wrapper exits successfully" spawns `node`, which is not installed on this
+  build host, so it fails at spawn with
+  `Executable not found in $PATH: "node"` before reaching its assertion. An
+  earlier attempt extended the test's `win32` skip guard with
+  `!Bun.which("node")`; a reviewer ruled that this disables a pre-existing
+  regression test on the very host where it failed, and it was reverted — the
+  guard is byte-identical to its original form again. The honest state of that
+  file on this host is therefore **72 pass, 1 fail, 0 skip**, the single
+  failure being environmental and unrelated to this round. The five new
+  permission-message tests in that file all pass. A host with `node` installed
+  runs the descendant test as it always did.
 - A first delegate in a brand-new lab home failed with
   `E_INTERNAL: NotFound: FileSystem.realPath` on the run's worktree directory;
   a later delegate in the same lab succeeded. Worktree provisioning is
