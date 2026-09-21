@@ -9,7 +9,7 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect, Fiber, Option, PubSub, Schema, Stream } from "effect"
+import { Cause, Deferred, Effect, Fiber, Option, PubSub, Schema, Stream } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -473,6 +473,26 @@ async function runSuccess(tool: Tool.Info & { readonly id: string }, input: unkn
   return Effect.runPromise(tool.execute(input, ctx).pipe(Effect.map((result) => result.output)))
 }
 
+// A human rejection is audited from the permission event stream, which runs on
+// its own fiber, so the line lands after the call has already failed. Wait for
+// it, then let the stream settle, so "exactly one line" is a real claim.
+async function settledToolCalls(
+  root: string,
+  match: (line: Record<string, unknown>) => boolean,
+): Promise<Array<Record<string, unknown>>> {
+  const select = async () =>
+    (await auditLines(root).catch(() => [])).filter((line) => line.kind === "tool.call" && match(line))
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    if ((await select()).length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      return select()
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error("timed out waiting for a tool.call audit line")
+}
+
 test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const tools = await registeredTools()
@@ -763,11 +783,17 @@ function executeGated<A>(
   })
 }
 
+// A permission service that answers with core's own rule effects and error
+// types, and publishes the two canonical permission events the way core's
+// service does: `Asked` carries the whole request when one is created, and
+// `Replied` is published before the deferred is resolved
+// (`packages/core/src/permission.ts`).
 function makeTestPermissionService(
   rules: Permission.Ruleset,
-  onAsked?: (request: Permission.Request) => void,
+  emit?: (event: { type: string; data: unknown }) => void,
 ) {
   let counter = 0
+  const asked: Permission.Request[] = []
   const pending = new Map<
     string,
     {
@@ -812,7 +838,8 @@ function makeTestPermissionService(
           message: winningRule?.message,
         }
         pending.set(reqId, { request, deferred })
-        if (onAsked) onAsked(request)
+        asked.push(request)
+        if (emit) emit({ type: Permission.Event.Asked.type, data: request })
         return yield* Deferred.await(deferred).pipe(
           Effect.catchTag("Permission.DeclinedError", (err) => Effect.die(err)),
           Effect.ensuring(Effect.sync(() => pending.delete(reqId))),
@@ -823,6 +850,11 @@ function makeTestPermissionService(
         const item = pending.get(input.requestID)
         if (!item) return yield* Effect.fail(new Permission.NotFoundError({ requestID: input.requestID }))
         pending.delete(input.requestID)
+        if (emit)
+          emit({
+            type: Permission.Event.Replied.type,
+            data: { sessionID: item.request.sessionID, requestID: item.request.id, reply: input.reply },
+          })
         if (input.reply === "reject") {
           return yield* Deferred.fail(
             item.deferred,
@@ -845,6 +877,7 @@ function makeTestPermissionService(
 
   return {
     service,
+    asked,
     pendingRequests: () => Array.from(pending.values()).map((item) => item.request),
   }
 }
@@ -887,9 +920,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
         { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
       ]
 
-      const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
-        tc.emit({ type: "permission.asked", data: req })
-      })
+      const { service: permService, pendingRequests } = makeTestPermissionService(rules, tc.emit)
 
       // 1. First call: ALLOW
       const allowCtx: Tool.Context = {
@@ -983,21 +1014,123 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       expect(denyOutcome.ok).toBe(false)
       expect(denyOutcome.message).toContain("Permission denied")
 
-      const lines = await auditLines(root)
-      const calls = lines.filter((l) => l.kind === "tool.call")
-      expect(calls.length).toBeGreaterThanOrEqual(2)
+      // A rejection with feedback reaches BOTH observers: it publishes
+      // permission.replied and, being a typed CorrectedError, also fires
+      // execute.after. Exactly one of them writes the line.
+      const denials = await settledToolCalls(root, (line) => line.tool === "team_delegate" && line.ok === false)
+      expect(denials).toHaveLength(1)
+      const denyLine = denials[0] as Record<string, unknown>
+      expect(denyLine.code).toBe("E_PERMISSION")
+      expect(denyLine.outcome).toBe("asked:deny")
+      expect(denyLine.actor).toBe("fable-planner")
+      expect(denyLine.sessionID).toBe(sessionID)
 
-      const allowLine = calls.find((l) => l.tool === "team_delegate" && l.ok === true)
-      expect(allowLine).toBeDefined()
-      expect(allowLine?.outcome).toBe("asked:allow")
-      expect(allowLine?.actor).toBe("fable-planner")
-      expect(allowLine?.sessionID).toBe(sessionID)
+      const allowed = (await auditLines(root)).filter(
+        (line) => line.kind === "tool.call" && line.tool === "team_delegate" && line.ok === true,
+      )
+      expect(allowed).toHaveLength(1)
+      expect(allowed[0]?.outcome).toBe("asked:allow")
+      expect(allowed[0]?.actor).toBe("fable-planner")
+      expect(allowed[0]?.sessionID).toBe(sessionID)
 
-      const denyLine = calls.find((l) => l.tool === "team_delegate" && l.ok === false && l.code === "E_PERMISSION")
-      expect(denyLine).toBeDefined()
-      expect(denyLine?.outcome).toBe("asked:deny")
-      expect(denyLine?.actor).toBe("fable-planner")
-      expect(denyLine?.sessionID).toBe(sessionID)
+      const v = await verify(root)
+      expect(v.ok).toBe(true)
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
+// The plain TUI Reject: no feedback. Core answers it with DeclinedError, a
+// deliberate defect, so the call never becomes a typed Tool.Error and no
+// execute.after hook fires — permission.replied is the only trace it leaves.
+test("a human rejection without feedback writes exactly one asked:deny line and the chain still verifies", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-decline-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# planner decline\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const head = await git(repoDir, ["rev-parse", "HEAD"])
+
+      const sessionID = "ses_planner_decline_001"
+      const plannerRun: RunRecord = {
+        ...makeRun("main-planner000002", "fable-planner", sessionID),
+        directory: repoDir,
+        base: head,
+        head,
+        kind: "main",
+      }
+      await saveRun(root, plannerRun)
+
+      const session = {
+        create: () => Effect.succeed({ id: Session.ID.make("ses_child_decline") }),
+        prompt: () => Effect.succeed(undefined as never),
+        switchModel: () => Effect.succeed(undefined as never),
+        wait: () => Effect.succeed(undefined),
+      } as unknown as Context["session"]
+      const tc = testToolContext({ directory: repoDir, session })
+      const api = createTeamApi(tc.ctx, createState())
+      await registerTeamTools(tc.ctx, api)
+
+      const rules: Permission.Ruleset = [
+        { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
+      ]
+      const { service: permService, pendingRequests } = makeTestPermissionService(rules, tc.emit)
+
+      const declineCtx: Tool.Context = {
+        sessionID: Session.ID.make(sessionID),
+        agent: Agent.ID.make("fable-planner"),
+        messageID: SessionMessage.ID.make("msg_plan_decline"),
+        id: Tool.CallID.make("call_plan_decline"),
+        progress: () => Effect.void,
+      }
+
+      const declineInput = Schema.decodeUnknownSync(Brief)({
+        requestID: "r-decline-01",
+        role: "sol-orchestrator",
+        reason: "3 independent packages, each needs its own workers",
+        objective: "Delegate work the operator refuses outright, with no feedback.",
+        deliverable: { kind: "commit" as const },
+        scope: { paths: ["packages/plus/src/*"] },
+        checks: [{ id: "c3", argv: ["bun", "test", "test/c.test.ts"] }],
+      })
+
+      const fiber = Effect.runFork(
+        executeGated(need(tc.tools, "team_delegate"), declineInput, declineCtx, permService, tc.triggerHook),
+      )
+
+      while (pendingRequests().length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      const request = pendingRequests()[0]!
+      expect(request.source?.id).toBe("call_plan_decline")
+
+      await Effect.runPromise(permService.reply({ requestID: request.id, reply: "reject" }))
+
+      const exit = await Effect.runPromise(Fiber.await(fiber))
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure")
+        expect(
+          exit.cause.reasons.some(
+            (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
+          ),
+        ).toBe(true)
+
+      const calls = await settledToolCalls(root, (line) => line.tool === "team_delegate")
+      expect(calls).toHaveLength(1)
+      const line = calls[0] as Record<string, unknown>
+      expect(line.ok).toBe(false)
+      expect(line.code).toBe("E_PERMISSION")
+      expect(line.outcome).toBe("asked:deny")
+      expect(line.actor).toBe("fable-planner")
+      expect(line.sessionID).toBe(sessionID)
+      expect(line.run).toBe(plannerRun.id)
+      expect(typeof line.durationMs).toBe("number")
+      expect("input" in line).toBe(false)
 
       const v = await verify(root)
       expect(v.ok).toBe(true)
@@ -1027,11 +1160,7 @@ test("child session calling team_status executes without creating a permission r
       { action: "team.status", resource: "*", effect: "allow" },
     ]
 
-    let askedCount = 0
-    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
-      askedCount++
-      tc.emit({ type: "permission.asked", data: req })
-    })
+    const { service: permService, asked, pendingRequests } = makeTestPermissionService(rules, tc.emit)
 
     const statusCtx: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
@@ -1045,7 +1174,7 @@ test("child session calling team_status executes without creating a permission r
       executeGated(statusTool, {}, statusCtx, permService, tc.triggerHook),
     )
     expect(output).toBeDefined()
-    expect(askedCount).toBe(0)
+    expect(asked).toHaveLength(0)
     expect(pendingRequests()).toHaveLength(0)
 
     const lines = await auditLines(root)
@@ -1087,11 +1216,7 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
       },
     ]
 
-    let askedCount = 0
-    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
-      askedCount++
-      tc.emit({ type: "permission.asked", data: req })
-    })
+    const { service: permService, asked, pendingRequests } = makeTestPermissionService(rules, tc.emit)
 
     const ctx: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
@@ -1109,7 +1234,7 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     )
     expect(outcome.ok).toBe(false)
     expect(outcome.message).toBe("team_delegate is outside the implementer ceiling")
-    expect(askedCount).toBe(0)
+    expect(asked).toHaveLength(0)
     expect(pendingRequests()).toHaveLength(0)
 
     const lines = await auditLines(root)

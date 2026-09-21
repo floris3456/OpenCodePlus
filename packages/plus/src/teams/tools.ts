@@ -1,6 +1,7 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { ToolHooks } from "@opencode/plugin/effect/tool"
+import { Permission } from "@opencode/schema/permission"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Exit, Schema, Scope, Stream } from "effect"
 import path from "node:path"
@@ -49,9 +50,40 @@ const ListDescription = "List runs in this namespace, optionally filtered.\nHidd
 const GetContextDescription = "Load your brief, checks, siblings, inbox and budget.\nCall first, then execute the Brief."
 const CheckDescription = "Run one assigned focused check in your worktree.\nUnknown ids fail with E_UNKNOWN_CHECK."
 
+// One team tool call in flight, remembered at `tool.execute.before` so a refusal
+// seen on the event stream can be audited with the same actor, session and
+// duration the call itself would have reported.
+interface TeamCall {
+  readonly tool: string
+  readonly sessionID: string
+  readonly agent: string
+  readonly start: number
+}
+
 interface TeamAuditState {
+  readonly calls: Map<string, TeamCall>
   readonly askedCallIds: Set<string>
-  readonly startTimes: Map<string, number>
+  readonly askedRequests: Map<string, string>
+}
+
+const PermissionEvents: Set<string> = new Set([Permission.Event.Asked.type, Permission.Event.Replied.type])
+
+function appendToolCall(line: {
+  run: string | null
+  actor: string
+  sessionID: string
+  tool: string
+  ok: boolean
+  code: string | null
+  durationMs: number
+  outcome: ToolCallOutcome
+}): Effect.Effect<void> {
+  return Effect.ignore(
+    Effect.tryPromise({
+      try: () => append(teamsDataDir(), "tool.call", line),
+      catch: () => undefined,
+    }),
+  )
 }
 
 function isPermissionError(error: Tool.Error): boolean {
@@ -61,6 +93,12 @@ function isPermissionError(error: Tool.Error): boolean {
   return false
 }
 
+// Exactly one `tool.call` line per refused call, split by which refusals can
+// reach which observer. A human rejection always publishes `permission.replied`
+// and is written there; a rule denial never creates a request, so no reply will
+// ever arrive for it and this hook owns it. The only refusal that reaches both
+// is a rejection WITH feedback, which core types as `Permission.CorrectedError`
+// — recognising that cause here is what keeps the line from being written twice.
 function handleExecuteAfter(
   event: ToolHooks["execute.after"],
   state: TeamAuditState,
@@ -68,47 +106,76 @@ function handleExecuteAfter(
   return Effect.gen(function* () {
     if (!event.tool.startsWith("team_")) return
     const callId = String(event.id)
-    const start = state.startTimes.get(callId)
-    const durationMs = start !== undefined ? Date.now() - start : 0
-    state.startTimes.delete(callId)
-
     if (event.status !== "error") {
+      state.calls.delete(callId)
       state.askedCallIds.delete(callId)
       return
     }
+    // Leave the call state alone for a rejection with feedback: the replied
+    // observer owns that line and still needs it, and the two observers reach
+    // this call in no guaranteed order.
+    if ((event.error.error as { _tag?: string } | undefined)?._tag === "Permission.CorrectedError") return
 
-    if (!isPermissionError(event.error)) {
-      state.askedCallIds.delete(callId)
-      return
-    }
+    const call = state.calls.get(callId)
+    state.calls.delete(callId)
+    state.askedCallIds.delete(callId)
+    if (!isPermissionError(event.error)) return
 
-    const wasAsked =
-      state.askedCallIds.has(callId) ||
-      (event.error.error as { _tag?: string } | undefined)?._tag === "Permission.CorrectedError"
+    const sessionID = String(event.sessionID)
+    const found = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
+
+    yield* appendToolCall({
+      run: found?.id ?? null,
+      actor: String(event.agent),
+      sessionID,
+      tool: event.tool,
+      ok: false,
+      code: "E_PERMISSION",
+      durationMs: call === undefined ? 0 : Date.now() - call.start,
+      outcome: "denied",
+    })
+  })
+}
+
+function rememberAsked(data: unknown, state: TeamAuditState): void {
+  const request = data as { id?: string; source?: { type?: string; id?: string } } | undefined
+  if (request?.source?.type !== "tool" || typeof request.source.id !== "string") return
+  state.askedCallIds.add(request.source.id)
+  if (typeof request.id === "string" && state.calls.has(request.source.id))
+    state.askedRequests.set(request.id, request.source.id)
+}
+
+// The only trace a rejection WITHOUT feedback leaves: core answers it with
+// `DeclinedError`, deliberately a defect, so the call never becomes a typed
+// `Tool.Error` and no `tool.execute.after` fires for it. The reply event is
+// published for every answered request, including the ones core cascades onto
+// the session's other pending requests, and one request is mapped once, so the
+// rejected call is audited exactly once whether or not it carried feedback.
+function handleReplied(data: unknown, state: TeamAuditState): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const replied = data as { requestID?: string; reply?: string } | undefined
+    if (typeof replied?.requestID !== "string") return
+    const callId = state.askedRequests.get(replied.requestID)
+    if (callId === undefined) return
+    state.askedRequests.delete(replied.requestID)
+    if (replied.reply !== "reject") return
+    const call = state.calls.get(callId)
+    if (call === undefined) return
+    state.calls.delete(callId)
     state.askedCallIds.delete(callId)
 
-    const outcome: ToolCallOutcome = wasAsked ? "asked:deny" : "denied"
-    const sessionID = String(event.sessionID)
-    const agent = String(event.agent)
-    const found = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
-    const run = found?.id ?? null
+    const found = yield* Effect.promise(() => bySession(teamsDataDir(), call.sessionID))
 
-    yield* Effect.ignore(
-      Effect.tryPromise({
-        try: () =>
-          append(teamsDataDir(), "tool.call", {
-            run,
-            actor: agent,
-            sessionID,
-            tool: event.tool,
-            ok: false,
-            code: "E_PERMISSION",
-            durationMs,
-            outcome,
-          }),
-        catch: () => undefined,
-      }),
-    )
+    yield* appendToolCall({
+      run: found?.id ?? null,
+      actor: call.agent,
+      sessionID: call.sessionID,
+      tool: call.tool,
+      ok: false,
+      code: "E_PERMISSION",
+      durationMs: Date.now() - call.start,
+      outcome: "asked:deny",
+    })
   })
 }
 
@@ -129,7 +196,12 @@ async function installHook(ctx: Context, state: TeamAuditState): Promise<Registr
       const beforeReg = yield* Effect.suspend(() =>
         ctx.tool.hook("execute.before", (event) => {
           if (event.tool.startsWith("team_")) {
-            state.startTimes.set(String(event.id), Date.now())
+            state.calls.set(String(event.id), {
+              tool: event.tool,
+              sessionID: String(event.sessionID),
+              agent: String(event.agent),
+              start: Date.now(),
+            })
           }
           return Effect.void
         }),
@@ -154,19 +226,18 @@ async function installHook(ctx: Context, state: TeamAuditState): Promise<Registr
   )
 }
 
-async function listenAskedEvents(ctx: Context, state: TeamAuditState): Promise<Registration> {
+// Both permission events share one subscription so they stay ordered: the
+// request is always remembered before the reply that resolves it arrives.
+async function listenPermissionEvents(ctx: Context, state: TeamAuditState): Promise<Registration> {
   return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       yield* ctx.event.subscribe().pipe(
-        Stream.filter((event) => event.type === "permission.asked"),
+        Stream.filter((event) => PermissionEvents.has(event.type)),
         Stream.runForEach((event) =>
-          Effect.sync(() => {
-            const data = event.data as { source?: { type?: string; id?: string } } | undefined
-            if (data?.source?.type === "tool" && typeof data.source.id === "string") {
-              state.askedCallIds.add(data.source.id)
-            }
-          }),
+          event.type === Permission.Event.Asked.type
+            ? Effect.sync(() => rememberAsked(event.data, state))
+            : handleReplied(event.data, state),
         ),
         Effect.catchCause((cause) =>
           Effect.logWarning("plus team event subscription failed", { cause }).pipe(Effect.asVoid),
@@ -189,8 +260,9 @@ async function listenAskedEvents(ctx: Context, state: TeamAuditState): Promise<R
 
 export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
   const state: TeamAuditState = {
+    calls: new Map<string, TeamCall>(),
     askedCallIds: new Set<string>(),
-    startTimes: new Map<string, number>(),
+    askedRequests: new Map<string, string>(),
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
@@ -323,14 +395,15 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
     })
   })
   const hookReg = await installHook(ctx, state)
-  const eventReg = await listenAskedEvents(ctx, state)
+  const eventReg = await listenPermissionEvents(ctx, state)
   return {
     dispose: Effect.gen(function* () {
       yield* toolReg.dispose
       yield* hookReg.dispose
       yield* eventReg.dispose
+      state.calls.clear()
       state.askedCallIds.clear()
-      state.startTimes.clear()
+      state.askedRequests.clear()
     }),
   }
 }
@@ -351,7 +424,7 @@ function runGated<A>(
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
     const callId = String(toolCtx.id)
-    const start = state.startTimes.get(callId) ?? Date.now()
+    const start = state.calls.get(callId)?.start ?? Date.now()
     const auditState: { run: string | null } = { run: null }
     const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState).pipe(
       Effect.map((result) => ({ ok: true as const, output: result.output })),
@@ -362,24 +435,18 @@ function runGated<A>(
     const code = settled.ok ? null : codeOf(settled.message)
     const wasAsked = state.askedCallIds.has(callId)
     state.askedCallIds.delete(callId)
-    state.startTimes.delete(callId)
+    state.calls.delete(callId)
     const outcome: ToolCallOutcome = wasAsked ? "asked:allow" : "allowed"
-    yield* Effect.ignore(
-      Effect.tryPromise({
-        try: () =>
-          append(teamsDataDir(), "tool.call", {
-            run: auditState.run,
-            actor: agent,
-            sessionID,
-            tool: `team_${name}`,
-            ok,
-            code,
-            durationMs,
-            outcome,
-          }),
-        catch: () => undefined,
-      }),
-    )
+    yield* appendToolCall({
+      run: auditState.run,
+      actor: agent,
+      sessionID,
+      tool: `team_${name}`,
+      ok,
+      code,
+      durationMs,
+      outcome,
+    })
     if (!settled.ok) return yield* Effect.fail(new Tool.Error({ message: settled.message }))
     return { output: settled.output }
   })
