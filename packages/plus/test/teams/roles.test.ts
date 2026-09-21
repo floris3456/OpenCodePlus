@@ -283,4 +283,9 @@ test("effective permission at /api/agent for a child session is never ask", asyn
   const effective = evaluate("team.delegate", "*", permissions)
   expect(effective.effect).toBe("deny")
   expect(effective.effect).not.toBe("ask")
+
+  for (const tool of teamTools) {
+    const eff = evaluate(`team.${tool}`, "*", permissions)
+    expect(eff.effect).not.toBe("ask")
+  }
 })

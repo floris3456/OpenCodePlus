@@ -1,11 +1,12 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
+import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Schema } from "effect"
+import { Effect, Exit, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { runRegistration } from "../instructions/apply.js"
 import { teamsDataDir } from "../instructions/paths.js"
-import { append } from "./audit.js"
+import { append, type ToolCallOutcome } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
@@ -48,8 +49,138 @@ const ListDescription = "List runs in this namespace, optionally filtered.\nHidd
 const GetContextDescription = "Load your brief, checks, siblings, inbox and budget.\nCall first, then execute the Brief."
 const CheckDescription = "Run one assigned focused check in your worktree.\nUnknown ids fail with E_UNKNOWN_CHECK."
 
+const askedCallIds = new Set<string>()
+const startTimes = new Map<string, number>()
+
+export function markCallAsked(callID: string): void {
+  askedCallIds.add(callID)
+}
+
+export function isCallAsked(callID: string): boolean {
+  return askedCallIds.has(callID)
+}
+
+export function clearAskedCalls(): void {
+  askedCallIds.clear()
+  startTimes.clear()
+}
+
+function isPermissionError(error: Tool.Error): boolean {
+  const cause = error.error as { _tag?: string } | undefined
+  if (cause?._tag === "Permission.BlockedError" || cause?._tag === "Permission.CorrectedError") return true
+  if (typeof error.message === "string" && error.message.startsWith("Permission denied")) return true
+  return false
+}
+
+export function handleExecuteAfter(
+  event: ToolHooks["execute.after"],
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (!event.tool.startsWith("team_")) return
+    const callId = String(event.id)
+    const start = startTimes.get(callId)
+    const durationMs = start !== undefined ? Date.now() - start : 0
+    startTimes.delete(callId)
+
+    if (event.status !== "error") {
+      askedCallIds.delete(callId)
+      return
+    }
+
+    if (!isPermissionError(event.error)) {
+      askedCallIds.delete(callId)
+      return
+    }
+
+    const wasAsked =
+      askedCallIds.has(callId) ||
+      (event.error.error as { _tag?: string } | undefined)?._tag === "Permission.CorrectedError"
+    askedCallIds.delete(callId)
+
+    const outcome: ToolCallOutcome = wasAsked ? "asked:deny" : "denied"
+    const sessionID = String(event.sessionID)
+    const agent = String(event.agent)
+    const found = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
+    const run = found?.id ?? null
+
+    yield* Effect.ignore(
+      Effect.tryPromise({
+        try: () =>
+          append(teamsDataDir(), "tool.call", {
+            run,
+            actor: agent,
+            sessionID,
+            tool: event.tool,
+            ok: false,
+            code: "E_PERMISSION",
+            durationMs,
+            outcome,
+          }),
+        catch: () => undefined,
+      }),
+    )
+  })
+}
+
+async function installHook(ctx: Context): Promise<Registration> {
+  if (typeof ctx.tool?.hook !== "function") return { dispose: Effect.void }
+  const registered = await Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const afterReg = yield* Effect.suspend(() =>
+        ctx.tool.hook("execute.after", (event) => handleExecuteAfter(event)),
+      ).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.catchCause(() => Effect.succeed({ dispose: Effect.void })),
+      )
+      const beforeReg = yield* Effect.suspend(() =>
+        ctx.tool.hook("execute.before", (event) => {
+          if (event.tool.startsWith("team_")) {
+            startTimes.set(String(event.id), Date.now())
+          }
+          return Effect.void
+        }),
+      ).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.catchCause(() => Effect.succeed({ dispose: Effect.void })),
+      )
+      return {
+        dispose: Effect.all([afterReg.dispose, beforeReg.dispose, Scope.close(scope, Exit.void)], { discard: true }),
+      }
+    }).pipe(Effect.catchCause(() => Effect.succeed({ dispose: Effect.void }))),
+  )
+  return registered
+}
+
+async function listenAskedEvents(ctx: Context): Promise<Registration> {
+  if (typeof ctx.event?.subscribe !== "function") return { dispose: Effect.void }
+  const registered = await Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === "permission.asked"),
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            const data = event.data as { source?: { type?: string; id?: string } } | undefined
+            if (data?.source?.type === "tool" && typeof data.source.id === "string") {
+              askedCallIds.add(data.source.id)
+            }
+          }),
+        ),
+        Effect.catchCause(() => Effect.void),
+        Effect.forkScoped({ startImmediately: true }),
+        Effect.provideService(Scope.Scope, scope),
+      )
+      return {
+        dispose: Scope.close(scope, Exit.void),
+      }
+    }).pipe(Effect.catchCause(() => Effect.succeed({ dispose: Effect.void }))),
+  )
+  return registered
+}
+
 export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
-  return runRegistration(ctx.tool.transform, (editor) => {
+  const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Team runs: delegate work, report outcomes, and read run state." })
     editor.add({
       name: "delegate",
@@ -178,6 +309,11 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       execute: (input, context) => runGated("check", input, context, ctx, (args, caller) => api.check(args, caller)),
     })
   })
+  const hookReg = await installHook(ctx)
+  const eventReg = await listenAskedEvents(ctx)
+  return {
+    dispose: Effect.all([toolReg.dispose, hookReg.dispose, eventReg.dispose], { discard: true }),
+  }
 }
 
 function teamOptions(name: TeamTool, codemode: boolean) {
@@ -203,6 +339,11 @@ function runGated<A>(
     const durationMs = Date.now() - start
     const ok = settled.ok
     const code = settled.ok ? null : codeOf(settled.message)
+    const callId = String(toolCtx.id)
+    const wasAsked = askedCallIds.has(callId)
+    askedCallIds.delete(callId)
+    startTimes.delete(callId)
+    const outcome: ToolCallOutcome = wasAsked ? "asked:allow" : "allowed"
     yield* Effect.ignore(
       Effect.tryPromise({
         try: () =>
@@ -214,6 +355,7 @@ function runGated<A>(
             ok,
             code,
             durationMs,
+            outcome,
           }),
         catch: () => undefined,
       }),

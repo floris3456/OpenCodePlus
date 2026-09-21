@@ -5,6 +5,8 @@ import { Effect, Option, Predicate, Schema } from "effect"
 import { lock } from "./store.js"
 import { errCode, io } from "./io.js"
 
+export type ToolCallOutcome = "allowed" | "asked:allow" | "denied" | "asked:deny"
+
 export interface AppendResult {
   seq: number
   at: string

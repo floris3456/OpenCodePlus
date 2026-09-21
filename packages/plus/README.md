@@ -233,6 +233,18 @@ as one new attempt.
   checkout of it — is never a candidate and is never removed.
 - `team_list` and `team_status` indicate worktree state (`present`, `removed`, or `dirty`)
   for each run; `team_status` reports it beside its live `dirty` read.
+- Every gated team tool invocation writes an HMAC-SHA256 authenticated `tool.call` record
+  to `<teams data dir>/audit.log` (key at `audit.key`, mode `0600`).
+  Records contain `seq`, `at`, `kind: "tool.call"`, `run`, `actor`, `sessionID`, `tool`, `ok`,
+  `code`, `durationMs`, and `outcome`.
+  - `outcome` values: `"allowed"` (call permitted without human intervention), `"asked:allow"`
+    (call asked human approval and was approved in TUI), `"denied"` (call refused at call time
+    by rule with `code: "E_PERMISSION"`), and `"asked:deny"` (call asked human approval and was
+    declined with feedback in TUI with `code: "E_PERMISSION"`).
+  - Reachability: `"allowed"` and `"asked:allow"` are recorded through `runGated`. `"denied"`
+    and `"asked:deny"` are recorded through the `tool.execute.after` hook observing gate refusals
+    before `runGated`. Decline without feedback stays a defect in core (`DeclinedError`) and is
+    observable via `permission.replied`.
 
 The binding contract for the tool surface is `SPEC.md`.
 
