@@ -11,7 +11,9 @@ import { createPlusApi, createState, createHandlers } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
 import { enable } from "../src/project.js"
-import { projectLogPath, projectTeamsPath, teachingFilePath, teachingSkillId } from "../src/instructions/paths.js"
+import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId } from "../src/instructions/paths.js"
+import { load } from "../src/instructions/store.js"
+import { globalDefaultsTeamsPath } from "../src/instructions/teams.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import {
@@ -27,7 +29,7 @@ import {
   unknownRowRefusal,
 } from "../src/instructions/ops.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import type { MemoInput } from "../src/instructions/tree.js"
+import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { agentHarness, agentInfo, catalogHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
@@ -232,9 +234,9 @@ function need(tools: Map<string, Tool.Info & { readonly id: string }>, id: strin
   return tool
 }
 
-async function freshFixture(): Promise<{ ctx: Context; api: PlusApi; tools: Map<string, Tool.Info & { readonly id: string }>; project: string }> {
+async function freshFixture(overrides?: Partial<Parameters<typeof fullContext>[0]>): Promise<{ ctx: Context; api: PlusApi; tools: Map<string, Tool.Info & { readonly id: string }>; project: string }> {
   const { project } = await tempProject()
-  const ctx = fixtureContext(project)
+  const ctx = fixtureContext(project, overrides)
   const state = createState()
   const api = createPlusApi(ctx, state)
   await registerInstructionTools(ctx, api)
@@ -382,8 +384,19 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   const apiConfig = process.env.OPENCODE_CONFIG_DIR ?? ""
   if (apiConfig.length === 0) throw new Error("missing api config dir")
   const apiProject = apiIsolation.project
+  const agentPrompt = "Be helpful."
+  const agentFields = { description: "Helper agent", mode: "subagent" as const }
+  const skillBody = "Take notes."
   process.env.OPENCODE_CONFIG_DIR = toolConfig
-  const toolCtx = fixtureContext(toolProject)
+  // The tool resolves every create's returned row through the tree, and the
+  // unit harnesses for skills and MCP do not rescan the disk the way core's
+  // watcher does, so the host registry here must already list what the create
+  // writes. The files themselves are still written by the real create paths
+  // and compared below.
+  const toolCtx = fixtureContext(toolProject, {
+    skills: [skillInfo("notes2", skillBody)],
+    servers: [["search", { type: "remote", url: "https://example.test" }]],
+  })
   const toolApi = createPlusApi(toolCtx, createState())
   await registerInstructionTools(toolCtx, toolApi)
   const toolTools = await readTools(toolCtx)
@@ -391,9 +404,6 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   process.env.OPENCODE_CONFIG_DIR = apiConfig
   const apiCtx = fixtureContext(apiProject)
   const apiApi = createPlusApi(apiCtx, createState())
-  const agentPrompt = "Be helpful."
-  const agentFields = { description: "Helper agent", mode: "subagent" as const }
-  const skillBody = "Take notes."
   const baseTitle = "Custom.txt"
   const baseText = "custom base"
   // const instructionText = "Follow the guide."
@@ -904,7 +914,9 @@ test("a tool write appends a log line with actor tool carrying agent/session/mes
 })
 
 test("a tool create appends a log line with actor tool", async () => {
-  const { api, tools } = await freshFixture()
+  // The harness skill registry does not rescan the disk, so the created skill
+  // is listed here for the create's row lookup; the file write is still real.
+  const { api, tools } = await freshFixture({ skills: [skillInfo("loggedskill", "seed")] })
   await runOk(need(tools, "instructions_create"), { kind: "skill", name: "loggedskill", body: "Log me." })
   const logged = await api.log({ where: "actor:tool" })
   if (!logged.ok) throw new Error("log failed")
@@ -967,8 +979,10 @@ test("instructions_create with kind team creates the directory disabled and logs
     level: string
     team: string
     enabled: boolean
+    id: string
+    item: string
   }
-  expect(output).toEqual({ level: "project", team: "crew", enabled: false })
+  expect(output).toEqual({ level: "project", team: "crew", enabled: false, id: "team:project:crew", item: "crew" })
   const stat = await fs.stat(path.join(projectTeamsPath(project), "crew"))
   expect(stat.isDirectory()).toBe(true)
   const snapshot = await snapshotOf(api)
@@ -1329,8 +1343,10 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(curatedShownRecord.record?.state).toBe("off")
   const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
   expect(textError.message).toContain("cannot be edited")
-  const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"], message: "force pushes are not allowed here" })) as { tool: string; id: string }
-  expect(created).toMatchObject({ tool: "shell", id: "no-push" })
+  const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"], message: "force pushes are not allowed here" })) as { tool: string; id: string; item: string }
+  // A rule with no agent is shared: it lands in the Defaults catalogue and
+  // returns that row id, not the project-level default the old code wrote.
+  expect(created).toMatchObject({ tool: "shell", id: "item:defaults::perm:shell:no-push", item: "perm:shell:no-push" })
   const afterCreate = await snapshotOf(api)
   const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.address?.item === "perm:shell:no-push")
   if (customRow === undefined) throw new Error("missing custom perm row")
@@ -1965,4 +1981,461 @@ test("instructions_set on a team-special row persists team-scoped record", async
     expect(custom.state).toBe("off")
     expect(custom.team).toEqual({ level: "project", team: "crew" })
   }
+})
+
+// ---------------------------------------------------------------------------
+// create returns the row id show/set/delete accept
+
+test("every enabled create kind returns the row id show and delete accept, and delete removes the row", async () => {
+  const { project } = await tempProject()
+  const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate" }] }]
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    skills: [skillInfo("notes2", "Take notes.", path.join(project, ".opencode", "skill", "notes2", "SKILL.md"))],
+    servers: [["search", { type: "remote", url: "https://example.test" }]],
+    models: [modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState(), { builtins: registry })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+  const del = need(tools, "instructions_delete")
+
+  const known = async (id: string) =>
+    expandedTree(memoFromSnapshot(await snapshotOf(api))).find((node) => node.id === id)
+
+  // The member step deletes its own member, so the team it lives in is created
+  // first and stays alive through it. Owner is the file-backed project agent
+  // the model and rule steps are addressed to.
+  await runOk(create, { kind: "team", team: "crew", level: "project" })
+  await runOk(create, { kind: "agent", id: "owner", prompt: "owner role", scope: "project" })
+
+  const steps: readonly {
+    readonly name: string
+    readonly input: Record<string, unknown>
+    readonly id: string
+    readonly item: string
+    readonly kind: TreeNodeKind
+    readonly status: string
+    readonly show?: { readonly view?: string; readonly expect?: Record<string, unknown> }
+    readonly showFail?: string
+    readonly gone?: boolean
+  }[] = [
+    {
+      name: "agent",
+      input: { kind: "agent", id: "helper", prompt: "helper role", scope: "project" },
+      id: "agent:project:helper",
+      item: "helper",
+      kind: "agent",
+      status: "Deleted agent helper",
+      show: { view: "assembled", expect: { agent: "helper" } },
+      gone: true,
+    },
+    {
+      name: "skill",
+      input: { kind: "skill", name: "notes2", body: "Take notes." },
+      id: "item:defaults::skill:notes2",
+      item: "skill:notes2",
+      kind: "item",
+      status: "Deleted skill notes2",
+      show: { expect: { view: "resolved" } },
+    },
+    {
+      name: "base",
+      input: { kind: "base", id: "custom", title: "Custom.txt", text: "custom base" },
+      id: "item:defaults::base:custom",
+      item: "base:custom",
+      kind: "item",
+      status: "Deleted base template custom",
+      show: { expect: { view: "resolved" } },
+      gone: true,
+    },
+    {
+      name: "mcp",
+      input: { kind: "mcp", name: "search", config: { type: "remote", url: "https://example.test" } },
+      id: "item:defaults::mcp:search",
+      item: "mcp:search",
+      kind: "item",
+      status: "Removed MCP server search",
+      show: { expect: { view: "resolved" } },
+    },
+    {
+      name: "model",
+      input: { kind: "model", providerID: "acme", modelID: "nova-2", level: "project", agent: "owner" },
+      id: "item:project:owner:model:acme/nova-2",
+      item: "model:acme/nova-2",
+      kind: "item",
+      status: 'Removed "item:project:owner:model:acme/nova-2"',
+      show: { expect: { view: "resolved" } },
+      gone: true,
+    },
+    {
+      name: "rule",
+      input: { kind: "rule", tool: "shell", id: "owner-rule", label: "Owner rule", patterns: ["git push *"], level: "project", agent: "owner" },
+      id: "item:project:owner:perm:shell:owner-rule",
+      item: "perm:shell:owner-rule",
+      kind: "item",
+      status: 'Removed "item:project:owner:perm:shell:owner-rule"',
+      show: { expect: { tool: "shell", rule: "owner-rule" } },
+      gone: true,
+    },
+    {
+      name: "member",
+      input: { kind: "member", team: "crew", level: "project", id: "newbie", prompt: "newbie role" },
+      id: "team:project:crew:newbie",
+      item: "newbie",
+      kind: "team",
+      status: "Deleted team member newbie",
+      show: { expect: { kind: "member", level: "project", team: "crew", member: "newbie", registered: false } },
+      showFail: "diff",
+      gone: true,
+    },
+    {
+      name: "team",
+      input: { kind: "team", team: " squad ", level: "project" },
+      id: "team:project:squad",
+      item: "squad",
+      kind: "team",
+      status: "Deleted team squad",
+      show: { expect: { kind: "team", level: "project", team: "squad", enabled: false, members: [] } },
+      showFail: "sections",
+      gone: true,
+    },
+  ]
+
+  for (const step of steps) {
+    const output = (await runOk(create, step.input)) as { id: string; item: string }
+    expect(output.id).toBe(step.id)
+    expect(output.item).toBe(step.item)
+    const row = await known(step.id)
+    if (row === undefined) throw new Error(`create ${step.name} did not put ${step.id} in the tree`)
+    expect(row.kind).toBe(step.kind)
+    const shown = (await runOk(show, {
+      id: step.id,
+      ...(step.show?.view === undefined ? {} : { view: step.show.view }),
+    })) as Record<string, unknown>
+    expect(shown).toMatchObject({ id: step.id, ...(step.show?.expect ?? {}) })
+    if (step.showFail !== undefined) {
+      const refused = await runFail(show, { id: step.id, view: step.showFail })
+      expect(refused.message).toContain("view.unsupported")
+      expect(refused.message).not.toContain("row.unknown")
+    }
+    const deleted = (await runOk(del, { id: step.id, confirm: true })) as { status: string }
+    expect(deleted.status).toBe(step.status)
+    if (step.gone === true) expect(await known(step.id)).toBeUndefined()
+  }
+})
+
+test("create returns the created level's model and rule row, not the identical Defaults row", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    models: [modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+  const del = need(tools, "instructions_delete")
+
+  // Project and global rows need agents that live at those levels.
+  await runOk(create, { kind: "agent", id: "proj", prompt: "proj role", scope: "project" })
+  await runOk(create, { kind: "agent", id: "glob", prompt: "glob role", scope: "global" })
+
+  // A model with no agent and no level keeps the original validation.
+  const invalidModel = await runFail(create, { kind: "model", providerID: "acme", modelID: "nova-2" })
+  expect(invalidModel.message).toContain("create model requires agent for project|global levels")
+
+  // An explicit defaults model with no agent is the shared Defaults row.
+  const sharedModel = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults" })) as {
+    id: string
+    item: string
+    level: string
+    agent: string | null
+  }
+  expect(sharedModel).toMatchObject({ id: "item:defaults::model:acme/nova-2", item: "model:acme/nova-2", level: "defaults", agent: null })
+
+  // A shared rule (no agent, no level) keeps the original project storage and
+  // resolves through its visible Defaults row.
+  const sharedRule = (await runOk(create, { kind: "rule", tool: "shell", id: "shared-rule", label: "Shared", patterns: ["git push *"] })) as {
+    id: string
+    item: string
+    level: string
+    agent: string | null
+  }
+  expect(sharedRule).toMatchObject({ id: "item:defaults::perm:shell:shared-rule", item: "perm:shell:shared-rule", level: "project", agent: null })
+  const shownShared = (await runOk(show, { id: sharedRule.id })) as { tool: string; rule: string }
+  expect(shownShared).toMatchObject({ tool: "shell", rule: "shared-rule" })
+  const storedShared = (await load(project)).records.find((record) => record.type === "rule" && record.id === "shared-rule")
+  expect(storedShared).toMatchObject({ level: "project", agent: null })
+  expect(await Bun.file(projectRecordsPath(project)).text()).toContain('"id":"shared-rule"')
+  const sharedGlobalPath = globalRecordsPath()
+  const sharedGlobalText = (await Bun.file(sharedGlobalPath).exists()) ? await Bun.file(sharedGlobalPath).text() : ""
+  expect(sharedGlobalText).not.toContain('"id":"shared-rule"')
+
+  // The same model and rule at project and global levels return their own
+  // rows even though the Defaults row with the same item already exists.
+  const projectModel = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "project", agent: "proj" })) as { id: string }
+  expect(projectModel.id).toBe("item:project:proj:model:acme/nova-2")
+  const globalModel = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "global", agent: "glob" })) as { id: string }
+  expect(globalModel.id).toBe("item:global:glob:model:acme/nova-2")
+  const projectRule = (await runOk(create, { kind: "rule", tool: "shell", id: "proj-rule", label: "Proj", patterns: ["proj *"], level: "project", agent: "proj" })) as { id: string }
+  expect(projectRule.id).toBe("item:project:proj:perm:shell:proj-rule")
+  const globalRule = (await runOk(create, { kind: "rule", tool: "shell", id: "glob-rule", label: "Glob", patterns: ["glob *"], level: "global", agent: "glob" })) as { id: string }
+  expect(globalRule.id).toBe("item:global:glob:perm:shell:glob-rule")
+
+  // Each write persisted at its own store: the global rule lands in the global
+  // records file, the shared and project rules in the project file.
+  const storedGlobalRule = (await load(project)).records.find((record) => record.type === "rule" && record.id === "glob-rule")
+  expect(storedGlobalRule).toMatchObject({ level: "global", agent: "glob" })
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  const projectText = await Bun.file(projectRecordsPath(project)).text()
+  expect({ globalRule: globalText.includes('"id":"glob-rule"'), projectRule: projectText.includes('"id":"glob-rule"') }).toEqual({
+    globalRule: true,
+    projectRule: false,
+  })
+
+  for (const id of [sharedModel.id, sharedRule.id, projectModel.id, globalModel.id, projectRule.id, globalRule.id]) {
+    const snapshot = await snapshotOf(api)
+    if (!expandedTree(memoFromSnapshot(snapshot)).some((node) => node.id === id)) throw new Error(`missing created row ${id}`)
+    const deleted = (await runOk(del, { id, confirm: true })) as { status: string }
+    expect(deleted.status).toContain("Removed")
+  }
+  // Delete of the returned id removed the written records.
+  const remaining = (await load(project)).records.filter((record) => record.type === "model" || record.type === "rule")
+  expect(remaining.some((record) => record.type === "rule" && record.id === "shared-rule")).toBe(false)
+  expect(remaining.some((record) => record.type === "rule" && record.id === "proj-rule")).toBe(false)
+  expect(remaining.some((record) => record.type === "rule" && record.id === "glob-rule")).toBe(false)
+  expect(
+    remaining.some(
+      (record) => record.type === "model" && record.providerID === "acme" && record.modelID === "nova-2" && record.agent !== null,
+    ),
+  ).toBe(false)
+  const after = await snapshotOf(api)
+  // The pre-split catalogue migration copies the first shared Defaults row
+  // written into a new store into the Teams catalogue (store.ts
+  // migrateCatalogues); that is existing store behaviour, so this asserts the
+  // Agents-catalogue rows this test wrote are gone.
+  expect(
+    after.records.filter((record) => (record.type === "model" || record.type === "rule") && record.catalogue === undefined),
+  ).toEqual([])
+})
+
+test("create kind member adds members at project and defaults level and returns the member row id", async () => {
+  const { project } = await tempProject()
+  const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate" }] }]
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState(), { builtins: registry })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+  const del = need(tools, "instructions_delete")
+
+  // Colon team names and nested member ids both round-trip, and a padded team
+  // name is normalized exactly as team.addAgent normalizes it, so the write and
+  // the row lookup agree.
+  await runOk(create, { kind: "team", team: "crew:one", level: "project" })
+  const member = (await runOk(create, {
+    kind: "member",
+    team: " crew:one ",
+    level: "project",
+    id: "nested/beta",
+    prompt: "beta role",
+  })) as { id: string; item: string }
+  expect(member.id).toBe("team:project:crew:one:nested/beta")
+  expect(member.item).toBe("nested/beta")
+  const memberPath = path.join(projectTeamsPath(project), "crew:one", "nested", "beta.md")
+  expect(await Bun.file(memberPath).text()).toContain("beta role")
+
+  // The member entity view and its subtree: the team is disabled, so the host
+  // has not registered the member; enabling the team registers it.
+  const disabledView = (await runOk(show, { id: member.id })) as Record<string, unknown>
+  expect(disabledView).toMatchObject({ kind: "member", level: "project", team: "crew:one", member: "nested/beta", registered: false })
+  const recordView = (await runOk(show, { id: member.id, view: "record" })) as { record: Record<string, unknown> }
+  expect(recordView.record).toMatchObject({ kind: "member", team: "crew:one", member: "nested/beta" })
+  const subtree = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const memberRows = subtree.filter((node) => node.id.includes("nested/beta")).map((node) => node.id)
+  const subtreeTool = "item:project:crew:one/:nested/beta:tool:shell"
+  expect(memberRows).toContain("group:project:crew:one/:nested/beta:tools")
+  expect(memberRows).toContain(subtreeTool)
+  const toggled = (await runOk(need(tools, "instructions_set"), { id: subtreeTool, state: "off" })) as { status: string }
+  expect(toggled.status).toBe('Disabled "shell"')
+  const enabled = await api.setTeamEnabled({ level: "project", team: "crew:one", enabled: true, actor: { type: "tui" } })
+  if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
+  const enabledView = (await runOk(show, { id: member.id })) as Record<string, unknown>
+  expect(enabledView).toMatchObject({ kind: "member", registered: true })
+
+  // A global member created through a padded team name.
+  await runOk(create, { kind: "team", team: "gcrew", level: "global" })
+  const globalMember = (await runOk(create, {
+    kind: "member",
+    team: " gcrew ",
+    level: "global",
+    id: "gmember",
+    prompt: "global member role",
+  })) as { id: string; item: string }
+  expect(globalMember.id).toBe("team:global:gcrew:gmember")
+  expect(globalMember.item).toBe("gmember")
+  const globalMemberPath = path.join(globalTeamsPath(), "gcrew", "gmember.md")
+  expect(await Bun.file(globalMemberPath).text()).toContain("global member role")
+  const globalView = (await runOk(show, { id: globalMember.id })) as Record<string, unknown>
+  expect(globalView).toMatchObject({ kind: "member", level: "global", team: "gcrew", member: "gmember" })
+
+  // Defaults level writes the same overlay the TUI writes for a built-in team.
+  const overlay = (await runOk(create, {
+    kind: "member",
+    team: " ship ",
+    level: "defaults",
+    id: "rookie",
+    prompt: "rookie role",
+  })) as { id: string; item: string }
+  expect(overlay.id).toBe("team:defaults:ship:rookie")
+  expect(overlay.item).toBe("rookie")
+  const overlayPath = path.join(globalDefaultsTeamsPath(), "ship", "rookie.md")
+  expect(await Bun.file(overlayPath).text()).toContain("rookie role")
+  const snapshot = await snapshotOf(api)
+  expect(snapshot.teams?.find((team) => team.team === "ship")).toMatchObject({ overlay: ["rookie"] })
+  const overlayShown = (await runOk(show, { id: overlay.id })) as Record<string, unknown>
+  expect(overlayShown).toMatchObject({ kind: "member", level: "defaults", team: "ship", member: "rookie" })
+
+  const removedMember = (await runOk(del, { id: member.id, confirm: true })) as { status: string }
+  expect(removedMember.status).toBe("Deleted team member nested/beta")
+  expect(await Bun.file(memberPath).exists()).toBe(false)
+  const removedGlobal = (await runOk(del, { id: globalMember.id, confirm: true })) as { status: string }
+  expect(removedGlobal.status).toBe("Deleted team member gmember")
+  expect(await Bun.file(globalMemberPath).exists()).toBe(false)
+  const removedOverlay = (await runOk(del, { id: overlay.id, confirm: true })) as { status: string }
+  expect(removedOverlay.status).toBe("Deleted team member rookie")
+  expect(await Bun.file(overlayPath).exists()).toBe(false)
+})
+
+test("create kind member forwards the agent fields to team.addAgent", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const real = createPlusApi(ctx, createState())
+  const forwarded: unknown[] = []
+  // A recording delegation, not a stub: the create below still runs the real
+  // handler and writes the real member file; the recorder only observes the
+  // request the tool sent, which is how field forwarding is proven before the
+  // member-fields API change lands.
+  const api: PlusApi = {
+    ...real,
+    addTeamAgent: (input) => {
+      forwarded.push(input)
+      return real.addTeamAgent(input)
+    },
+  }
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  await runOk(create, { kind: "team", team: "crew", level: "project" })
+  const created = (await runOk(create, {
+    kind: "member",
+    team: "crew",
+    level: "project",
+    id: "fielded",
+    prompt: "fielded role",
+    fields: { description: "fielded desc", mode: "subagent" },
+  })) as { id: string; item: string }
+  expect(created.id).toBe("team:project:crew:fielded")
+  expect(created.item).toBe("fielded")
+  expect(forwarded).toHaveLength(1)
+  const request = forwarded[0] as {
+    level?: string
+    team?: string
+    id?: string
+    prompt?: string
+    template?: string
+    fields?: { description?: string; mode?: string }
+    actor?: { type?: string }
+  }
+  expect(request).toMatchObject({
+    level: "project",
+    team: "crew",
+    id: "fielded",
+    prompt: "fielded role",
+    actor: { type: "tool" },
+  })
+  expect(request.fields).toEqual({ description: "fielded desc", mode: "subagent" })
+  expect(await Bun.file(path.join(projectTeamsPath(project), "crew", "fielded.md")).text()).toContain("fielded role")
+})
+
+test("create kind team passes the template to team.create and produces the template's members", async () => {
+  const { project } = await tempProject()
+  const registry = [
+    {
+      name: "review",
+      members: [
+        { id: "editor", body: "editor role", fields: { description: "editor desc", mode: "primary" as const, permissions: [] } },
+        { id: "reviewer", body: "reviewer role" },
+      ],
+    },
+  ]
+  const ctx = fullContext({
+    directory: project,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState(), { builtins: registry })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+
+  const created = (await runOk(create, { kind: "team", team: "mine", level: "project", template: "review" })) as {
+    id: string
+    item: string
+    enabled: boolean
+  }
+  expect(created).toMatchObject({ id: "team:project:mine", item: "mine", enabled: false })
+  const shownTeam = (await runOk(show, { id: created.id })) as Record<string, unknown>
+  expect(shownTeam).toMatchObject({
+    kind: "team",
+    level: "project",
+    team: "mine",
+    enabled: false,
+    members: ["editor", "reviewer"],
+  })
+  const snapshot = await snapshotOf(api)
+  expect(snapshot.teams?.find((team) => team.team === "mine")).toEqual({
+    level: "project",
+    team: "mine",
+    enabled: false,
+    agents: ["editor", "reviewer"],
+  })
+  const rows = expandedTree(memoFromSnapshot(snapshot))
+  expect(rows.some((node) => node.id === "team:project:mine:editor")).toBe(true)
+  expect(rows.some((node) => node.id === "team:project:mine:reviewer")).toBe(true)
+  // The same handler the TUI's team.create calls wrote the member files.
+  const teamDir = path.join(projectTeamsPath(project), "mine")
+  const [editorMember, reviewerMember] = registry[0]!.members
+  if (editorMember === undefined || reviewerMember === undefined) throw new Error("missing template members")
+  const editorText = await Bun.file(path.join(teamDir, "editor.md")).text()
+  expect(editorText).toBe(formatMarkdown(editorMember.fields as never, editorMember.body))
+  expect(await Bun.file(path.join(teamDir, "reviewer.md")).text()).toBe(formatMarkdown(undefined, reviewerMember.body))
+})
+
+test("create kind instruction is refused with instruction.disabled and writes nothing", async () => {
+  const { project, tools } = await freshFixture()
+  const error = await runFail(need(tools, "instructions_create"), { kind: "instruction", name: "AGENTS.md", text: "guide" })
+  expect(error.message).toContain("instruction.disabled")
+  expect(error.message).toContain("Context catalogue")
+  expect(await Bun.file(path.join(project, "AGENTS.md")).exists()).toBe(false)
+  expect(await Bun.file(path.join(project, ".opencode", "AGENTS.md")).exists()).toBe(false)
 })

@@ -15,10 +15,20 @@ import {
   resolveSplit,
   scopedTo,
 } from "./model.js"
-import type { Address, CustomizationRecord, Item, ModelRecord, RecordScope, RuleRecord, SplitRecord } from "./model.js"
+import type {
+  Address,
+  Catalogue,
+  CustomizationRecord,
+  Item,
+  Level,
+  ModelRecord,
+  RecordScope,
+  RuleRecord,
+  SplitRecord,
+} from "./model.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
-import { findLazy, materialize } from "./tree.js"
+import { expandedTree, findLazy, materialize } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { manual, slice } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -125,11 +135,139 @@ export function resolveRefusalForLabel(label: string): string {
   return `"${label}" cannot be resolved`
 }
 
+function memoOfInput(input: MemoInput): Memo {
+  return buildMemo(input as unknown as Parameters<typeof buildMemo>[0])
+}
+
 function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode } | undefined {
-  const memo = buildMemo(input as unknown as Parameters<typeof buildMemo>[0])
+  const memo = memoOfInput(input)
   const lazy = findLazy(memo, rowId)
   if (lazy === undefined) return undefined
   return { memo, node: materialize(lazy) }
+}
+
+// ---------------------------------------------------------------------------
+// Created-row resolution
+//
+// create returns the row id the TUI shows for the record it just wrote, so
+// show, set and delete accept it without a row.unknown detour. Every id below
+// is read from that same tree; nothing here formats a row id, and a create
+// whose row is missing resolves undefined so the caller can fail instead of
+// inventing one. `item` names the created thing inside its row kind: the
+// `<itemId>` of an item row, or the agent/team/member id of an entity row.
+
+export interface CreatedRow {
+  readonly id: string
+  readonly item: string
+}
+
+export interface CreatedItemAddress {
+  readonly level: Level
+  readonly agent: string | null
+  readonly item: string
+  readonly catalogue?: Catalogue
+}
+
+export function createdItemRow(input: MemoInput, address: CreatedItemAddress): CreatedRow | undefined {
+  const node = expandedTree(input).find(
+    (candidate) =>
+      candidate.address !== undefined &&
+      candidate.address.level === address.level &&
+      candidate.address.agent === address.agent &&
+      candidate.address.item === address.item &&
+      candidate.address.section === null &&
+      catalogueOf(candidate.address.catalogue) === catalogueOf(address.catalogue),
+  )
+  if (node?.address === undefined) return undefined
+  return { id: node.id, item: node.address.item }
+}
+
+export function createdAgentRow(input: MemoInput, scope: "project" | "global", id: string): CreatedRow | undefined {
+  const node = expandedTree(input).find(
+    (candidate) => candidate.kind === "agent" && candidate.label === id && candidate.id.split(":")[1] === scope,
+  )
+  return node === undefined ? undefined : { id: node.id, item: id }
+}
+
+export function createdTeamRow(input: MemoInput, level: Level, team: string): CreatedRow | undefined {
+  const teams = (input.teams ?? memoOfInput(input).ctx.teams) as readonly TeamInput[]
+  if (!teams.some((candidate) => candidate.level === level && candidate.team === team)) return undefined
+  const node = expandedTree(input).find(
+    (candidate) =>
+      candidate.kind === "team" && candidate.depth === 2 && candidate.label === team && candidate.id.split(":")[1] === level,
+  )
+  return node === undefined ? undefined : { id: node.id, item: team }
+}
+
+export function createdMemberRow(input: MemoInput, level: Level, team: string, member: string): CreatedRow | undefined {
+  const entry = ((input.teams ?? memoOfInput(input).ctx.teams) as readonly TeamInput[]).find(
+    (candidate) => candidate.level === level && candidate.team === team,
+  )
+  if (entry === undefined || !entry.agents.includes(member)) return undefined
+  const node = expandedTree(input).find(
+    (candidate) =>
+      candidate.kind === "team" &&
+      candidate.depth === 3 &&
+      candidate.label === member &&
+      candidate.id.split(":")[1] === level &&
+      candidate.id.split(":").slice(2, -1).join(":") === team,
+  )
+  return node === undefined ? undefined : { id: node.id, item: member }
+}
+
+// ---------------------------------------------------------------------------
+// Team and member row entities
+//
+// Team (`team:<level>:<team>`, depth 2) and member (`team:<level>:<team>:<member>`,
+// depth 3) rows carry no item address, so show renders the entity these rows
+// stand for instead of a resolved text. The team is found the same way
+// removalPlan resolves it: by the row's own id, so colon team names pick the
+// real team rather than an id prefix, and a member row belongs to the team
+// that lists it.
+
+export type TeamRowEntity =
+  | {
+      readonly kind: "team"
+      readonly level: Level
+      readonly team: string
+      readonly enabled: boolean
+      readonly members: readonly string[]
+      readonly overlay?: readonly string[]
+    }
+  | {
+      readonly kind: "member"
+      readonly level: Level
+      readonly team: string
+      readonly member: string
+      readonly registered: boolean
+    }
+
+export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity | undefined {
+  if (node.kind !== "team") return undefined
+  const memo = memoOfInput(input)
+  const teams = (input.teams ?? memo.ctx.teams) as readonly TeamInput[]
+  const exact = teams.find((candidate) => node.id === `team:${candidate.level}:${candidate.team}`)
+  if (exact !== undefined && node.depth === 2)
+    return {
+      kind: "team",
+      level: exact.level,
+      team: exact.team,
+      enabled: exact.enabled,
+      members: [...exact.agents],
+      ...(exact.overlay === undefined ? {} : { overlay: [...exact.overlay] }),
+    }
+  if (node.depth !== 3) return undefined
+  const parent = teams.find((candidate) =>
+    candidate.agents.some((member) => node.id === `team:${candidate.level}:${candidate.team}:${member}`),
+  )
+  if (parent === undefined) return undefined
+  return {
+    kind: "member",
+    level: parent.level,
+    team: parent.team,
+    member: node.label,
+    registered: memo.ctx.agents.some((agent) => agent.id === node.label),
+  }
 }
 
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
