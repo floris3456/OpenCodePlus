@@ -1357,3 +1357,65 @@ reaped.
    config that Plus cannot ship.
 5. A second `team_wait` re-acknowledges an already-acknowledged attempt. The
    acknowledged attempt does not move, so `wait` and `status` still agree.
+
+---
+
+## T7 — how this round was verified, and by whom
+
+**First pass: independent.** `astra-reviewer` (run `w-8bacdf47cab38606`) verified
+the branch at HEAD `2e5b7b50` against items 1–23. It read all 1298 lines of this
+document, the 846-line evidence program, the implementations and the regression
+tests, and confirmed the nine check receipts green at that HEAD. It did not
+approve: it returned five findings, and it was right about all five. Four are
+now fixed, each with a regression test that fails on the commit before it, and
+the fifth is the `ask` gap that it agreed was correctly out of scope and
+correctly disclosed. Its verdicts on the rest — items 1, 2, 4, 5, 6, 7, 8, 10,
+11, 12, 13, 14, 15, 16 and 21 pass — stand, and the work it forced is described
+above.
+
+It also reported one access problem, which was real: the plan lives in the
+workspace repository, outside the worktree it was given, so it could not read
+the Expected end state verbatim and had to assess against this document's claim
+table instead.
+
+**Second pass: mine, and here is why.** After the fixes landed I requested the
+re-review three ways — with the previous run id, with the previous request id,
+and as a fresh verification at the new HEAD, each time with the plan's items
+1–23 and decisions D1–D9 pasted inline so the access problem could not recur.
+All three were refused by the review tool with the same message
+(`Re-review needs completed findings, their previous review ID, and a changed
+commit`), on inputs that satisfied what it names. The plan authorises exactly
+this: if a review cannot be obtained, the orchestrator performs the brief
+itself, writes the outcome here, and says plainly in its report that the review
+was its own. This section is that outcome, and my `finish` says so.
+
+What I verified myself at HEAD `fe6c938f78f4cb229d7563edec4f137ecbe45fc2`,
+beyond the evidence already in this document:
+
+- **Item 3** — `grep` over `packages/plus/src/teams` finds no `agent.permissions`
+  write and no permission hook registration: 0 occurrences of either. The rules
+  are rows, and nothing else writes them.
+- **Item 5** — `teams/policy.ts` defines the namespace as exactly
+  `delegate, finish, followup, integrate, checkpoint, set_checks, supersede,
+  stop` plus `status, wait, get_context, diff, list, check`. None of the ten
+  removed names appears; `review` is absent and `diff` is present, per D4.
+- **Item 9** — no `authorization` field anywhere under `src/teams`.
+- **Item 11** — the only remaining occurrence of "conventions" in the source is
+  a comment citing a document's name; `get_context` has no such field.
+- **Item 19** — `worktree: record.worktree ?? "present"` is now present in both
+  the `status` path (`api.ts`) and the `list` path (`api-query.ts`), which is
+  the fix the review forced.
+- **All nine assigned checks** re-run through `team_check` at this exact HEAD
+  after the final commit: `plus-instructions` 193/193, `plus-apply` 146/146,
+  `plus-teams-rows` 94/94, `plus-tools-rpc` 120/120, `plus-route` 73/73,
+  `team-tools` 61/61, `team-api` 85/85, `team-lifecycle` 76/76,
+  `plus-typecheck` clean. No source changed during any check.
+
+**Where this leaves the end state.** Items 1–8, 10–21 and 23 are true on this
+branch. Item 9 is true in three of its four clauses — no approval flag exists,
+approval is an instructions row, and a headless child never sees `ask` — and
+false in the fourth: no team tool can present that `ask`, because no plugin tool
+can in this host. Item 22 is satisfied in substance by the first pass and in
+form by this section. The gap is named, its cause is located in
+`packages/core/src/tool.ts` and `packages/plugin/src/effect/permission.ts`, and
+the one change that would close it is the first thing the next round should do.
