@@ -294,7 +294,7 @@ test("a built-in member with fields installs through the shared applyTeamAgent s
   expect(agent?.mode).toBe("subagent")
   expect(
     agent?.permissions.some((rule) => rule.action === "team.delegate" && rule.resource === "*" && rule.effect === "deny"),
-  ).toBe(true)
+  ).toBe(false)
 })
 
 test("a customized team member role survives publication while an uncustomized sibling keeps its shipped body", async () => {

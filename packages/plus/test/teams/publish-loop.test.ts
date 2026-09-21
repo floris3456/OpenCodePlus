@@ -75,20 +75,24 @@ test("second publish with fielded builtin member is a no-op", async () => {
   const state = createState()
   const handlers = createHandlers(ctx, state, { builtins: fixtureWithFields() })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
-  // The role still installs with its mode, description, and permission rules.
+  // The role still installs with its mode and description. Declared permissions
+  // are parsed for the fingerprint and never installed; what the member may do
+  // lives in instructions rows.
   const installed = await Effect.runPromise(ctx.agent.list())
   const fielded = installed.data.find((entry) => String(entry.id) === "fielded")
   expect(fielded?.system).toBe("fielded body")
   expect(fielded?.description).toBe("Fielded agent")
   expect(fielded?.mode).toBe("subagent")
-  expect(fielded?.permissions.some((rule) => rule.action === "shell" && rule.resource === "*" && rule.effect === "deny")).toBe(true)
+  expect(fielded?.permissions.some((rule) => rule.action === "shell" && rule.resource === "*" && rule.effect === "deny")).toBe(false)
+  expect(fielded?.permissions.some((rule) => rule.action === "read" && rule.resource === "*.key" && rule.effect === "deny")).toBe(false)
+  expect(fielded?.permissions.some((rule) => rule.action === "team.delegate" && rule.resource === "*" && rule.effect === "deny")).toBe(false)
   const afterEnable = state.fingerprint
   const installs = agents.transforms
   const disposes = agents.disposes
   const reloads = agents.reloads
   // Second publish with unchanged inputs is a genuine no-op: the fingerprint
   // is unchanged and no further agent registrations or reloads happen.
-  // Before the team-field unmask, the host's own description/mode/permissions
+  // Before the team-field unmask, the host's own description/mode
   // reported as upstream, the team lost to its own output (teamBodies []),
   // and every pass disposed and reinstalled in a loop.
   await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
