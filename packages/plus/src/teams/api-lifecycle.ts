@@ -13,8 +13,6 @@ import { readJson } from "./store.js"
 import { setState } from "./tasks.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
-const STOP_BUSY_MESSAGE = "Child is working; call shutdown_request then wait, or supersede."
-
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
 }
@@ -86,6 +84,7 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
   const child = await loadRun(root, args.run)
   if (child === undefined || child.parent !== parent.id) return notChild(parent, args.run)
   if (child.state === "stopped") return succeeded({ run: child.id, state: "stopped" })
+  if (child.state === "stopping") return succeeded({ run: child.id, state: "stopping" })
   if (child.state === "idle") {
     await interruptSession(ctx, child.sessionID)
     const stopping = transition(child, "stopping", "shutdown")
@@ -98,7 +97,9 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
     await saveRun(root, stopped)
     return succeeded({ run: child.id, state: "stopped" })
   }
-  return fail("E_BUSY", STOP_BUSY_MESSAGE)
+  const updated: RunRecord = { ...child, stopRequested: true }
+  await saveRun(root, updated)
+  return succeeded({ run: child.id, state: "stopping" })
 }
 
 export async function supersedeHandler(ctx: Context, args: SupersedeInput, caller: TeamCaller): Promise<TeamApiResult> {

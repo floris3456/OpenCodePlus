@@ -62,7 +62,7 @@ export function toolsByServer(kind: Kind): { direct: string[]; code: string[] } 
     }
   if (kind === "orchestrator")
     return {
-      direct: ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "finish"],
+      direct: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish"],
       code: ["status", "diff", "list", "wait", "get_context", "check"],
     }
   if (kind === "implementer")

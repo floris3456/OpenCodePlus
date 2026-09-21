@@ -183,3 +183,27 @@ test("a run whose role is not a member of an enabled team contributes no row", a
   const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir))
   expect(items.some((item) => item.runID !== undefined)).toBe(false)
 })
+
+test("a planner role emits an ask row on team.delegate", async () => {
+  const items = teamPolicyItems(policyMembersOf(["fable-planner"]))
+  const delegateRow = items.find((item) => item.id === "perm:team_delegate:team-role")
+  expect(delegateRow).toBeDefined()
+  expect(delegateRow?.enabled).toBe(true)
+  expect(delegateRow?.policy?.on).toEqual([{ action: "team.delegate", resource: "*", effect: "ask" }])
+  const permissions = await permissionsAfterApply("fable-planner", items)
+  expect(has(permissions, "team.delegate", "*", "ask")).toBe(true)
+  expect(has(permissions, "team.delegate", "*", "deny")).toBe(false)
+})
+
+test("a child run for a planner role overrides ask to deny on team.delegate", async () => {
+  await saveRun(dir, makeRun({ id: "w-0000000000000002", role: "fable-planner", paths: [] }))
+  const runs = await liveRunScopes(dir)
+  expect(runs.some((r) => r.id === "w-0000000000000002")).toBe(true)
+  const items = teamPolicyItems(policyMembersOf(["fable-planner"]), runs)
+  const childRow = items.find((item) => item.id === "perm:edit:run:w-0000000000000002")
+  expect(childRow).toBeDefined()
+  expect(childRow?.policy?.on).toContainEqual({ action: "team.delegate", resource: "*", effect: "deny" })
+  const permissions = await permissionsAfterApply("fable-planner", items)
+  const { evaluate } = await import("../../../core/src/permission.js")
+  expect(evaluate("team.delegate", "*", permissions).effect).toBe("deny")
+})

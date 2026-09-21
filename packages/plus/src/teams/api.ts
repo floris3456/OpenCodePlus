@@ -666,14 +666,18 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Pr
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   const raw = await readJson<unknown>(path.join(root, "runs", record.id, "brief.json"))
-  if (raw === undefined)
+  const isRoot = record.kind === "main" || record.parent === null || record.id.startsWith("main-")
+  if (raw === undefined && !isRoot)
     throw toolError("E_NO_BRIEF", `Run ${record.id} has no stored brief (runs/${record.id}/brief.json).`, { run: record.id })
-  const briefParsed = Schema.decodeUnknownOption(Brief)(raw)
-  if (Option.isNone(briefParsed))
-    throw toolError("E_NO_BRIEF", `Run ${record.id} has an unreadable brief.`, {
-      run: record.id,
-    })
-  const brief = briefParsed.value
+  let brief: Brief | null = null
+  if (raw !== undefined) {
+    const briefParsed = Schema.decodeUnknownOption(Brief)(raw)
+    if (Option.isNone(briefParsed))
+      throw toolError("E_NO_BRIEF", `Run ${record.id} has an unreadable brief.`, {
+        run: record.id,
+      })
+    brief = briefParsed.value
+  }
   const assigned = await readChecks(root, record.id)
   const checks = await Promise.all(
     assigned.map(async (checkDef) => {
@@ -691,6 +695,13 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Pr
   )
   const siblings = record.task === null ? [] : await siblingsOf(root, record.task)
   const pending = await peek(root, record.id)
+  const briefPath = brief === null ? null : path.join(root, "runs", record.id, "brief.md")
+  const scope =
+    brief === null
+      ? { paths: [...record.paths], forbidden: [] }
+      : { paths: [...brief.scope.paths], forbidden: [...brief.scope.forbidden] }
+  const interfaces = brief === null ? [] : [...brief.context.interfaces]
+  const decisions = brief === null ? [] : [...brief.context.decisions]
   return succeeded({
     run: record.id,
     role: record.role,
@@ -700,13 +711,12 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Pr
     base: record.base,
     head: record.head,
     brief,
-    briefPath: path.join(root, "runs", record.id, "brief.md"),
-    scope: { paths: [...brief.scope.paths], forbidden: [...brief.scope.forbidden] },
+    briefPath,
+    scope,
     checks,
-    interfaces: [...brief.context.interfaces],
-    decisions: [...brief.context.decisions],
+    interfaces,
+    decisions,
     siblings,
-    conventions: "",
     budget: {
       turns: record.budget.turns ?? null,
       tokens: record.budget.tokens ?? null,

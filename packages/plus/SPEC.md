@@ -921,10 +921,11 @@ run's HEAD) or a 40-hex commit; `paths` narrows the patch. Output is
 (default 200000) with `truncated: true`. A run that is neither the caller's
 nor one of its children refuses with `E_NOT_VISIBLE`.
 
-While the namespace has no bootstrap tool of its own, a no-argument
-`team_status` from a planner or orchestrator session with no run creates the
-`main` run for that session and then answers normally; every other no-run call
-keeps the exact `E_NOT_ACTOR` message.
+A planner or orchestrator opening a fresh chat and calling any team tool
+creates the `main` root run bound to that session automatically and then
+answers normally. There is no `prepare`. All other no-run calls keep the exact
+`E_NOT_ACTOR` message, as does a session whose run role differs from the
+calling agent.
 
 Every team tool has exactly one input schema; all of them live in
 `teams/schema.ts` and are imported by `teams/tools.ts` and by the handler that
@@ -961,14 +962,20 @@ Row ids the producer emits, per member of an enabled team:
 - `perm:team_<tool>:role-ceiling` — one per team tool **outside** the role's
   ceiling, shipped off, denying `team.<tool>` on `*`. Tools inside the ceiling
   carry no row: the member simply keeps them.
+- `perm:team_delegate:team-role` — shipped on for planner members, requesting
+  `team.delegate` on `*` with effect `ask` (the human-approval moment). Off
+  installs a `deny`.
 - `perm:search:team-tavily` — shipped off for implementers, reviewers and
   scouts, denying `search_tavily_*` on `*`. Code search stays available.
 - `perm:edit:run:<runID>` — per-run edit scope, derived from `run.json` while
   the run is non-terminal. On installs, in order, `deny edit *`, one
-  `allow edit <path>` per `scope.paths` entry, then `deny edit .git/**` and
-  `deny edit .opencodeplus/**` (core evaluates last-match-wins, so the
-  never-editable state wins over the scope allows). The row carries `runID`
-  and is filterable with `run:<id>`.
+  `allow edit <path>` per `scope.paths` entry (when paths are non-empty), then
+  `deny edit .git/**` and `deny edit .opencodeplus/**` (core evaluates
+  last-match-wins, so the never-editable state wins over the scope allows). For
+  child runs (`w-...`), any `ask` effect carried by the member (e.g.
+  `team.delegate` for planners) is overridden to `deny` so headless children
+  never block on `ask`. The row carries `runID` and is filterable with
+  `run:<id>`.
 
 Rows appear in a `Policy` group under the member's `Tools` group
 (`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
@@ -1015,7 +1022,11 @@ Error codes carrying `accepted` today:
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
 - `E_BUSY`: `followup` with `delivery:"now"` against a working child refuses with
   `{"delivery":"queue"}`; the queued form is then delivered by the child's own
-  idle handoff. (`stop` on a working child also raises `E_BUSY`, with no `accepted`.)
+  idle handoff. `stop` on a working child requests stop after its turn (setting
+  `stopRequested` on the run and returning `{ run, state: "stopping" }`), which
+  `onSessionIdle` completes to `stopped`.
+- `get_context` on a root run returns the run fields with `brief: null` (rather
+  than failing `E_NO_BRIEF`). The `conventions` field has been removed.
 
 New input and output fields:
 - `wait` input `ack?: boolean` (default `true`). Output gains
