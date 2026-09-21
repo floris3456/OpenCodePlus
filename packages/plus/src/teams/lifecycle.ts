@@ -193,6 +193,12 @@ export async function onSessionIdle(
   const marked = announce ? markNotified(idle) : idle
   if (marked !== current) await saveRun(root, marked)
   if (announce && attempt !== undefined) await notifyParent(ctx, root, marked, attempt)
+  if (marked.stopRequested) {
+    const stopping = transition(marked, "stopping", "shutdown")
+    const stopped = transition(stopping, "stopped", "exited")
+    await saveRun(root, stopped)
+    return stopped
+  }
   return deliverInbox(ctx, root, marked)
 }
 

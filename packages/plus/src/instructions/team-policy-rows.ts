@@ -49,7 +49,8 @@ export async function liveRunScopes(root: string): Promise<PolicyRun[]> {
     if (record === undefined || typeof record.id !== "string") continue
     if (isTerminal(record.state)) continue
     const paths = record.paths ?? []
-    if (paths.length === 0) continue
+    const isChild = record.kind === "w" || record.id.startsWith("w-")
+    if (paths.length === 0 && !isChild) continue
     out.push({ id: record.id, role: record.role, paths: [...paths] })
   }
   return out.toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
@@ -89,6 +90,7 @@ export function teamPolicyItems(members: readonly PolicyMember[], runs: readonly
       ...nativeRows(member),
       ...ceilingRows(member),
       ...searchRows(member),
+      ...plannerRows(member),
     ]),
     ...runs.flatMap((run) => (byRole.has(run.role) ? [runScopeRow(run)] : [])),
   ]
@@ -164,13 +166,53 @@ function searchRows(member: PolicyMember): Item[] {
   ]
 }
 
+// D6: team.delegate defaults to "ask" for planner members (human approval moment).
+function plannerRows(member: PolicyMember): Item[] {
+  if (member.kind !== "planner") return []
+  return [
+    row({
+      id: permItemId("team_delegate", "team-role"),
+      title: "team_delegate",
+      agent: member.id,
+      order: 150,
+      permTool: "team_delegate",
+      permAction: "team.delegate",
+      patterns: ["*"],
+      enabled: true,
+      policy: {
+        on: [rule("team.delegate", "*", "ask")],
+        off: [rule("team.delegate", "*", "deny")],
+      },
+    }),
+  ]
+}
+
 // Per-run edit scope. The run record is the source: the row exists while the
 // run does and carries the run's own `scope.paths`. Deny `*` first so the
 // path allows override it, then the never-editable state last so nothing
 // inside scope.paths can reach it (core evaluates last-match-wins).
+// D6: child runs override any role "ask" effect to "deny" (headless ask never returns).
 function runScopeRow(run: PolicyRun): Item {
-  const scope = run.paths.join(", ")
-  const guidance = `Only scope.paths [${scope}] are editable. Version-control and paused-tool state is never editable, even inside scope.paths. Report anything else in needs=[{kind:"path"...}].`
+  const scope = run.paths.length > 0 ? ` [${run.paths.join(", ")}]` : ""
+  const guidance =
+    run.paths.length > 0
+      ? `Only scope.paths${scope} are editable. Version-control and paused-tool state is never editable, even inside scope.paths. Report anything else in needs=[{kind:"path"...}].`
+      : `Version-control and paused-tool state is never editable. Report anything else in needs=[{kind:"path"...}].`
+  const isChild = run.id.startsWith("w-")
+  const kind = kindOf(run.role)
+  const overrideRules: PolicyRule[] =
+    isChild && kind.ok && kind.kind === "planner" ? [rule("team.delegate", "*", "deny")] : []
+  const editRules: PolicyRule[] =
+    run.paths.length > 0
+      ? [
+          rule("edit", "*", "deny"),
+          ...run.paths.map((path) => rule("edit", path, "allow")),
+          ...editForbidden.map((path) => rule("edit", path, "deny")),
+        ]
+      : [
+          rule("edit", "*", "deny"),
+          ...editForbidden.map((path) => rule("edit", path, "deny")),
+        ]
   return row({
     id: `perm:edit:run:${run.id}`,
     title: `Edit scope for run ${run.id}`,
@@ -184,9 +226,8 @@ function runScopeRow(run: PolicyRun): Item {
     runID: run.id,
     policy: {
       on: [
-        rule("edit", "*", "deny"),
-        ...run.paths.map((path) => rule("edit", path, "allow")),
-        ...editForbidden.map((path) => rule("edit", path, "deny")),
+        ...editRules,
+        ...overrideRules,
       ],
       off: [],
     },

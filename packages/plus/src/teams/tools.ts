@@ -38,7 +38,7 @@ const IntegrateDescription = "Enqueue a child's completed commit into the merge 
 const CheckpointDescription = "Commit only intended files in your own worktree after checking expected HEAD."
 const SetChecksDescription = "Record the integration checks for the current task.\nOutput is the check ids."
 const SupersedeDescription = "Abandon an owned child and cancel its task.\nWorking children get a shutdown request first, then an interrupt."
-const StopDescription = "Stop an idle owned child.\nWorking children fail E_BUSY; stopped children succeed as a no-op."
+const StopDescription = "Stop an owned child.\nWorking children stop after their turn; idle children stop now."
 const StatusDescription =
   "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; never acknowledges, but shows what wait acknowledged as acked."
 const WaitDescription =
@@ -237,12 +237,11 @@ function runGatedInner<A>(
     const found = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
     auditState.run = found?.id ?? null
     let run = found
-    if (run === undefined && isRootBootstrapCall(name, input)) {
+    if (run === undefined) {
       const kind = kindOf(agent)
-      // Root-run bootstrap, the single no-run exception: a planner or
-      // orchestrator session asking for its own status becomes the main run,
-      // then falls through to the normal gate so status answers with its own
-      // shape. All other no-run calls keep the byte-exact E_NOT_ACTOR message.
+      // Root-run bootstrap: a planner or orchestrator session calling any team
+      // tool becomes the main run, then continues through the normal gate.
+      // All other no-run calls keep the byte-exact E_NOT_ACTOR message.
       if (kind.ok && (kind.kind === "planner" || kind.kind === "orchestrator")) {
         const directory = String(pluginCtx.location.directory)
         const top = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "--show-toplevel"]))
@@ -309,17 +308,6 @@ function runGatedInner<A>(
     }
     return { output: result.value }
   })
-}
-
-// Which call bootstraps a root run while the namespace has no bootstrap tool
-// of its own: the no-argument `status` a planner or orchestrator makes to ask
-// "where am I". Naming one tool keeps the E_NOT_ACTOR answer exact for every
-// other no-run call; widening this to "any tool bootstraps a root run" is a
-// separate change with its own state-machine consequences.
-function isRootBootstrapCall(name: TeamTool, input: unknown): boolean {
-  if (name !== "status") return false
-  if (typeof input !== "object" || input === null) return true
-  return (input as Record<string, unknown>).runs === undefined
 }
 
 function requireActor(

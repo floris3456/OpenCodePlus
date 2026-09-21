@@ -600,11 +600,41 @@ test("get_context returns the stored brief, checks and scope", async () => {
       expect(value.scope.paths).toEqual(["packages/plus/src/*"])
       expect(value.checks.map((check) => check.id)).toEqual(["unit"])
       expect(value.inbox).toEqual([])
+      expect((value as Record<string, unknown>).conventions).toBeUndefined()
     } finally {
       await removeRepo(repo.dir)
     }
   })
 }, 30000)
+
+test("get_context on a root run returns brief: null without conventions", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        kind: "main",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_006_root",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const value = required(await api.get_context({}, callerFor(parent))) as Record<string, unknown>
+      expect(value.run).toBe("main-0123456789abcdef")
+      expect(value.brief).toBeNull()
+      expect(value.briefPath).toBeNull()
+      expect(value.interfaces).toEqual([])
+      expect(value.decisions).toEqual([])
+      expect(value.scope).toEqual({ paths: [], forbidden: [] })
+      expect(value.conventions).toBeUndefined()
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
 
 test("status shows the child head and the check receipt", async () => {
   await withIsolatedTeamsRoot(async (root) => {

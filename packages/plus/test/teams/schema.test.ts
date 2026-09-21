@@ -17,19 +17,15 @@ import {
   MergeState,
   MergeStates,
   MetricsInput,
-  PlanHandoffInput,
   Policy,
-  PrepareInput,
   Report,
   ReportStatus,
   ReportStatuses,
-  ResumeInput,
   ReviewInput,
   RunID,
   RunState,
   RunStates,
   SetChecksInput,
-  ShutdownRequestInput,
   StatusInput,
   StopInput,
   SupersedeInput,
@@ -133,11 +129,7 @@ test("teams/schema exports every tool input schema as the single source", () => 
     CheckpointInput,
     SetChecksInput,
     SupersedeInput,
-    ShutdownRequestInput,
     StopInput,
-    ResumeInput,
-    PrepareInput,
-    PlanHandoffInput,
     StatusInput,
     WaitInput,
     DiffInput,
@@ -149,7 +141,7 @@ test("teams/schema exports every tool input schema as the single source", () => 
     TavilySearchInput,
     TavilyExtractInput,
   ]
-  expect(toolSchemas).toHaveLength(23)
+  expect(toolSchemas).toHaveLength(19)
   for (const s of toolSchemas) {
     expect(Schema.isSchema(s)).toBe(true)
   }

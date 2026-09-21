@@ -200,7 +200,7 @@ test("a session with no run fails E_NOT_ACTOR with the exact message", async () 
 test("a session with no run names the input run id in E_NOT_ACTOR", async () => {
   await withIsolatedTeamsRoot(async () => {
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_none_named", "sol-orchestrator")
+    const ctx = toolContext("ses_team_none_named", "muse-implementer")
     const message = await runMessage(need(tools, "team_followup"), { run: "w-aaaaaaaaaaaaaaaa", requestID: "r1", prompt: "again" }, ctx)
     expect(message).toBe(notActor("w-aaaaaaaaaaaaaaaa"))
   })
@@ -232,7 +232,7 @@ test("a run whose role does not match the calling agent fails E_NOT_ACTOR", asyn
   })
 })
 
-test("a no-argument team_status from a no-run orchestrator session creates a main run and is idempotent", async () => {
+test("any team tool from a no-run planner/orchestrator session bootstraps a root run, and is idempotent", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-"))
     try {
@@ -252,22 +252,25 @@ test("a no-argument team_status from a no-run orchestrator session creates a mai
       const pluginCtx = context({ tool: harness.domain, location })
       const api = createTeamApi(pluginCtx, createState())
       await registerTeamTools(pluginCtx, api)
-      const tool = need(harness.tools, "team_status")
+      const listTool = need(harness.tools, "team_list")
+      const statusTool = need(harness.tools, "team_status")
       const toolCtx = toolContext("ses_team_root_001", "sol-orchestrator")
-      // The bootstrap falls through to the normal handler, so status answers
-      // with its own shape for the run it just created.
-      const first = (await Effect.runPromise(tool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
+
+      // Any tool (e.g. team_list) from a no-run orchestrator session bootstraps a root run
+      const listOutput = (await Effect.runPromise(listTool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
         string,
         unknown
       >[]
-      expect(first).toHaveLength(1)
-      const created = String(first[0]?.run)
+      expect(listOutput).toHaveLength(1)
+      const created = String(listOutput[0]?.run)
       expect(created.startsWith("main-")).toBe(true)
-      const second = (await Effect.runPromise(tool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
+
+      // A second call (e.g. team_status) is idempotent and reuses the existing main run
+      const statusOutput = (await Effect.runPromise(statusTool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
         string,
         unknown
       >[]
-      expect(second[0]?.run).toBe(created)
+      expect(statusOutput[0]?.run).toBe(created)
       const stored = await loadRun(root, created)
       expect(stored?.kind).toBe("main")
       expect(stored?.role).toBe("sol-orchestrator")
@@ -297,7 +300,7 @@ test("team_status from a no-run implementer session still fails E_NOT_ACTOR", as
   })
 })
 
-test("team_status naming runs from a no-run orchestrator session fails E_NOT_ACTOR and creates no run record", async () => {
+test("team_status naming runs from a no-run orchestrator session bootstraps a root run and queries normally", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-"))
     try {
@@ -319,11 +322,12 @@ test("team_status naming runs from a no-run orchestrator session fails E_NOT_ACT
       const tool = need(harness.tools, "team_status")
       const toolCtx = toolContext("ses_team_prep_orch_cwd", "sol-orchestrator")
       const message = await runMessage(tool, { runs: ["w-0000000000000000"] }, toolCtx)
-      expect(message).toBe(notActor("w-0000000000000000"))
+      expect(message.startsWith("E_UNKNOWN_RUN:")).toBe(true)
       const bound = await bySession(root, "ses_team_prep_orch_cwd")
-      expect(bound).toBeUndefined()
+      expect(bound).toBeDefined()
+      expect(bound?.kind).toBe("main")
       const runs = await fs.readdir(path.join(root, "runs")).catch(() => [])
-      expect(runs).toEqual([])
+      expect(runs).toEqual([bound!.id])
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true })
     }

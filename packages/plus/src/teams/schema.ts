@@ -373,13 +373,11 @@ export const Policy = Schema.Struct({
       orchestrator: field(
         Schema.Struct({
           delegateTo: field(Schema.Array(Schema.String), () => [...defaultOrchestratorDelegateTo]),
-          allowOwnCommits: field(Schema.Boolean, () => false),
           fixRounds: field(Schema.Number, () => 5),
           freshWorkerAfterRound: field(Schema.Number, () => 3),
         }),
         () => ({
           delegateTo: [...defaultOrchestratorDelegateTo],
-          allowOwnCommits: false,
           fixRounds: 5,
           freshWorkerAfterRound: 3,
         }),
@@ -389,7 +387,6 @@ export const Policy = Schema.Struct({
       planner: { delegateTo: ["opus-orchestrator", "sol-orchestrator"] },
       orchestrator: {
         delegateTo: [...defaultOrchestratorDelegateTo],
-        allowOwnCommits: false,
         fixRounds: 5,
         freshWorkerAfterRound: 3,
       },
@@ -650,36 +647,10 @@ export const SupersedeInput = Schema.Struct({
 })
 export type SupersedeInput = typeof SupersedeInput.Type
 
-export const ShutdownRequestInput = Schema.Struct({
-  run: RunID,
-  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
-})
-export type ShutdownRequestInput = typeof ShutdownRequestInput.Type
-
 export const StopInput = Schema.Struct({
   run: RunID,
 })
 export type StopInput = typeof StopInput.Type
-
-export const ResumeInput = Schema.Struct({
-  run: RunID,
-})
-export type ResumeInput = typeof ResumeInput.Type
-
-export const PrepareInput = Schema.Struct({
-  cwd: Schema.optional(Schema.String),
-})
-export type PrepareInput = typeof PrepareInput.Type
-
-export const PlanHandoffInput = Schema.Struct({
-  requestID: Schema.String,
-  planFile: Schema.String,
-  role: Schema.optional(Schema.Literals(["opus-orchestrator", "sol-orchestrator"])),
-  repo: Schema.optional(Schema.String),
-  base: Schema.optional(Schema.String),
-  authorization: Schema.Literal(true),
-})
-export type PlanHandoffInput = typeof PlanHandoffInput.Type
 
 export const StatusInput = Schema.Struct({
   runs: Schema.optional(Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20))),

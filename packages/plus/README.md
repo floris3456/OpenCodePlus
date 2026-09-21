@@ -163,6 +163,10 @@ or without project mode. The namespace holds fourteen tools that all work —
 read-only `git diff` of your own run or one of your children, truncated to
 `maxBytes` (default 200000) with `truncated: true`.
 
+A planner or orchestrator opening a fresh chat and calling any team tool
+creates a root `main` run bound to that session automatically. There is no
+`prepare`.
+
 A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.idle`,
 `session.execution.failed` and `session.execution.interrupted`, maps the
@@ -171,9 +175,15 @@ to `idle`, notifies the parent once and hands the pending inbox to the session
 as one new attempt.
 
 - A child whose model turn ends is `idle` whether or not it called
-  `team_finish`; its attempt is `no_report` when it did not. `team_stop`,
-  `team_wait until:"idle"` and `team_followup delivery:"now"` therefore work
+  `team_finish`; its attempt is `no_report` when it did not.
+- `stop` and `supersede` are the only ways to halt a child. `team_stop` on a
+  working child asks it to stop after its turn (setting `stopRequested` and
+  returning `state: "stopping"`), completed by `onSessionIdle`; `team_stop` on
+  an idle child stops it now; both are idempotent.
+- `team_wait until:"idle"` and `team_followup delivery:"now"` work
   with no tool call from the child.
+- `team_get_context` on a root run returns `brief: null` rather than failing
+  `E_NO_BRIEF`. The `conventions` field has been removed.
 - `team_followup` with the default `delivery:"queue"` against a working child
   is delivered when that child next goes idle, as a new attempt.
   `delivery:"now"` against a working child refuses with `E_BUSY` and

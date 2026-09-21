@@ -62,6 +62,7 @@ export interface RunRecord {
   sessionID: string | null
   configDigest: string | null
   supersededReason?: string
+  stopRequested?: boolean
   worktree?: WorktreeState
   promotedFrom?: string
   history: HistoryEntry[]

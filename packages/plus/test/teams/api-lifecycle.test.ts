@@ -11,6 +11,7 @@ import { peek } from "../../src/teams/inbox.js"
 import { loadRun, saveRun, isAttemptTerminal, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
 import { stopHandler, supersedeHandler } from "../../src/teams/api-lifecycle.js"
+import { onSessionIdle } from "../../src/teams/lifecycle.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -173,7 +174,7 @@ test("stop on an idle child stops and records both history rows", async () => {
   })
 })
 
-test("stop on a working child fails E_BUSY with the exact message", async () => {
+test("stop on a working child sets stopRequested and reports stopping, and is idempotent", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()
     const { parent, child } = parentWithChild("main-0123456789abcdef", "w-bbbbbbbbbbbbbbbb", {
@@ -182,10 +183,34 @@ test("stop on a working child fails E_BUSY with the exact message", async () => 
     })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const error = rejected(await stopHandler(context({ session: recordSession().domain }), { run: child.id }, callerFor(parent)))
-    expect(error.code).toBe("E_BUSY")
-    expect(error.message).toBe("Child is working; call shutdown_request then wait, or supersede.")
-    expect((await loadRun(root, child.id))?.state).toBe("working")
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const value = required(await stopHandler(ctx, { run: child.id }, callerFor(parent))) as {
+      run: string
+      state: string
+    }
+    expect(value).toEqual({ run: child.id, state: "stopping" })
+    const stored = await loadRun(root, child.id)
+    expect(stored?.stopRequested).toBe(true)
+    expect(stored?.state).toBe("working")
+
+    // Idempotent: second call returns the same outcome
+    const second = required(await stopHandler(ctx, { run: child.id }, callerFor(parent))) as {
+      run: string
+      state: string
+    }
+    expect(second).toEqual({ run: child.id, state: "stopping" })
+
+    // Idle handler completes it: when the turn ends, onSessionIdle transitions to stopped
+    const finished = await onSessionIdle(ctx, root, stored!)
+    expect(finished.state).toBe("stopped")
+    const stoppedStored = await loadRun(root, child.id)
+    expect(stoppedStored?.state).toBe("stopped")
+    expect(stoppedStored?.history).toEqual([
+      { at: expect.any(String), from: "working", to: "idle", trigger: "turn_ended" },
+      { at: expect.any(String), from: "idle", to: "stopping", trigger: "shutdown" },
+      { at: expect.any(String), from: "stopping", to: "stopped", trigger: "exited" },
+    ])
   })
 })
 
@@ -221,14 +246,18 @@ test("stop on a dead child reconciles to stopped", async () => {
   })
 })
 
-test("stop on a ready child fails E_BUSY with the exact message", async () => {
+test("stop on a ready child sets stopRequested and reports stopping", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentWithChild("main-0123456789abcdef", "w-eeeeeeeeeeeeeeee", { state: "ready" })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const error = rejected(await stopHandler(context({ session: recordSession().domain }), { run: child.id }, callerFor(parent)))
-    expect(error.code).toBe("E_BUSY")
-    expect(error.message).toBe("Child is working; call shutdown_request then wait, or supersede.")
+    const value = required(await stopHandler(context({ session: recordSession().domain }), { run: child.id }, callerFor(parent))) as {
+      run: string
+      state: string
+    }
+    expect(value).toEqual({ run: child.id, state: "stopping" })
+    const stored = await loadRun(root, child.id)
+    expect(stored?.stopRequested).toBe(true)
   })
 })
 
