@@ -437,7 +437,7 @@ export type ProviderRequest = {
   body: { [x: string]: any }
 }
 
-export type PermissionRule = { action: string; resource: string; effect: PermissionEffect }
+export type PermissionRule = { action: string; resource: string; effect: PermissionEffect; message?: string }
 
 export type PluginInfo = { id?: string; source: PluginSource; features: PluginFeatures; state: PluginState }
 
@@ -2822,6 +2822,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["id"]
   readonly title?: {
@@ -2835,6 +2836,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["title"]
   readonly agent?: {
@@ -2848,6 +2850,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["agent"]
   readonly model?: {
@@ -2861,6 +2864,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["model"]
   readonly location?: {
@@ -2874,6 +2878,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["location"]
   readonly metadata?: {
@@ -2887,6 +2892,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["metadata"]
   readonly permissions?: {
@@ -2900,6 +2906,7 @@ export type SessionCreateInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }> | null
   }["permissions"]
 }
@@ -2943,6 +2950,7 @@ export type SessionImportInput = {
         readonly action: string
         readonly resource: string
         readonly effect: "allow" | "deny" | "ask"
+        readonly message?: string
       }>
       readonly revert?: {
         readonly messageID: string
@@ -3253,6 +3261,7 @@ export type SessionImportInput = {
         readonly action: string
         readonly resource: string
         readonly effect: "allow" | "deny" | "ask"
+        readonly message?: string
       }>
       readonly revert?: {
         readonly messageID: string
@@ -3563,6 +3572,7 @@ export type SessionImportInput = {
         readonly action: string
         readonly resource: string
         readonly effect: "allow" | "deny" | "ask"
+        readonly message?: string
       }>
       readonly revert?: {
         readonly messageID: string
@@ -5832,6 +5842,7 @@ export type PermissionRulesInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly message?: string
     }>
   }["permissions"]
 }
