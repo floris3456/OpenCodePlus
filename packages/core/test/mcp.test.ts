@@ -34,10 +34,12 @@ import { McpStdio } from "@opencode/core/mcp/stdio"
 import { Permission } from "@opencode/core/permission"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
+import { SessionErrors } from "@opencode/core/session/error"
 import { State } from "@opencode/core/state"
 import { McpTool } from "@opencode/core/tool/mcp"
 import { Tool } from "@opencode/core/tool"
 import {
+  Cause,
   Context,
   Deferred,
   Effect,
@@ -65,7 +67,7 @@ import { hostEnvironmentLayer, recordingEnvironmentLayer } from "./fixture/envir
 import { codeModeListings, executeTool, toolDefinitions, toolIdentity, waitForTool } from "./lib/tool"
 
 let assertion: Deferred.Deferred<Permission.AssertInput> | undefined
-let decision: Effect.Effect<void, Permission.Error> = Effect.void
+let decision: Effect.Effect<void, Permission.Error | SessionErrors.NotFoundError> = Effect.void
 let calls = 0
 let invocations: Array<Parameters<Mcp.Interface["callTool"]>[0]> = []
 
@@ -2160,6 +2162,126 @@ it.effect("does not call MCP when permission is blocked", () =>
       toolCalls: [{ tool: "demo.search", status: "error" }],
       error: true,
     })
+    expect(calls).toBe(0)
+  }),
+)
+
+// A rule may carry the words the agent should read, and the MCP leaf asserts its own
+// permission, so its blanket failure mapping is the last place that message can be lost.
+it.effect("gives the model a denying rule's own message", () =>
+  Effect.gen(function* () {
+    calls = 0
+    assertion = yield* Deferred.make<Permission.AssertInput>()
+    decision = Effect.fail(
+      new Permission.BlockedError({
+        rules: [{ action: "direct_lookup", resource: "*", effect: "deny", message: "Use the approved search instead" }],
+        permission: "direct_lookup",
+        resources: ["*"],
+        reason: "Use the approved search instead",
+      }),
+    )
+    const registry = yield* Tool.Service
+    const registration = yield* McpTool.Service
+    yield* registration.flush
+
+    const execution = yield* executeTool(registry, {
+      sessionID: Session.ID.make("ses_mcp_rule_message"),
+      ...toolIdentity,
+      call: { type: "tool-call", id: "call_mcp_rule_message", name: "direct_lookup", input: {} },
+    })
+
+    expect(execution).toMatchObject({ status: "error", error: { message: "Use the approved search instead" } })
+    expect(calls).toBe(0)
+  }),
+)
+
+it.effect("keeps the generic failure when a denying rule carries no message", () =>
+  Effect.gen(function* () {
+    calls = 0
+    assertion = yield* Deferred.make<Permission.AssertInput>()
+    decision = Effect.fail(new Permission.BlockedError({ rules: [], permission: "direct_lookup", resources: ["*"] }))
+    const registry = yield* Tool.Service
+    const registration = yield* McpTool.Service
+    yield* registration.flush
+
+    const execution = yield* executeTool(registry, {
+      sessionID: Session.ID.make("ses_mcp_no_message"),
+      ...toolIdentity,
+      call: { type: "tool-call", id: "call_mcp_no_message", name: "direct_lookup", input: {} },
+    })
+
+    expect(execution).toMatchObject({ status: "error", error: { message: "Unable to execute direct_lookup" } })
+    expect(calls).toBe(0)
+  }),
+)
+
+it.effect("keeps the generic failure when the call fails for a non-permission reason", () =>
+  Effect.gen(function* () {
+    calls = 0
+    assertion = yield* Deferred.make<Permission.AssertInput>()
+    decision = Effect.fail(new SessionErrors.NotFoundError({ sessionID: Session.ID.make("ses_mcp_unknown") }))
+    const registry = yield* Tool.Service
+    const registration = yield* McpTool.Service
+    yield* registration.flush
+
+    const execution = yield* executeTool(registry, {
+      sessionID: Session.ID.make("ses_mcp_other_failure"),
+      ...toolIdentity,
+      call: { type: "tool-call", id: "call_mcp_other_failure", name: "direct_lookup", input: {} },
+    })
+
+    expect(execution).toMatchObject({ status: "error", error: { message: "Unable to execute direct_lookup" } })
+    expect(calls).toBe(0)
+  }),
+)
+
+// A decline with feedback stays a typed failure precisely so a leaf can hand the human's
+// words to the model, exactly as the plugin gate does with `Permission.CorrectedError`.
+it.effect("gives the model a human's correction instead of the generic failure", () =>
+  Effect.gen(function* () {
+    calls = 0
+    assertion = yield* Deferred.make<Permission.AssertInput>()
+    decision = Effect.fail(new Permission.CorrectedError({ feedback: "search the changelog instead" }))
+    const registry = yield* Tool.Service
+    const registration = yield* McpTool.Service
+    yield* registration.flush
+
+    const execution = yield* executeTool(registry, {
+      sessionID: Session.ID.make("ses_mcp_corrected"),
+      ...toolIdentity,
+      call: { type: "tool-call", id: "call_mcp_corrected", name: "direct_lookup", input: {} },
+    })
+
+    expect(execution).toMatchObject({ status: "error", error: { message: "search the changelog instead" } })
+    expect(calls).toBe(0)
+  }),
+)
+
+it.effect("keeps a plain decline a defect that the leaf never turns into model output", () =>
+  Effect.gen(function* () {
+    calls = 0
+    assertion = yield* Deferred.make<Permission.AssertInput>()
+    decision = Effect.die(new Permission.DeclinedError())
+    const registry = yield* Tool.Service
+    const registration = yield* McpTool.Service
+    yield* registration.flush
+    const toolSet = yield* registry.snapshot()
+
+    const exit = yield* toolSet
+      .execute({
+        sessionID: Session.ID.make("ses_mcp_declined"),
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call_mcp_declined", name: "direct_lookup", input: {} },
+      })
+      .pipe(Effect.exit)
+
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure")
+      expect(
+        exit.cause.reasons.some(
+          (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
+        ),
+      ).toBe(true)
     expect(calls).toBe(0)
   }),
 )
