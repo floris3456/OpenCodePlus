@@ -27,7 +27,7 @@ import { apply } from "../../src/instructions/apply.js"
 import { discover } from "../../src/instructions/discover.js"
 import { scopesOf, type Level } from "../../src/instructions/model.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
-import { liveRunScopes, policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
+import { policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
 import { enable } from "../../src/project.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
@@ -138,14 +138,8 @@ async function registerAll(ctx: Context) {
   return plus
 }
 
-// The shipped roster as a project team, which is the TUI's "start from
-// template" flow. A defaults-level copy would be shadowed by the very agents
-// Plus installs for it (they read back as defaults-scope regulars), so its
-// members would carry no rows at all.
 async function enableShippedTeam(plus: PlusApi): Promise<void> {
-  const created = await plus.createTeam({ level: "project", team: TEAM, template: TEAM })
-  expect(created.ok).toBe(true)
-  const enabled = await plus.setTeamEnabled({ level: "project", team: TEAM, enabled: true })
+  const enabled = await plus.setTeamEnabled({ level: "defaults", team: TEAM, enabled: true })
   expect(enabled.ok).toBe(true)
 }
 
@@ -270,10 +264,20 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
 
       const ids = listed.rows.map((row) => row.id)
       const ceiling = allowedTeamTools("implementer")
-      // A row is listable only where a hostable tool row exists to hang it
-      // under, which for this member is the out-of-ceiling direct team tools.
-      const codeSet = new Set<string>(codeTools)
-      for (const tool of teamTools.filter((name) => !ceiling.includes(name) && !codeSet.has(name)))
+      for (const item of [
+        "perm:shell:team-role",
+        "perm:question:team-role",
+        "perm:subagent:team-role",
+        "perm:task:team-role",
+        "perm:read:team-role",
+        "perm:external_directory:team-role",
+        "perm:search:team-tavily",
+      ])
+        expect(ids.some((id) => id.endsWith(item))).toBe(true)
+      // Every team tool outside the ceiling, including the Code Mode ones
+      // (team_wait, team_list) that no tool row can host: they reach a caller
+      // through the member's own Policy group.
+      for (const tool of teamTools.filter((name) => !ceiling.includes(name)))
         expect(ids.some((id) => id.endsWith(`perm:team_${tool}:role-ceiling`))).toBe(true)
       for (const tool of ceiling) expect(ids.some((id) => id.endsWith(`perm:team_${tool}:role-ceiling`))).toBe(false)
 
@@ -288,27 +292,6 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       expect(shown.tool).toBe("team_delegate")
       expect(shown.enabled).toBe(false)
       expect(shown.patterns).toEqual(["*"])
-
-      // The whole set, straight from the producer that feeds the snapshot.
-      // Plus.SnapshotItem carries neither `policy` nor `runID`, so the tree's
-      // Policy group — the surface that lists every row regardless of tool —
-      // is empty by the time instructions_list reads the snapshot back.
-      const produced = teamPolicyItems(policyMembersOf(["gemini-implementer"]))
-      const producedIds = produced.map((row) => row.id)
-      call("teamPolicyItems(policyMembersOf([gemini-implementer])) row ids", undefined, producedIds)
-      for (const item of [
-        "perm:shell:team-role",
-        "perm:question:team-role",
-        "perm:subagent:team-role",
-        "perm:task:team-role",
-        "perm:read:team-role",
-        "perm:external_directory:team-role",
-        "perm:team_delegate:role-ceiling",
-        "perm:search:team-tavily",
-      ])
-        expect(producedIds).toContain(item)
-      for (const tool of ceiling) expect(producedIds).not.toContain(`perm:team_${tool}:role-ceiling`)
-      call("teamPolicyItems(...) perm:shell:team-role", undefined, produced.find((row) => row.id === "perm:shell:team-role"))
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
@@ -455,19 +438,28 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "text", "badges", "source"] }
       const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_list"), scopeQuery, parent)
       call("instructions_list", scopeQuery, scopeRows)
-      // The row exists; the `run:` filter cannot see it because the RPC
-      // snapshot drops the `runID` the filter reads, so the producer below is
-      // the only surface that answers today.
-      const live = await liveRunScopes(root)
-      expect(live.some((entry) => entry.id === childRun && entry.paths.includes("docs/note.md"))).toBe(true)
-      const scopeRow = teamPolicyItems(policyMembersOf(["gemini-implementer"]), live).find(
-        (row) => row.id === `perm:edit:run:${childRun}`,
-      )
-      call(`teamPolicyItems(..., liveRunScopes) perm:edit:run:${childRun}`, undefined, scopeRow)
-      expect(scopeRow?.runID).toBe(childRun)
+      // One produced row at two addresses: the member is listed as a Defaults
+      // agent and again under the Defaults team it belongs to.
+      expect(scopeRows.rows.map((row) => row.id)).toEqual([
+        `item:defaults:gemini-implementer:perm:edit:run:${childRun}`,
+        `item:defaults:${TEAM}/:gemini-implementer:perm:edit:run:${childRun}`,
+      ])
+      const scopeRow = scopeRows.rows.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
+      expect(scopeRow).toBeDefined()
       expect(scopeRow?.text).toContain("docs/note.md")
-      expect(scopeRow?.policy?.on).toContainEqual({ action: "edit", resource: "docs/note.md", effect: "allow" })
-      expect(scopeRow?.policy?.on).toContainEqual({ action: "edit", resource: "*", effect: "deny" })
+      expect(scopeRow?.text).toContain("never editable")
+      // `text` is the resolved row; `patterns` is only on the show surface, so
+      // the walkthrough needs both calls to state the whole rule.
+      const scopeShown = await runOk<{ tool: string; rule: string; patterns: string[]; enabled: boolean; source: string }>(
+        need(fixture.tools, "instructions_show"),
+        { id: scopeRow?.id },
+        parent,
+      )
+      call("instructions_show", { id: scopeRow?.id }, scopeShown)
+      expect(scopeShown.tool).toBe("edit")
+      expect(scopeShown.rule).toBe(`run:${childRun}`)
+      expect(scopeShown.patterns).toEqual(["*", "docs/note.md", ".git/**", ".opencodeplus/**"])
+      expect(scopeShown.enabled).toBe(true)
 
       const child = toolContext(delegated.session, "gemini-implementer")
       const childContext = await runOk<{ run: string; brief: { objective: string }; scope: { paths: string[] } }>(
