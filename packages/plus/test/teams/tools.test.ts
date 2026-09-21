@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { EventDomain } from "@opencode/plugin/effect/event"
+import type { ToolDomain, ToolHooks } from "@opencode/plugin/effect/tool"
 import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
@@ -7,13 +9,12 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect, Fiber, Option, Schema } from "effect"
+import { Deferred, Effect, Fiber, Option, PubSub, Schema, Stream } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { assertToolPermission } from "../../../core/src/tool/permission-gate.js"
 import { Permission } from "../../../core/src/permission.js"
-import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { verify } from "../../src/teams/audit.js"
@@ -21,7 +22,7 @@ import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief } from "../../src/teams/schema.js"
-import { registerTeamTools, markCallAsked, handleExecuteAfter } from "../../src/teams/tools.js"
+import { registerTeamTools } from "../../src/teams/tools.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { context, toolHarness } from "../harness.js"
 
@@ -63,9 +64,91 @@ const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "c
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`
 
+interface TestToolHarness {
+  readonly ctx: Context
+  readonly tools: Map<string, Tool.Info & { readonly id: string }>
+  readonly emit: (event: { type: string; data: unknown }) => void
+  readonly triggerHook: <Name extends "execute.before" | "execute.after">(
+    name: Name,
+    event: ToolHooks[Name],
+  ) => Effect.Effect<void>
+}
+
+function testToolContext(options: {
+  directory?: string
+  session?: unknown
+} = {}): TestToolHarness {
+  const base = toolHarness()
+  const beforeHooks: Array<(event: ToolHooks["execute.before"]) => Effect.Effect<void>> = []
+  const afterHooks: Array<(event: ToolHooks["execute.after"]) => Effect.Effect<void>> = []
+
+  const domain = {
+    ...base.domain,
+    hook: (name: string, callback: unknown) =>
+      Effect.sync(() => {
+        if (name === "execute.before") {
+          beforeHooks.push(callback as (event: ToolHooks["execute.before"]) => Effect.Effect<void>)
+          return {
+            dispose: Effect.sync(() => {
+              const idx = beforeHooks.indexOf(callback as (event: ToolHooks["execute.before"]) => Effect.Effect<void>)
+              if (idx !== -1) beforeHooks.splice(idx, 1)
+            }),
+          }
+        }
+        if (name === "execute.after") {
+          afterHooks.push(callback as (event: ToolHooks["execute.after"]) => Effect.Effect<void>)
+          return {
+            dispose: Effect.sync(() => {
+              const idx = afterHooks.indexOf(callback as (event: ToolHooks["execute.after"]) => Effect.Effect<void>)
+              if (idx !== -1) afterHooks.splice(idx, 1)
+            }),
+          }
+        }
+        return { dispose: Effect.void }
+      }),
+  } as ToolDomain
+
+  const pubsub = Effect.runSync(PubSub.unbounded<{ type: string; data: unknown }>())
+  const event = {
+    subscribe: () => Stream.fromPubSub(pubsub) as any,
+  }
+
+  const emit = (evt: { type: string; data: unknown }) => {
+    Effect.runSync(PubSub.publish(pubsub, evt))
+  }
+
+  const triggerHook = <Name extends "execute.before" | "execute.after">(name: Name, evt: ToolHooks[Name]) =>
+    Effect.gen(function* () {
+      const hooks = name === "execute.before" ? beforeHooks : afterHooks
+      for (const hook of hooks) {
+        yield* (hook as (e: unknown) => Effect.Effect<void>)(evt)
+      }
+    })
+
+  const location = options.directory
+    ? new Location.Info({
+        directory: AbsolutePath.make(options.directory),
+        project: {
+          id: Project.ID.global,
+          directory: AbsolutePath.make(options.directory),
+          canonical: AbsolutePath.make(options.directory),
+        },
+      })
+    : undefined
+
+  const ctx = context({
+    tool: domain,
+    event,
+    ...(location ? { location } : {}),
+    ...(options.session ? { session: options.session as Context["session"] } : {}),
+  })
+
+  return { ctx, tools: base.tools, emit, triggerHook }
+}
+
 function fixture(): { ctx: Context; tools: Map<string, Tool.Info & { readonly id: string }> } {
-  const harness = toolHarness()
-  return { ctx: context({ tool: harness.domain }), tools: harness.tools }
+  const tc = testToolContext()
+  return { ctx: tc.ctx, tools: tc.tools }
 }
 
 async function registeredTools(): Promise<Map<string, Tool.Info & { readonly id: string }>> {
@@ -629,9 +712,21 @@ function executeGated<A>(
   input: A,
   context: Tool.Context,
   permission: Permission.Interface,
-  afterHook?: (event: ToolHooks["execute.after"]) => Effect.Effect<void>,
+  triggerHook: <Name extends "execute.before" | "execute.after">(
+    name: Name,
+    event: ToolHooks[Name],
+  ) => Effect.Effect<void>,
 ): Effect.Effect<{ output?: unknown }, Tool.Error> {
   return Effect.gen(function* () {
+    yield* triggerHook("execute.before", {
+      tool: tool.id,
+      sessionID: context.sessionID,
+      agent: context.agent,
+      messageID: context.messageID,
+      id: context.id,
+      input,
+    })
+
     const execution = yield* assertToolPermission(tool, tool.id, context).pipe(
       Effect.provideService(Permission.Service, permission),
       Effect.andThen(tool.execute(input, context)),
@@ -652,7 +747,7 @@ function executeGated<A>(
         status: "error",
         error: execution.failure,
       }
-      if (afterHook) yield* afterHook(afterEvent)
+      yield* triggerHook("execute.after", afterEvent)
       return yield* Effect.fail(execution.failure)
     }
     const afterEvent: ToolHooks["execute.after"] = {
@@ -663,14 +758,14 @@ function executeGated<A>(
         output: execution.value.output,
       },
     }
-    if (afterHook) yield* afterHook(afterEvent)
+    yield* triggerHook("execute.after", afterEvent)
     return execution.value
   })
 }
 
 function makeTestPermissionService(
   rules: Permission.Ruleset,
-  onAsked?: (request: Permission.Request) => Effect.Effect<void>,
+  onAsked?: (request: Permission.Request) => void,
 ) {
   let counter = 0
   const pending = new Map<
@@ -717,7 +812,7 @@ function makeTestPermissionService(
           message: winningRule?.message,
         }
         pending.set(reqId, { request, deferred })
-        if (onAsked) yield* onAsked(request)
+        if (onAsked) onAsked(request)
         return yield* Deferred.await(deferred).pipe(
           Effect.catchTag("Permission.DeclinedError", (err) => Effect.die(err)),
           Effect.ensuring(Effect.sync(() => pending.delete(reqId))),
@@ -776,33 +871,25 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       }
       await saveRun(root, plannerRun)
 
-      const harness = toolHarness()
-      const directory = AbsolutePath.make(repoDir)
-      const location = new Location.Info({
-        directory,
-        project: { id: Project.ID.global, directory, canonical: directory },
-      })
       const session = {
         create: () => Effect.succeed({ id: Session.ID.make("ses_child_001") }),
         prompt: () => Effect.succeed(undefined as never),
         switchModel: () => Effect.succeed(undefined as never),
         wait: () => Effect.succeed(undefined),
       } as unknown as Context["session"]
-      const pluginCtx = context({ tool: harness.domain, location, session })
-      const api = createTeamApi(pluginCtx, createState())
-      await registerTeamTools(pluginCtx, api)
+      const tc = testToolContext({ directory: repoDir, session })
+      const api = createTeamApi(tc.ctx, createState())
+      await registerTeamTools(tc.ctx, api)
 
-      const delegateTool = need(harness.tools, "team_delegate")
+      const delegateTool = need(tc.tools, "team_delegate")
 
       const rules: Permission.Ruleset = [
         { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
       ]
 
-      const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) =>
-        Effect.sync(() => {
-          if (req.source?.id) markCallAsked(req.source.id)
-        }),
-      )
+      const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
+        tc.emit({ type: "permission.asked", data: req })
+      })
 
       // 1. First call: ALLOW
       const allowCtx: Tool.Context = {
@@ -824,7 +911,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       })
 
       const allowFiber = Effect.runFork(
-        executeGated(delegateTool, delegateInput, allowCtx, permService, handleExecuteAfter),
+        executeGated(delegateTool, delegateInput, allowCtx, permService, tc.triggerHook),
       )
 
       while (pendingRequests().length === 0) {
@@ -868,7 +955,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       })
 
       const denyFiber = Effect.runFork(
-        executeGated(delegateTool, denyInput, denyCtx, permService, handleExecuteAfter),
+        executeGated(delegateTool, denyInput, denyCtx, permService, tc.triggerHook),
       )
 
       while (pendingRequests().length === 0) {
@@ -930,24 +1017,21 @@ test("child session calling team_status executes without creating a permission r
     }
     await saveRun(root, childRun)
 
-    const harness = toolHarness()
-    const pluginCtx = context({ tool: harness.domain })
-    const api = createTeamApi(pluginCtx, createState())
-    await registerTeamTools(pluginCtx, api)
+    const tc = testToolContext()
+    const api = createTeamApi(tc.ctx, createState())
+    await registerTeamTools(tc.ctx, api)
 
-    const statusTool = need(harness.tools, "team_status")
+    const statusTool = need(tc.tools, "team_status")
 
     const rules: Permission.Ruleset = [
       { action: "team.status", resource: "*", effect: "allow" },
     ]
 
     let askedCount = 0
-    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) =>
-      Effect.sync(() => {
-        askedCount++
-        if (req.source?.id) markCallAsked(req.source.id)
-      }),
-    )
+    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
+      askedCount++
+      tc.emit({ type: "permission.asked", data: req })
+    })
 
     const statusCtx: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
@@ -958,7 +1042,7 @@ test("child session calling team_status executes without creating a permission r
     }
 
     const output = await Effect.runPromise(
-      executeGated(statusTool, {}, statusCtx, permService, handleExecuteAfter),
+      executeGated(statusTool, {}, statusCtx, permService, tc.triggerHook),
     )
     expect(output).toBeDefined()
     expect(askedCount).toBe(0)
@@ -988,12 +1072,11 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     }
     await saveRun(root, implRun)
 
-    const harness = toolHarness()
-    const pluginCtx = context({ tool: harness.domain })
-    const api = createTeamApi(pluginCtx, createState())
-    await registerTeamTools(pluginCtx, api)
+    const tc = testToolContext()
+    const api = createTeamApi(tc.ctx, createState())
+    await registerTeamTools(tc.ctx, api)
 
-    const delegateTool = need(harness.tools, "team_delegate")
+    const delegateTool = need(tc.tools, "team_delegate")
 
     const rules: Permission.Ruleset = [
       {
@@ -1005,12 +1088,10 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     ]
 
     let askedCount = 0
-    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) =>
-      Effect.sync(() => {
-        askedCount++
-        if (req.source?.id) markCallAsked(req.source.id)
-      }),
-    )
+    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
+      askedCount++
+      tc.emit({ type: "permission.asked", data: req })
+    })
 
     const ctx: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
@@ -1021,7 +1102,7 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     }
 
     const outcome = await Effect.runPromise(
-      executeGated(delegateTool, {}, ctx, permService, handleExecuteAfter).pipe(
+      executeGated(delegateTool, {}, ctx, permService, tc.triggerHook).pipe(
         Effect.map(() => ({ ok: true as const, message: "" })),
         Effect.catchTag("Tool.Error", (err) => Effect.succeed({ ok: false as const, message: err.message })),
       ),

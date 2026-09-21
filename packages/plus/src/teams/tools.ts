@@ -49,20 +49,9 @@ const ListDescription = "List runs in this namespace, optionally filtered.\nHidd
 const GetContextDescription = "Load your brief, checks, siblings, inbox and budget.\nCall first, then execute the Brief."
 const CheckDescription = "Run one assigned focused check in your worktree.\nUnknown ids fail with E_UNKNOWN_CHECK."
 
-const askedCallIds = new Set<string>()
-const startTimes = new Map<string, number>()
-
-export function markCallAsked(callID: string): void {
-  askedCallIds.add(callID)
-}
-
-export function isCallAsked(callID: string): boolean {
-  return askedCallIds.has(callID)
-}
-
-export function clearAskedCalls(): void {
-  askedCallIds.clear()
-  startTimes.clear()
+interface TeamAuditState {
+  readonly askedCallIds: Set<string>
+  readonly startTimes: Map<string, number>
 }
 
 function isPermissionError(error: Tool.Error): boolean {
@@ -72,30 +61,31 @@ function isPermissionError(error: Tool.Error): boolean {
   return false
 }
 
-export function handleExecuteAfter(
+function handleExecuteAfter(
   event: ToolHooks["execute.after"],
+  state: TeamAuditState,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     if (!event.tool.startsWith("team_")) return
     const callId = String(event.id)
-    const start = startTimes.get(callId)
+    const start = state.startTimes.get(callId)
     const durationMs = start !== undefined ? Date.now() - start : 0
-    startTimes.delete(callId)
+    state.startTimes.delete(callId)
 
     if (event.status !== "error") {
-      askedCallIds.delete(callId)
+      state.askedCallIds.delete(callId)
       return
     }
 
     if (!isPermissionError(event.error)) {
-      askedCallIds.delete(callId)
+      state.askedCallIds.delete(callId)
       return
     }
 
     const wasAsked =
-      askedCallIds.has(callId) ||
+      state.askedCallIds.has(callId) ||
       (event.error.error as { _tag?: string } | undefined)?._tag === "Permission.CorrectedError"
-    askedCallIds.delete(callId)
+    state.askedCallIds.delete(callId)
 
     const outcome: ToolCallOutcome = wasAsked ? "asked:deny" : "denied"
     const sessionID = String(event.sessionID)
@@ -122,39 +112,50 @@ export function handleExecuteAfter(
   })
 }
 
-async function installHook(ctx: Context): Promise<Registration> {
-  if (typeof ctx.tool?.hook !== "function") return { dispose: Effect.void }
-  const registered = await Effect.runPromise(
+async function installHook(ctx: Context, state: TeamAuditState): Promise<Registration> {
+  return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       const afterReg = yield* Effect.suspend(() =>
-        ctx.tool.hook("execute.after", (event) => handleExecuteAfter(event)),
+        ctx.tool.hook("execute.after", (event) => handleExecuteAfter(event, state)),
       ).pipe(
         Effect.provideService(Scope.Scope, scope),
-        Effect.catchCause(() => Effect.succeed({ dispose: Effect.void })),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("plus team tool execute.after hook registration failed", { cause }).pipe(
+            Effect.as({ dispose: Effect.void }),
+          ),
+        ),
       )
       const beforeReg = yield* Effect.suspend(() =>
         ctx.tool.hook("execute.before", (event) => {
           if (event.tool.startsWith("team_")) {
-            startTimes.set(String(event.id), Date.now())
+            state.startTimes.set(String(event.id), Date.now())
           }
           return Effect.void
         }),
       ).pipe(
         Effect.provideService(Scope.Scope, scope),
-        Effect.catchCause(() => Effect.succeed({ dispose: Effect.void })),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("plus team tool execute.before hook registration failed", { cause }).pipe(
+            Effect.as({ dispose: Effect.void }),
+          ),
+        ),
       )
       return {
         dispose: Effect.all([afterReg.dispose, beforeReg.dispose, Scope.close(scope, Exit.void)], { discard: true }),
       }
-    }).pipe(Effect.catchCause(() => Effect.succeed({ dispose: Effect.void }))),
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("plus team tool hook install failed", { cause }).pipe(
+          Effect.as({ dispose: Effect.void }),
+        ),
+      ),
+    ),
   )
-  return registered
 }
 
-async function listenAskedEvents(ctx: Context): Promise<Registration> {
-  if (typeof ctx.event?.subscribe !== "function") return { dispose: Effect.void }
-  const registered = await Effect.runPromise(
+async function listenAskedEvents(ctx: Context, state: TeamAuditState): Promise<Registration> {
+  return Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       yield* ctx.event.subscribe().pipe(
@@ -163,23 +164,35 @@ async function listenAskedEvents(ctx: Context): Promise<Registration> {
           Effect.sync(() => {
             const data = event.data as { source?: { type?: string; id?: string } } | undefined
             if (data?.source?.type === "tool" && typeof data.source.id === "string") {
-              askedCallIds.add(data.source.id)
+              state.askedCallIds.add(data.source.id)
             }
           }),
         ),
-        Effect.catchCause(() => Effect.void),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("plus team event subscription failed", { cause }).pipe(Effect.asVoid),
+        ),
         Effect.forkScoped({ startImmediately: true }),
         Effect.provideService(Scope.Scope, scope),
       )
       return {
         dispose: Scope.close(scope, Exit.void),
       }
-    }).pipe(Effect.catchCause(() => Effect.succeed({ dispose: Effect.void }))),
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("plus team event listener install failed", { cause }).pipe(
+          Effect.as({ dispose: Effect.void }),
+        ),
+      ),
+    ),
   )
-  return registered
 }
 
 export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
+  const state: TeamAuditState = {
+    askedCallIds: new Set<string>(),
+    startTimes: new Map<string, number>(),
+  }
+
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Team runs: delegate work, report outcomes, and read run state." })
     editor.add({
@@ -189,7 +202,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("delegate", false),
       origin,
-      execute: (input, context) => runGated("delegate", input, context, ctx, (args, caller) => api.delegate(args, caller)),
+      execute: (input, context) => runGated("delegate", input, context, ctx, state, (args, caller) => api.delegate(args, caller)),
     })
     editor.add({
       name: "finish",
@@ -198,7 +211,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("finish", false),
       origin,
-      execute: (input, context) => runGated("finish", input, context, ctx, (args, caller) => api.finish(args, caller)),
+      execute: (input, context) => runGated("finish", input, context, ctx, state, (args, caller) => api.finish(args, caller)),
     })
     editor.add({
       name: "followup",
@@ -207,7 +220,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("followup", false),
       origin,
-      execute: (input, context) => runGated("followup", input, context, ctx, (args, caller) => api.followup(args, caller)),
+      execute: (input, context) => runGated("followup", input, context, ctx, state, (args, caller) => api.followup(args, caller)),
     })
     editor.add({
       name: "integrate",
@@ -216,7 +229,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("integrate", false),
       origin,
-      execute: (input, context) => runGated("integrate", input, context, ctx, (args, caller) => api.integrate(args, caller)),
+      execute: (input, context) => runGated("integrate", input, context, ctx, state, (args, caller) => api.integrate(args, caller)),
     })
     editor.add({
       name: "checkpoint",
@@ -225,7 +238,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("checkpoint", false),
       origin,
-      execute: (input, context) => runGated("checkpoint", input, context, ctx, (args, caller) => api.checkpoint(args, caller)),
+      execute: (input, context) => runGated("checkpoint", input, context, ctx, state, (args, caller) => api.checkpoint(args, caller)),
     })
     editor.add({
       name: "set_checks",
@@ -234,7 +247,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("set_checks", false),
       origin,
-      execute: (input, context) => runGated("set_checks", input, context, ctx, (args, caller) => api.set_checks(args, caller)),
+      execute: (input, context) => runGated("set_checks", input, context, ctx, state, (args, caller) => api.set_checks(args, caller)),
     })
     editor.add({
       name: "supersede",
@@ -243,7 +256,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("supersede", false),
       origin,
-      execute: (input, context) => runGated("supersede", input, context, ctx, (args, caller) => api.supersede(args, caller)),
+      execute: (input, context) => runGated("supersede", input, context, ctx, state, (args, caller) => api.supersede(args, caller)),
     })
     editor.add({
       name: "stop",
@@ -252,7 +265,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("stop", false),
       origin,
-      execute: (input, context) => runGated("stop", input, context, ctx, (args, caller) => api.stop(args, caller)),
+      execute: (input, context) => runGated("stop", input, context, ctx, state, (args, caller) => api.stop(args, caller)),
     })
     editor.add({
       name: "status",
@@ -261,7 +274,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("status", true),
       origin,
-      execute: (input, context) => runGated("status", input, context, ctx, (args, caller) => api.status(args, caller)),
+      execute: (input, context) => runGated("status", input, context, ctx, state, (args, caller) => api.status(args, caller)),
     })
     editor.add({
       name: "wait",
@@ -270,7 +283,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("wait", true),
       origin,
-      execute: (input, context) => runGated("wait", input, context, ctx, (args, caller) => api.wait(args, caller)),
+      execute: (input, context) => runGated("wait", input, context, ctx, state, (args, caller) => api.wait(args, caller)),
     })
     editor.add({
       name: "diff",
@@ -279,7 +292,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("diff", true),
       origin,
-      execute: (input, context) => runGated("diff", input, context, ctx, (args, caller) => api.diff(args, caller)),
+      execute: (input, context) => runGated("diff", input, context, ctx, state, (args, caller) => api.diff(args, caller)),
     })
     editor.add({
       name: "list",
@@ -288,7 +301,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("list", true),
       origin,
-      execute: (input, context) => runGated("list", input, context, ctx, (args, caller) => api.list(args, caller)),
+      execute: (input, context) => runGated("list", input, context, ctx, state, (args, caller) => api.list(args, caller)),
     })
     editor.add({
       name: "get_context",
@@ -297,7 +310,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("get_context", true),
       origin,
-      execute: (input, context) => runGated("get_context", input, context, ctx, (args, caller) => api.get_context(args, caller)),
+      execute: (input, context) => runGated("get_context", input, context, ctx, state, (args, caller) => api.get_context(args, caller)),
     })
     editor.add({
       name: "check",
@@ -306,13 +319,19 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       output: Schema.Unknown,
       options: teamOptions("check", true),
       origin,
-      execute: (input, context) => runGated("check", input, context, ctx, (args, caller) => api.check(args, caller)),
+      execute: (input, context) => runGated("check", input, context, ctx, state, (args, caller) => api.check(args, caller)),
     })
   })
-  const hookReg = await installHook(ctx)
-  const eventReg = await listenAskedEvents(ctx)
+  const hookReg = await installHook(ctx, state)
+  const eventReg = await listenAskedEvents(ctx, state)
   return {
-    dispose: Effect.all([toolReg.dispose, hookReg.dispose, eventReg.dispose], { discard: true }),
+    dispose: Effect.gen(function* () {
+      yield* toolReg.dispose
+      yield* hookReg.dispose
+      yield* eventReg.dispose
+      state.askedCallIds.clear()
+      state.startTimes.clear()
+    }),
   }
 }
 
@@ -325,12 +344,14 @@ function runGated<A>(
   input: A,
   toolCtx: Tool.Context,
   pluginCtx: Context,
+  state: TeamAuditState,
   call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
-    const start = Date.now()
+    const callId = String(toolCtx.id)
+    const start = state.startTimes.get(callId) ?? Date.now()
     const auditState: { run: string | null } = { run: null }
     const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState).pipe(
       Effect.map((result) => ({ ok: true as const, output: result.output })),
@@ -339,10 +360,9 @@ function runGated<A>(
     const durationMs = Date.now() - start
     const ok = settled.ok
     const code = settled.ok ? null : codeOf(settled.message)
-    const callId = String(toolCtx.id)
-    const wasAsked = askedCallIds.has(callId)
-    askedCallIds.delete(callId)
-    startTimes.delete(callId)
+    const wasAsked = state.askedCallIds.has(callId)
+    state.askedCallIds.delete(callId)
+    state.startTimes.delete(callId)
     const outcome: ToolCallOutcome = wasAsked ? "asked:allow" : "allowed"
     yield* Effect.ignore(
       Effect.tryPromise({
