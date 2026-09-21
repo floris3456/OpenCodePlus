@@ -1685,6 +1685,91 @@ anywhere:
 The 69 changed files are 21 documents, 26 source files under `src/` and 22 test
 files under `test/`.
 
+## Commit provenance
+
+The receipts below are bound to HEAD
+`362f28224718d136777557d91b06b84e69068c8c` against the capture source
+`0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`. The whole span between them is ten
+commits:
+
+```text
+--- 9092c5b89 docs(plus): quote the Team tab hint bar the product renders
+ packages/plus/README.md     |  2 +-
+ packages/plus/SPEC.md       |  2 +-
+ packages/plus/docs/TOOLS.md | 10 +++++++---
+--- e119c87d2 docs(plus): correct the last stale Team tab hint bar quote
+ packages/plus/docs/round3-t4-evidence.md | 2 +-
+--- 8b0c10c60 docs(plus): paste the six final round-3 live captures
+ packages/plus/docs/teams-tools-round3-walkthrough.md | 727 ++++++++++++-----
+--- 1d3db5b3f docs(plus): drop the stale no-capture notes now the captures are in
+ packages/plus/docs/teams-tools-round3-walkthrough.md | 15 ++++++-------
+--- 541bef478 docs(plus): name the source the captures ran, not a moving head
+ packages/plus/docs/teams-tools-round3-walkthrough.md | 13 +++++++------
+--- f56d4fe24 docs(plus): correct the keymap-mode and harness claims, record the scope and secret receipts
+ packages/plus/docs/round3-t4-evidence.md             |  2 +-
+ packages/plus/docs/teams-tools-round3-walkthrough.md | 59 +++++++++++++---
+--- 963f463ed fix(plus): refuse a tool actor's delete that would erase a protected agent's row
+ packages/plus/README.md        |  2 +-
+ packages/plus/SPEC.md          | 19 ++-
+ packages/plus/src/index.ts     | 85 ++++++++++++-
+ packages/plus/test/rpc.test.ts | 275 ++++++++++++++++++++++++++++++++++++++++-
+--- d717cbb0b docs(plus): correct the audit outcome table and drifted citations
+ packages/plus/docs/TOOLS.md | 187 +++++++++++++++++++++---------------
+--- 7b91d2626 docs(plus): re-pin index.ts citations and document the cascade guard
+ packages/plus/docs/TOOLS.md | 42 ++++++++++++++++++++++------------
+--- 034642fee docs(plus): correct the RPC actor claim and the final-head provenance
+ packages/plus/docs/TOOLS.md                          | 25 ++++++++++--
+ packages/plus/docs/teams-tools-round3-walkthrough.md | 38 ++++++++++++++------
+```
+
+Only two source or test files change in it:
+
+```text
+packages/plus/src/index.ts
+packages/plus/test/rpc.test.ts
+```
+
+Those two files are the entire source and test delta of the span, and both
+belong to `963f463e`. That commit's eleven hunks inside
+`packages/plus/src/index.ts` are exactly three result-type unions, four
+cascade-guard call sites, three RPC error narrowings and the new helper, and no
+added or removed line mentions the Team tab, the composer keymap, the run
+lifecycle or the permission-message path, which is why every capture in this
+document still describes current behaviour:
+
+```text
+$ git show 963f463e -- packages/plus/src/index.ts | grep '^@@'
+@@ -188,6 +188,7 @@ export type DeleteSkillResult =
+@@ -208,6 +209,7 @@ export type DeleteBaseResult =
+@@ -248,6 +250,7 @@ export type RemoveMcpResult =
+@@ -717,6 +720,13 @@ export function createPlusApi(...)
+@@ -767,6 +777,11 @@ export function createPlusApi(...)
+@@ -887,6 +902,11 @@ export function createPlusApi(...)
+@@ -1619,6 +1639,16 @@ export function createPlusApi(...)
+@@ -1875,7 +1905,15 @@ export function createHandlers(...)
+@@ -1899,7 +1937,15 @@ export function createHandlers(...)
+@@ -1947,7 +1993,15 @@ export function createHandlers(...)
+@@ -2355,6 +2409,31 @@ function refuseProtectedForTool(
+
+$ git show 963f463e -- packages/plus/src/index.ts | grep -E '^[+-]' | grep -v '^[+-][+-]' \
+    | grep -icE 'active-team|keymap|composer|lifecycle|permAction|ruleDenialMessage|runs\.list|runs\.stop'
+0
+```
+
+The section above is unchanged since the commit it names:
+
+```text
+$ for h in 1636101b 362f2822; do
+    git show $h:packages/plus/docs/teams-tools-round3-walkthrough.md \
+      | sed -n '/^## Scope and secret-safety receipts/,/^## /p' | sed '$d' | sha256sum
+  done
+c091e31c321874da8dc37ab89bd174426adf5bfcf2b1d84ee4adedbb980dfdd5  -
+c091e31c321874da8dc37ab89bd174426adf5bfcf2b1d84ee4adedbb980dfdd5  -
+```
+
+The identical digests show the scope and secret-safety receipts are
+byte-for-byte the ones taken at `c1aab6d5`, unchanged by every later commit.
+
 ## Corrections the final verification found
 
 Comparing the live captures against the branch's own documentation turned up one
