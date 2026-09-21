@@ -1,20 +1,24 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { Session } from "@opencode/schema/session"
-import type { PermissionDomain } from "@opencode/plugin/effect/permission"
-import type { PermissionEvaluation } from "@opencode/plugin/effect/permission"
-import { Effect } from "effect"
+// Team rules are instructions rows, so this file tests rows: the producer's
+// output, what those rows resolve to through the real apply path, and that a
+// project-level override changes the answer. No permission hook exists to
+// test any more.
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { context } from "../harness.js"
+import { apply } from "../../src/instructions/apply.js"
+import { liveRunScopes, policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
+import { fingerprint, type CustomizationRecord } from "../../src/instructions/model.js"
 import { saveRun } from "../../src/teams/run.js"
 import type { RunRecord } from "../../src/teams/run.js"
-import { registerTeamPermissions } from "../../src/teams/permissions.js"
+import { agentHarness, agentInfo, context } from "../harness.js"
+
+const UPDATED = "2026-01-01T00:00:00.000Z"
 
 let dir = ""
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "teams-permissions-"))
+  dir = await mkdtemp(join(tmpdir(), "teams-policy-rows-"))
 })
 
 afterEach(async () => {
@@ -44,247 +48,138 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
     budget: {},
     createdAt: now,
     lastUsed: now,
-    sessionID: Session.ID.make("ses_teampolicy001"),
+    sessionID: "ses_teampolicy001",
     configDigest: null,
     history: [],
     ...overrides,
   }
 }
 
-function permissionHarness() {
-  const state = {
-    calls: 0,
-    disposes: 0,
-    callback: undefined as ((event: PermissionEvaluation) => Effect.Effect<void>) | undefined,
+async function permissionsAfterApply(
+  member: string,
+  items: ReturnType<typeof teamPolicyItems>,
+  records: CustomizationRecord[] = [],
+  level: "defaults" | "project" = "defaults",
+) {
+  const agents = agentHarness([agentInfo(member, "upstream")])
+  const ctx = context({ agent: agents.domain })
+  await apply(ctx, {
+    items,
+    agents: [{ id: member, level }],
+    records,
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: level === "project" ? new Set([member]) : new Set<string>() },
+    teamAgents: [member],
+  })
+  return agents.state.get(member)?.permissions ?? []
+}
+
+function has(
+  permissions: readonly { action: string; resource: string; effect: string }[],
+  action: string,
+  resource: string,
+  effect: string,
+): boolean {
+  return permissions.some((rule) => rule.action === action && rule.resource === resource && rule.effect === effect)
+}
+
+test("the producer emits one perm row per native action, per out-of-ceiling tool and per narrowed search server", () => {
+  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]))
+  const ids = items.map((item) => item.id)
+  expect(ids).toContain("perm:shell:team-role")
+  expect(ids).toContain("perm:question:team-role")
+  expect(ids).toContain("perm:external_directory:team-role")
+  expect(ids).toContain("perm:subagent:team-role")
+  expect(ids).toContain("perm:task:team-role")
+  expect(ids).toContain("perm:read:team-role")
+  expect(ids).toContain("perm:team_delegate:role-ceiling")
+  expect(ids).toContain("perm:search:team-tavily")
+  // In-ceiling tools carry no row: the member simply keeps them.
+  expect(ids).not.toContain("perm:team_checkpoint:role-ceiling")
+  for (const item of items) {
+    expect(item.kind).toBe("perm")
+    expect(item.agents).toEqual(["muse-implementer"])
+    expect(item.policy).toBeDefined()
   }
-  const domain = {
-    list: () => Effect.die("unused permission.list"),
-    get: () => Effect.die("unused permission.get"),
-    reply: () => Effect.die("unused permission.reply"),
-    rules: () => Effect.die("unused permission.rules"),
-    hook: (name: "evaluate", callback: (event: PermissionEvaluation) => Effect.Effect<void>) => {
-      state.calls += 1
-      state.callback = callback
-      return Effect.succeed({ dispose: Effect.sync(() => { state.disposes += 1 }) })
+})
+
+test("an orchestrator ships shell on and an implementer ships it off", () => {
+  const orchestrator = teamPolicyItems(policyMembersOf(["sol-orchestrator"]))
+  const implementer = teamPolicyItems(policyMembersOf(["muse-implementer"]))
+  expect(orchestrator.find((item) => item.id === "perm:shell:team-role")?.enabled).toBe(true)
+  expect(implementer.find((item) => item.id === "perm:shell:team-role")?.enabled).toBe(false)
+})
+
+test("rows resolve to the role's native answers and its ceiling on the agent", async () => {
+  const permissions = await permissionsAfterApply("muse-implementer", teamPolicyItems(policyMembersOf(["muse-implementer"])))
+  expect(has(permissions, "shell", "*", "deny")).toBe(true)
+  expect(has(permissions, "external_directory", "*", "deny")).toBe(true)
+  expect(has(permissions, "question", "*", "deny")).toBe(true)
+  expect(has(permissions, "subagent", "*", "deny")).toBe(true)
+  expect(has(permissions, "task", "*", "deny")).toBe(true)
+  expect(has(permissions, "read", "*.key", "deny")).toBe(true)
+  expect(has(permissions, "read", "*.env*", "deny")).toBe(true)
+  expect(has(permissions, "read", "*/auth.json", "deny")).toBe(true)
+  expect(has(permissions, "team.delegate", "*", "deny")).toBe(true)
+  expect(has(permissions, "team.checkpoint", "*", "deny")).toBe(false)
+  expect(has(permissions, "search_tavily_*", "*", "deny")).toBe(true)
+})
+
+test("an orchestrator's shell row resolves to an explicit allow", async () => {
+  const permissions = await permissionsAfterApply("sol-orchestrator", teamPolicyItems(policyMembersOf(["sol-orchestrator"])))
+  expect(has(permissions, "shell", "*", "allow")).toBe(true)
+  expect(has(permissions, "shell", "*", "deny")).toBe(false)
+})
+
+test("a project-level record on a role row overrides the shipped answer", async () => {
+  const records: CustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "muse-implementer",
+      item: "perm:shell:team-role",
+      section: null,
+      state: "on",
+      basedOn: fingerprint("upstream"),
+      updated: UPDATED,
     },
-  }
-  return { state, domain }
-}
+  ]
+  const permissions = await permissionsAfterApply(
+    "muse-implementer",
+    teamPolicyItems(policyMembersOf(["muse-implementer"])),
+    records,
+    "project",
+  )
+  expect(has(permissions, "shell", "*", "allow")).toBe(true)
+  expect(has(permissions, "shell", "*", "deny")).toBe(false)
+})
 
-function evaluation(
-  sessionID: Session.ID,
-  resources: string[],
-  effect: PermissionEvaluation["effect"],
-  message?: string,
-): PermissionEvaluation {
-  return message === undefined
-    ? { sessionID, action: "edit", resources, effect }
-    : { sessionID, action: "edit", resources, effect, message }
-}
+test("a live run contributes an edit-scope row that allows scope.paths and denies everything else", async () => {
+  await saveRun(dir, makeRun())
+  const runs = await liveRunScopes(dir)
+  expect(runs).toEqual([{ id: "w-0000000000000001", role: "muse-implementer", paths: ["packages/plus/src/*"] }])
+  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), runs)
+  const row = items.find((item) => item.id === "perm:edit:run:w-0000000000000001")
+  expect(row).toBeDefined()
+  expect(row?.runID).toBe("w-0000000000000001")
+  expect(row?.text).toContain("packages/plus/src/*")
+  const permissions = await permissionsAfterApply("muse-implementer", items)
+  const editRules = permissions.filter((rule) => rule.action === "edit")
+  expect(editRules).toEqual([
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
+    { action: "edit", resource: ".git/**", effect: "deny" },
+    { action: "edit", resource: ".opencodeplus/**", effect: "deny" },
+  ])
+})
 
-describe("team run edit scope", () => {
-  test("implementer run allows scope, denies outside and .git", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-    expect(harness.state.calls).toBe(1)
+test("a superseded run contributes no edit-scope row", async () => {
+  await saveRun(dir, makeRun({ state: "superseded" }))
+  expect(await liveRunScopes(dir)).toEqual([])
+})
 
-    const allowed = evaluation(sessionID, ["packages/plus/src/x.ts"], "ask")
-    await Effect.runPromise(callback(allowed))
-    expect(allowed.effect).toBe("allow")
-
-    const outside = evaluation(sessionID, ["packages/core/x.ts"], "allow")
-    await Effect.runPromise(callback(outside))
-    expect(outside.effect).toBe("deny")
-
-    const git = evaluation(sessionID, [".git/HEAD"], "allow")
-    await Effect.runPromise(callback(git))
-    expect(git.effect).toBe("deny")
-
-    await Effect.runPromise(registration.dispose)
-    expect(harness.state.disposes).toBe(1)
-  })
-
-  test("session with no run is untouched for allow and deny", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const missing = Session.ID.make("ses_teampolicymiss")
-    const keepAllow = evaluation(missing, ["packages/plus/src/x.ts"], "allow")
-    await Effect.runPromise(callback(keepAllow))
-    expect(keepAllow.effect).toBe("allow")
-
-    const keepDeny = evaluation(missing, ["packages/plus/src/x.ts"], "deny")
-    await Effect.runPromise(callback(keepDeny))
-    expect(keepDeny.effect).toBe("deny")
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("absolute resource under the run directory matches the relative scope", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const absolute = join(run.directory, "packages/plus/src/x.ts")
-    const event = evaluation(sessionID, [absolute], "ask")
-    await Effect.runPromise(callback(event))
-    expect(event.effect).toBe("allow")
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("out-of-scope denial names the path and every scope entry", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID, paths: ["packages/plus/src/*", "packages/cli/src/*"] })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const event = evaluation(sessionID, ["packages/core/x.ts"], "ask")
-    await Effect.runPromise(callback(event))
-    expect(event.effect).toBe("deny")
-    expect(event.message).toBe(
-      `"packages/core/x.ts" is outside your scope.paths [packages/plus/src/*, packages/cli/src/*]. Report it in needs=[{kind:"path"...}].`,
-    )
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("forbidden denial uses version-control wording", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const event = evaluation(sessionID, [".git/HEAD"], "ask")
-    await Effect.runPromise(callback(event))
-    expect(event.effect).toBe("deny")
-    expect(event.message).toBe(
-      `".git/HEAD" is version-control or paused-tool state and is never editable, even inside scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`,
-    )
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("in-scope allow sets no message", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const event = evaluation(sessionID, ["packages/plus/src/x.ts"], "ask")
-    await Effect.runPromise(callback(event))
-    expect(event.effect).toBe("allow")
-    expect(event.message).toBeUndefined()
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("session with no run leaves effect and message untouched", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const missing = Session.ID.make("ses_teampolicymiss")
-    const keepAllow = evaluation(missing, ["packages/core/x.ts"], "allow")
-    await Effect.runPromise(callback(keepAllow))
-    expect(keepAllow.effect).toBe("allow")
-    expect(keepAllow.message).toBeUndefined()
-
-    const keepDeny = evaluation(missing, ["packages/core/x.ts"], "deny", "original")
-    await Effect.runPromise(callback(keepDeny))
-    expect(keepDeny.effect).toBe("deny")
-    expect(keepDeny.message).toBe("original")
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("empty resources denies with nothing-to-check message", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const event = evaluation(sessionID, [], "ask")
-    await Effect.runPromise(callback(event))
-    expect(event.effect).toBe("deny")
-    expect(event.message).toBe(
-      `Edit request named no file; nothing to check against scope.paths [packages/plus/src/*].`,
-    )
-
-    await Effect.runPromise(registration.dispose)
-  })
-
-  test("first offending resource wins with forbidden checked first", async () => {
-    const sessionID = Session.ID.make("ses_teampolicy001")
-    const run = makeRun({ sessionID })
-    await saveRun(dir, run)
-    const harness = permissionHarness()
-    const ctx = context({ permission: harness.domain as unknown as PermissionDomain })
-    const registration = await registerTeamPermissions(ctx, dir)
-    const callback = harness.state.callback
-    expect(callback).toBeDefined()
-    if (callback === undefined) return
-
-    const forbiddenSecond = evaluation(sessionID, ["packages/core/a.ts", ".git/HEAD"], "ask")
-    await Effect.runPromise(callback(forbiddenSecond))
-    expect(forbiddenSecond.effect).toBe("deny")
-    expect(forbiddenSecond.message).toBe(
-      `".git/HEAD" is version-control or paused-tool state and is never editable, even inside scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`,
-    )
-
-    const firstOutOfScope = evaluation(sessionID, ["packages/core/a.ts", "packages/other/b.ts"], "ask")
-    await Effect.runPromise(callback(firstOutOfScope))
-    expect(firstOutOfScope.effect).toBe("deny")
-    expect(firstOutOfScope.message).toBe(
-      `"packages/core/a.ts" is outside your scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`,
-    )
-
-    await Effect.runPromise(registration.dispose)
-  })
+test("a run whose role is not a member of an enabled team contributes no row", async () => {
+  await saveRun(dir, makeRun({ role: "stranger" }))
+  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir))
+  expect(items.some((item) => item.runID !== undefined)).toBe(false)
 })

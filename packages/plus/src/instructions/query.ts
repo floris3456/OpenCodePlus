@@ -668,6 +668,7 @@ const structuralKeys = new Set([
   "execute",
   "level",
   "catalogue",
+  "run",
   "agent",
   "state",
   "modified",
@@ -922,6 +923,17 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
     case "level": {
       const allowed = oneOf(key, alts, ["project", "global", "defaults"], term)
       return (candidate) => allowed.some((alt) => levelOf(candidate) === lower(alt))
+    }
+    // Run-scoped rows only: the live run whose edit scope the row expresses.
+    // `run:<id>` is how a parent finds the rules a child is working under.
+    case "run": {
+      return (candidate) => {
+        const address = candidate.address
+        if (address === undefined) return false
+        const runID = lookupItem(state, address.item, address.agent)?.runID
+        if (runID === undefined) return false
+        return alts.some((alt) => lower(runID) === lower(alt))
+      }
     }
     case "catalogue": {
       const allowed = oneOf(key, alts, ["agents", "teams"], term)

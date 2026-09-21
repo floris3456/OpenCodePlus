@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
+import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
 import { enable } from "../src/project.js"
@@ -351,6 +352,48 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(base).toBeDefined()
   expect(base?.address?.agent).toBe("CrewMate")
   expect(base?.address?.catalogue).toBe("teams")
+})
+
+test("a team member's rules are rows under a Policy group, and team tools never reach the Agents catalogue", () => {
+  const member = "gemini-implementer"
+  const policy = teamPolicyItems(policyMembersOf([member]))
+  const teamTool = makeItem({
+    id: "tool:team_delegate",
+    kind: "tool",
+    group: "plus",
+    title: "delegate",
+    namespace: "team",
+    codemode: false,
+  })
+  const nodes = expandAll({
+    items: [...items(), teamTool, ...policy],
+    records: [],
+    agents: [...agents(), { id: member, scope: "project", origin: "plus" }],
+    teams: [{ level: "project", team: "crew", enabled: true, agents: [member] }],
+  })
+  const group = nodes.find((node) => node.id === `group:project:crew/:${member}:tools:policy`)
+  expect(group?.kind).toBe("group")
+  expect(group?.label).toBe("Policy")
+  const rows = childrenOf(nodes, `group:project:crew/:${member}:tools:policy`)
+  expect(rows.map((node) => node.id)).toContain(`item:project:crew/:${member}:perm:shell:team-role`)
+  expect(rows.map((node) => node.id)).toContain(`item:project:crew/:${member}:perm:team_supersede:role-ceiling`)
+  const shell = rows.find((node) => node.id === `item:project:crew/:${member}:perm:shell:team-role`)
+  expect(shell?.badges.state).toBe("off")
+  expect(shell?.actions?.toggle).toBe(true)
+  expect(shell?.address).toEqual({ level: "project", agent: member, item: "perm:shell:team-role", section: null, catalogue: "teams" })
+  // Policy rows live in one group per owner, never duplicated under the tool
+  // they govern. The member's stand-alone Agents-catalogue row reads the same
+  // records, so it carries its own single copy.
+  expect(nodes.filter((node) => node.id === `item:project:crew/:${member}:perm:shell:team-role`)).toHaveLength(1)
+  expect(nodes.filter((node) => node.id === `item:project:${member}:perm:shell:team-role`)).toHaveLength(1)
+  expect(childrenOf(nodes, `item:project:crew/:${member}:tool:bash`).map((node) => node.id)).not.toContain(
+    `item:project:crew/:${member}:perm:shell:team-role`,
+  )
+  // The Agents catalogue lists no team tool, for the member or for anyone else.
+  expect(nodes.some((node) => node.id === `item:project:${member}:tool:team_delegate`)).toBe(false)
+  expect(nodes.some((node) => node.id === "item:project:Implementer:tool:team_delegate")).toBe(false)
+  expect(nodes.some((node) => node.id === "item:defaults::tool:team_delegate")).toBe(false)
+  expect(nodes.some((node) => node.id === `item:project:crew/:${member}:tool:team_delegate`)).toBe(true)
 })
 
 test("registered team member yields its Role/persona under System", () => {

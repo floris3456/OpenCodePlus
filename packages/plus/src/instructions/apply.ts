@@ -10,7 +10,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
-import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
+import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
 import { actionForToolId, scrubLines } from "./tool-permissions.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
@@ -52,7 +52,13 @@ export interface Applied {
 
 export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
   const models = input.models ?? []
-  if (input.records.length === 0 && models.length === 0) return { registrations: [], tools: [] }
+  // Team rules do not come from a record: a role's ceiling and native denies,
+  // and the `team.*` deny that hides the namespace from every non-member,
+  // must land even when nothing at all is customized, so they are their own
+  // reason to install.
+  const teamRules = input.items.some((item) => item.kind === "perm" && item.policy !== undefined)
+  if (input.records.length === 0 && models.length === 0 && !teamRules && teamNamespaceDenials(input).length === 0)
+    return { registrations: [], tools: [] }
   const installed: Registration[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
@@ -308,7 +314,7 @@ async function applySkills(
 
 function pushRule(
   editor: AgentEditor,
-  rule: { agent: string; action: string; resource: string; effect: "deny" | "allow" },
+  rule: { agent: string; action: string; resource: string; effect: PolicyRule["effect"] },
   team: ReadonlySet<string>,
 ) {
   // Core evaluates permissions last-match-wins, so appending is always
@@ -337,6 +343,9 @@ function permDenials(input: ApplyInput): { agent: string; action: string; resour
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "perm") return []
+      // Team policy rows carry both sides of their answer and install through
+      // policyRules; installing their patterns here too would double them.
+      if (item.policy !== undefined) return []
       if (item.patterns === undefined || item.patterns.length === 0) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
@@ -348,6 +357,44 @@ function permDenials(input: ApplyInput): { agent: string; action: string; resour
     }),
   )
 }
+
+// Team role rules: every policy row resolved for the member it belongs to,
+// installing the row's own `on` rules when it resolves enabled and its `off`
+// rules when it resolves disabled. The rules are the row's whole answer — the
+// role ceiling, the native denies and a live run's edit scope all arrive here
+// — so a project or global override of the row changes what lands with no
+// other code path involved.
+function policyRules(input: ApplyInput): { agent: string; action: string; resource: string; effect: PolicyRule["effect"] }[] {
+  return input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
+      const policy = item.policy
+      if (item.kind !== "perm" || policy === undefined) return []
+      if (!applies(item, agent.id)) return []
+      const resolved = resolvedFor(item, agent, input)
+      const rules = resolved.enabled ? policy.on : policy.off
+      return rules.map((rule) => ({ agent: agent.id, action: rule.action, resource: rule.resource, effect: rule.effect }))
+    }),
+  )
+}
+
+// What hides the team namespace from everyone else (item 4): an agent that is
+// not a member of an enabled team gets one wildcard deny on the namespace's
+// permission action, which is exactly the shape core drops a tool for
+// (`packages/core/src/tool.ts` whollyDisabled matches the action by wildcard
+// against `options.permission`). Nothing is emitted when the namespace is not
+// registered at all, so an inventory without team tools installs nothing.
+function teamNamespaceDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
+  const registered = input.items.some(
+    (item) => item.kind === "tool" && (item.namespace === teamNamespace || item.id.startsWith(`tool:${teamNamespace}_`)),
+  )
+  if (!registered) return []
+  const members = new Set(input.teamAgents ?? [])
+  return input.agents
+    .filter((agent) => !members.has(agent.id))
+    .map((agent) => ({ agent: agent.id, action: `${teamNamespace}.*`, resource: "*", effect: "deny" as const }))
+}
+
+const teamNamespace = "team"
 
 // Disabled-rule scrub keywords per agent: the union of keywords from every
 // OFF perm item for that agent. Empty means no scrub, so unrelated saves
@@ -566,7 +613,11 @@ async function applySession(
       catalogPath: catalogPath(candidate.item),
       pinned: candidate.pinned,
     }))
-  const permDenies = permDenials(input)
+  // Role rules and the non-member namespace deny land through the same
+  // pushRule path as every other rule, appended after the per-pattern denies
+  // so a policy row's own ordering (deny *, then the allowed paths, then the
+  // never-editable state) survives core's last-match-wins evaluation.
+  const permDenies = [...permDenials(input), ...policyRules(input), ...teamNamespaceDenials(input)]
   const scrubByAgent = scrubKeywordsByAgent(input)
   const needsScrub = [...scrubByAgent.values()].some((keywords) => keywords.length > 0)
   if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub)

@@ -35,7 +35,7 @@ function throwingContext(captured: { current?: unknown }): {
   }
 }
 
-const NINE = [
+const TEN = [
   "fable-planner",
   "astra-planner",
   "sol-orchestrator",
@@ -43,6 +43,7 @@ const NINE = [
   "muse-implementer",
   "gemini-implementer",
   "spark-implementer",
+  "opus-implementer",
   "astra-reviewer",
   "scout",
 ] as const
@@ -52,7 +53,8 @@ interface Expectation {
   readonly shell: "allow" | "deny"
   readonly external: "allow" | "deny"
   readonly question: "allow" | "deny"
-  readonly deniedTeamTool: string
+  /** null when the role's ceiling is the whole namespace, so nothing is denied. */
+  readonly deniedTeamTool: string | null
   readonly allowedTeamTool: string
 }
 
@@ -70,7 +72,9 @@ const EXPECTED: Record<string, Expectation> = {
     shell: "allow",
     external: "allow",
     question: "deny",
-    deniedTeamTool: "plan_handoff",
+    // An orchestrator's ceiling is the whole namespace now that every
+    // advertised tool works, so no team tool is denied for it.
+    deniedTeamTool: null,
     allowedTeamTool: "delegate",
   },
   "muse-implementer": {
@@ -97,6 +101,14 @@ const EXPECTED: Record<string, Expectation> = {
     deniedTeamTool: "delegate",
     allowedTeamTool: "checkpoint",
   },
+  "opus-implementer": {
+    description: "Genuinely hard or mistake-costly tasks",
+    shell: "deny",
+    external: "deny",
+    question: "deny",
+    deniedTeamTool: "delegate",
+    allowedTeamTool: "checkpoint",
+  },
   "astra-reviewer": {
     description: "Astra reviewer: reviews diffs against the brief with findings",
     shell: "deny",
@@ -115,7 +127,11 @@ const EXPECTED: Record<string, Expectation> = {
   },
 }
 
-test("enabling opencodeplus-team installs all nine roles with mode, description, and deny rules", async () => {
+// The rules no longer travel on the member definition: they are instructions
+// rows under each member, and this test reads the end of that path — what
+// /api/agent reports after a publish. The effective permissions are the same
+// ones the old member-carried `permissions` list produced.
+test("enabling opencodeplus-team installs all ten roles with mode, description, and deny rules", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const ctx = fullContext({ directory: project })
@@ -123,7 +139,7 @@ test("enabling opencodeplus-team installs all nine roles with mode, description,
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})))
   const listed = await Effect.runPromise(ctx.agent.list())
   const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
-  for (const id of NINE) expect(byId.has(id)).toBe(true)
+  for (const id of TEN) expect(byId.has(id)).toBe(true)
   for (const [id, expected] of Object.entries(EXPECTED)) {
     const agent = byId.get(id)
     expect(agent).toBeDefined()
@@ -141,8 +157,10 @@ test("enabling opencodeplus-team installs all nine roles with mode, description,
     expect(has("read", "*.key", "deny")).toBe(true)
     expect(has("read", "*.env*", "deny")).toBe(true)
     expect(has("read", "*/auth.json", "deny")).toBe(true)
-    expect(has(`team.${expected.deniedTeamTool}`, "*", "deny")).toBe(true)
+    if (expected.deniedTeamTool !== null) expect(has(`team.${expected.deniedTeamTool}`, "*", "deny")).toBe(true)
     expect(has(`team.${expected.allowedTeamTool}`, "*", "deny")).toBe(false)
+    // A member is never hidden from the namespace it belongs to.
+    expect(has("team.*", "*", "deny")).toBe(false)
   }
 })
 
@@ -155,7 +173,7 @@ test("built-in roles allow shell only for orchestrators and deny shell for all o
   const listed = await Effect.runPromise(ctx.agent.list())
   const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
   const orchestrators = new Set(["sol-orchestrator", "opus-orchestrator"])
-  for (const id of NINE) {
+  for (const id of TEN) {
     const agent = byId.get(id)
     expect(agent).toBeDefined()
     if (agent === undefined) continue

@@ -7,6 +7,8 @@ import { Effect, Layer, Schema } from "effect"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { fingerprint, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
+import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
+import { allowedTeamTools, codeTools, teamTools } from "../src/teams/policy.js"
 import { CodeModeCatalog } from "../../core/src/codemode/catalog.js"
 import { CodeModeInstructions } from "../../core/src/codemode/instructions.js"
 import { Tool as CoreTool } from "../../core/src/tool.js"
@@ -82,7 +84,12 @@ function mcpDomainFor(server: string) {
   }
 }
 
-function pluginTool(namespace: string, name: string, description: string): Tool.Info & { readonly id: string; readonly origin: { type: "plugin"; name: string } } {
+function pluginTool(
+  namespace: string,
+  name: string,
+  description: string,
+  codemode = true,
+): Tool.Info & { readonly id: string; readonly origin: { type: "plugin"; name: string } } {
   const id = `${namespace.replaceAll(".", "_")}_${name.replace(/[^A-Za-z0-9_-]/g, "_")}`
   return {
     id,
@@ -90,7 +97,7 @@ function pluginTool(namespace: string, name: string, description: string): Tool.
     description,
     input: Schema.Struct({}),
     output: Schema.String,
-    options: { namespace, codemode: true, permission: `${namespace}.${name}` },
+    options: { namespace, codemode, permission: `${namespace}.${name}` },
     origin: { type: "plugin", name: "opencode.plus" },
     execute: () => Effect.die("unused tool.execute"),
   }
@@ -272,4 +279,62 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
   const paths = Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog))
   expect(paths).toContain("team.status")
   expect(paths).not.toContain("team.diff")
+})
+
+// Item 4, through the real path: apply produces the rules, core's own tool
+// registry produces the catalog. A non-member sees no team entry at all; a
+// member sees exactly its ceiling and nothing above it.
+test("a non-member agent sees no team tool while a member sees exactly its ceiling", async () => {
+  const agents = agentHarness([agentInfo("build", "upstream")])
+  const registered = teamTools.map((name) =>
+    pluginTool("team", name, `team ${name}`, codeTools.includes(name as (typeof codeTools)[number])),
+  )
+  const ctx = context({ agent: agents.domain, tool: toolDomainFor(registered), mcp: mcpDomainFor("team-query") })
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  const member = "gemini-implementer"
+  const teamAgents = [{ id: member, scope: "defaults" as const }, { id: "build", scope: "project" as const }]
+  await apply(
+    ctx,
+    makeInput({
+      items: [...discovered.items, ...teamPolicyItems(policyMembersOf([member]))],
+      agents: [{ id: member, level: "defaults" as Level }, { id: "build", level: "project" as Level }],
+      scopes: scopesOf(teamAgents),
+      records: [],
+      teamAgents: [member],
+    }),
+  )
+
+  const toolLayer = LayerNode.compile(LayerNode.group([CoreTool.node]), {
+    replacements: [
+      Image.node.replace(Layer.mock(Image.Service, { normalize: (_resource, content) => Effect.succeed(content) })),
+    ],
+  })
+  const visible = async (agent: string): Promise<string[]> => {
+    const permissions = agents.state.get(agent)?.permissions ?? []
+    const snapshot = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* CoreTool.Service
+        yield* registry.transform((editor) => {
+          for (const tool of registered)
+            editor.add({
+              name: tool.name,
+              description: tool.description,
+              input: tool.input,
+              output: tool.output,
+              options: tool.options,
+              execute: () => Effect.die("unused tool.execute"),
+            })
+        })
+        return yield* registry.snapshot(permissions)
+      }).pipe(Effect.provide(toolLayer), Effect.scoped),
+    )
+    if (!snapshot.codeModeCatalog) throw new Error("expected codeModeCatalog in snapshot")
+    return Object.keys(CodeModeCatalog.flattenToRecord(snapshot.codeModeCatalog)).filter((path) => path.startsWith("team."))
+  }
+
+  expect(await visible("build")).toEqual([])
+  const ceiling = allowedTeamTools("implementer")
+  expect((await visible(member)).toSorted()).toEqual(
+    ceiling.filter((name) => codeTools.includes(name as (typeof codeTools)[number])).map((name) => `team.${name}`).toSorted(),
+  )
 })

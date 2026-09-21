@@ -37,7 +37,7 @@ export interface Discovered {
   readonly bodies: ReadonlyMap<string, string>
   /** Unmasked upstream model per agent id (file frontmatter wins, else host unmasked). Exported for baseline capture and snapshot. */
   readonly modelUpstream: ReadonlyMap<string, ModelRefLike | undefined>
-  /** Live host agent registry as observed at discovery time. Exported so the publish fingerprint can unmask Plus-installed team output (description/mode/permissions) back to upstream instead of reporting it as new inventory. */
+  /** Live host agent registry as observed at discovery time. Exported so the publish fingerprint can unmask Plus-installed team output (description/mode) back to upstream instead of reporting it as new inventory. */
   readonly hosts: readonly Agent.Info[]
 }
 

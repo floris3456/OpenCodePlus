@@ -21,33 +21,40 @@ import { registerTeamTools } from "../../src/teams/tools.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { context, toolHarness } from "../harness.js"
 
+// The whole namespace. Every name here has a real handler; a tool that
+// cannot work is absent rather than registered-and-failing.
 const teamNames = [
   "delegate",
   "finish",
   "followup",
-  "review",
   "integrate",
   "checkpoint",
   "set_checks",
   "supersede",
-  "shutdown_request",
   "stop",
-  "resume",
-  "prepare",
-  "plan_handoff",
   "status",
   "wait",
   "diff",
   "list",
   "get_context",
   "check",
+] as const
+
+// Gone from the namespace: search moved to the `search` MCP server, and the
+// rest had no implementation to advertise.
+const removedNames = [
+  "review",
+  "shutdown_request",
+  "resume",
+  "prepare",
+  "plan_handoff",
   "metrics",
   "exa_code_search",
   "tavily_search",
   "tavily_extract",
 ] as const
 
-const codemodeFalse = new Set(["delegate", "finish", "followup", "review", "integrate", "checkpoint", "set_checks", "supersede", "shutdown_request", "stop", "resume", "prepare", "plan_handoff"])
+const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop"])
 
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`
@@ -144,7 +151,7 @@ async function runMessage(
 test("every team tool registers under namespace team with codemode and permission", async () => {
   const tools = await registeredTools()
   const registered = teamNames.map((name) => need(tools, `team_${name}`))
-  expect(registered).toHaveLength(23)
+  expect(registered).toHaveLength(14)
   for (const [index, tool] of registered.entries()) {
     const name = teamNames[index] as string
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
@@ -152,6 +159,31 @@ test("every team tool registers under namespace team with codemode and permissio
     expect(tool.options?.codemode).toBe(!codemodeFalse.has(name))
     expect(tool.options?.permission).toBe(`team.${name}`)
   }
+})
+
+test("the team namespace advertises nothing it cannot do", async () => {
+  const tools = await registeredTools()
+  for (const name of removedNames) expect(tools.has(`team_${name}`)).toBe(false)
+  expect([...tools.keys()].filter((id) => id.startsWith("team_")).toSorted()).toEqual(
+    teamNames.map((name) => `team_${name}`).toSorted(),
+  )
+})
+
+test("no registered team tool returns E_NOT_IMPLEMENTED for any role in its ceiling", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    await saveRun(root, makeRun("w-1111111111111111", "sol-orchestrator", "ses_team_impl_orch"))
+    const tools = await registeredTools()
+    const ctx = toolContext("ses_team_impl_orch", "sol-orchestrator")
+    for (const name of teamNames) {
+      const outcome = await Effect.runPromise(
+        need(tools, `team_${name}`).execute({}, ctx).pipe(
+          Effect.map(() => ""),
+          Effect.catchTag("Tool.Error", (error) => Effect.succeed(error.message)),
+        ),
+      )
+      expect(outcome).not.toContain("E_NOT_IMPLEMENTED")
+    }
+  })
 })
 
 test("a session with no run fails E_NOT_ACTOR with the exact message", async () => {
@@ -200,7 +232,7 @@ test("a run whose role does not match the calling agent fails E_NOT_ACTOR", asyn
   })
 })
 
-test("team_prepare from a no-run orchestrator session creates a main run and is idempotent", async () => {
+test("a no-argument team_status from a no-run orchestrator session creates a main run and is idempotent", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-"))
     try {
@@ -220,20 +252,23 @@ test("team_prepare from a no-run orchestrator session creates a main run and is 
       const pluginCtx = context({ tool: harness.domain, location })
       const api = createTeamApi(pluginCtx, createState())
       await registerTeamTools(pluginCtx, api)
-      const tool = need(harness.tools, "team_prepare")
+      const tool = need(harness.tools, "team_status")
       const toolCtx = toolContext("ses_team_root_001", "sol-orchestrator")
+      // The bootstrap falls through to the normal handler, so status answers
+      // with its own shape for the run it just created.
       const first = (await Effect.runPromise(tool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
         string,
         unknown
-      >
-      expect(typeof first.run).toBe("string")
-      expect(String(first.run).startsWith("main-")).toBe(true)
+      >[]
+      expect(first).toHaveLength(1)
+      const created = String(first[0]?.run)
+      expect(created.startsWith("main-")).toBe(true)
       const second = (await Effect.runPromise(tool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
         string,
         unknown
-      >
-      expect(second.run).toBe(first.run)
-      const stored = await loadRun(root, String(first.run))
+      >[]
+      expect(second[0]?.run).toBe(created)
+      const stored = await loadRun(root, created)
       expect(stored?.kind).toBe("main")
       expect(stored?.role).toBe("sol-orchestrator")
       expect(stored?.directory).toBe(repoDir)
@@ -246,23 +281,23 @@ test("team_prepare from a no-run orchestrator session creates a main run and is 
       expect(stored?.attempts[0]?.state).toBe("streaming")
       const entries = await fs.readdir(path.join(root, "runs"))
       const mains = entries.filter((entry) => entry.startsWith("main-"))
-      expect(mains).toEqual([String(first.run)])
+      expect(mains).toEqual([created])
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true })
     }
   })
 })
 
-test("team_prepare from a no-run implementer session still fails E_NOT_ACTOR", async () => {
+test("team_status from a no-run implementer session still fails E_NOT_ACTOR", async () => {
   await withIsolatedTeamsRoot(async () => {
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_prep_impl", "muse-implementer")
-    const message = await runMessage(need(tools, "team_prepare"), {}, ctx)
+    const message = await runMessage(need(tools, "team_status"), {}, ctx)
     expect(message).toBe(notActor("unknown"))
   })
 })
 
-test("team_prepare with a cwd argument from a no-run orchestrator session fails E_NOT_ACTOR and creates no run record", async () => {
+test("team_status naming runs from a no-run orchestrator session fails E_NOT_ACTOR and creates no run record", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-"))
     try {
@@ -281,10 +316,10 @@ test("team_prepare with a cwd argument from a no-run orchestrator session fails 
       const pluginCtx = context({ tool: harness.domain, location })
       const api = createTeamApi(pluginCtx, createState())
       await registerTeamTools(pluginCtx, api)
-      const tool = need(harness.tools, "team_prepare")
+      const tool = need(harness.tools, "team_status")
       const toolCtx = toolContext("ses_team_prep_orch_cwd", "sol-orchestrator")
-      const message = await runMessage(tool, { cwd: "scripts/team2" }, toolCtx)
-      expect(message).toBe(notActor("unknown"))
+      const message = await runMessage(tool, { runs: ["w-0000000000000000"] }, toolCtx)
+      expect(message).toBe(notActor("w-0000000000000000"))
       const bound = await bySession(root, "ses_team_prep_orch_cwd")
       expect(bound).toBeUndefined()
       const runs = await fs.readdir(path.join(root, "runs")).catch(() => [])
@@ -304,7 +339,7 @@ test("the instructions namespace still registers alongside team", async () => {
   expect(need(created.tools, "instructions_list").options?.namespace).toBe("instructions")
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
   expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
-  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(23)
+  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(14)
 })
 
 async function auditLines(root: string): Promise<Array<Record<string, unknown>>> {
@@ -379,14 +414,11 @@ test("successful gated call writes tool.call with run id and chain verifies acro
   })
 })
 
-test("integrate, set_checks, supersede, stop and list reach real handlers while review remains not implemented", async () => {
+test("integrate, set_checks, supersede, stop and list reach real handlers", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     await saveRun(root, makeRun("w-dddddddddddddddd", "sol-orchestrator", "ses_team_orch"))
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_orch", "sol-orchestrator")
-
-    const reviewMessage = await runMessage(need(tools, "team_review"), {}, ctx)
-    expect(reviewMessage.startsWith("E_NOT_IMPLEMENTED:")).toBe(true)
 
     const integrateMessage = await runMessage(
       need(tools, "team_integrate"),

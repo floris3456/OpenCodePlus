@@ -31,6 +31,7 @@ export const delegatedRoles = [
   "muse-implementer",
   "gemini-implementer",
   "spark-implementer",
+  "opus-implementer",
   "scout",
 ] as const
 
@@ -295,6 +296,7 @@ const defaultOrchestratorDelegateTo = [
   "muse-implementer",
   "gemini-implementer",
   "spark-implementer",
+  "opus-implementer",
   "opus-orchestrator",
   "sol-orchestrator",
   "astra-reviewer",

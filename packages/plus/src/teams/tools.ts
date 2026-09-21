@@ -15,24 +15,15 @@ import {
   CheckInput,
   CheckpointInput,
   DiffInput,
-  ExaCodeSearchInput,
   FollowupInput,
   GetContextInput,
   IntegrateInput,
   ListInput,
-  MetricsInput,
-  PlanHandoffInput,
-  PrepareInput,
   Report,
-  ResumeInput,
-  ReviewInput,
   SetChecksInput,
-  ShutdownRequestInput,
   StatusInput,
   StopInput,
   SupersedeInput,
-  TavilyExtractInput,
-  TavilySearchInput,
   WaitInput,
 } from "./schema.js"
 
@@ -43,16 +34,11 @@ const DelegateDescription = "Start a bounded task in a new isolated worktree. On
 const FinishDescription = "Declare an outcome for the current attempt.\nDone, blocked, or needs-context with evidence the parent verifies."
 const FollowupDescription =
   "Send a correction to an owned child.\nThe default queue delivers it as a new attempt when the child next goes idle; delivery:\"now\" needs an already idle child and fails E_BUSY otherwise."
-const ReviewDescription = "Claim completion and request independent verification.\nRuns stale checks first, then starts a reviewer run."
 const IntegrateDescription = "Enqueue a child's completed commit into the merge queue.\nLands synchronously when the queue is empty and the parent is clean."
 const CheckpointDescription = "Commit only intended files in your own worktree after checking expected HEAD."
 const SetChecksDescription = "Record the integration checks for the current task.\nOutput is the check ids."
 const SupersedeDescription = "Abandon an owned child and cancel its task.\nWorking children get a shutdown request first, then an interrupt."
-const ShutdownRequestDescription = "Ask an owned child to stop after its turn.\nIdempotent; the sweeper marks stopping when the turn ends."
 const StopDescription = "Stop an idle owned child.\nWorking children fail E_BUSY; stopped children succeed as a no-op."
-const ResumeDescription = "Resume a stopped or dead owned child.\nDead registrations are probed once and replaced when not live."
-const PrepareDescription = "Install worktree dependencies from a frozen bun.lock.\nRetained for repos without an after_create hook."
-const PlanHandoffDescription = "Validate a plan file and start an orchestrator with it.\nRequires authorization:true after the human approved the plan."
 const StatusDescription =
   "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; never acknowledges, but shows what wait acknowledged as acked."
 const WaitDescription =
@@ -61,12 +47,6 @@ const DiffDescription = "Show a run's worktree diff against a ref or base.\nLarg
 const ListDescription = "List runs in this namespace, optionally filtered.\nHidden states (superseded, reaped) need all:true. Read-only."
 const GetContextDescription = "Load your brief, checks, siblings, inbox and budget.\nCall first, then execute the Brief."
 const CheckDescription = "Run one assigned focused check in your worktree.\nUnknown ids fail with E_UNKNOWN_CHECK."
-const MetricsDescription = "Aggregate tool-call metrics from the audit chain.\nComputed from tool.call events, not the SQLite stores."
-const ExaCodeSearchDescription =
-  "Find real code examples via Exa code search.\nBe specific about language, framework and version. Prefer highlights over full text to get targeted code snippets."
-const TavilySearchDescription = "Search the web via Tavily with scored snippets.\nPrefer specific queries under 400 chars."
-const TavilyExtractDescription =
-  "Extract clean content from up to 20 page URLs.\nProvide a query with chunks_per_source to return only the most relevant chunks and avoid context bloat."
 
 export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
   return runRegistration(ctx.tool.transform, (editor) => {
@@ -97,15 +77,6 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       options: teamOptions("followup", false),
       origin,
       execute: (input, context) => runGated("followup", input, context, ctx, (args, caller) => api.followup(args, caller)),
-    })
-    editor.add({
-      name: "review",
-      description: ReviewDescription,
-      input: ReviewInput,
-      output: Schema.Unknown,
-      options: teamOptions("review", false),
-      origin,
-      execute: (input, context) => runGated("review", input, context, ctx, (args, caller) => api.review(args, caller)),
     })
     editor.add({
       name: "integrate",
@@ -144,15 +115,6 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       execute: (input, context) => runGated("supersede", input, context, ctx, (args, caller) => api.supersede(args, caller)),
     })
     editor.add({
-      name: "shutdown_request",
-      description: ShutdownRequestDescription,
-      input: ShutdownRequestInput,
-      output: Schema.Unknown,
-      options: teamOptions("shutdown_request", false),
-      origin,
-      execute: (input, context) => runGated("shutdown_request", input, context, ctx, (args, caller) => api.shutdown_request(args, caller)),
-    })
-    editor.add({
       name: "stop",
       description: StopDescription,
       input: StopInput,
@@ -160,33 +122,6 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       options: teamOptions("stop", false),
       origin,
       execute: (input, context) => runGated("stop", input, context, ctx, (args, caller) => api.stop(args, caller)),
-    })
-    editor.add({
-      name: "resume",
-      description: ResumeDescription,
-      input: ResumeInput,
-      output: Schema.Unknown,
-      options: teamOptions("resume", false),
-      origin,
-      execute: (input, context) => runGated("resume", input, context, ctx, (args, caller) => api.resume(args, caller)),
-    })
-    editor.add({
-      name: "prepare",
-      description: PrepareDescription,
-      input: PrepareInput,
-      output: Schema.Unknown,
-      options: teamOptions("prepare", false),
-      origin,
-      execute: (input, context) => runGated("prepare", input, context, ctx, (args, caller) => api.prepare(args, caller)),
-    })
-    editor.add({
-      name: "plan_handoff",
-      description: PlanHandoffDescription,
-      input: PlanHandoffInput,
-      output: Schema.Unknown,
-      options: teamOptions("plan_handoff", false),
-      origin,
-      execute: (input, context) => runGated("plan_handoff", input, context, ctx, (args, caller) => api.plan_handoff(args, caller)),
     })
     editor.add({
       name: "status",
@@ -241,42 +176,6 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       options: teamOptions("check", true),
       origin,
       execute: (input, context) => runGated("check", input, context, ctx, (args, caller) => api.check(args, caller)),
-    })
-    editor.add({
-      name: "metrics",
-      description: MetricsDescription,
-      input: MetricsInput,
-      output: Schema.Unknown,
-      options: teamOptions("metrics", true),
-      origin,
-      execute: (input, context) => runGated("metrics", input, context, ctx, (args, caller) => api.metrics(args, caller)),
-    })
-    editor.add({
-      name: "exa_code_search",
-      description: ExaCodeSearchDescription,
-      input: ExaCodeSearchInput,
-      output: Schema.Unknown,
-      options: teamOptions("exa_code_search", true),
-      origin,
-      execute: (input, context) => runGated("exa_code_search", input, context, ctx, (args, caller) => api.exa_code_search(args, caller)),
-    })
-    editor.add({
-      name: "tavily_search",
-      description: TavilySearchDescription,
-      input: TavilySearchInput,
-      output: Schema.Unknown,
-      options: teamOptions("tavily_search", true),
-      origin,
-      execute: (input, context) => runGated("tavily_search", input, context, ctx, (args, caller) => api.tavily_search(args, caller)),
-    })
-    editor.add({
-      name: "tavily_extract",
-      description: TavilyExtractDescription,
-      input: TavilyExtractInput,
-      output: Schema.Unknown,
-      options: teamOptions("tavily_extract", true),
-      origin,
-      execute: (input, context) => runGated("tavily_extract", input, context, ctx, (args, caller) => api.tavily_extract(args, caller)),
     })
   })
 }
@@ -335,14 +234,15 @@ function runGatedInner<A>(
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
-    const run = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
-    auditState.run = run?.id ?? null
-    if (run === undefined && name === "prepare" && isRootPrepareInput(input)) {
+    const found = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
+    auditState.run = found?.id ?? null
+    let run = found
+    if (run === undefined && isRootBootstrapCall(name, input)) {
       const kind = kindOf(agent)
       // Root-run bootstrap, the single no-run exception: a planner or
-      // orchestrator session calling prepare becomes the main run. All
-      // other no-run calls fall through to requireActor and keep the
-      // byte-exact E_NOT_ACTOR message.
+      // orchestrator session asking for its own status becomes the main run,
+      // then falls through to the normal gate so status answers with its own
+      // shape. All other no-run calls keep the byte-exact E_NOT_ACTOR message.
       if (kind.ok && (kind.kind === "planner" || kind.kind === "orchestrator")) {
         const directory = String(pluginCtx.location.directory)
         const top = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "--show-toplevel"]))
@@ -391,15 +291,10 @@ function runGatedInner<A>(
         const streaming = attemptTransition(admitted, "streaming", "first_event")
         yield* Effect.promise(() => saveRun(teamsDataDir(), streaming))
         auditState.run = streaming.id
-        return { output: rootPrepareOutput(streaming) }
+        // A second call finds this run through bySession, so the bootstrap is
+        // idempotent without a second branch.
+        run = streaming
       }
-    }
-    if (run !== undefined && name === "prepare" && run.kind === "main" && isRootPrepareInput(input)) {
-      // Idempotent root form: a repeat no-arg prepare from the bound session
-      // returns the existing main run instead of creating another. This
-      // precedes the role gate so planners (whose ceiling lacks prepare)
-      // still bootstrap idempotently; prepare with cwd keeps the full gate.
-      return { output: rootPrepareOutput(run) }
     }
     const owned = yield* requireActor(run, input, agent)
     yield* requireRole(owned, name)
@@ -416,21 +311,15 @@ function runGatedInner<A>(
   })
 }
 
-function isRootPrepareInput(input: unknown): boolean {
+// Which call bootstraps a root run while the namespace has no bootstrap tool
+// of its own: the no-argument `status` a planner or orchestrator makes to ask
+// "where am I". Naming one tool keeps the E_NOT_ACTOR answer exact for every
+// other no-run call; widening this to "any tool bootstraps a root run" is a
+// separate change with its own state-machine consequences.
+function isRootBootstrapCall(name: TeamTool, input: unknown): boolean {
+  if (name !== "status") return false
   if (typeof input !== "object" || input === null) return true
-  return (input as Record<string, unknown>).cwd === undefined
-}
-
-function rootPrepareOutput(run: RunRecord): Record<string, unknown> {
-  return {
-    run: run.id,
-    session: run.sessionID,
-    directory: run.directory,
-    role: run.role,
-    state: run.state,
-    base: run.base,
-    head: run.head,
-  }
+  return (input as Record<string, unknown>).runs === undefined
 }
 
 function requireActor(
