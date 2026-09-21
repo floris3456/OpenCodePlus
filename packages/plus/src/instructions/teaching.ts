@@ -92,14 +92,14 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 
 ## Guards and errors
 
-- Writes are refused for agents listed in \`.opencodeplus/project.json\` \`protectedAgents\`; a write whose actor is a tool is refused again at the shared API boundary, not only in the tool wrapper, and \`instructions.mutate\` with a caller-supplied actor gets the same rule. TUI writes are unaffected.
+- Only tool-actor writes are refused for agents listed in \`.opencodeplus/project.json\` \`protectedAgents\`; the refusal is enforced at the shared API boundary, not only in the tool wrapper, and \`instructions.mutate\` with a caller-supplied actor gets the same rule. TUI writes are unaffected.
 - \`delete\` needs \`confirm: true\`.
 - Project mode has no enable/disable tool.
 - Every successful write is logged with actor \`tool\`.
 
 | error | meaning |
 | \`row.unknown\` | no row has that id; \`list\` again for the current id |
-| \`create.failed\` | the \`create\` was refused; the message names why |
+| \`create.failed\` | the write landed but its row is still missing from the published tree after a short watcher wait, so no id can be returned; \`list\` (or re-read the row) before retrying, because a blind retry can write a duplicate |
 | \`instruction.disabled\` | \`create kind:"instruction"\` is disabled for now; native opencode applies AGENTS.md files |
 | \`agent.protected\` | that agent is in \`protectedAgents\` |
 | \`delete.unconfirmed\` | retry with \`confirm: true\` |
