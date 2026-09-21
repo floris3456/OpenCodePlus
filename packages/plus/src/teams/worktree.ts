@@ -98,6 +98,12 @@ export function ownedRoot(workspaceRoot: string, repoKey: string): string {
   return join(workspaceRoot, "worktrees", repoKey)
 }
 
+// The merge worktree area under ownedRoot: temporary worktrees created during
+// merge operations live here (tempDirFor in merge.ts).
+export function mergeArea(owned: string): string {
+  return join(owned, "merge")
+}
+
 export async function create(root: string, opts: CreateOptions): Promise<Created> {
   const ts = stamp()
   const dir = join(ownedRoot(opts.workspaceRoot, opts.repoKey), opts.role, `${opts.name}-${ts}`)
@@ -204,6 +210,7 @@ export async function orphans(repoRoot: string, owned: string, knownDirs: string
   const entries = await list(repoRoot)
   const mainReal = await real(repoRoot)
   const ownedReal = await real(owned)
+  const mergeReal = await real(mergeArea(ownedReal))
   const known = new Set<string>()
   for (const d of knownDirs) known.add(await real(d))
   const result: string[] = []
@@ -211,6 +218,8 @@ export async function orphans(repoRoot: string, owned: string, knownDirs: string
     const key = await real(e.path)
     if (key === mainReal) continue
     if (!under(ownedReal, key)) continue
+    // A live merge worktree is owned by the merge in flight, not by a run record.
+    if (key === mergeReal || under(mergeReal, key)) continue
     if (!known.has(key)) result.push(e.path)
   }
   return result

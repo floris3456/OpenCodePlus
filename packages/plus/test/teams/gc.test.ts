@@ -13,7 +13,7 @@ import { gc, sweep } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Policy } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
-import { ownedRoot } from "../../src/teams/worktree.js"
+import { mergeArea, ownedRoot } from "../../src/teams/worktree.js"
 
 const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
 
@@ -398,6 +398,49 @@ test("orphan worktree unclaimed by any run is removed by GC", async () => {
       // The sweep never reaches outside the team's own worktree area.
       expect(res.orphansRemoved).not.toContain(outside)
       expect(await Bun.file(path.join(outside, "uncommitted.txt")).text()).toBe("work in progress\n")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
+
+test("merge worktree in merge area survives GC while real orphan is removed", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+      })
+      await saveRun(root, parent)
+
+      // A merge worktree in the merge area, unclaimed by any run record
+      // (simulating a live merge in flight).
+      const mergeDir = path.join(mergeArea(ownedRoot(root, parent.repoKey)), "temp-merge-wt")
+      await git(repo.dir, ["worktree", "add", "--detach", mergeDir, repo.head])
+      expect(await dirExists(mergeDir)).toBe(true)
+
+      // A real orphan elsewhere under the owned root
+      const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "orphan-wt")
+      const orphanBranch = "team/orphan/test-gc"
+      await git(repo.dir, ["worktree", "add", "-b", orphanBranch, orphanDir, repo.head])
+      expect(await dirExists(orphanDir)).toBe(true)
+
+      const res = await gc(root, defaultPolicy)
+
+      // Real orphan is removed
+      expect(res.orphansRemoved).toContain(orphanDir)
+      expect(await dirExists(orphanDir)).toBe(false)
+
+      // Merge worktree in merge area survives GC
+      expect(res.orphansRemoved).not.toContain(mergeDir)
+      expect(await dirExists(mergeDir)).toBe(true)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
