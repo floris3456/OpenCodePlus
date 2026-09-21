@@ -1100,7 +1100,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { id: input.id, reason: `Unknown template ${templateName}` },
           },
         }
-      const content = formatMarkdown(seed?.fields, seed?.prompt ?? input.prompt)
+      const override = toAgentFields(input.fields)
+      const fields =
+        seed?.fields === undefined
+          ? override
+          : override === undefined
+            ? seed.fields
+            : { ...seed.fields, ...override }
+      const content = formatMarkdown(fields, seed?.prompt ?? input.prompt)
       await fs.mkdir(path.dirname(target), { recursive: true })
       await fs.writeFile(target, content)
       await Effect.runPromise(ctx.agent.reload())

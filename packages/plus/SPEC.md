@@ -581,7 +581,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
 | `team.create` | `{ level, team, template? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
-| `team.addAgent` | `{ level, team, id, template?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
+| `team.addAgent` | `{ level, team, id, template?, fields?, prompt }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid` |
 | `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
 | `team.delete` | `{ level, team }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid` |
 | `team.list` | `void` | `TeamListOutput` | `project.disabled` |
@@ -864,9 +864,10 @@ RPC surface (`rpc.ts`, `index.ts`):
   overlay `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
   Reuses `validateAgentId`, `readTemplate`, and `formatMarkdown` (never the
   regular-agent `create()`); an optional `template` names a Defaults agent
-  seeding fields and prompt, unknown names fail with `agent.invalid`. Refuses
-  an existing member id with `agent.exists` (path in data) and invalid ids
-  with `agent.invalid`. After the write calls `refreshAfterFileChange(...,
+  seeding fields and prompt, unknown names fail with `agent.invalid`. Optional
+  `fields` (`CreateAgentFields`) override template fields for explicit defined
+  keys while omitted keys inherit from the template. Refuses an existing member
+  id with `agent.exists` (path in data) and invalid ids with `agent.invalid`. After the write calls `refreshAfterFileChange(...,
   true)` exactly as `createAgent` does, so an enabled team's new member
   installs without a restart. Both team rows and member rows carry `add: "agent"`;
   `a` on `team:<level>:<team>` or on `team:<level>:<team>:<member>` opens only

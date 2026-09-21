@@ -531,7 +531,8 @@ export const CreateTeamInput = Schema.Struct({
 // Adding an agent to a team writes `<teamdir>/<id>.md` (project/global) or
 // the Defaults overlay `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
 // An optional `template` names a Defaults agent seeding fields and prompt;
-// unknown names fail with `agent.invalid`. Existing member ids fail with
+// unknown names fail with `agent.invalid`. Optional `fields` override template
+// defaults for explicitly defined keys. Existing member ids fail with
 // `agent.exists`, invalid ids with `agent.invalid`.
 export interface TeamAddAgentInput extends Schema.Schema.Type<typeof TeamAddAgentInput> {}
 export const TeamAddAgentInput = Schema.Struct({
@@ -539,6 +540,7 @@ export const TeamAddAgentInput = Schema.Struct({
   team: Schema.String,
   id: Schema.String,
   template: Schema.optionalKey(Schema.String),
+  fields: Schema.optionalKey(CreateAgentFields),
   prompt: Schema.String,
 }).annotate({ identifier: "Plus.TeamAddAgentInput" })
 
