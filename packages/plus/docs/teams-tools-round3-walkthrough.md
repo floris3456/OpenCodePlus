@@ -1,18 +1,21 @@
 # Teams tools round 3 — walkthrough
 
-- **Assembled at:** worktree HEAD `fe908491ae45316e13258bce273af43b61ebcab9` (the
-  parent's integrated round-3 branch). Every pasted block repeats the capture head its
-  source document records.
+- **Assembled at:** worktree HEAD `61896a627c9a495c8e84549854fba48b8cfcb087` (the
+  parent's integrated round-3 branch). Blocks pasted from committed task
+  evidence repeat the capture head their source document records; the six final
+  live captures were taken by the orchestrator against source
+  `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`, the same tree plus three
+  documentation corrections that touch no source file.
 - **Plan:** `docs/handoffs/2026-09-22-teams-tools-round3/plan.md`, "Expected end state".
   This document covers items 1–15 and the D4 outcome. Item 16 (`docs/TOOLS.md`) is T7;
   items 17–19 are the review gate and the parent's finish.
-- **Status: evidence-assembly checkpoint, not overall completion.** Everything already
-  committed on this branch is pasted below. Every final-lab proof the parent still has to
-  capture is labelled **PENDING** together with exactly what must be pasted. Pending
-  labels are removed only after that evidence exists.
+- **Status: complete for items 1–15 and the D4 outcome.** Nothing in this
+  document is pending. Item 16 (`docs/TOOLS.md`) is T7; items 17–19 are the
+  review gate and the parent's finish.
 - **Author:** this walkthrough was transcribed by a worker because the orchestrator holds
   the read and live tools but no file-edit capability. The orchestrator owns the live
-  captures and the verification.
+  captures and the verification. The same division holds for the final captures: the
+  orchestrator drove the lab and owns the evidence; a worker transcribed it.
 
 ## Surfaces, and how each block is labelled
 
@@ -26,6 +29,43 @@
 Live-capture source heads: baseline lab `r3-main-1ecb-before` ran source
 `f0522d90f2537ebcd4a516b50122e951f4503fc6`; the first after lab `r3-main-1ecb-after` ran
 source `ff72f8788595221c45bee3297ffe9f8ffd5f9d6d`. Each block below repeats its head.
+The six final captures listed in "The final lab" below ran source
+`0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`.
+
+## The final lab
+
+Items 4, 6, 7, 8, 9 and 10 are captured in one isolated lab at the final head.
+
+| Fact | Value |
+| --- | --- |
+| Lab home | `run/tmp-build/tui-lab-r3f`, created by `docs/team-v2/scripts/tui-lab.sh` |
+| Source it runs | the parent's worktree at `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7` |
+| Lab project | `run/tmp-build/tui-lab-r3f/proj`, a fresh `git init` scratch repository |
+| Lab host | loopback port `59849`, isolated — never the human's server on `40374`, never `~/.config/opencode`, never `run/plus` |
+| Model transport | `docs/round3-lab.ts` on `http://127.0.0.1:50139`, credential-free, loopback only |
+| Lab model | `round3/fixture` — "Round 3 fixture (deterministic transport)" |
+| Parent chat | `ses_f3a97e3eeffec38cTEQnVwPfyM` |
+| Namespace | `run/tmp-build/tui-lab-r3f/data/opencode/opencodeplus/teams` |
+
+Every run in the captures below is created by the real `team.delegate` handler
+through `docs/round3-delegate.ts`; the parent run is the seed for the genuine
+lab chat. The run records at the end of the session:
+
+```text
+main-bea60b299c69893b | opus-orchestrator | working |  None | ses_f3a97e3eeffec38cTEQnVwPfyM
+w-1f1780ec37e7d3b5    | muse-implementer  | idle    |  T2   | ses_f3a96b439ffeGLA8wn0vzPtCih
+w-6972f472bca9efe4    | muse-implementer  | stopped |  T1   | ses_f3a96ef10ffeqHyDLBI97lKXoB
+w-abdb7b6445068de3    | muse-implementer  | idle    |  T3   | ses_f3a96b22bffe0ti3Dy53Cf77vm
+```
+
+A second, unrelated lab namespace exists on the same machine for the whole
+session and appears in none of the captures:
+
+```text
+$ ls run/tmp-build/tui-lab-r3-main-1ecb-after/data/opencode/opencodeplus/teams/runs/
+main-139bf0b6ac23a0f6
+w-1abacda252b877fb
+```
 
 ---
 
@@ -320,16 +360,78 @@ The same after-fix command spans the T2 persistence suite quoted in
 `rule.add`/`rule.update`, tool `create`/`show`/`set` with message, and
 `Permission.evaluate` receiving it (89 pass, 1 skip, 0 fail).
 
-**PENDING — the model-visible refusal text (DETERMINISTIC TRANSPORT).** Item 4 also
-requires that when such a rule denies, the model receives that message. The committed lab
-recipe is `packages/plus/docs/round3-lab.md`: the fixture answers `ROUND3_REFUSAL` with a
-native `shell` call `printf round3-denied`; a deny rule whose message is exactly
-`Round3 sentinel command is denied.` must make the next provider request carry that
-sentinel; `GET /proof` must then report `"sentinelSeen": true`. Paste the lab's
-model-visible tool result and the `/proof` body here when the parent captures them.
+### REAL LAB (pilotty) + DETERMINISTIC TRANSPORT — the model receives the rule's own message
 
-**Complete for the dialog, `show`, disk and core-evaluate halves; model-visible half
-pending.**
+The rule is created in the final lab through the real RPC handlers on the lab
+host, both logged with actor `tui`:
+
+```text
+$ tui-lab.sh rpc r3f rule.add '{"level":"project","agent":"build","tool":"shell","id":"round3-refusal","label":"Round3 refusal","patterns":["printf round3-denied"],"keywords":["printf round3-denied"],"message":"Round3 sentinel command is denied."}'
+{"output":{"level":"project","agent":"build","tool":"shell","id":"round3-refusal","label":"Round3 refusal"}}
+
+$ instructions.mutate  (row state off)  →  mutate ok: True revision 2 global 0
+```
+
+What the lab writes to `proj/.opencodeplus/instructions/records.jsonl`:
+
+```text
+{"version":2,"revision":2}
+{"type":"customization","level":"project","agent":"build","item":"perm:shell:round3-refusal","section":null,"state":"off","basedOn":"","updated":"2026-09-21T19:19:08.998485Z"}
+{"type":"rule","level":"project","agent":"build","tool":"shell","id":"round3-refusal","label":"Round3 refusal","patterns":["printf round3-denied"],"keywords":["printf round3-denied"],"message":"Round3 sentinel command is denied.","updated":"2026-09-21T19:19:01.374Z"}
+```
+
+and to `proj/.opencodeplus/instructions/log.jsonl`:
+
+```text
+{"ts":"2026-09-21T19:19:01.375Z","actor":{"type":"tui"},"op":"rule.add","target":"rule:project:build:shell:round3-refusal","summary":"rule.add shell:round3-refusal (project)","revision":1}
+{"ts":"2026-09-21T19:19:09.000Z","actor":{"type":"tui"},"op":"mutate","target":"item:project:build:perm:shell:round3-refusal","summary":"mutate item:project:build:perm:shell:round3-refusal","revision":2}
+```
+
+The prompt `ROUND3_REFUSAL please run the sentinel command` in the lab chat. The
+fixture answers with a native `shell` call `printf round3-denied` and stops its
+turn; the host evaluates the rule, denies, and hands the rule's own message to
+the model as the tool result:
+
+```text
+--- Terminal 130x45 | Cursor: (39, 5) ---
+   Round3 fixture reply.         +
+  ┃                                                                                       Round3 fixture reply.
+  ┃  Round3 parent chat
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  [ ]
+  ┃
+  ┃  Build · Round 3 fixture (deterministic transport) Round 3 loopback fixture
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /…/OpenCod…/run/tmp-build/tui-lab-r3f/proj:master  shift+tab agents  ctrl+p commands    /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+Two independent facts in one screen. `Round3 sentinel command is denied.` is the
+tool result the host produced from the rule's `message`, and `Round3 fixture:
+received the tool result with the refusal sentinel.` is the fixture's answer,
+which it can only give from a request body that actually carried that exact
+string. `GET /proof` agrees, and `sentinelSeen` can only become true from
+content that arrived in a request:
+
+```text
+$ curl -s http://127.0.0.1:50139/proof
+{"requests":4,"streams":4,"holds":0,"refusals":1,"refusalResults":1,"sentinelSeen":true}
+```
+
+**Complete.**
 
 ---
 
@@ -444,14 +546,48 @@ from `team.runs.list` with `(id, role, state, task, head, worktree, lastUsed, se
 parent)`, sorted `lastUsed` descending; the default filter is the active states
 (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
 
-**PENDING — a real-lab capture with runs present.** The pilotty capture above shows the
-run-backed tab with no runs. Item 6 needs a final-lab capture listing one row per run
-with id, role, state and task, newest first, in the default active view. The parent's lab
-recipe (two delegated children, one idle and one stopped) is in
-`packages/plus/docs/round3-t4-evidence.md` §3 and `packages/plus/docs/round3-delegate.md`.
+### REAL LAB (pilotty) — the run-backed tab with real runs, final head
 
-**Partial — implementation and empty-view capture present; populated default-view capture
-pending.**
+`↓` in the chat opens the composer tabs, `→ → →` selects Team. This is the first
+screen of the tab, with no other key pressed:
+
+```text
+--- Terminal 130x45 | Cursor: (42, 67) ---
+   Round3 fixture reply.         +
+  ┃                                                                                       Round3 fixture reply.
+  ┃  Round3 parent chat
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — idle — T3                         idle
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃  w-6972f472bca9efe4 — muse-implementer — idle — T1                         idle
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→[ ]
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+One row per run, `<id> — <role> — <state> — <task>` with the state repeated on
+the right, newest first by `lastUsed`. The parent orchestrator run carries no
+task, so its row ends at the state. Every row is an active state.
+
+**Complete.**
 
 ---
 
@@ -464,11 +600,115 @@ Implementation: `ctrl+a` (`composer.team.toggle`, `inactive`/`active`) flips the
 the inactive states (`stopped`, `dead`, `superseded`, `reaped`), newest first, and updates
 the hint bar, which the after capture above shows as `active ctrl+a`.
 
-**PENDING — the pilotty captures.** Take both views in the final lab: the default active
-view and the `ctrl+a` inactive view on the same run set, with the hint bar visible in
-each, plus the toggle back.
+### REAL LAB (pilotty) — active, `ctrl+a` inactive, `ctrl+a` back
 
-**Pending live.**
+Default active view:
+
+```text
+--- Terminal 130x45 | Cursor: (40, 19) ---
+   Round3 fixture reply.           Round3 fixture reply.         +
+  ┃                                                                                       Round3 fixture reply.
+  ┃  Round3 parent chat
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — idle — T3                         idle
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃  w-6972f472bca9efe4 — muse-implementer — idle — T1                         idle
+  ┃                [ ]
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+`↓ ↓ ↓` then `ctrl+d` stops `w-6972f472bca9efe4` (item 9's first capture), which
+gives this run set an inactive member. `ctrl+a`:
+
+```text
+--- Terminal 130x45 | Cursor: (42, 69) ---
+   Round3 fixture reply.           Round3 fixture reply.         +
+  ┃                                                                                       Round3 fixture reply.
+  ┃  Round3 parent chat
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-6972f472bca9efe4 — muse-implementer — stopped — T1                   stopped
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  inactive ctrl+a  stop|resume ctrl+d  tabs ←/→[ ]
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+`ctrl+a` again:
+
+```text
+--- Terminal 130x45 | Cursor: (42, 69) ---
+   Round3 fixture reply.           Round3 fixture reply.         +
+  ┃                                                                                       Round3 fixture reply.
+  ┃  Round3 parent chat
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — idle — T3                         idle
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→  [ ]
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+The hint bar names the view that is on: `active ctrl+a` in the active view,
+`inactive ctrl+a` in the inactive one.
+
+**Complete.**
 
 ---
 
@@ -480,10 +720,112 @@ yet.
 `Enter` runs `composer.team.select`, which navigates to that run's `sessionID` and closes
 the composer (the component test above covers the navigation).
 
-**PENDING — the pilotty capture.** In the final lab, select a row and show the TUI
-navigating to that run's session; do it once on an active row and once on an inactive row.
+### REAL LAB (pilotty) — Enter on an active row
 
-**Pending live.**
+Selected row `w-1f1780ec37e7d3b5 — muse-implementer — idle — T2`. After `Enter`
+the TUI is in that run's session: the footer is the child's worktree
+`…/implementer/t21f17-20260921-2120` and the first message is the Brief the real
+delegate handler sent.
+
+```text
+--- Terminal 130x45 | Cursor: (39, 5) ---
+   Round3 fixture reply.         ⠧ New session - 2026-09-21T19:2 +
+     Switched model to Round 3 fixture (deterministic transport)                          New session - 2026-09-21T19:20:07.
+                                                                                          375Z
+  ┃
+  ┃  # Brief — r3f-child-2 — muse-implementer                                             MCP
+  ┃                                                                                       • search                    Connected
+  ┃  ## Objective
+  ┃  Child 2 for the round-3 Team tab capture: reply with one short line.
+  ┃
+  ┃  ## Deliverable
+  ┃  report — text
+  ┃
+  ┃  ## Scope
+  ┃  May edit:         Must not touch:
+  ┃
+  ┃  ## Interfaces you touch
+  ┃
+  ┃
+  ┃  ## Decisions already made
+  ┃
+  ┃
+  ┃  ## Checks (run with team_check)
+  ┃
+  ┃
+  ┃  ## Budget
+  ┃  effort small: about 25 turns / 400000 tokens / 1200000ms wall. Stop and report
+  ┃  before exhausting it.
+  ┃
+  ┃
+  ┃
+  ┃  [ ]
+  ┃
+  ┃  Build · Round 3 fixture (deterministic transport) Round 3 loopback fixture
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /…/t21f17-20260…/implementer/t21f17-20260921-2120  shift+tab agents  ctrl+p commands    /…/t…/implementer/t21f17-20260921-2120
+```
+
+### REAL LAB (pilotty) — Enter on an inactive row
+
+Inactive view, selected row
+`w-abdb7b6445068de3 — muse-implementer — stopped — T3`:
+
+```text
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — stopped — T3                   stopped
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  inactive ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/t…/implementer/t21f17-20260921-2120
+```
+
+After `Enter`:
+
+```text
+--- Terminal 130x45 | Cursor: (39, 5) ---
+   Round3 fixture reply.         ⠧ New session - 2026-09-21T19:2 +
+     Switched model to Round 3 fixture (deterministic transport)                          New session - 2026-09-21T19:20:07.
+                                                                                          921Z
+  ┃
+  ┃  # Brief — r3f-child-3 — muse-implementer                                             MCP
+  ┃                                                                                       • search                    Connected
+  ┃  ## Objective
+  ┃  Child 3 for the round-3 Team tab capture: reply with one short line.
+  ┃
+  ┃  ## Deliverable
+  ┃  report — text
+  ┃
+  ┃  ## Scope
+  ┃  May edit:         Must not touch:
+  ┃
+  ┃  ## Interfaces you touch
+  ┃
+  ┃
+  ┃  ## Decisions already made
+  ┃
+  ┃
+  ┃  ## Checks (run with team_check)
+  ┃
+  ┃
+  ┃  ## Budget
+  ┃  effort small: about 25 turns / 400000 tokens / 1200000ms wall. Stop and report
+  ┃  before exhausting it.
+  ┃
+  ┃
+  ┃
+  ┃  [ ]
+  ┃
+  ┃  Build · Round 3 fixture (deterministic transport) Round 3 loopback fixture
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /…/t3abdb-20260…/implementer/t3abdb-20260921-2120  shift+tab agents  ctrl+p commands    /…/t…/implementer/t3abdb-20260921-2120
+```
+
+**Complete.**
 
 ---
 
@@ -553,13 +895,185 @@ baseline lab capture below is the probe that `Ctrl+D` did not leave the client:
   /…/tmp-b…/tui-lab-r3-main-1ecb-before/proj:master  shift+tab agents  ctrl+p commands    /…/tui-lab-r3-main-1ecb-b…/proj:master
 ```
 
-**PENDING — the pilotty captures.** In the final lab, with one working, one idle and one
-stopped/dead run: `ctrl+d` on the idle run → stopped; `ctrl+d` on the stopped/dead run →
-attach, then a first prompt and the run reading `working`; `ctrl+d` on the working run →
-the must-interrupt-first message; the hint bar visible in each. These prove the key
-routing at the final head as well as the three outcomes.
+### REAL LAB (pilotty) — the three `ctrl+d` outcomes at the final head
 
-**Pending live; D4 decision recorded.**
+**Idle → stopped.** Selected row
+`w-6972f472bca9efe4 — muse-implementer — idle — T1`, the fourth row of item 7's
+active view. After `ctrl+d` it is gone from the active view, and the client is
+still running — which is also the D4 probe repeated at the final head:
+
+```text
+--- Terminal 130x45 | Cursor: (39, 84) ---
+   Round3 fixture reply.           Round3 fixture reply.         +
+  ┃                                                                                       Round3 fixture reply.
+  ┃  Round3 parent chat
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — idle — T3                         idle
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃                                                                                 [ ]
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+Its run record after the keypress, and item 7's inactive view shows the same
+row:
+
+```text
+w-6972f472bca9efe4 | muse-implementer | stopped | T1 | ses_f3a96ef10ffeqHyDLBI97lKXoB
+```
+
+**Stopped → resumed.** Earlier in the same session `ctrl+d` stopped
+`w-abdb7b6445068de3` the same way. In the inactive view, on that stopped row:
+
+```text
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — stopped — T3                   stopped
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  inactive ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+`ctrl+d` puts the TUI in that run's session (D5: a stopped run is resumed by
+attaching):
+
+```text
+--- Terminal 130x45 | Cursor: (39, 5) ---
+   Round3 fixture reply.         ⠦ New session - 2026-09-21T19:2 +
+     Switched model to Round 3 fixture (deterministic transport)                          New session - 2026-09-21T19:20:07.
+                                                                                          921Z
+  ┃
+  ┃  # Brief — r3f-child-3 — muse-implementer                                             MCP
+  ┃                                                                                       • search                    Connected
+  ┃  ## Objective
+  ┃  Child 3 for the round-3 Team tab capture: reply with one short line.
+  ┃
+  ┃  ## Deliverable
+  ┃  report — text
+  ┃
+  ┃  ## Scope
+  ┃  May edit:         Must not touch:
+  ┃
+  ┃  ## Interfaces you touch
+  ┃
+  ┃
+  ┃  ## Decisions already made
+  ┃
+  ┃
+  ┃  ## Checks (run with team_check)
+  ┃
+  ┃
+  ┃  ## Budget
+  ┃  effort small: about 25 turns / 400000 tokens / 1200000ms wall. Stop and report
+  ┃  before exhausting it.
+  ┃
+  ┃
+  ┃
+  ┃  [ ]
+  ┃
+  ┃  Build · Round 3 fixture (deterministic transport) Round 3 loopback fixture
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /…/t3abdb-20260…/implementer/t3abdb-20260921-2120  shift+tab agents  ctrl+p commands    /…/t…/implementer/t3abdb-20260921-2120
+```
+
+The session is usable. Typing `ROUND3_HOLD resumed after attach` and pressing
+Enter starts a real streaming step, and the run record moves on its own:
+
+```text
+state BEFORE the first prompt:
+w-abdb7b6445068de3 stopped
+state AFTER the first prompt:
+w-abdb7b6445068de3 working
+```
+
+The tab reads `working` for it while the step streams:
+
+```text
+  ┃  ROUND3_HOLD resumed after attach
+  ┃
+     Round3 fixture hold. hold 1 hold 2 hold 3 hold 4 hold 5 hold 6 hold 7 hold 8 hold
+     9 hold 10 hold 11 hold 12 hold 13 hold 14 hold 15 hold 16 hold 17 hold 18 hold 19
+     hold 20 hold 21
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — working — T3                   working
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃  w-6972f472bca9efe4 — muse-implementer — idle — T1                         idle
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/t…/implementer/t3abdb-20260921-2120
+```
+
+When that step ends the run settles back to `idle` by itself, which is the state
+item 7's captures show for it.
+
+**Working → interrupt first.** Selected row
+`main-bea60b299c69893b — opus-orchestrator — working`:
+
+```text
+--- Terminal 130x45 | Cursor: (3, 128) ---
+   Round3 fixture reply.         +
+                                                                                          ┃                                    ┃
+  ┃                                                                                       ┃  Run must be interrupted first  x  ┃
+  ┃  Round3 parent chat                                                                   ┃                                    ┃[ ]
+  ┃                                                                                       MCP
+                                                                                          • search                    Connected
+     Round3 fixture reply.
+     Build · Round 3 fixture (deterministic transport) · 68ms
+  ┃
+  ┃  ROUND3_REFUSAL please run the sentinel command
+  ┃
+  ┃
+  ┃  $ printf round3-denied
+  ┃
+  ┃  Round3 sentinel command is denied.
+  ┃
+     Round3 fixture: received the tool result with the refusal sentinel.
+     Build · Round 3 fixture (deterministic transport) · 87ms
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃  w-6972f472bca9efe4 — muse-implementer — idle — T1                         idle
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/tmp-build/tui-lab-r3f/proj:master
+```
+
+The run keeps `working` and the list is unchanged: nothing else happens. The
+hint bar names the key in every capture above.
+
+**Complete; D4 confirmed at the final head — `ctrl+d` reaches the tab, `ctrl+s`
+is not used.**
 
 ---
 
@@ -574,12 +1088,86 @@ lists entries for this data root (`teamsDataDir()`), and the assigned `team-tab`
 `teams-rpc.test.ts` case `team.runs.list returns namespace runs, sorted lastUsed desc,
 with all 9 fields, and all:false hides superseded/reaped` was green.
 
-**PENDING — the delegated child's chat.** Item 10 needs a final-lab capture of the Team
-tab inside a child's chat, created by the real delegate handler
-(`packages/plus/docs/round3-delegate.md`), showing it works there and lists only that
-namespace's runs.
+### REAL LAB (pilotty) — the tab inside a delegated child's chat
 
-**Pending live for the child-chat half.**
+The same keys (`↓`, `→ → →`) inside the session of run `w-1f1780ec37e7d3b5`,
+whose Location is the child worktree the real delegate handler created:
+
+```text
+--- Terminal 130x45 | Cursor: (0, 64) ---
+   Round3 fixture reply.         ⠹ New session - 2026-09-21T19:2[ ]+
+     Switched model to Round 3 fixture (deterministic transport)                          New session - 2026-09-21T19:20:07.
+                                                                                          375Z
+  ┃
+  ┃  # Brief — r3f-child-2 — muse-implementer                                             MCP
+  ┃                                                                                       • search                    Connected
+  ┃  ## Objective
+  ┃  Child 2 for the round-3 Team tab capture: reply with one short line.
+  ┃
+  ┃  ## Deliverable
+  ┃  report — text
+  ┃
+  ┃  ## Scope
+  ┃  May edit:         Must not touch:
+  ┃
+  ┃  ## Interfaces you touch
+  ┃
+  ┃
+  ┃  ## Decisions already made
+  ┃
+  ┃
+  ┃  ## Checks (run with team_check)
+  ┃
+  ┃
+  ┃  ## Budget
+  ┃  effort small: about 25 turns / 400000 tokens / 1200000ms wall. Stop and report
+  ┃  before exhausting it.
+  ┃
+  ┃
+  ┃
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  main-bea60b299c69893b — opus-orchestrator — working                    working
+  ┃  w-1f1780ec37e7d3b5 — muse-implementer — idle — T2                         idle
+  ┃  w-6972f472bca9efe4 — muse-implementer — idle — T1                         idle
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/t…/implementer/t21f17-20260921-2120
+```
+
+`ctrl+a` works there too:
+
+```text
+  ┃  Subagents  Shell  Terminals  Team                                           esc
+  ┃
+  ┃  w-abdb7b6445068de3 — muse-implementer — stopped — T3                   stopped
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃  move ↑↓  attach ⏎  inactive ctrl+a  stop|resume ctrl+d  tabs ←/→
+  ┃                                                                                       /…/t…/implementer/t21f17-20260921-2120
+```
+
+Every row in both views belongs to this lab's namespace; neither
+`main-139bf0b6ac23a0f6` nor `w-1abacda252b877fb` — the other lab's runs, present
+on the machine throughout — ever appears. Plus is active in that Location
+without any copied project config: the child worktrees hold only `.git`,
+`README.md` and `src`.
+
+```text
+$ ls -a <teams>/worktrees/proj/implementer/t16972-20260921-2119
+.  ..  .git  README.md  src        .opencodeplus present: no
+$ ls -a <teams>/worktrees/proj/implementer/t21f17-20260921-2120
+.  ..  .git  README.md  src        .opencodeplus present: no
+$ ls -a <teams>/worktrees/proj/implementer/t3abdb-20260921-2120
+.  ..  .git  README.md  src        .opencodeplus present: no
+```
+
+**Complete.**
 
 ---
 
@@ -1014,20 +1602,35 @@ active agents and team-member defaults; unrelated tools (`tool:bash`) were exclu
 
 ---
 
-## Pending evidence — exact list for the parent's follow-up captures
+## Assigned checks at the final head
 
-| Item | What is missing | Where it goes |
+All six assigned checks run green, cwd `packages/plus`, each exit code `0`. The
+five test checks ran at `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`; the three
+documentation commits after it change no source file and no test file, and
+`plus-typecheck` is re-run at the final head.
+
+| Check | Command | Result |
 | --- | --- | --- |
-| 4 | Model-visible refusal text through the DETERMINISTIC TRANSPORT: the lab's tool result carrying `Round3 sentinel command is denied.` and `/proof` with `"sentinelSeen": true` | Item 4, replace the **PENDING** paragraph |
-| 6 | REAL LAB (pilotty) capture of the run-backed Team tab with real runs: one row per run with id, role, state and task, newest first, default active view | Item 6, replace the **PENDING** paragraph |
-| 7 | REAL LAB (pilotty) captures of the active view and the `ctrl+a` inactive view on the same run set, hint bar visible, and the toggle back | Item 7, replace the **PENDING** paragraph |
-| 8 | REAL LAB (pilotty) capture of Enter attaching to a run's session, once active and once inactive | Item 8, replace the **PENDING** paragraph |
-| 9 | REAL LAB (pilotty) captures: `ctrl+d` idle → stopped; `ctrl+d` stopped/dead → attach then the run reads `working` after the first prompt; `ctrl+d` working → must-interrupt-first; hint bar visible | Item 9, replace the **PENDING** paragraph |
-| 10 | REAL LAB (pilotty) capture of the Team tab inside a delegated child's chat, listing only that namespace's runs | Item 10, replace the **PENDING** paragraph |
+| `plus-tools` | `bun test test/tools.test.ts test/teams-rpc.test.ts test/ops.test.ts` | 133 pass, 1 skip, 0 fail, 830 expect() |
+| `plus-rules` | `bun test test/tool-permissions.test.ts test/apply.test.ts test/rpc.test.ts` | 119 pass, 5 skip, 0 fail, 1178 expect() |
+| `plus-tui` | `bun test test/route.test.tsx test/active-team.test.tsx test/project-mode.test.tsx` | 80 pass, 1 skip, 0 fail, 460 expect() |
+| `team-runtime` | `bun test test/teams/tools.test.ts test/teams/audit.test.ts test/teams/worktree.test.ts test/teams/api.test.ts test/teams/api-lifecycle.test.ts test/teams/api-query.test.ts test/teams/lifecycle-events.test.ts` | 133 pass, 0 fail, 693 expect() |
+| `plus-search-query` | `bun test test/search/mcp.test.ts test/search/register.test.ts test/query.test.ts` | 72 pass, 0 fail, 2195 expect() |
+| `plus-typecheck` | `bun run typecheck` | `$ tsgo --noEmit -p tsconfig.test.json`, no output |
 
-Everything else in items 1–15 is pasted above from committed evidence. This document does
-not claim the pending live captures and does not claim overall round-3 completion; the
-parent removes each pending label once the evidence exists.
+Nothing in this document is pending.
+
+## Corrections the final verification found
+
+Comparing the live captures against the branch's own documentation turned up one
+real defect, fixed before review: `SPEC.md`, `README.md`, `docs/TOOLS.md` and
+`docs/round3-t4-evidence.md` all quoted a Team-tab hint bar the product does not
+render — `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`,
+shortcut-first and with both view labels at once. The tab contributes four
+`{ label, shortcut }` hints (`src/tui/active-team.tsx:217`–`222`) which the
+composer renders label-first, appending its own `tabs ←/→`, and the `ctrl+a`
+hint carries one label at a time. All four documents now state the bar the
+captures show. No source changed.
 
 ## Decisions recorded by this document
 
@@ -1035,3 +1638,17 @@ parent removes each pending label once the evidence exists.
   stop/resume and `ctrl+s` is not used (details and the pending live proof under item 9).
 - **`instruction.disabled`:** intentionally refused and an accepted Context pause, not a
   failed create; this document claims eight enabled create kinds, not nine (item 3).
+- The six final captures are taken in one lab, `tui-lab-r3f`, running the
+  branch's own source, against the credential-free loopback transport of
+  `docs/round3-lab.md`. No key file is needed for any of them and none is read.
+- The item-4 rule is created through the lab host's real `rule.add` and
+  `instructions.mutate` handlers rather than the TUI dialog, because the dialog,
+  `show` and detail-pane halves of item 4 already have their own pilotty
+  captures above; what was missing was only the model-visible text, and the RPC
+  path writes the identical record — shown on disk — with actor `tui`.
+- The runs in every Team-tab capture are created by the real `team.delegate`
+  handler through `docs/round3-delegate.md`'s driver, never by hand-written
+  `run.json` files.
+- The independent reviewer reads this walkthrough from its own worktree at the
+  reviewed HEAD, where it is committed, instead of a re-paste in its prompt: the
+  committed bytes are the evidence, and a re-paste could only be less faithful.
