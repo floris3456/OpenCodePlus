@@ -1092,7 +1092,8 @@ It returns `{ dead, gc }` — the reconciled dead run ids and the pass's whole
   `owned` is `worktree.ownedRoot(root, repoKey)` — `<teams root>/worktrees/<repoKey>`, the directory
   `worktree.create` places its children in. Only unclaimed worktrees **under that directory** are
   candidates: another worktree of the same repository (a developer's own checkout) is never a candidate
-  and is never removed.
+  and is never removed. The temporary merge area (`<owned>/merge`) is also excluded: a live merge worktree
+  is owned by the merge in flight, not by a run record.
 
 ## §11 Tools, log, and query
 
