@@ -1075,6 +1075,34 @@ New input and output fields:
   `status` reports the record's value (`worktree` defaulting to `"present"`) next to
   its live `dirty` git read, so the registered `team_status` and `team_list` agree.
 
+### Audit chain and permission gating (`teams/audit.ts`, `teams/tools.ts`)
+
+Every gated invocation of a team tool (`team_*`) writes a tamper-evident, HMAC-SHA256 authenticated record of kind `tool.call` to `<teams data dir>/audit.log` (key stored at `<teams data dir>/audit.key` with file mode `0600`).
+
+Each `tool.call` audit entry contains:
+- `seq`: Monotonically increasing 1-based sequence number
+- `at`: ISO 8601 UTC timestamp
+- `kind`: `"tool.call"`
+- `run`: Run ID associated with the session (e.g. `main-...` or `w-...`), or `null` if no run is bound
+- `actor`: Agent role name (e.g. `"fable-planner"`, `"sol-orchestrator"`, `"muse-implementer"`)
+- `sessionID`: Session ID where the call originated
+- `tool`: Dotted/qualified tool name (e.g. `"team_delegate"`, `"team_status"`)
+- `ok`: Boolean indicating call success (`true` when handler completed; `false` on permission refusal or handler error)
+- `code`: Error code on failure (`"E_PERMISSION"` on permission gate refusals, or handler error code like `"E_NOT_ACTOR"`, `"E_ROLE"`, etc.; `null` on success)
+- `durationMs`: Call duration in milliseconds
+- `outcome`: Permission authorization outcome:
+  - `"allowed"`: Tool call was permitted by the permission rules without requiring human approval (`ok: true` on success, or `ok: false` with handler error code)
+  - `"asked:allow"`: Tool call required human confirmation (`ask`), human approved the request in the TUI, and the tool executed (`ok: true`)
+  - `"denied"`: Tool call was refused at call time by a `deny` rule (e.g. out-of-ceiling tool, child planner delegation, or native denial); `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
+  - `"asked:deny"`: Tool call required human confirmation (`ask`), and human declined with feedback in the TUI; `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
+
+Reachability of outcomes:
+- `"allowed"`: Reachable through `runGated` when permission rules evaluate to `allow`.
+- `"asked:allow"`: Reachable through `runGated` when permission rules evaluate to `ask`, core emits `Permission.Event.Asked` with the tool CallID as `source.id`, and the user replies `once` or `always`.
+- `"denied"`: Reachable through the `tool.execute.after` hook when permission rules evaluate to `deny` at call time and core throws `BlockedError`.
+- `"asked:deny"`: Reachable through the `tool.execute.after` hook when permission rules evaluate to `ask` and the user declines with feedback (`reply: "reject"` with message), which core throws as `CorrectedError`.
+- Note on decline without feedback: in core, a user decline without feedback stays an intentional defect (`DeclinedError`), bypassing tool failure handling so no `tool.execute.after` hook fires for it; this outcome is observable through the `permission.replied` event with `reply: "reject"`.
+
 ### Run state follows the host session (`teams/lifecycle.ts`)
 
 A run's state is driven by its host session, not by whether the agent called a

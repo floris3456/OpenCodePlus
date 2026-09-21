@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { EventDomain } from "@opencode/plugin/effect/event"
+import type { ToolDomain, ToolHooks } from "@opencode/plugin/effect/tool"
 import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
@@ -7,16 +9,19 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Option, Schema } from "effect"
+import { Deferred, Effect, Fiber, Option, PubSub, Schema, Stream } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { assertToolPermission } from "../../../core/src/tool/permission-gate.js"
+import { Permission } from "../../../core/src/permission.js"
 import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { Brief } from "../../src/teams/schema.js"
 import { registerTeamTools } from "../../src/teams/tools.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { context, toolHarness } from "../harness.js"
@@ -59,9 +64,91 @@ const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "c
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`
 
+interface TestToolHarness {
+  readonly ctx: Context
+  readonly tools: Map<string, Tool.Info & { readonly id: string }>
+  readonly emit: (event: { type: string; data: unknown }) => void
+  readonly triggerHook: <Name extends "execute.before" | "execute.after">(
+    name: Name,
+    event: ToolHooks[Name],
+  ) => Effect.Effect<void>
+}
+
+function testToolContext(options: {
+  directory?: string
+  session?: unknown
+} = {}): TestToolHarness {
+  const base = toolHarness()
+  const beforeHooks: Array<(event: ToolHooks["execute.before"]) => Effect.Effect<void>> = []
+  const afterHooks: Array<(event: ToolHooks["execute.after"]) => Effect.Effect<void>> = []
+
+  const domain = {
+    ...base.domain,
+    hook: (name: string, callback: unknown) =>
+      Effect.sync(() => {
+        if (name === "execute.before") {
+          beforeHooks.push(callback as (event: ToolHooks["execute.before"]) => Effect.Effect<void>)
+          return {
+            dispose: Effect.sync(() => {
+              const idx = beforeHooks.indexOf(callback as (event: ToolHooks["execute.before"]) => Effect.Effect<void>)
+              if (idx !== -1) beforeHooks.splice(idx, 1)
+            }),
+          }
+        }
+        if (name === "execute.after") {
+          afterHooks.push(callback as (event: ToolHooks["execute.after"]) => Effect.Effect<void>)
+          return {
+            dispose: Effect.sync(() => {
+              const idx = afterHooks.indexOf(callback as (event: ToolHooks["execute.after"]) => Effect.Effect<void>)
+              if (idx !== -1) afterHooks.splice(idx, 1)
+            }),
+          }
+        }
+        return { dispose: Effect.void }
+      }),
+  } as ToolDomain
+
+  const pubsub = Effect.runSync(PubSub.unbounded<{ type: string; data: unknown }>())
+  const event = {
+    subscribe: () => Stream.fromPubSub(pubsub) as any,
+  }
+
+  const emit = (evt: { type: string; data: unknown }) => {
+    Effect.runSync(PubSub.publish(pubsub, evt))
+  }
+
+  const triggerHook = <Name extends "execute.before" | "execute.after">(name: Name, evt: ToolHooks[Name]) =>
+    Effect.gen(function* () {
+      const hooks = name === "execute.before" ? beforeHooks : afterHooks
+      for (const hook of hooks) {
+        yield* (hook as (e: unknown) => Effect.Effect<void>)(evt)
+      }
+    })
+
+  const location = options.directory
+    ? new Location.Info({
+        directory: AbsolutePath.make(options.directory),
+        project: {
+          id: Project.ID.global,
+          directory: AbsolutePath.make(options.directory),
+          canonical: AbsolutePath.make(options.directory),
+        },
+      })
+    : undefined
+
+  const ctx = context({
+    tool: domain,
+    event,
+    ...(location ? { location } : {}),
+    ...(options.session ? { session: options.session as Context["session"] } : {}),
+  })
+
+  return { ctx, tools: base.tools, emit, triggerHook }
+}
+
 function fixture(): { ctx: Context; tools: Map<string, Tool.Info & { readonly id: string }> } {
-  const harness = toolHarness()
-  return { ctx: context({ tool: harness.domain }), tools: harness.tools }
+  const tc = testToolContext()
+  return { ctx: tc.ctx, tools: tc.tools }
 }
 
 async function registeredTools(): Promise<Map<string, Tool.Info & { readonly id: string }>> {
@@ -617,6 +704,425 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true })
     }
+  })
+})
+
+function executeGated<A>(
+  tool: Tool.Info & { readonly id: string },
+  input: A,
+  context: Tool.Context,
+  permission: Permission.Interface,
+  triggerHook: <Name extends "execute.before" | "execute.after">(
+    name: Name,
+    event: ToolHooks[Name],
+  ) => Effect.Effect<void>,
+): Effect.Effect<{ output?: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    yield* triggerHook("execute.before", {
+      tool: tool.id,
+      sessionID: context.sessionID,
+      agent: context.agent,
+      messageID: context.messageID,
+      id: context.id,
+      input,
+    })
+
+    const execution = yield* assertToolPermission(tool, tool.id, context).pipe(
+      Effect.provideService(Permission.Service, permission),
+      Effect.andThen(tool.execute(input, context)),
+      Effect.map((result) => ({ value: result })),
+      Effect.catchTag("Tool.Error", (failure) => Effect.succeed({ failure })),
+    )
+    const base = {
+      tool: tool.id,
+      sessionID: context.sessionID,
+      agent: context.agent,
+      messageID: context.messageID,
+      id: context.id,
+      input,
+    }
+    if ("failure" in execution) {
+      const afterEvent: ToolHooks["execute.after"] = {
+        ...base,
+        status: "error",
+        error: execution.failure,
+      }
+      yield* triggerHook("execute.after", afterEvent)
+      return yield* Effect.fail(execution.failure)
+    }
+    const afterEvent: ToolHooks["execute.after"] = {
+      ...base,
+      status: "completed",
+      result: {
+        content: [],
+        output: execution.value.output,
+      },
+    }
+    yield* triggerHook("execute.after", afterEvent)
+    return execution.value
+  })
+}
+
+function makeTestPermissionService(
+  rules: Permission.Ruleset,
+  onAsked?: (request: Permission.Request) => void,
+) {
+  let counter = 0
+  const pending = new Map<
+    string,
+    {
+      request: Permission.Request
+      deferred: Deferred.Deferred<void, Permission.DeclinedError | Permission.CorrectedError>
+    }
+  >()
+
+  const service: Permission.Interface = {
+    ask: () => Effect.die("unused ask"),
+    assert: (input) =>
+      Effect.gen(function* () {
+        const winningRule = rules
+          .filter(
+            (r) =>
+              r.action === input.action ||
+              r.action === "*" ||
+              (r.action.endsWith(".*") && input.action.startsWith(r.action.slice(0, -1))),
+          )
+          .at(-1)
+        const effect = winningRule?.effect ?? "allow"
+        if (effect === "deny") {
+          return yield* Effect.fail(
+            new Permission.BlockedError({
+              permission: input.action,
+              resources: [...input.resources],
+              rules,
+              reason: winningRule?.message,
+            }),
+          )
+        }
+        if (effect === "allow") return
+        counter++
+        const reqId = Schema.decodeSync(Permission.ID)(`perm_req_${counter}`)
+        const deferred = yield* Deferred.make<void, Permission.DeclinedError | Permission.CorrectedError>()
+        const request: Permission.Request = {
+          id: reqId,
+          sessionID: input.sessionID,
+          action: input.action,
+          resources: [...input.resources],
+          source: input.source,
+          message: winningRule?.message,
+        }
+        pending.set(reqId, { request, deferred })
+        if (onAsked) onAsked(request)
+        return yield* Deferred.await(deferred).pipe(
+          Effect.catchTag("Permission.DeclinedError", (err) => Effect.die(err)),
+          Effect.ensuring(Effect.sync(() => pending.delete(reqId))),
+        )
+      }),
+    reply: (input) =>
+      Effect.gen(function* () {
+        const item = pending.get(input.requestID)
+        if (!item) return yield* Effect.fail(new Permission.NotFoundError({ requestID: input.requestID }))
+        pending.delete(input.requestID)
+        if (input.reply === "reject") {
+          return yield* Deferred.fail(
+            item.deferred,
+            input.message
+              ? new Permission.CorrectedError({ feedback: input.message })
+              : new Permission.DeclinedError(),
+          )
+        }
+        return yield* Deferred.succeed(item.deferred, undefined)
+      }),
+    get: (id) => Effect.sync(() => pending.get(id)?.request),
+    forSession: (sessionID) =>
+      Effect.sync(() =>
+        Array.from(pending.values())
+          .filter((item) => item.request.sessionID === sessionID)
+          .map((item) => item.request),
+      ),
+    list: () => Effect.sync(() => Array.from(pending.values()).map((item) => item.request)),
+  }
+
+  return {
+    service,
+    pendingRequests: () => Array.from(pending.values()).map((item) => item.request),
+  }
+}
+
+test("planner delegate under ask: allow creates run and audit line with asked:allow, deny refuses and writes asked:deny", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-planner-gate-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# planner gate\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const head = await git(repoDir, ["rev-parse", "HEAD"])
+
+      const sessionID = "ses_planner_gate_001"
+      const plannerRun: RunRecord = {
+        ...makeRun("main-planner000001", "fable-planner", sessionID),
+        directory: repoDir,
+        base: head,
+        head,
+        kind: "main",
+      }
+      await saveRun(root, plannerRun)
+
+      const session = {
+        create: () => Effect.succeed({ id: Session.ID.make("ses_child_001") }),
+        prompt: () => Effect.succeed(undefined as never),
+        switchModel: () => Effect.succeed(undefined as never),
+        wait: () => Effect.succeed(undefined),
+      } as unknown as Context["session"]
+      const tc = testToolContext({ directory: repoDir, session })
+      const api = createTeamApi(tc.ctx, createState())
+      await registerTeamTools(tc.ctx, api)
+
+      const delegateTool = need(tc.tools, "team_delegate")
+
+      const rules: Permission.Ruleset = [
+        { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
+      ]
+
+      const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
+        tc.emit({ type: "permission.asked", data: req })
+      })
+
+      // 1. First call: ALLOW
+      const allowCtx: Tool.Context = {
+        sessionID: Session.ID.make(sessionID),
+        agent: Agent.ID.make("fable-planner"),
+        messageID: SessionMessage.ID.make("msg_plan_allow"),
+        id: Tool.CallID.make("call_plan_allow"),
+        progress: () => Effect.void,
+      }
+
+      const delegateInput = Schema.decodeUnknownSync(Brief)({
+        requestID: "r-allow-01",
+        role: "sol-orchestrator",
+        reason: "3 independent packages, each needs its own workers",
+        objective: "Build the feature in an isolated worktree for test.",
+        deliverable: { kind: "commit" as const },
+        scope: { paths: ["packages/plus/src/*"] },
+        checks: [{ id: "c1", argv: ["bun", "test", "test/a.test.ts"] }],
+      })
+
+      const allowFiber = Effect.runFork(
+        executeGated(delegateTool, delegateInput, allowCtx, permService, tc.triggerHook),
+      )
+
+      while (pendingRequests().length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+
+      const pending = pendingRequests()
+      expect(pending).toHaveLength(1)
+      expect(pending[0]?.action).toBe("team.delegate")
+      expect(pending[0]?.source?.id).toBe("call_plan_allow")
+      expect(pending[0]?.message).toBe("Plan execution needs human approval")
+
+      await Effect.runPromise(permService.reply({ requestID: pending[0]!.id, reply: "once" }))
+
+      const allowResult = (await Effect.runPromise(Fiber.join(allowFiber))) as { output?: Record<string, unknown> }
+      expect(allowResult).toBeDefined()
+      const childRunID = String(allowResult.output?.run ?? "")
+      expect(childRunID.startsWith("w-")).toBe(true)
+
+      const childRecord = await loadRun(root, childRunID)
+      expect(childRecord).toBeDefined()
+      expect(childRecord?.role).toBe("sol-orchestrator")
+
+      // 2. Second call: DENY
+      const denyCtx: Tool.Context = {
+        sessionID: Session.ID.make(sessionID),
+        agent: Agent.ID.make("fable-planner"),
+        messageID: SessionMessage.ID.make("msg_plan_deny"),
+        id: Tool.CallID.make("call_plan_deny"),
+        progress: () => Effect.void,
+      }
+
+      const denyInput = Schema.decodeUnknownSync(Brief)({
+        requestID: "r-deny-01",
+        role: "sol-orchestrator",
+        reason: "3 independent packages, each needs its own workers",
+        objective: "Build another feature in an isolated worktree for test.",
+        deliverable: { kind: "commit" as const },
+        scope: { paths: ["packages/plus/src/*"] },
+        checks: [{ id: "c2", argv: ["bun", "test", "test/b.test.ts"] }],
+      })
+
+      const denyFiber = Effect.runFork(
+        executeGated(delegateTool, denyInput, denyCtx, permService, tc.triggerHook),
+      )
+
+      while (pendingRequests().length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+
+      const pending2 = pendingRequests()
+      expect(pending2).toHaveLength(1)
+      expect(pending2[0]?.source?.id).toBe("call_plan_deny")
+
+      await Effect.runPromise(
+        permService.reply({
+          requestID: pending2[0]!.id,
+          reply: "reject",
+          message: "Permission denied: operator rejected delegate",
+        }),
+      )
+
+      const denyOutcome = await Effect.runPromise(
+        Fiber.join(denyFiber).pipe(
+          Effect.map(() => ({ ok: true as const, message: "" })),
+          Effect.catchTag("Tool.Error", (err) => Effect.succeed({ ok: false as const, message: err.message })),
+        ),
+      )
+      expect(denyOutcome.ok).toBe(false)
+      expect(denyOutcome.message).toContain("Permission denied")
+
+      const lines = await auditLines(root)
+      const calls = lines.filter((l) => l.kind === "tool.call")
+      expect(calls.length).toBeGreaterThanOrEqual(2)
+
+      const allowLine = calls.find((l) => l.tool === "team_delegate" && l.ok === true)
+      expect(allowLine).toBeDefined()
+      expect(allowLine?.outcome).toBe("asked:allow")
+      expect(allowLine?.actor).toBe("fable-planner")
+      expect(allowLine?.sessionID).toBe(sessionID)
+
+      const denyLine = calls.find((l) => l.tool === "team_delegate" && l.ok === false && l.code === "E_PERMISSION")
+      expect(denyLine).toBeDefined()
+      expect(denyLine?.outcome).toBe("asked:deny")
+      expect(denyLine?.actor).toBe("fable-planner")
+      expect(denyLine?.sessionID).toBe(sessionID)
+
+      const v = await verify(root)
+      expect(v.ok).toBe(true)
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
+test("child session calling team_status executes without creating a permission request and writes outcome: allowed", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const sessionID = "ses_child_status_test"
+    const childRunID = "w-child0000000001"
+    const childRun: RunRecord = {
+      ...makeRun(childRunID, "muse-implementer", sessionID),
+      parent: "main-000000000000",
+    }
+    await saveRun(root, childRun)
+
+    const tc = testToolContext()
+    const api = createTeamApi(tc.ctx, createState())
+    await registerTeamTools(tc.ctx, api)
+
+    const statusTool = need(tc.tools, "team_status")
+
+    const rules: Permission.Ruleset = [
+      { action: "team.status", resource: "*", effect: "allow" },
+    ]
+
+    let askedCount = 0
+    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
+      askedCount++
+      tc.emit({ type: "permission.asked", data: req })
+    })
+
+    const statusCtx: Tool.Context = {
+      sessionID: Session.ID.make(sessionID),
+      agent: Agent.ID.make("muse-implementer"),
+      messageID: SessionMessage.ID.make("msg_child_status"),
+      id: Tool.CallID.make("call_child_status"),
+      progress: () => Effect.void,
+    }
+
+    const output = await Effect.runPromise(
+      executeGated(statusTool, {}, statusCtx, permService, tc.triggerHook),
+    )
+    expect(output).toBeDefined()
+    expect(askedCount).toBe(0)
+    expect(pendingRequests()).toHaveLength(0)
+
+    const lines = await auditLines(root)
+    const statusLine = lines.find((l) => l.tool === "team_status" && l.sessionID === sessionID)
+    expect(statusLine).toBeDefined()
+    expect(statusLine?.ok).toBe(true)
+    expect(statusLine?.code).toBeNull()
+    expect(statusLine?.outcome).toBe("allowed")
+    expect(statusLine?.run).toBe(childRunID)
+    expect(statusLine?.actor).toBe("muse-implementer")
+
+    const v = await verify(root)
+    expect(v.ok).toBe(true)
+  })
+})
+
+test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISSION and writes outcome: denied", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const sessionID = "ses_partial_deny_test"
+    const implRunID = "w-impl0000000001"
+    const implRun: RunRecord = {
+      ...makeRun(implRunID, "muse-implementer", sessionID),
+      parent: "main-000000000000",
+    }
+    await saveRun(root, implRun)
+
+    const tc = testToolContext()
+    const api = createTeamApi(tc.ctx, createState())
+    await registerTeamTools(tc.ctx, api)
+
+    const delegateTool = need(tc.tools, "team_delegate")
+
+    const rules: Permission.Ruleset = [
+      {
+        action: "team.delegate",
+        resource: "*",
+        effect: "deny",
+        message: "team_delegate is outside the implementer ceiling",
+      },
+    ]
+
+    let askedCount = 0
+    const { service: permService, pendingRequests } = makeTestPermissionService(rules, (req) => {
+      askedCount++
+      tc.emit({ type: "permission.asked", data: req })
+    })
+
+    const ctx: Tool.Context = {
+      sessionID: Session.ID.make(sessionID),
+      agent: Agent.ID.make("muse-implementer"),
+      messageID: SessionMessage.ID.make("msg_partial_deny"),
+      id: Tool.CallID.make("call_partial_deny"),
+      progress: () => Effect.void,
+    }
+
+    const outcome = await Effect.runPromise(
+      executeGated(delegateTool, {}, ctx, permService, tc.triggerHook).pipe(
+        Effect.map(() => ({ ok: true as const, message: "" })),
+        Effect.catchTag("Tool.Error", (err) => Effect.succeed({ ok: false as const, message: err.message })),
+      ),
+    )
+    expect(outcome.ok).toBe(false)
+    expect(outcome.message).toBe("team_delegate is outside the implementer ceiling")
+    expect(askedCount).toBe(0)
+    expect(pendingRequests()).toHaveLength(0)
+
+    const lines = await auditLines(root)
+    const denyLine = lines.find((l) => l.tool === "team_delegate" && l.sessionID === sessionID)
+    expect(denyLine).toBeDefined()
+    expect(denyLine?.ok).toBe(false)
+    expect(denyLine?.code).toBe("E_PERMISSION")
+    expect(denyLine?.outcome).toBe("denied")
+    expect(denyLine?.run).toBe(implRunID)
+    expect(denyLine?.actor).toBe("muse-implementer")
+
+    const v = await verify(root)
+    expect(v.ok).toBe(true)
   })
 })
 
