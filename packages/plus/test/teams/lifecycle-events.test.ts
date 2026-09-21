@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
+import { SessionEvent } from "@opencode/schema/session-event"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -78,6 +79,36 @@ function idleEvent(sessionID: string) {
   return { type: "session.idle", properties: { sessionID } }
 }
 
+// The host's canonical execution events carry their payload in `data`, and the
+// event names come from the schema owner so a rename fails this suite instead
+// of silently unsubscribing Plus.
+function startedEvent(sessionID: string) {
+  return { type: SessionEvent.Execution.Started.type, data: { sessionID } }
+}
+
+function succeededEvent(sessionID: string) {
+  return { type: SessionEvent.Execution.Succeeded.type, data: { sessionID } }
+}
+
+// A stopped/dead record that still carries the stop intent its own stop already
+// satisfied, with the last attempt settled terminal.
+function intentRun(
+  id: string,
+  state: "stopped" | "dead",
+  sessionID: string,
+  overrides: Partial<RunRecord> = {},
+): RunRecord {
+  const now = new Date().toISOString()
+  return baseRun({
+    id,
+    state,
+    attempts: [{ n: 1, state: "interrupted", startedAt: now, trigger: "delegate", endedAt: now }],
+    sessionID,
+    stopRequested: true,
+    ...overrides,
+  })
+}
+
 function workingChild(id: string, parent: string | null, sessionID: string): RunRecord {
   const now = new Date().toISOString()
   return baseRun({
@@ -90,13 +121,18 @@ function workingChild(id: string, parent: string | null, sessionID: string): Run
   })
 }
 
-test("the four session events are the ones we subscribe to", () => {
-  expect([...SessionRunEvents].toSorted()).toEqual([
-    "session.execution.failed",
-    "session.execution.interrupted",
-    "session.execution.started",
-    "session.idle",
-  ])
+test("the subscribed events are the host's canonical execution events plus the deprecated idle alias", () => {
+  expect([...SessionRunEvents].toSorted()).toEqual(
+    [
+      SessionEvent.Execution.Failed.type,
+      SessionEvent.Execution.Interrupted.type,
+      SessionEvent.Execution.Started.type,
+      SessionEvent.Execution.Succeeded.type,
+      // Deprecated ephemeral event (packages/schema/src/session-status-event.ts);
+      // the host publishes execution.succeeded instead, but harnesses still drive it.
+      "session.idle",
+    ].toSorted(),
+  )
 })
 
 test("a turn that ends without finish leaves the run idle and the attempt no_report", async () => {
@@ -104,7 +140,7 @@ test("a turn that ends without finish leaves the run idle and the attempt no_rep
     const child = workingChild("w-aaaaaaaaaaaaaaaa", null, "ses_child_001")
     await saveRun(root, child)
     const sessions = recordSession()
-    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_001"))
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_child_001"))
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("idle")
     expect(moved?.attempts).toHaveLength(1)
@@ -124,7 +160,7 @@ test("a starting child reaches idle when its first turn ends", async () => {
       sessionID: "ses_child_002",
     })
     await saveRun(root, child)
-    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_002"))
+    await onSessionEvent(context({ session: recordSession().domain }), root, succeededEvent("ses_child_002"))
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("idle")
     expect(moved?.attempts[0]?.state).toBe("no_report")
@@ -165,7 +201,7 @@ test("an attempt whose report is already written is left to finish", async () =>
     const child = workingChild("w-eeeeeeeeeeeeeeee", null, "ses_child_005")
     await saveRun(root, child)
     await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { status: "done", summary: "Landed." })
-    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_005"))
+    await onSessionEvent(context({ session: recordSession().domain }), root, succeededEvent("ses_child_005"))
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("idle")
     expect(moved?.attempts[0]?.state).toBe("streaming")
@@ -204,7 +240,7 @@ test("a followup queued while working is delivered as a new attempt on idle", as
     await saveRun(root, child)
     await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "Also cover the empty-list case." })
     const sessions = recordSession()
-    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_008"))
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_child_008"))
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("working")
     expect(moved?.attempts).toHaveLength(2)
@@ -224,7 +260,7 @@ test("two queued followups arrive as one prompt and one attempt", async () => {
     await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "First correction." })
     await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "Second correction." })
     const sessions = recordSession()
-    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_009"))
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_child_009"))
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.text).toBe("First correction.\n\nSecond correction.")
     expect((await loadRun(root, child.id))?.attempts).toHaveLength(2)
@@ -261,7 +297,7 @@ test("a followup already delivered to an idle child is not prompted twice", asyn
     )
     expect(queued.ok).toBe(true)
     expect(sessions.prompted).toHaveLength(1)
-    await onSessionEvent(ctx, root, idleEvent("ses_child_010"))
+    await onSessionEvent(ctx, root, succeededEvent("ses_child_010"))
     const moved = await loadRun(root, child.id)
     expect(sessions.prompted).toHaveLength(1)
     expect(moved?.state).toBe("idle")
@@ -288,7 +324,7 @@ test("a settled child puts exactly one child.settled item in a working parent's 
     await saveRun(root, child)
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
-    await onSessionEvent(ctx, root, idleEvent("ses_child_011"))
+    await onSessionEvent(ctx, root, succeededEvent("ses_child_011"))
     const items = await peek(root, parent.id)
     expect(items).toHaveLength(1)
     expect(items[0]?.kind).toBe("child.settled")
@@ -299,7 +335,7 @@ test("a settled child puts exactly one child.settled item in a working parent's 
     // A working parent is not prompted; its own idle drain delivers this.
     expect(sessions.prompted).toHaveLength(0)
     expect((await loadRun(root, child.id))?.attempts[0]?.notified).toBe(true)
-    await onSessionEvent(ctx, root, idleEvent("ses_child_011"))
+    await onSessionEvent(ctx, root, succeededEvent("ses_child_011"))
     expect(await peek(root, parent.id)).toHaveLength(1)
   })
 })
@@ -330,7 +366,7 @@ test("the settlement names the report status and path when the child reported", 
       status: "done",
       summary: "Filter fixed and covered.\nmore detail",
     })
-    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_012"))
+    await onSessionEvent(context({ session: recordSession().domain }), root, succeededEvent("ses_child_012"))
     const items = await peek(root, parent.id)
     expect(items).toHaveLength(1)
     expect(items[0]?.text).toContain("settled: done")
@@ -355,7 +391,7 @@ test("an idle parent is prompted with the settlement immediately", async () => {
     await saveRun(root, parent)
     await saveRun(root, child)
     const sessions = recordSession()
-    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_013"))
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_child_013"))
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.sessionID).toBe("ses_parent_013")
     expect(sessions.prompted[0]?.text).toContain(child.id)
@@ -508,5 +544,138 @@ test("session.execution.started on superseded or reaped runs keeps state unchang
     expect(res2).toBeUndefined()
     expect((await loadRun(root, superseded.id))?.state).toBe("superseded")
     expect((await loadRun(root, reaped.id))?.state).toBe("reaped")
+  })
+})
+
+test("a resumed stopped run consumes the stop intent its stop already satisfied", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-0000000000000001",
+      role: "opus-orchestrator",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_parent_intent_001",
+      children: ["w-0000000000000001"],
+    })
+    const child = intentRun("w-0000000000000001", "stopped", "ses_intent_001", { parent: parent.id, task: "T4" })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+
+    const resumed = await onSessionEvent(ctx, root, startedEvent("ses_intent_001"))
+    expect(resumed?.state).toBe("working")
+    expect(resumed?.history[resumed.history.length - 1]).toMatchObject({
+      from: "stopped",
+      to: "working",
+      trigger: "resume",
+    })
+    expect((await loadRun(root, child.id))?.stopRequested).toBeUndefined()
+
+    const settled = await onSessionEvent(ctx, root, succeededEvent("ses_intent_001"))
+    expect(settled?.state).toBe("idle")
+    const stored = await loadRun(root, child.id)
+    expect(stored?.state).toBe("idle")
+    expect(stored?.stopRequested).toBeUndefined()
+    expect(stored?.attempts[0]?.state).toBe("interrupted")
+    expect(stored?.attempts[0]?.notified).toBe(true)
+
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.kind).toBe("child.settled")
+    expect(items[0]?.from).toBe(child.id)
+    expect(items[0]?.text).toContain("attempt 1 interrupted")
+
+    // A repeated success neither re-stops the run nor notifies the parent twice.
+    await onSessionEvent(ctx, root, succeededEvent("ses_intent_001"))
+    expect((await loadRun(root, child.id))?.state).toBe("idle")
+    expect(await peek(root, parent.id)).toHaveLength(1)
+    expect(sessions.prompted).toHaveLength(0)
+  })
+})
+
+test("a resumed dead run consumes the stop intent and settles idle after success", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = intentRun("w-0000000000000002", "dead", "ses_intent_002")
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const resumed = await onSessionEvent(ctx, root, startedEvent("ses_intent_002"))
+    expect(resumed?.state).toBe("working")
+    expect(resumed?.history[resumed.history.length - 1]).toMatchObject({
+      from: "dead",
+      to: "working",
+      trigger: "resume",
+    })
+    expect((await loadRun(root, run.id))?.stopRequested).toBeUndefined()
+    const settled = await onSessionEvent(ctx, root, succeededEvent("ses_intent_002"))
+    expect(settled?.state).toBe("idle")
+    expect((await loadRun(root, run.id))?.state).toBe("idle")
+  })
+})
+
+test("a resumed run stays usable: its queued followup starts the next attempt after success", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = intentRun("w-0000000000000003", "stopped", "ses_intent_003")
+    await saveRun(root, run)
+    await put(root, run.id, { kind: "followup", from: "main-0000000000000002", text: "Continue with the second half." })
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+
+    await onSessionEvent(ctx, root, startedEvent("ses_intent_003"))
+    const settled = await onSessionEvent(ctx, root, succeededEvent("ses_intent_003"))
+    expect(settled?.state).toBe("working")
+    expect(settled?.stopRequested).toBeUndefined()
+    expect(settled?.attempts).toHaveLength(2)
+    expect(settled?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.sessionID).toBe("ses_intent_003")
+    expect(sessions.prompted[0]?.text).toBe("Continue with the second half.")
+    expect(await peek(root, run.id)).toEqual([])
+
+    const done = await onSessionEvent(ctx, root, succeededEvent("ses_intent_003"))
+    expect(done?.state).toBe("idle")
+    expect(done?.stopRequested).toBeUndefined()
+    expect(done?.attempts[1]?.state).toBe("no_report")
+  })
+})
+
+test("a stop intent on a starting run is not consumed by execution.started", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const run = baseRun({
+      id: "w-0000000000000004",
+      state: "starting",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_intent_004",
+      stopRequested: true,
+    })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const working = await onSessionEvent(ctx, root, startedEvent("ses_intent_004"))
+    expect(working?.state).toBe("working")
+    expect((await loadRun(root, run.id))?.stopRequested).toBe(true)
+    const stopped = await onSessionEvent(ctx, root, succeededEvent("ses_intent_004"))
+    expect(stopped?.state).toBe("stopped")
+    expect(stopped?.attempts[0]?.state).toBe("no_report")
+  })
+})
+
+test("a stop intent on a working run still stops it when its turn succeeds", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = workingChild("w-0000000000000005", null, "ses_intent_005")
+    await saveRun(root, { ...run, stopRequested: true })
+    const sessions = recordSession()
+    const stopped = await onSessionEvent(
+      context({ session: sessions.domain }),
+      root,
+      succeededEvent("ses_intent_005"),
+    )
+    expect(stopped?.state).toBe("stopped")
+    expect(stopped?.attempts[0]?.state).toBe("no_report")
+    expect(sessions.prompted).toHaveLength(0)
   })
 })

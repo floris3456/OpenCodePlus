@@ -97,7 +97,7 @@ Arrow-down in the composer switches to the `Team` tab, which lists runs in the c
 - Default view shows active runs (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
 - `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`); hint bar indicates which view is active.
 - `Enter` attaches by navigating to that run's session (`sessionID`).
-- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session, or displays a warning message that a `working` run must be interrupted first.
+- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first.
 - Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
 
 ## Tools
@@ -195,19 +195,27 @@ creates a root `main` run bound to that session automatically. There is no
 `prepare`.
 
 A run's state follows its host session rather than the
-agent's good manners: `index.ts` subscribes to `session.idle`,
+agent's good manners: `index.ts` subscribes to `session.execution.succeeded`,
 `session.execution.failed`, `session.execution.interrupted` and `session.execution.started`, maps the
 session to its run, and `teams/lifecycle.ts` settles the attempt, moves the run
 to `idle`, notifies the parent once and hands the pending inbox to the session
-as one new attempt. On `session.execution.started`, a run in `idle`, `starting`, `stopped` or `dead`
-transitions to `working` (`prompt` for idle, `resume` for others), following the session into its execution turn. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
+as one new attempt. `session.execution.succeeded` is the host's canonical
+success event (`SessionEvent.Execution.Succeeded`); `session.idle` is a
+deprecated compatibility alias that settles identically. On
+`session.execution.started`, a run in `idle`, `starting`, `stopped` or `dead`
+transitions to `working` (`prompt` for idle, `resume` for others), following the session into its execution turn.
+Resuming a `stopped` or `dead` run consumes the `stopRequested` intent its own stop already
+satisfied, so the resumed turn settles `idle` instead of stopping again; a stop intent on a run that
+has not stopped yet is still honoured at settlement. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`; its attempt is `no_report` when it did not.
 - `stop` and `supersede` are the only ways to halt a child. `team_stop` on a
   working child asks it to stop after its turn (setting `stopRequested` and
   returning `state: "stopping"`), completed by `onSessionIdle`; `team_stop` on
-  an idle child stops it now; both are idempotent.
+  an idle child stops it now; both are idempotent. Resuming a stopped or dead
+  run through its session consumes the retained `stopRequested`, so the first
+  successful turn after the resume stays `idle` instead of stopping again.
 - `team_wait until:"idle"` and `team_followup delivery:"now"` work
   with no tool call from the child.
 - `team_get_context` on a root run returns `brief: null` rather than failing

@@ -146,7 +146,12 @@ export type SessionOutcome = "idle" | "failed" | "interrupted"
 // The host's session lifecycle is the only authority on whether a run's model
 // turn is over. A child that never called finish still ends its turn, so no
 // tool call from the child is needed for its parent to see it idle.
+// `session.execution.succeeded` is the canonical host success event
+// (`SessionEvent.Execution.Succeeded`, published by core's SessionExecution at
+// the end of every busy period); `session.idle` is a deprecated ephemeral event
+// the host no longer publishes, kept so older harnesses still settle.
 const OUTCOMES: Record<string, SessionOutcome> = {
+  "session.execution.succeeded": "idle",
   "session.idle": "idle",
   "session.execution.failed": "failed",
   "session.execution.interrupted": "interrupted",
@@ -156,6 +161,17 @@ export const SessionRunEvents: ReadonlySet<string> = new Set([
   ...Object.keys(OUTCOMES),
   "session.execution.started",
 ])
+
+// A stop requested while a run was executing is satisfied by the stop that
+// produced its stopped/dead state, but the record still carries the flag.
+// Resuming the session must not stop the next turn too. A run that has not
+// stopped yet (idle, starting) keeps its intent.
+function consumeStopIntent(run: RunRecord): RunRecord {
+  if (run.stopRequested !== true) return run
+  const next: RunRecord = { ...run }
+  delete next.stopRequested
+  return next
+}
 
 /** Maps one host session event onto its run, if any. Sessions without a run are ignored. */
 export async function onSessionEvent(
@@ -170,9 +186,10 @@ export async function onSessionEvent(
   if (run === undefined) return undefined
 
   if (event.type === "session.execution.started") {
-    if (run.state === "idle" || run.state === "starting" || run.state === "stopped" || run.state === "dead") {
+    const resuming = run.state === "stopped" || run.state === "dead"
+    if (run.state === "idle" || run.state === "starting" || resuming) {
       const trigger = run.state === "idle" ? "prompt" : "resume"
-      const working = transition(run, "working", trigger)
+      const working = transition(resuming ? consumeStopIntent(run) : run, "working", trigger)
       await saveRun(root, working)
       return working
     }

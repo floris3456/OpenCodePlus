@@ -918,7 +918,7 @@ In a chat, arrow-down to the `Team` composer tab shows runs in the current names
 - Default view displays active runs (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
 - `ctrl+a` toggles to inactive runs (`stopped`, `dead`, `superseded`, `reaped`), newest first, and back; the hint bar indicates which view is active.
 - `Enter` (`composer.team.select`) on any row, active or inactive, attaches by navigating to that run's session (`sessionID`).
-- `ctrl+d` (`composer.team.action`): on an `idle` run, stops the run; on a `stopped` or `dead` run, resumes by attaching to its session; on a `working` run, displays a toast warning that the run must be interrupted first.
+- `ctrl+d` (`composer.team.action`): on an `idle` run, stops the run; on a `stopped` or `dead` run, resumes by attaching to its session (the lifecycle resume consumes any retained `stopRequested`, so the resumed run reads `working` once its first prompt starts executing and settles `idle` on success); on a `working` run, displays a toast warning that the run must be interrupted first.
 - Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
 - The list automatically refreshes on `teams.changed`, host session lifecycle events, and on a 2 s periodic interval while the tab is active.
 
@@ -1103,7 +1103,8 @@ Error codes carrying `accepted` today:
   `{"delivery":"queue"}`; the queued form is then delivered by the child's own
   idle handoff. `stop` on a working child requests stop after its turn (setting
   `stopRequested` on the run and returning `{ run, state: "stopping" }`), which
-  `onSessionIdle` completes to `stopped`.
+  `onSessionIdle` completes to `stopped`. The retained flag is consumed when
+  the session is resumed, so the resumed turn settles `idle` (see below).
 - `get_context` on a root run returns the run fields with `brief: null` (rather
   than failing `E_NO_BRIEF`). The `conventions` field has been removed.
 
@@ -1152,18 +1153,29 @@ Which component writes which outcome, and why exactly one line is written per ga
 ### Run state follows the host session (`teams/lifecycle.ts`)
 
 A run's state is driven by its host session, not by whether the agent called a
-tool. `index.ts` subscribes to `session.idle`, `session.execution.failed`,
-`session.execution.interrupted`, and `session.execution.started`
-(`SessionRunEvents`), resolves `sessionID → run` with `run.bySession`, and
-ignores sessions with no run. On `session.execution.started`, a run in
-`idle`, `starting`, `stopped`, or `dead` state transitions to `working` (trigger
-`prompt` for `idle`, `resume` for others). A `working` run is a no-op;
-`superseded` and `reaped` runs remain unchanged. For turn-ending events (`session.idle`,
-`session.execution.failed`, `session.execution.interrupted`), `onSessionIdle`
-then, in this order:
+tool. `index.ts` subscribes to `session.execution.succeeded`,
+`session.execution.failed`, `session.execution.interrupted`, and
+`session.execution.started` (`SessionRunEvents`), resolves `sessionID → run`
+with `run.bySession`, and ignores sessions with no run.
+`session.execution.succeeded` is the host's canonical success event
+(`SessionEvent.Execution.Succeeded`, published by core's `SessionExecution` at
+the end of every busy period). `session.idle` is a deprecated schema event the
+host no longer publishes; it stays in the subscription set only as a
+compatibility alias that settles identically. On `session.execution.started`, a
+run in `idle`, `starting`, `stopped`, or `dead` state transitions to `working`
+(trigger `prompt` for `idle`, `resume` for others). Resuming a `stopped` or
+`dead` run consumes a retained `stopRequested` intent first: that intent was
+already satisfied by the stop that produced the state, so the resumed turn
+settles `idle` instead of stopping again. A stop intent on a run that has not
+stopped yet (`idle`, `starting`) is preserved and still stops it at
+settlement. A `working` run is a no-op; `superseded` and `reaped` runs remain
+unchanged. For turn-ending events (`session.execution.succeeded`,
+`session.idle`, `session.execution.failed`, `session.execution.interrupted`),
+`onSessionIdle` then, in this order:
 
 1. settles the open attempt — `failed` on `session.execution.failed`,
-   `interrupted` on `session.execution.interrupted`, otherwise `no_report`
+   `interrupted` on `session.execution.interrupted`, otherwise (`session.execution.succeeded`,
+   the deprecated `session.idle`) `no_report`
    (walked forward through `finishing` by `run.toFinishing`). An attempt whose
    `report-<n>.json` already exists belongs to `finish` and is left alone;
 2. moves the run `working → idle` (`turn_ended`) or `starting → idle`
