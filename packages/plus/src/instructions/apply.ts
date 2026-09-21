@@ -177,13 +177,29 @@ interface ChainArgs {
 }
 
 function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
+  // A Defaults-scope agent (every host built-in: build, plan, explore, …) owns
+  // a visible row under Project, Global AND Defaults — tree.ts
+  // nativeAgentsForLevel/specialAgentsForLevel list it at all three levels —
+  // and ops.ts writes at the row's own address, so turning one of its
+  // permission rows off from the Project view saves `{level:"project",
+  // agent:"build"}`. Resolving that agent's perm rows at the discovered
+  // Defaults level reaches neither that record nor a Global one, so the saved
+  // OFF installed no host deny and no refusal message at all. Permission rows
+  // for such an agent therefore resolve from Project with the agent present at
+  // both higher levels, which is exactly the chain resolutionChain then builds:
+  // project -> global -> defaults -> shared. Every other item kind keeps the
+  // discovered scope, and a team-scoped agent keeps its established chain and
+  // the Teams catalogue untouched.
+  const fromProject = item.kind === "perm" && agent.team === undefined && agent.level === "defaults"
   return resolve({
     upstream: item,
     records: args.records,
     splits: args.splits,
-    scopes: args.scopes,
+    scopes: fromProject
+      ? { global: new Set(args.scopes.global).add(agent.id), defaults: new Set(args.scopes.defaults).add(agent.id) }
+      : args.scopes,
     address: {
-      level: agent.level,
+      level: fromProject ? "project" : agent.level,
       agent: agent.id,
       item: item.id,
       section: null,

@@ -495,12 +495,22 @@ describe("rule message persistence across boundaries", () => {
         label: "No Force Push",
         patterns: ["git push --force *"],
         message: "force pushing destroys history",
-      })) as { tool: string; id: string }
-      expect(created).toMatchObject({ tool: "shell", id: "no-force-push" })
+      })) as { tool: string; id: string; item: string }
+      // D1: `create` returns the row id the tree shows for what it wrote, with
+      // the item id alongside it. A shared (`agent: null`) rule has exactly one
+      // visible row — the Defaults Agents-catalogue inventory row — so that is
+      // the returned id, not the bare rule id.
+      expect(created).toMatchObject({
+        tool: "shell",
+        item: "perm:shell:no-force-push",
+        id: "item:defaults::perm:shell:no-force-push",
+      })
 
       // Locate row in tree
       const snapshot = await snapshotOf(api)
-      const customRow = expandedTree(memoInputOf(snapshot)).find((node) => node.address?.item === "perm:shell:no-force-push")
+      const rows = expandedTree(memoInputOf(snapshot))
+      expect(rows.some((node) => node.id === created.id)).toBe(true)
+      const customRow = rows.find((node) => node.address?.item === "perm:shell:no-force-push")
       if (customRow === undefined) throw new Error("missing custom perm row")
 
       // instructions_show (default view) returns message
@@ -712,6 +722,55 @@ describe("rule message persistence across boundaries", () => {
       const denial = evaluate("shell", "git push --force origin main", alphaRules)
       expect(denial.effect).toBe("deny")
       expect(denial.message).toBe("force pushes are strictly prohibited by repo rule")
+    })
+
+    test("a built-in agent's project-level row off installs the host deny through the real publish path", async () => {
+      const { evaluate } = await import("../../core/src/permission.js")
+      const { project } = await tempProject()
+      const ctx = fullContext({
+        directory: project,
+        agents: [agentInfo("build", "upstream role")],
+        tools: [{ id: "shell", description: "Run shell. Use git push to publish.", options: { codemode: false } }],
+        session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+      })
+      const api = createPlusApi(ctx, createState())
+      await registerInstructionTools(ctx, api)
+      const tools = await readTools(ctx)
+
+      // `build` is a host built-in with no file, so discovery scopes it at
+      // Defaults while the tree still shows its rows under Project.
+      const snapshot = await snapshotOf(api)
+      expect(snapshot.agents.find((agent) => agent.id === "build")?.scope).toBe("defaults")
+      const projectRow = expandedTree(memoInputOf(snapshot)).find(
+        (node) =>
+          node.address?.item === "perm:shell:git-push" &&
+          node.address.level === "project" &&
+          node.address.agent === "build",
+      )
+      if (projectRow === undefined) throw new Error("missing project-level perm row for build")
+
+      await runOk(need(tools, "instructions_set"), { id: projectRow.id, state: "off" })
+
+      // The write lands at the row's own address, so what the resolver has to
+      // find for a Defaults-scope agent is a project-level record.
+      const stored = await load(project)
+      const record = stored.records.find(
+        (entry): entry is CustomizationRecord => entry.type === "customization" && entry.item === "perm:shell:git-push",
+      )
+      expect(record?.level).toBe("project")
+      expect(record?.agent).toBe("build")
+      expect(record?.state).toBe("off")
+
+      const refreshed = await api.refresh()
+      expect(refreshed.ok).toBe(true)
+      const listed = await Effect.runPromise(ctx.agent.list())
+      const installed = listed.data.find((entry) => String(entry.id) === "build")
+      if (installed === undefined) throw new Error("build missing from the installed agent list")
+      const permissions = installed.permissions ?? []
+      const denial = evaluate("shell", "git push origin main", permissions)
+      expect(denial.effect).toBe("deny")
+      expect(denial.message).toBe("pushing is not allowed here")
+      expect(evaluate("shell", "git status", permissions).effect).not.toBe("deny")
     })
   })
 })
