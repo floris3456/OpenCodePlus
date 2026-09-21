@@ -624,6 +624,16 @@ an update the matched record's owner, not the caller's row address; on an
 add the requested `agent`. The declared error is `agent.protected` with
 `{ agent, id?, reason }`, and the reason text is the same
 `agent.protected: row belongs to protected agent "<id>"` the tools raise.
+Deleting an item is a write to other agents' rows too: `rule.remove` refuses
+a tool actor before the rule is saved when the item-record cascade would drop
+a customization or split owned by a protected agent, even when the removed
+rule itself is shared or owned by someone else. `skill.delete`,
+`base.delete` and `mcp.remove` guard their cascades the same way before the
+file or the project config entry is removed. Their RPC inputs carry no
+`actor`, so their boundary always normalises to the TUI and the cascade
+refusal is unreachable over RPC; the `PlusApi` results for those three
+methods carry the `agent.protected` variant for the tool callers that do pass
+an actor.
 
 Events: `project.changed`, `instructions.changed`, `teams.changed`.
 
@@ -1402,8 +1412,13 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   with `agent.protected` (`{ agent, id?, reason }`); a missing actor is the
   TUI and never refuses. `instructions.mutate` decides from the changed rows
   only, so carrying a protected agent's unchanged records in a full-snapshot
-  mutate is not a refusal. Unknown ids fail with `row.unknown`. A no-op or a
-  refusal writes nothing and logs nothing.
+  mutate is not a refusal. The guard covers the item-record cascade as well:
+  deleting a rule, skill, base template or MCP server as a tool actor is
+  refused when any protected agent holds a customization or split for that
+  item, and the refusal is decided before anything is written — the rule
+  record, the file on disk, every record and the log all stay untouched.
+  Unknown ids fail with `row.unknown`. A no-op or a refusal writes nothing
+  and logs nothing.
 
 ### Applying Code Mode rows (`apply.ts`, `model.ts`)
 

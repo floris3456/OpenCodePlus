@@ -188,6 +188,7 @@ export type DeleteSkillResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "skill.missing"; message: string; data: Plus.SkillMissing }
         | { code: "skill.invalid"; message: string; data: Plus.SkillInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type CreateBaseResult =
@@ -208,6 +209,7 @@ export type DeleteBaseResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "base.missing"; message: string; data: Plus.BaseMissing }
         | { code: "base.invalid"; message: string; data: Plus.BaseInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type CreateInstructionApiResult =
@@ -248,6 +250,7 @@ export type RemoveMcpResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "mcp.missing"; message: string; data: Plus.McpMissing }
         | { code: "mcp.invalid"; message: string; data: Plus.McpInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type SetTeamEnabledResult =
@@ -717,6 +720,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      // The cascade below drops every customization/split at skill:<id>, not
+      // only rows the deleted skill owned, and deleting the file is a write;
+      // refuse a tool actor before either. The delete helper trims ids, so the
+      // cascade address uses the same trimmed form.
+      const stored = await load(directory)
+      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `skill:${input.id.trim()}`, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const result = await deleteSkill({ projectDirectory: directory, id: input.id })
       if (!result.ok && result.reason === "missing")
         return {
@@ -767,6 +777,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      // Same cascade guard as skill.delete: refuse a tool actor before the
+      // template file is removed when a protected agent holds base:<id>.
+      const stored = await load(directory)
+      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `base:${input.id.trim()}`, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const result = await deleteBaseTemplate(input.id)
       if (!result.ok && result.reason === "missing")
         return {
@@ -887,6 +902,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      // Same cascade guard as skill.delete: refuse a tool actor before the
+      // server leaves the project config when a protected agent holds mcp:<name>.
+      const stored = await load(directory)
+      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `mcp:${input.name.trim()}`, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const result = await removeMcp({ projectDirectory: directory, name: input.name })
       if (!result.ok && result.reason === "missing")
         return {
@@ -1619,6 +1639,16 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const refusal = refuseProtectedForTool(input.actor, existing.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
+      // The cascade below drops every customization and split at this item,
+      // not only the removed rule's own rows, so a protected agent holding one
+      // refuses the delete before the rule is saved.
+      const cascadeRefusal = refuseProtectedItemCascade(
+        input.actor,
+        loaded.records,
+        permItemId(validated.tool, validated.id),
+        config,
+      )
+      if (cascadeRefusal !== undefined) return { ok: false as const, error: cascadeRefusal }
       const next = loaded.records.filter((record) => record !== existing)
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
@@ -1875,7 +1905,15 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "skill.missing")
             return yield* Effect.fail(context.error("skill.missing", result.error.message, result.error.data))
-          return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
+          if (result.error.code === "skill.invalid")
+            return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
+          // Unreachable through this method: its RPC input carries no actor, so
+          // this boundary always normalises to the TUI and the item-cascade
+          // guard cannot refuse. The variant exists for the tool-facing
+          // PlusApi, which passes an actor.
+          return yield* Effect.fail(
+            context.error("skill.invalid", result.error.message, { id: input.id, reason: result.error.message }),
+          )
         }
         return result.value
       }),
@@ -1899,7 +1937,15 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "base.missing")
             return yield* Effect.fail(context.error("base.missing", result.error.message, result.error.data))
-          return yield* Effect.fail(context.error("base.invalid", result.error.message, result.error.data))
+          if (result.error.code === "base.invalid")
+            return yield* Effect.fail(context.error("base.invalid", result.error.message, result.error.data))
+          // Unreachable through this method: its RPC input carries no actor, so
+          // this boundary always normalises to the TUI and the item-cascade
+          // guard cannot refuse. The variant exists for the tool-facing
+          // PlusApi, which passes an actor.
+          return yield* Effect.fail(
+            context.error("base.invalid", result.error.message, { id: input.id, reason: result.error.message }),
+          )
         }
         return result.value
       }),
@@ -1947,7 +1993,15 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "mcp.missing")
             return yield* Effect.fail(context.error("mcp.missing", result.error.message, result.error.data))
-          return yield* Effect.fail(context.error("mcp.invalid", result.error.message, result.error.data))
+          if (result.error.code === "mcp.invalid")
+            return yield* Effect.fail(context.error("mcp.invalid", result.error.message, result.error.data))
+          // Unreachable through this method: its RPC input carries no actor, so
+          // this boundary always normalises to the TUI and the item-cascade
+          // guard cannot refuse. The variant exists for the tool-facing
+          // PlusApi, which passes an actor.
+          return yield* Effect.fail(
+            context.error("mcp.invalid", result.error.message, { name: input.name, reason: result.error.message }),
+          )
         }
         return result.value
       }),
@@ -2353,6 +2407,31 @@ function refuseProtectedForTool(
   if (!config.protectedAgents.includes(agentId)) return undefined
   const reason = `agent.protected: row belongs to protected agent "${agentId}"`
   return { code: "agent.protected" as const, message: reason, data: { agent: agentId, reason } }
+}
+
+// A delete handler's item-record cascade drops every customization and split
+// addressed to the deleted item, including rows owned by other agents. That
+// cascade is a write too, so a tool actor may not trigger it while any of
+// those rows belongs to a protected agent; otherwise deleting a shared row
+// would silently erase a protected agent's own override. Same refusal shape
+// and same TUI exemption as refuseProtectedForTool. Callers must run this
+// before any write, including a file delete, so a refusal leaves the store,
+// the file and the log untouched.
+function refuseProtectedItemCascade(
+  actor: Plus.Actor | undefined,
+  records: readonly StoredRecord[],
+  item: string,
+  config: { readonly protectedAgents: readonly string[] },
+): { code: "agent.protected"; message: string; data: Plus.AgentProtected } | undefined {
+  if (normalizeActor(actor).type !== "tool") return undefined
+  const owner = records.find(
+    (record): record is CustomizationRecord | SplitRecord =>
+      (record.type === "customization" || record.type === "split") &&
+      record.item === item &&
+      record.agent !== null &&
+      config.protectedAgents.includes(record.agent),
+  )?.agent
+  return refuseProtectedForTool(actor, owner, config)
 }
 
 function validateModelRef(

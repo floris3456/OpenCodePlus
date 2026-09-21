@@ -6,10 +6,11 @@ import fsSync from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { applySessionModel, createHandlers, createState, type PlusState } from "../src/index.js"
+import { applySessionModel, createHandlers, createPlusApi, createState, type PlusState } from "../src/index.js"
+import { userBaseFile } from "../src/agents/base.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type SplitRecord } from "../src/instructions/model.js"
-import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
+import { globalRecordsPath, projectLogPath, projectRecordsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { disable, enable } from "../src/project.js"
@@ -195,6 +196,12 @@ function readProjectMcp(project: string): [string, { type: "remote"; url: string
   const doc = JSON.parse(text)
   const servers = doc?.mcp?.servers ?? {}
   return Object.entries(servers) as [string, { type: "remote"; url: string; disabled?: boolean }][]
+}
+
+async function logLines(logPath: string): Promise<string[]> {
+  const file = Bun.file(logPath)
+  if (!(await file.exists())) return []
+  return (await file.text()).split("\n").filter((line) => line.trim().length > 0)
 }
 
 test("gated methods fail with project.disabled when project mode is off", async () => {
@@ -2537,6 +2544,270 @@ test("protected agents refuse tool-actor rule writes at the RPC boundary and all
   expect(removed).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
   const gone = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
+})
+
+test("rule.remove as a tool actor refuses when the item cascade would erase a protected agent's row", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    }),
+    createState(),
+  )
+
+  // The defect case: a shared custom rule plus a protected agent's own OFF
+  // customization at the same item. The rule's owner is null, so the
+  // addressed-owner guard passes; only the cascade scan can see alpha's row.
+  await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: null, tool: "shell", id: "git-push", label: "Shared push rule", patterns: ["git push *"] },
+      throwingContext({}),
+    ),
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const permItem = snapshot.items.find((item) => item.id === "perm:shell:git-push")
+  if (permItem === undefined) throw new Error("missing perm:shell:git-push item")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [...snapshot.records, record("perm:shell:git-push", { state: "off", basedOn: permItem.fingerprint })],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const before = await logLines(projectLogPath(project))
+  const refused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["rule.remove"](
+      { level: "project", agent: null, tool: "shell", id: "git-push", actor: { type: "tool" } },
+      throwingContext(refused),
+    ),
+    refused,
+    "agent.protected",
+  )
+  expect(refused.current?.message).toBe('agent.protected: row belongs to protected agent "alpha"')
+  expect(refused.current?.data).toEqual({
+    agent: "alpha",
+    reason: 'agent.protected: row belongs to protected agent "alpha"',
+  })
+
+  // From the store on disk: the refusal wrote nothing and logged nothing.
+  const stored = await load(project)
+  expect(
+    stored.records.some((entry) => entry.type === "rule" && entry.tool === "shell" && entry.id === "git-push"),
+  ).toBe(true)
+  expect(
+    stored.records.some(
+      (entry) =>
+        (entry.type === "customization" || entry.type === "split") &&
+        entry.item === "perm:shell:git-push" &&
+        entry.agent === "alpha",
+    ),
+  ).toBe(true)
+  expect(await logLines(projectLogPath(project))).toEqual(before)
+
+  // The same call without an actor is the TUI: it removes the rule and the
+  // cascade still drops the protected agent's customization.
+  const removed = await Effect.runPromise(
+    handlers["rule.remove"]({ level: "project", agent: null, tool: "shell", id: "git-push" }, throwingContext({})),
+  )
+  expect(removed).toMatchObject({ tool: "shell", id: "git-push" })
+  const after = await load(project)
+  expect(
+    after.records.some((entry) => entry.type === "rule" && entry.tool === "shell" && entry.id === "git-push"),
+  ).toBe(false)
+  expect(
+    after.records.some(
+      (entry) =>
+        (entry.type === "customization" || entry.type === "split") && entry.item === "perm:shell:git-push",
+    ),
+  ).toBe(false)
+})
+
+test("rule.remove as a tool actor still drops customizations of unprotected agents", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    }),
+    createState(),
+  )
+
+  await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: null, tool: "shell", id: "git-push", label: "Shared push rule", patterns: ["git push *"] },
+      throwingContext({}),
+    ),
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const permItem = snapshot.items.find((item) => item.id === "perm:shell:git-push")
+  if (permItem === undefined) throw new Error("missing perm:shell:git-push item")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          ...snapshot.records,
+          record("perm:shell:git-push", { agent: "beta", state: "off", basedOn: permItem.fingerprint }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+
+  const removed = await Effect.runPromise(
+    handlers["rule.remove"](
+      { level: "project", agent: null, tool: "shell", id: "git-push", actor: { type: "tool" } },
+      throwingContext({}),
+    ),
+  )
+  expect(removed).toMatchObject({ tool: "shell", id: "git-push" })
+  const after = await load(project)
+  expect(
+    after.records.some((entry) => entry.type === "rule" && entry.tool === "shell" && entry.id === "git-push"),
+  ).toBe(false)
+  expect(
+    after.records.some(
+      (entry) =>
+        (entry.type === "customization" || entry.type === "split") && entry.item === "perm:shell:git-push",
+    ),
+  ).toBe(false)
+})
+
+test("skill.delete as a tool actor refuses when the item cascade would erase a protected agent's row", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+
+  const created = await api.createSkill({ name: "notes", body: "Original body." })
+  expect(created.ok).toBe(true)
+  if (!created.ok) throw new Error(`createSkill failed: ${created.error.message}`)
+  const beforeSeed = await api.snapshot()
+  if (!beforeSeed.ok) throw new Error("snapshot failed")
+  const seeded = await api.mutate({
+    expectedRevision: beforeSeed.value.revision,
+    expectedGlobalRevision: beforeSeed.value.globalRevision,
+    records: [record("skill:notes", { state: "off" })],
+  })
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error(`seed failed: ${seeded.error.message}`)
+  expect(seeded.value.ok).toBe(true)
+
+  const refused = await api.deleteSkill({ id: "notes", actor: { type: "tool" } })
+  expect(refused.ok).toBe(false)
+  if (refused.ok) throw new Error("expected deleteSkill refusal")
+  expect(refused.error.code).toBe("agent.protected")
+  expect(refused.error.message).toBe('agent.protected: row belongs to protected agent "alpha"')
+  expect(refused.error.data).toEqual({
+    agent: "alpha",
+    reason: 'agent.protected: row belongs to protected agent "alpha"',
+  })
+
+  // Refused before any write: the file and the protected row both survive.
+  expect(await Bun.file(created.value.path).exists()).toBe(true)
+  const stored = await load(project)
+  expect(
+    stored.records.some(
+      (entry) =>
+        (entry.type === "customization" || entry.type === "split") &&
+        entry.item === "skill:notes" &&
+        entry.agent === "alpha",
+    ),
+  ).toBe(true)
+
+  // Without an actor the same call is the TUI and completes normally.
+  const tui = await api.deleteSkill({ id: "notes" })
+  expect(tui.ok).toBe(true)
+  expect(await Bun.file(created.value.path).exists()).toBe(false)
+  const after = await load(project)
+  expect(
+    after.records.some(
+      (entry) => (entry.type === "customization" || entry.type === "split") && entry.item === "skill:notes",
+    ),
+  ).toBe(false)
+})
+
+test("base.delete and mcp.remove as tool actors refuse when the cascade would erase a protected row", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+
+  const base = await api.createBase({ id: "custom", title: "Custom.txt", text: "custom base" })
+  expect(base.ok).toBe(true)
+  const baseSnapshot = await api.snapshot()
+  if (!baseSnapshot.ok) throw new Error("snapshot failed")
+  const baseSeeded = await api.mutate({
+    expectedRevision: baseSnapshot.value.revision,
+    expectedGlobalRevision: baseSnapshot.value.globalRevision,
+    records: [record("base:custom", { level: "global", state: "off" })],
+  })
+  expect(baseSeeded.ok).toBe(true)
+  if (!baseSeeded.ok) throw new Error(`seed failed: ${baseSeeded.error.message}`)
+  expect(baseSeeded.value.ok).toBe(true)
+  expect(await Bun.file(userBaseFile("custom")).exists()).toBe(true)
+
+  const baseRefused = await api.deleteBase({ id: "custom", actor: { type: "tool" } })
+  expect(baseRefused.ok).toBe(false)
+  if (baseRefused.ok) throw new Error("expected deleteBase refusal")
+  expect(baseRefused.error.code).toBe("agent.protected")
+  expect(baseRefused.error.message).toBe('agent.protected: row belongs to protected agent "alpha"')
+  expect(await Bun.file(userBaseFile("custom")).exists()).toBe(true)
+  expect(
+    (await load(project)).records.some(
+      (entry) => (entry.type === "customization" || entry.type === "split") && entry.item === "base:custom",
+    ),
+  ).toBe(true)
+
+  const added = await api.addMcp({ name: "shared", config: { type: "remote", url: "https://example.com/mcp" } })
+  expect(added.ok).toBe(true)
+  const mcpSnapshot = await api.snapshot()
+  if (!mcpSnapshot.ok) throw new Error("snapshot failed")
+  const mcpSeeded = await api.mutate({
+    expectedRevision: mcpSnapshot.value.revision,
+    expectedGlobalRevision: mcpSnapshot.value.globalRevision,
+    records: [record("mcp:shared", { state: "off" })],
+  })
+  expect(mcpSeeded.ok).toBe(true)
+  if (!mcpSeeded.ok) throw new Error(`seed failed: ${mcpSeeded.error.message}`)
+  expect(mcpSeeded.value.ok).toBe(true)
+
+  const mcpRefused = await api.removeMcp({ name: "shared", actor: { type: "tool" } })
+  expect(mcpRefused.ok).toBe(false)
+  if (mcpRefused.ok) throw new Error("expected removeMcp refusal")
+  expect(mcpRefused.error.code).toBe("agent.protected")
+  expect(mcpRefused.error.message).toBe('agent.protected: row belongs to protected agent "alpha"')
+  expect(readProjectMcp(project).map(([name]) => name)).toEqual(["shared"])
+  expect(
+    (await load(project)).records.some(
+      (entry) => (entry.type === "customization" || entry.type === "split") && entry.item === "mcp:shared",
+    ),
+  ).toBe(true)
 })
 
 test("instructions.mutate refuses a tool actor changing a protected agent's row and allows unchanged carries and TUI writes", async () => {
