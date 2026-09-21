@@ -15,6 +15,7 @@ import { PluginHooks } from "./plugin/hooks.js"
 import { SessionMessage } from "./session/message.js"
 import { SessionSchema } from "./session/schema.js"
 import { State } from "./state.js"
+import { assertToolPermission } from "./tool/permission-gate.js"
 import { definition, effectiveName, execute, normalizedName, normalizeContent } from "./tool/runtime.js"
 import { Wildcard } from "./util/wildcard.js"
 
@@ -115,7 +116,8 @@ const layer = Layer.effect(
       input: unknown,
       context: Tool.Context,
     ) {
-      const execution = yield* execute(tool, input, context).pipe(
+      const execution = yield* assertToolPermission(tool, name, context).pipe(
+        Effect.andThen(execute(tool, input, context)),
         Effect.map((value) => ({ value })),
         Effect.catchTag("Tool.Error", (failure) => Effect.succeed({ failure })),
       )
