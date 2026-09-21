@@ -24,8 +24,8 @@ import { installTeaching } from "./instructions/teaching.js"
 import { registerInstructionTools } from "./tools.js"
 import { createTeamApi } from "./teams/api.js"
 import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
-import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
+import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
@@ -2803,7 +2803,7 @@ async function discoverAll(
   modelBaselines?: ReadonlyMap<string, ModelBaseline>,
 ): Promise<Discovered> {
   const resolved = await resolveBaseTemplates(ctx)
-  return discover({
+  const discovered = await discover({
     ctx,
     records: customizationsOf(loaded.records),
     baselines,
@@ -2813,6 +2813,16 @@ async function discoverAll(
     ruleRecords: rulesOf(loaded.records),
     ...(modelBaselines === undefined ? {} : { modelBaselines }),
   })
+  return { ...discovered, items: [...discovered.items, ...(await teamPolicyRows(ctx, loaded, discovered))] }
+}
+
+// Team role rules join the inventory here, where the enabled teams are
+// already resolvable: the tree lists them, the query engine filters them and
+// apply installs whatever they resolve to, exactly like a discovered row.
+async function teamPolicyRows(ctx: Context, loaded: LoadedStores, discovered: Discovered): Promise<Item[]> {
+  const members = await resolveAllTeamAgents(ctx.location.directory, loaded.records.filter(isTeamRecord), discovered.agents)
+  if (members.length === 0) return []
+  return teamPolicyItems(policyMembersOf(members.map((agent) => agent.id)), await liveRunScopes(teamsDataDir()))
 }
 
 function scopeLevel(scope: "project" | "global" | "defaults"): Level {
@@ -3079,11 +3089,10 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
   })
 }
 
+// Team tools only. Team rules are instructions rows applied by apply.ts, so
+// there is no permission hook to install here.
 async function installTeamTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
-  const api = createTeamApi(ctx, state)
-  const tools = await registerTeamTools(ctx, api)
-  const permissions = await registerTeamPermissions(ctx)
-  return [tools, permissions]
+  return [await registerTeamTools(ctx, createTeamApi(ctx, state))]
 }
 
 function disposeTeamTooling(state: PlusState): Effect.Effect<void> {
@@ -3270,7 +3279,10 @@ function publishFresh(
       state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
       state.cachedScopes = { global: new Set(publishScopes.global), defaults: new Set(publishScopes.defaults) }
       const fingerprint = JSON.stringify({
-        items: view.items.filter((item) => item.kind !== "perm"),
+        // Mined perm rows are view-time only and stay out, but team policy
+        // rows are derived state that must move the fingerprint: a run
+        // starting or settling changes what a member may edit.
+        items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined),
         agents: view.agents,
         servers: discovered.servers,
         records: stored.records,
@@ -3779,7 +3791,7 @@ async function fingerprintPublish(
   const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
   const { specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, records)
   return JSON.stringify({
-    items: view.items.filter((item) => item.kind !== "perm"),
+    items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined),
     agents: view.agents,
     servers: discovered.servers,
     records,

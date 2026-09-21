@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { validateAgentId } from "../src/agents/files.js"
 import { builtinTeams } from "../src/instructions/builtin-teams.js"
+import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { validateTeamName } from "../src/instructions/teams.js"
 import { allowedTeamTools, kindOf, teamTools } from "../src/teams/policy.js"
 
@@ -22,7 +23,7 @@ test("shipped registry is well formed", () => {
   }
 })
 
-test("opencodeplus-team ships the nine team roles", () => {
+test("opencodeplus-team ships the ten team roles", () => {
   const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
   expect(team).toBeDefined()
   expect(team?.members.map((member) => member.id).toSorted()).toEqual(
@@ -32,6 +33,7 @@ test("opencodeplus-team ships the nine team roles", () => {
       "fable-planner",
       "gemini-implementer",
       "muse-implementer",
+      "opus-implementer",
       "opus-orchestrator",
       "scout",
       "sol-orchestrator",
@@ -48,7 +50,12 @@ test("starter and review members carry no fields", () => {
   }
 })
 
-test("opencodeplus-team members carry description, mode, and ceiling plus static denies", () => {
+// The member definition no longer carries what the member may do: the
+// ceiling and the native answers are instructions rows produced from
+// teams/policy.ts, and apply installs whatever they resolve to. The
+// end-to-end proof that they reach /api/agent unchanged lives in
+// test/teams/roles.test.ts.
+test("opencodeplus-team members carry description and mode and no permissions", () => {
   const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
   if (team === undefined) throw new Error("missing opencodeplus-team")
   for (const member of team.members) {
@@ -56,19 +63,53 @@ test("opencodeplus-team members carry description, mode, and ceiling plus static
     expect(fields).toBeDefined()
     expect(fields?.description?.trim().length).toBeGreaterThan(0)
     expect(fields?.mode).toBe("primary")
-    const permissions = fields?.permissions ?? []
-    // No per-run edit scope here; a later hook owns assigned-path allows.
-    expect(permissions.some((rule) => rule.action === "edit" && rule.effect === "allow")).toBe(false)
-    const resolved = kindOf(member.id)
-    if (!resolved.ok) throw new Error(`unknown role ${member.id}`)
-    const allowed = new Set<string>(allowedTeamTools(resolved.kind))
-    for (const tool of teamTools) {
-      const denied = permissions.some((rule) => rule.action === `team.${tool}` && rule.resource === "*" && rule.effect === "deny")
-      if (allowed.has(tool)) expect(denied).toBe(false)
-      else expect(denied).toBe(true)
-    }
+    expect(fields?.permissions).toEqual([])
     // Bodies compose shared first, then the role block.
     expect(member.body).toContain("team_get_context")
     expect(member.body.indexOf("team_get_context")).toBeLessThan(member.body.length - 1)
+  }
+})
+
+test("every member gets one ceiling row per out-of-ceiling tool and none for its own ceiling", () => {
+  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
+  if (team === undefined) throw new Error("missing opencodeplus-team")
+  const items = teamPolicyItems(policyMembersOf(team.members.map((member) => member.id)))
+  for (const member of team.members) {
+    const resolved = kindOf(member.id)
+    if (!resolved.ok) throw new Error(`unknown role ${member.id}`)
+    const allowed = new Set<string>(allowedTeamTools(resolved.kind))
+    const rows = items.filter((item) => item.agents?.includes(member.id) === true)
+    expect(rows.length).toBeGreaterThan(0)
+    for (const tool of teamTools) {
+      const row = rows.find((item) => item.id === `perm:team_${tool}:role-ceiling`)
+      if (allowed.has(tool)) {
+        expect(row).toBeUndefined()
+        continue
+      }
+      expect(row?.enabled).toBe(false)
+      expect(row?.policy?.off).toEqual([{ action: `team.${tool}`, resource: "*", effect: "deny" }])
+    }
+    // Per-run edit scope is never a role property: it only exists while a run does.
+    expect(rows.some((item) => item.runID !== undefined)).toBe(false)
+  }
+})
+
+test("no built-in prompt names a tool that left the namespace", () => {
+  const removed = [
+    "team_review",
+    "team_shutdown_request",
+    "team_resume",
+    "team_prepare",
+    "team_plan_handoff",
+    "team_metrics",
+    "exa_code_search",
+    "tavily_search",
+    "tavily_extract",
+    "plan_handoff",
+  ]
+  for (const team of builtinTeams) {
+    for (const member of team.members) {
+      for (const name of removed) expect(member.body).not.toContain(name)
+    }
   }
 })

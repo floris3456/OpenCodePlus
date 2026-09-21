@@ -1,7 +1,6 @@
-// Team tool handlers: delegate, finish, checkpoint, status, get_context,
-// wait, check, followup, integrate, set_checks, supersede, stop and list
-// are real implementations. The other ten methods stay as E_NOT_IMPLEMENTED
-// scaffolding for a later task.
+// Team tool handlers. Every method here is a real implementation and every
+// one of them is registered: the namespace advertises nothing that cannot
+// work, so there is no E_NOT_IMPLEMENTED path left.
 //
 // Every handler returns a result object and never throws: runGated in
 // tools.ts turns `{ ok: false, error }` into the model-visible Tool.Error,
@@ -47,28 +46,19 @@ import {
   CheckInput,
   CheckpointInput,
   DiffInput,
-  ExaCodeSearchInput,
   FollowupInput,
   GetContextInput,
   Head,
   IntegrateInput,
   ListInput,
-  MetricsInput,
-  PlanHandoffInput,
   Policy,
-  PrepareInput,
   Report,
-  ResumeInput,
-  ReviewInput,
   RunAck,
   RunID,
   SetChecksInput,
-  ShutdownRequestInput,
   StatusInput,
   StopInput,
   SupersedeInput,
-  TavilyExtractInput,
-  TavilySearchInput,
   WaitInput,
   budgetExhaustion,
   toolError,
@@ -102,26 +92,17 @@ export interface TeamApi {
   readonly delegate: (input: Brief, caller: TeamCaller) => Promise<TeamApiResult>
   readonly finish: (input: Report, caller: TeamCaller) => Promise<TeamApiResult>
   readonly followup: (input: FollowupInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly review: (input: ReviewInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly integrate: (input: IntegrateInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly checkpoint: (input: CheckpointInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly set_checks: (input: SetChecksInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly supersede: (input: SupersedeInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly shutdown_request: (input: ShutdownRequestInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly stop: (input: StopInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly resume: (input: ResumeInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly prepare: (input: PrepareInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly plan_handoff: (input: PlanHandoffInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly status: (input: StatusInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly wait: (input: WaitInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly diff: (input: DiffInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly list: (input: ListInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly get_context: (input: GetContextInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly check: (input: CheckInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly metrics: (input: MetricsInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly exa_code_search: (input: ExaCodeSearchInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly tavily_search: (input: TavilySearchInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly tavily_extract: (input: TavilyExtractInput, caller: TeamCaller) => Promise<TeamApiResult>
 }
 
 // Policy file loading lands later; the gates read bounds and effort budgets
@@ -135,10 +116,6 @@ const PLANNERS_MESSAGE = "Planners may delegate only to opus-orchestrator or sol
 const PLANNERS_ACCEPTED = { role: "opus-orchestrator" }
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
 const COMMIT_MESSAGE_RE = /^(feat|fix|docs|chore|refactor|test)(\([^)]+\))?: /
-
-function notImplemented(tool: string): TeamApiResult {
-  return { ok: false, error: { code: "E_NOT_IMPLEMENTED", message: `${tool} is not implemented yet`, accepted: null } }
-}
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -176,26 +153,17 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     delegate: (input, caller) => guarded(() => delegateHandler(ctx, state, input, caller)),
     finish: (input, caller) => guarded(() => finishHandler(input, caller)),
     followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller)),
-    review: async () => notImplemented("review"),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
     supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller)),
-    shutdown_request: async () => notImplemented("shutdown_request"),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller)),
-    resume: async () => notImplemented("resume"),
-    prepare: async () => notImplemented("prepare"),
-    plan_handoff: async () => notImplemented("plan_handoff"),
     status: (input, caller) => guarded(() => statusHandler(input, caller)),
     wait: (input, caller) => guarded(() => waitHandler(ctx, input, caller)),
-    diff: async () => notImplemented("diff"),
+    diff: (input, caller) => guarded(() => diffHandler(input, caller)),
     list: (input, caller) => guarded(() => listHandler(input, caller)),
     get_context: (input, caller) => guarded(() => getContextHandler(input, caller)),
     check: (input, caller) => guarded(() => checkHandler(input, caller)),
-    metrics: async () => notImplemented("metrics"),
-    exa_code_search: async () => notImplemented("exa_code_search"),
-    tavily_search: async () => notImplemented("tavily_search"),
-    tavily_extract: async () => notImplemented("tavily_extract"),
   }
 }
 
@@ -425,6 +393,12 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const admitted = attemptTransition(opened, "admitted", "admit")
   const streaming = attemptTransition(admitted, "streaming", "first_event")
   await saveRun(root, streaming)
+
+  // The child's edit scope is an instructions row derived from this record,
+  // so the record must be published before the child is prompted. Asking the
+  // host to reload agents republishes Plus through the same event a file edit
+  // uses; a host without the seam just ignores it.
+  await Effect.runPromise(ctx.agent.reload().pipe(Effect.ignore))
 
   const latest = await loadRun(root, parent.id)
   if (latest !== undefined && !latest.children.includes(childID))
@@ -741,6 +715,47 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Pr
     },
     inbox: pending.map((item) => ({ id: item.id, from: item.from, kind: item.kind, text: item.text })),
   })
+}
+
+// Read-only `git diff` of a run the caller can see: its own worktree or one
+// of its children's. Nothing is written, no ref moves, and a large patch is
+// truncated to maxBytes with truncated:true so a diff can never flood the
+// context. Visibility is the same rule wait and integrate use — self or an
+// owned child — so a run can never read a stranger's worktree.
+const DIFF_MAX_BYTES = 200_000
+
+async function diffHandler(args: DiffInput, caller: TeamCaller): Promise<TeamApiResult> {
+  const root = teamsDataDir()
+  const self = (await loadRun(root, caller.run.id)) ?? caller.run
+  const target = args.run === self.id ? self : await loadRun(root, args.run)
+  if (target === undefined) return fail("E_NOT_VISIBLE", `Run ${args.run} is not in this namespace.`, "a run id from list{}")
+  if (target.id !== self.id && target.parent !== self.id)
+    return fail("E_NOT_VISIBLE", `Run ${args.run} is neither your run nor one of your children.`, self.id)
+  const from = await diffFrom(root, target, args.from)
+  const maxBytes = args.maxBytes === undefined || args.maxBytes <= 0 ? DIFF_MAX_BYTES : Math.trunc(args.maxBytes)
+  const paths = args.paths ?? []
+  const result = await gitRaw(target.directory, ["diff", from, ...(paths.length === 0 ? [] : ["--", ...paths])])
+  if (result.code !== 0)
+    return fail("E_INTERNAL", `git diff ${from} failed in ${target.directory}: ${result.err || result.out || "unknown error"}`)
+  const bytes = Buffer.byteLength(result.out, "utf8")
+  const truncated = bytes > maxBytes
+  const head = await git(target.directory, ["rev-parse", "HEAD"]).catch(() => target.head)
+  return succeeded({
+    run: target.id,
+    from,
+    head,
+    bytes,
+    truncated,
+    patch: truncated ? Buffer.from(result.out, "utf8").subarray(0, maxBytes).toString("utf8") : result.out,
+  })
+}
+
+async function diffFrom(root: string, target: RunRecord, from: DiffInput["from"]): Promise<string> {
+  if (from === undefined || from === "base") return target.base
+  if (from !== "parent") return from
+  if (target.parent === null) return target.base
+  const parent = await loadRun(root, target.parent)
+  return parent?.head ?? target.base
 }
 
 async function checkHandler(args: CheckInput, caller: TeamCaller): Promise<TeamApiResult> {

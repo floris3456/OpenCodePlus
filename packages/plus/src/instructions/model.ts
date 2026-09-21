@@ -100,6 +100,22 @@ export interface Item {
   readonly provenance?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
+  /** Team policy rows only: the core rules this row installs — `on` when it resolves enabled, `off` when it resolves disabled. Only team-policy-rows.ts ever sets it. */
+  readonly policy?: PolicyEffects
+  /** Team policy rows derived from a live run: the run whose edit scope the row expresses. Only team-policy-rows.ts ever sets it. */
+  readonly runID?: string
+}
+
+/** One core permission rule. `ask` is a real core effect, so policy rows can carry it. */
+export interface PolicyRule {
+  readonly action: string
+  readonly resource: string
+  readonly effect: "allow" | "deny" | "ask"
+}
+
+export interface PolicyEffects {
+  readonly on: readonly PolicyRule[]
+  readonly off: readonly PolicyRule[]
 }
 
 // Id forms (documented, not enforced):

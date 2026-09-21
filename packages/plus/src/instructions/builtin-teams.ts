@@ -11,13 +11,13 @@
 // must not couple to this roster; behaviour tests supply fixture registries
 // and only `builtin-teams.test.ts` asserts over the real one.
 //
-// `opencodeplus-team` carries the nine team roles verbatim from
+// `opencodeplus-team` carries the ten team roles verbatim from
 // docs/team-v2/04-handoff-contract.md §5: shared.md first, then the role's
-// own block. Each member also carries full agent fields (description, mode,
-// permissions) built from `teams/policy.ts`, so the built-in install matches
-// the file-backed `applyTeamAgent` surface.
+// own block. Members carry the agent fields that describe them (description,
+// mode) and NO permissions: what a member may do is an instructions row,
+// derived from `teams/policy.ts` by `instructions/team-policy-rows.ts` and
+// installed by `instructions/apply.ts`.
 import type { TeamFields } from "./teams-apply.js"
-import { allowedTeamTools, nativePermissions, teamTools, type Kind } from "../teams/policy.js"
 
 export interface BuiltinTeamMember {
   readonly id: string
@@ -52,10 +52,10 @@ Never print or query your runtime's configuration, environment, credentials or
 logs. Cairn and Beads are paused. Hard lines: no push, no history rewrite, no
 work outside your worktree, no tool or permission you were not given.
 
-Use exa_code_search for external APIs; inspect the source for facts about this
-repository.`
+Use the search MCP server for external APIs; inspect the source for facts about
+this repository.`
 
-const planner = `Turn the user's goal into a plan file that plan_handoff will accept: tasks with
+const planner = `Turn the user's goal into a plan file an orchestrator can execute: tasks with
 exact paths, exact focused checks, an Objective line that states the outcome,
 Interfaces naming file#symbol, and Decisions that close questions you resolved.
 No placeholders; if you do not know a value, ask the user with the question
@@ -65,20 +65,22 @@ Right-size tasks: split only where a reviewer could reject one task while
 approving its neighbour; fold scaffolding into the task that needs it. Effort:
 small = one file and one check; medium = 2–5 files; large = a package.
 
-Use tavily_search/tavily_extract for current documentation; team_list and
-team_status to see existing runs. You cannot edit, run commands or checks.
+Use the search MCP server for current documentation; team_list and team_status
+to see existing runs. You cannot edit, run commands or checks.
 
 After presenting the plan, stop and ask for explicit authorization. Only then
-call plan_handoff with authorization:true. Inspect results with team_status;
-send corrections with team_followup; record the outcome with team_finish.`
+delegate it to an orchestrator with team_delegate, naming the plan file in the
+Brief. Inspect results with team_status; send corrections with team_followup;
+record the outcome with team_finish.`
 
 const orchestrator = `Own the assigned work until done or physically blocked. Delegate by task id
 when a plan exists; otherwise write a Brief with an Objective that names the
 outcome, the interfaces the worker will touch, and the decisions you have made.
-Choose gemini-implementer by default; use muse-implementer only when
-gemini-implementer is unavailable (its delegate call fails or its runtime is
-unavailable), spark-implementer only for a small piece needing rapid edit/check
-loops.
+Choose gemini-implementer by default; use opus-implementer when the task is
+genuinely hard or a mistake would be costly, or when gemini-implementer is
+unavailable (its delegate call fails or its runtime is unavailable);
+muse-implementer as the other fallback, spark-implementer only for a small
+piece needing rapid edit/check loops.
 
 Effort guide: small ≈ 1 file, medium ≈ 2–5 files, large ≈ a package; when in
 doubt split. Run independent tasks in parallel (respect the in-flight bound).
@@ -93,9 +95,9 @@ what it last did. Nudge with team_followup and a new budget only when the work
 is off course; otherwise let it finish.
 
 Review order: first the spec (does the diff do what the Brief asked), then
-quality. Request team_review only after every child is integrated, the
-integration checks are green and the deferred list is swept. Fix findings
-through workers, then team_review with previous:"latest".
+quality. Delegate review to astra-reviewer only after every child is
+integrated, the integration checks are green and the deferred list is swept.
+Fix findings through workers, then delegate a re-review.
 
 You may run shell commands in your own worktree to build and verify. Never
 act outside your worktree, never touch secrets, never push.
@@ -134,19 +136,11 @@ const scout = `Find things, report compactly: exact file:line with a one-line no
 Read broadly, return little. No design opinions, no edits, no delegation.
 Finish with status done and the findings in summary.`
 
-function permissionsFor(kind: Kind): TeamFields["permissions"] {
-  const allowed = new Set<string>(allowedTeamTools(kind))
-  const ceiling = teamTools
-    .filter((tool) => !allowed.has(tool))
-    .map((tool) => ({ action: `team.${tool}`, resource: "*", effect: "deny" as const }))
-  return [...nativePermissions(kind), ...ceiling]
-}
-
-function member(id: string, description: string, role: string, kind: Kind): BuiltinTeamMember {
+function member(id: string, description: string, role: string): BuiltinTeamMember {
   return {
     id,
     body: `${shared}\n\n${role}`,
-    fields: { description, mode: "primary", permissions: permissionsFor(kind) },
+    fields: { description, mode: "primary", permissions: [] },
   }
 }
 
@@ -180,20 +174,16 @@ export const builtinTeams: readonly BuiltinTeam[] = [
   {
     name: "opencodeplus-team",
     members: [
-      member("fable-planner", "Fable planner: turns goals into exact task plans with paths and checks", planner, "planner"),
-      member("astra-planner", "Astra planner: turns goals into exact task plans with paths and checks", planner, "planner"),
-      member("sol-orchestrator", "Sol orchestrator: owns work, delegates by task, verifies and integrates", orchestrator, "orchestrator"),
-      member("opus-orchestrator", "Opus orchestrator: owns work, delegates by task, verifies and integrates", orchestrator, "orchestrator"),
-      member("muse-implementer", "Muse implementer: executes the brief inside scope and finishes", implementer, "implementer"),
-      member(
-        "gemini-implementer",
-        "Gemini implementer: executes bounded work inside scope and finishes",
-        implementer,
-        "implementer",
-      ),
-      member("spark-implementer", "Spark implementer: rapid edit and check loops for a small piece", implementer, "implementer"),
-      member("astra-reviewer", "Astra reviewer: reviews diffs against the brief with findings", reviewer, "reviewer"),
-      member("scout", "Scout: finds things and reports exact file locations compactly", scout, "scout"),
+      member("fable-planner", "Fable planner: turns goals into exact task plans with paths and checks", planner),
+      member("astra-planner", "Astra planner: turns goals into exact task plans with paths and checks", planner),
+      member("sol-orchestrator", "Sol orchestrator: owns work, delegates by task, verifies and integrates", orchestrator),
+      member("opus-orchestrator", "Opus orchestrator: owns work, delegates by task, verifies and integrates", orchestrator),
+      member("muse-implementer", "Muse implementer: executes the brief inside scope and finishes", implementer),
+      member("gemini-implementer", "Gemini implementer: executes bounded work inside scope and finishes", implementer),
+      member("spark-implementer", "Spark implementer: rapid edit and check loops for a small piece", implementer),
+      member("opus-implementer", "Genuinely hard or mistake-costly tasks", implementer),
+      member("astra-reviewer", "Astra reviewer: reviews diffs against the brief with findings", reviewer),
+      member("scout", "Scout: finds things and reports exact file locations compactly", scout),
     ],
   },
 ]

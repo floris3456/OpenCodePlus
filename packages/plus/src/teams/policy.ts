@@ -1,10 +1,10 @@
-// Team role policy ported from scripts/team2/agent-policy.ts.
+// Team role policy: the DATA a role's rules are made of, and nothing else.
 //
-// Hard ceiling per docs/team-v2/03-tools.md §Mode summary "Registration per
-// role" table. Policy may only narrow this ceiling; the built-in team emits a
-// deny for every team tool outside it. Static denies mirror the reference
-// nativePermissions without per-run edit scope (a later permission hook owns
-// assigned-path edit allows, so none are emitted here).
+// This file states the ceiling and the native answers; it never writes them
+// onto an agent and never decides tool visibility. `instructions/team-policy-rows.ts`
+// turns both into ordinary instructions rows and `instructions/apply.ts`
+// installs whatever those rows resolve to, so a project or global override
+// changes the answer with no code path here involved.
 export type Kind = "planner" | "orchestrator" | "implementer" | "reviewer" | "scout"
 
 const kindByRole: Record<string, Kind> = {
@@ -15,6 +15,7 @@ const kindByRole: Record<string, Kind> = {
   "muse-implementer": "implementer",
   "gemini-implementer": "implementer",
   "spark-implementer": "implementer",
+  "opus-implementer": "implementer",
   "astra-reviewer": "reviewer",
   scout: "scout",
 }
@@ -29,36 +30,24 @@ export function kindOf(role: string): { ok: true; kind: Kind } | { ok: false; re
   return { ok: true, kind }
 }
 
-// v2 tool set per docs/team-v2/03-tools.md §Mode summary. Direct tools live
-// on MCP server `team`; code tools live on MCP server `team-query`.
+// The team namespace advertises only tools that work. Every name here has a
+// real handler in `teams/api.ts`; a tool with no implementation is absent, not
+// registered-and-failing. Web and code search are not team tools at all: they
+// come from the `search` MCP server, narrowed per role by a policy row.
+// Direct tools are native (`codemode: false`); code tools reach the model
+// through the Code Mode catalog.
 export const directTools = [
   "delegate",
   "finish",
   "followup",
-  "review",
   "integrate",
   "checkpoint",
   "set_checks",
   "supersede",
-  "shutdown_request",
   "stop",
-  "resume",
-  "prepare",
-  "plan_handoff",
 ] as const
 
-export const codeTools = [
-  "status",
-  "wait",
-  "get_context",
-  "diff",
-  "list",
-  "check",
-  "metrics",
-  "exa_code_search",
-  "tavily_search",
-  "tavily_extract",
-] as const
+export const codeTools = ["status", "wait", "get_context", "diff", "list", "check"] as const
 
 export const teamTools = [...directTools, ...codeTools] as const
 export type TeamTool = (typeof teamTools)[number]
@@ -68,42 +57,27 @@ export type TeamTool = (typeof teamTools)[number]
 export function toolsByServer(kind: Kind): { direct: string[]; code: string[] } {
   if (kind === "planner")
     return {
-      direct: ["plan_handoff", "delegate", "followup", "supersede", "shutdown_request", "stop", "resume", "finish"],
-      code: ["status", "diff", "list", "wait", "get_context", "metrics", "tavily_search", "tavily_extract", "exa_code_search"],
+      direct: ["delegate", "followup", "supersede", "stop", "finish"],
+      code: ["status", "diff", "list", "wait", "get_context"],
     }
   if (kind === "orchestrator")
-    // checkpoint stays in the ceiling so policy can enable it; the default
-    // path leaves it denied through the ceiling rule.
     return {
-      direct: [
-        "delegate",
-        "followup",
-        "review",
-        "integrate",
-        "checkpoint",
-        "set_checks",
-        "supersede",
-        "shutdown_request",
-        "stop",
-        "resume",
-        "prepare",
-        "finish",
-      ],
-      code: ["status", "diff", "list", "wait", "get_context", "check", "metrics", "exa_code_search"],
+      direct: ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "finish"],
+      code: ["status", "diff", "list", "wait", "get_context", "check"],
     }
   if (kind === "implementer")
     return {
-      direct: ["checkpoint", "prepare", "finish"],
-      code: ["status", "diff", "get_context", "check", "exa_code_search"],
+      direct: ["checkpoint", "finish"],
+      code: ["status", "diff", "get_context", "check"],
     }
   if (kind === "reviewer")
     return {
       direct: ["finish"],
-      code: ["status", "diff", "get_context", "exa_code_search"],
+      code: ["status", "diff", "get_context"],
     }
   return {
     direct: ["finish"],
-    code: ["status", "diff", "get_context", "exa_code_search"],
+    code: ["status", "diff", "get_context"],
   }
 }
 
@@ -118,8 +92,9 @@ export interface PolicyPermission {
   readonly effect: "allow" | "deny" | "ask"
 }
 
-// Static agent permission rules. Edit scope is intentionally absent: assigned
-// paths are granted per run by a later permission hook, never here.
+// The role's native answers, as data. Per-run edit scope is absent here
+// because it is not a property of the role: it comes from the run record and
+// becomes its own run-scoped row in the same producer.
 export function nativePermissions(kind: Kind): readonly PolicyPermission[] {
   // Implementers are denied rather than asked because a headless ask never
   // returns and the child blocks silently with no pending permission entry.

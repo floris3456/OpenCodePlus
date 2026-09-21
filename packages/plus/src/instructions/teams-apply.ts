@@ -183,7 +183,11 @@ export function applyTeamAgent(
     // A Plus customization of this member's role wins over the shipped body;
     // an uncustomized member still receives its team body exactly as before.
     agent.system = override ?? body
-    agent.permissions.push(...fields.permissions)
+    // Permissions are deliberately NOT installed here. What a member may do
+    // is an instructions row (instructions/team-policy-rows.ts), resolved and
+    // applied by apply.ts, so a project or global override changes it. A
+    // member file's `permissions:` frontmatter is parsed for the publish
+    // fingerprint and ignored for installation.
   })
 }
 

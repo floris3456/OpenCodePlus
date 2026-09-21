@@ -78,9 +78,10 @@ test("identity primitives accept and reject", () => {
   expect(Schema.decodeUnknownSync(TaskID)("T3.rework.1")).toBe("T3.rework.1")
 })
 
-test("delegatedRoles pins the eight delegatable roles", () => {
-  expect(delegatedRoles.length).toBe(8)
+test("delegatedRoles pins the nine delegatable roles", () => {
+  expect(delegatedRoles.length).toBe(9)
   expect(delegatedRoles).toContain("muse-implementer")
+  expect(delegatedRoles).toContain("opus-implementer")
   expect(delegatedRoles).toContain("scout")
 })
 

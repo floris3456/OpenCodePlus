@@ -981,15 +981,63 @@ function lazyTools(
     depth,
     actions: noActions(),
     children: () => {
-      const tools = sortedKind(ctx, "tool", owner)
+      const tools = sortedKind(ctx, "tool", owner).filter((item) => visibleInCatalogue(item, catalogue))
       return [
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native"), teamRef, catalogue, ownerPath),
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus"), teamRef, catalogue, ownerPath),
         mcpToolsGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp"), teamRef, catalogue, ownerPath),
         ...strayTools(ctx, memo, level, owner, agent, tools, depth + 1, teamRef, catalogue, ownerPath),
+        ...policyGroup(ctx, memo, level, owner, `${prefix}:policy`, depth + 1, teamRef, catalogue, ownerPath),
       ]
     },
   })
+}
+
+// Team tools live in the Teams catalogue only. A stand-alone agent never
+// calls them (apply denies the whole namespace for every non-member), so
+// listing them under Agents would advertise rows that can never resolve to a
+// usable tool.
+function visibleInCatalogue(item: Item, catalogue?: Catalogue): boolean {
+  if (catalogueOf(catalogue) === "teams") return true
+  return !(item.namespace === teamNamespace || item.id.startsWith(`tool:${teamNamespace}_`))
+}
+
+const teamNamespace = "team"
+
+// The member's own rule rows: the role ceiling, its native denies and, while a
+// run is live, its edit scope. They hang in one group rather than under the
+// tool each governs, because several of them (question, external directories,
+// a run's edit scope) govern a permission action with no tool row to hang
+// under. The group is omitted when the owner has no policy rows, so an
+// ordinary agent's Tools group is unchanged.
+function policyGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  id: string,
+  depth: number,
+  teamRef?: TeamRef,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy[] {
+  if (owner === null) return []
+  const rows = policyRowsFor(ctx, owner)
+  if (rows.length === 0) return []
+  return [
+    branch(memo, {
+      kind: "group",
+      id,
+      label: "Policy",
+      depth,
+      actions: noActions(),
+      children: () => rows.map((item) => lazyPermRow(memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath)),
+    }),
+  ]
+}
+
+function policyRowsFor(ctx: BuildContext, owner: string): Item[] {
+  return ctx.items.filter((item) => item.kind === "perm" && item.policy !== undefined && applies(item, owner)).toSorted(byOrderTitle)
 }
 
 function lazySkills(
@@ -1509,7 +1557,9 @@ export function toolPermRows(
   if (!canHostPermRules(item)) return []
   const toolId = item.id.slice("tool:".length)
   const rows = ctx.items
-    .filter((entry) => entry.kind === "perm" && entry.permTool === toolId)
+    // Team policy rows have their own group; without this they would appear
+    // twice for the actions that do have a tool row (shell, read, subagent).
+    .filter((entry) => entry.kind === "perm" && entry.policy === undefined && entry.permTool === toolId)
     .filter((entry) => (owner === null ? entry.agents === undefined : applies(entry, owner)))
     .toSorted(byOrderTitle)
   if (rows.length === 0) return []

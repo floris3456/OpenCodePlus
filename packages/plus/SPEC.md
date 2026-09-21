@@ -901,11 +901,87 @@ persistence and the RPC surface are implemented.
 
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
+The `team` namespace advertises only tools that work. It holds exactly
+fourteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
+`set_checks`, `supersede` and `stop` (native, `codemode: false`), and
+`status`, `wait`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
+one has a real handler in `teams/api.ts`; no registered team tool returns
+`E_NOT_IMPLEMENTED`.
+
+Nine names are **not** in the namespace, not in any role ceiling and not named
+by any built-in prompt: `review`, `shutdown_request`, `resume`, `prepare`,
+`plan_handoff`, `metrics`, `exa_code_search`, `tavily_search` and
+`tavily_extract`. Web and code search are not team tools: they are delivered by
+the `search` MCP server and narrowed per role by a policy row (below).
+
+`diff` is a read-only `git diff` of a run the caller can see — its own run or
+one of its children. `from` is `base` (the default), `parent` (the parent
+run's HEAD) or a 40-hex commit; `paths` narrows the patch. Output is
+`{ run, from, head, bytes, truncated, patch }`, truncated to `maxBytes`
+(default 200000) with `truncated: true`. A run that is neither the caller's
+nor one of its children refuses with `E_NOT_VISIBLE`.
+
+While the namespace has no bootstrap tool of its own, a no-argument
+`team_status` from a planner or orchestrator session with no run creates the
+`main` run for that session and then answers normally; every other no-run call
+keeps the exact `E_NOT_ACTOR` message.
+
 Every team tool has exactly one input schema; all of them live in
 `teams/schema.ts` and are imported by `teams/tools.ts` and by the handler that
 implements the tool. The tool layer validates the input once, against the
 registered schema; handlers receive the decoded value and never re-decode.
 `E_INPUT` is therefore unreachable from a tool call.
+
+### Team rules are instructions rows (`instructions/team-policy-rows.ts`)
+
+There is one source of truth for what a team member may do, and it is the
+instructions system. No file under `src/teams` writes permissions onto an
+agent, registers a permission hook, or decides tool visibility:
+`teams/policy.ts` states the ceiling and the native answers as data,
+`instructions/team-policy-rows.ts` turns that data into ordinary rows under
+each member, and `instructions/apply.ts` installs whatever those rows resolve
+to. They are listable (`instructions.list`), showable, logged, and overridable
+at project or global level like any other row.
+
+Every row is a `perm:` row carrying `agents: [<member>]` and both sides of its
+own answer: `policy.on` is installed when the row resolves enabled,
+`policy.off` when it resolves disabled. The shipped `enabled` state is the
+role's answer, so `on` reads as "permitted" exactly like every other row.
+
+Row ids the producer emits, per member of an enabled team:
+
+- `perm:shell:team-role`, `perm:question:team-role`,
+  `perm:external_directory:team-role`, `perm:subagent:team-role`,
+  `perm:task:team-role` — one per native permission action, `*` resource.
+  Shipped on for the roles that may (shell for orchestrators; question for
+  planners; external directories for planners and orchestrators), off for the
+  rest. On installs an explicit `allow`, off a `deny`.
+- `perm:read:team-role` — keys, env files and credentials (`*.key`, `*.env*`,
+  `*/auth.json`). Shipped off for every role.
+- `perm:team_<tool>:role-ceiling` — one per team tool **outside** the role's
+  ceiling, shipped off, denying `team.<tool>` on `*`. Tools inside the ceiling
+  carry no row: the member simply keeps them.
+- `perm:search:team-tavily` — shipped off for implementers, reviewers and
+  scouts, denying `search_tavily_*` on `*`. Code search stays available.
+- `perm:edit:run:<runID>` — per-run edit scope, derived from `run.json` while
+  the run is non-terminal. On installs, in order, `deny edit *`, one
+  `allow edit <path>` per `scope.paths` entry, then `deny edit .git/**` and
+  `deny edit .opencodeplus/**` (core evaluates last-match-wins, so the
+  never-editable state wins over the scope allows). The row carries `runID`
+  and is filterable with `run:<id>`.
+
+Rows appear in a `Policy` group under the member's `Tools` group
+(`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
+governs, because several of them govern an action with no tool row to hang
+under. The group is omitted for owners with no policy rows.
+
+Team tools appear only under the Teams catalogue's `Tools` inventory; the
+Agents catalogue never lists them. An agent that is not a member of an enabled
+team receives one wildcard deny, `{ action: "team.*", resource: "*", effect:
+"deny" }`, which is the shape core drops a tool for
+(`packages/core/src/tool.ts` `whollyDisabled` matches the action by wildcard
+against `options.permission`). `E_NOT_ACTOR` is therefore never the answer to
+"why can't build call this": `build` never sees a `team_*` tool at all.
 
 A refusal renders as `${code}: ${message}`. When the error carries `accepted`,
 one more line follows: `accepted: ${JSON.stringify(accepted)}`. For example,
