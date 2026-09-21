@@ -931,7 +931,7 @@ In a chat, arrow-down to the `Team` composer tab shows runs in the current names
 - `ctrl+a` toggles to inactive runs (`stopped`, `dead`, `superseded`, `reaped`), newest first, and back; the hint bar indicates which view is active.
 - `Enter` (`composer.team.select`) on any row, active or inactive, attaches by navigating to that run's session (`sessionID`).
 - `ctrl+d` (`composer.team.action`): on an `idle` run, stops the run; on a `stopped` or `dead` run, resumes by attaching to its session (the lifecycle resume consumes any retained `stopRequested`, so the resumed run reads `working` once its first prompt starts executing and settles `idle` on success); on a `working` run, displays a toast warning that the run must be interrupted first.
-- Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
+- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint names the view that is on (`inactive ctrl+a` while the inactive view is showing), and `tabs ←/→` is the composer's own hint.
 - The list automatically refreshes on `teams.changed`, host session lifecycle events, and on a 2 s periodic interval while the tab is active.
 
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
