@@ -916,8 +916,12 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
         const address = candidate.address
         if (address === undefined) return false
         const server = lookupItem(state, address.item, address.agent)?.server
-        if (server === undefined) return false
-        return alts.some((alt) => lower(server) === lower(alt))
+        if (server !== undefined && alts.some((alt) => lower(server) === lower(alt))) return true
+        if (address.item.startsWith("mcp:")) {
+          const serverName = address.item.slice("mcp:".length)
+          return alts.some((alt) => lower(serverName) === lower(alt))
+        }
+        return false
       }
     }
     case "level": {

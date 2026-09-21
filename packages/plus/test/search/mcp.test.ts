@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveSearchBinPath } from "../../src/search/register.js"
+import "./keys.test.js"
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
 
@@ -73,6 +74,54 @@ test(
       const parsedExa = JSON.parse(noKeyExa.content[0].text)
       expect(parsedExa.error).toBe("EXA_API_KEY is not set in the host environment")
     })
+  },
+  30_000,
+)
+
+test(
+  "search MCP server enforces mode 0600 and key file precedence over env",
+  async () => {
+    const keysDir = await mkdtemp(join(tmpdir(), "plus-mcp-keys-"))
+    const keyFile = join(keysDir, "exa.key")
+
+    try {
+      // 1. Insecure mode 0644 returns error
+      await writeFile(keyFile, "insecure-key\n", { mode: 0o644 })
+      await chmod(keyFile, 0o644)
+
+      await withSearchServer(
+        { ...process.env, OPENCODEPLUS_SEARCH_KEYS_DIR: keysDir, EXA_API_KEY: "" },
+        async (client) => {
+          const res = (await client.callTool({
+            name: "exa_code_search",
+            arguments: { query: "function test()" },
+          })) as { isError?: boolean; content: Array<{ type: string; text: string }> }
+
+          expect(res.isError).toBe(true)
+          const parsed = JSON.parse(res.content[0].text)
+          expect(parsed.error).toContain("0600")
+        },
+      )
+
+      // 2. Mode 0600 is accepted and key file wins over env
+      await chmod(keyFile, 0o600)
+      await withSearchServer(
+        { ...process.env, OPENCODEPLUS_SEARCH_KEYS_DIR: keysDir, EXA_API_KEY: "different-env-key" },
+        async (client) => {
+          const res = (await client.callTool({
+            name: "exa_code_search",
+            arguments: { query: "function test()" },
+          })) as { isError?: boolean; content: Array<{ type: string; text: string }> }
+
+          expect(res.isError).toBe(true)
+          const parsed = JSON.parse(res.content[0].text)
+          expect(parsed.error).not.toBe("EXA_API_KEY is not set in the host environment")
+          expect(parsed.error).toContain("Exa search failed")
+        },
+      )
+    } finally {
+      await rm(keysDir, { recursive: true, force: true })
+    }
   },
   30_000,
 )
