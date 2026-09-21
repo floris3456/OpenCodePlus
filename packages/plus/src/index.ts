@@ -24,6 +24,7 @@ import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
+import { byDirectory } from "./teams/run.js"
 import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
@@ -409,19 +410,19 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
   const builtins = options?.builtins ?? builtinTeams
   return {
     snapshot: async () => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state, builtins)
+      const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
       const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
     },
     refresh: async () => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -433,7 +434,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
     },
     mutate: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -460,7 +461,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             ? ("global" as const)
             : undefined
       if (staleStore !== undefined) {
-        const discovered = await discoverAll(ctx, loaded, state, builtins)
+        const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
         const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
         const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
         return {
@@ -475,7 +476,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       })
       if (!saved.ok) {
         const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
-        const discovered = await discoverAll(ctx, refreshed, state, builtins)
+        const discovered = await discoverAll(ctx, refreshed, state, builtins, directory)
         const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
         const outputIds = await snapshotOutputIds(directory, discovered, refreshed, builtins, state.teamOutputIds)
         return {
@@ -502,7 +503,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
     },
     log: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -514,13 +515,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { entries: [...entries], total } }
     },
     assembled: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state, builtins)
+      const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
       const result = await assembled({
         ctx,
         agent: input.agent,
@@ -539,7 +540,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: result }
     },
     createAgent: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -590,7 +591,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: validated.id, path: created.path } }
     },
     renameAgent: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -634,7 +635,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { from: from.id, to: to.id, path: renamed.toPath } }
     },
     deleteAgent: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -672,7 +673,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: validated.id, path: removed.path } }
     },
     createSkill: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -692,7 +693,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     importSkill: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -712,7 +713,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     deleteSkill: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -735,7 +736,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     createBase: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -762,7 +763,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id } }
     },
     deleteBase: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -792,7 +793,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id } }
     },
     createInstruction: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue
       // (instructions/discover.ts). The handler body below is kept for the rework.
       if (INSTRUCTIONS_DISABLED)
@@ -828,7 +829,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     deleteInstruction: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue.
       if (INSTRUCTIONS_DISABLED)
         return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
@@ -861,7 +862,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: result.id, path: result.path } }
     },
     addMcp: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -882,7 +883,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { name: result.name } }
     },
     removeMcp: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -906,7 +907,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { name: result.name } }
     },
     createTeam: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1015,7 +1016,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: false } }
     },
     setTeamEnabled: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1057,7 +1058,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
     },
     addTeamAgent: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1153,7 +1154,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: validated.id, path: target } }
     },
     removeTeamAgent: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1222,7 +1223,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { id: validated.id, path: target } }
     },
     deleteTeam: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1339,7 +1340,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       }
     },
     listTeams: async () => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1348,7 +1349,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: result }
     },
     catalogModels: async () => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1373,7 +1374,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { models } }
     },
     addModel: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1466,7 +1467,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       }
     },
     removeModel: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1532,7 +1533,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       }
     },
     addRule: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1592,7 +1593,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { level: next.level, agent: next.agent, tool: next.tool, id: next.id, label: next.label } }
     },
     removeRule: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1643,7 +1644,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: { level: existing.level, agent: existing.agent, tool: existing.tool, id: existing.id, label: existing.label } }
     },
     updateRule: async (input) => {
-      const directory = ctx.location.directory
+      const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
@@ -1709,7 +1710,9 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
   return {
     "project.status": () =>
       Effect.gen(function* () {
-        const directory = ctx.location.directory
+        // A run's session activates through its recorded project directory;
+        // status must report the same project the guards and activate use.
+        const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
         const config = yield* Effect.promise(() => read(directory))
         return {
           enabled: config !== undefined,
@@ -1732,6 +1735,9 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "project.disable": () =>
       Effect.gen(function* () {
+        // enable/disable act on the Location's own directory, never the
+        // inherited run project: a child chat toggling the parent's project
+        // off would be surprising, and the child worktree stays copy-free.
         const directory = ctx.location.directory
         yield* Effect.promise(() => disable(directory))
         const status: Plus.Status = {
@@ -2920,6 +2926,10 @@ async function discoverAll(
   loaded: LoadedStores,
   state: PlusState,
   builtins: readonly BuiltinTeam[],
+  // The project directory this publish belongs to: a run session in a child
+  // worktree activates through the run record's projectDirectory, so team rows
+  // resolve against the parent project, not the copy-free worktree.
+  directory: string = ctx.location.directory,
 ): Promise<Discovered> {
   const resolved = await resolveBaseTemplates(ctx)
   const discovered = await discover({
@@ -2934,7 +2944,7 @@ async function discoverAll(
   })
   return {
     ...discovered,
-    items: [...discovered.items, ...(await teamPolicyRows(ctx, loaded, discovered, builtins, state.teamOutputIds))],
+    items: [...discovered.items, ...(await teamPolicyRows(loaded, discovered, builtins, state.teamOutputIds, directory))],
   }
 }
 
@@ -2950,15 +2960,15 @@ async function discoverAll(
 // apart; approximating it by id would let a team member beat a genuine host
 // built-in of the same name.
 async function teamPolicyRows(
-  ctx: Context,
   loaded: LoadedStores,
   discovered: Discovered,
   builtins: readonly BuiltinTeam[],
   owned: ReadonlyMap<string, TeamOwnership>,
+  directory: string,
 ): Promise<Item[]> {
-  const outputIds = await snapshotOutputIds(ctx.location.directory, discovered, loaded, builtins, owned)
+  const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, owned)
   const members = await resolveAllTeamAgents(
-    ctx.location.directory,
+    directory,
     loaded.records.filter(isTeamRecord),
     filteredPublishAgents(discovered.agents, outputIds),
     builtins,
@@ -3184,12 +3194,24 @@ async function deleteInstruction(input: { projectDirectory: string; name: string
 
 function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
   return Effect.gen(function* () {
-    const config = yield* Effect.promise(() => read(ctx.location.directory))
+    // A run session's worktree is outside its parent's tree, so project mode
+    // cannot be found by walking up from the worktree. The run record names the
+    // project directory its delegate ran from; every other Location resolves
+    // from its own directory, upward (project.read).
+    const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
+    const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) return
     yield* ensureTooling(ctx, state)
-    const stored = yield* Effect.promise(() => loadCurrent(ctx.location.directory))
+    const stored = yield* Effect.promise(() => loadCurrent(directory))
     yield* publishFresh(ctx, state, stored)
   })
+}
+
+// The directory a Location activates against: the project directory recorded by
+// the run that owns this worktree, else the Location's own directory.
+export async function activationDirectory(directory: string): Promise<string> {
+  const run = await byDirectory(teamsDataDir(), directory)
+  return run?.projectDirectory ?? directory
 }
 
 // Tooling (teaching instruction/skill plus the instructions tool namespace)
@@ -3381,7 +3403,12 @@ function publishFresh(
 ): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
-      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state, builtins))
+      // The project directory this publish applies to. Activation resolves a
+      // run session's worktree to the project directory its record names; the
+      // team discoveries below must use the same directory, or a child
+      // worktree would report and install an empty project.
+      const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
+      const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state, builtins, directory))
       // A newer publish already won; this read is stale, so leave the applied
       // registrations and the last emitted revision untouched.
       if (state.projectRevision !== undefined && stored.projectRevision < state.projectRevision) return discovered
@@ -3390,10 +3417,10 @@ function publishFresh(
       const splits = splitsOf(stored.records)
       const modelRecords = modelsOf(stored.records)
       const view = yield* Effect.promise(() =>
-        stablePublishView(discovered, stored.records, ctx.location.directory, builtins, state.teamOutputIds),
+        stablePublishView(discovered, stored.records, directory, builtins, state.teamOutputIds),
       )
       const teamRecords = stored.records.filter(isTeamRecord)
-      const allDiscoveredTeams = yield* Effect.promise(() => discoverAllTeams(ctx.location.directory, builtins))
+      const allDiscoveredTeams = yield* Effect.promise(() => discoverAllTeams(directory, builtins))
       const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
       const { specialModelAgents, specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, stored.records)
 
@@ -4087,7 +4114,10 @@ export function applySessionModel(
   event: { type: string; properties?: Record<string, unknown>; data?: unknown },
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
-    const directory = ctx.location.directory
+    // Same resolution as activate: a session in a run's worktree adopts the
+    // recorded project directory's active models, not the worktree's own empty
+    // ancestry.
+    const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
     const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) return
     yield* Effect.promise(() => refreshActiveModelsIfStale(directory, state))
@@ -4157,7 +4187,9 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
 
 function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.gen(function* () {
-    const directory = ctx.location.directory
+    // Same resolution as activate: a host refresh in a run's worktree must not
+    // deactivate the tooling activation just installed (see activationDirectory).
+    const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
     const config = yield* Effect.promise(() => read(directory))
     if (config === undefined) {
       yield* deactivate(state)

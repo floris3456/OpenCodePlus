@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { readdir } from "node:fs/promises"
+import { readdir, realpath } from "node:fs/promises"
 import path from "node:path"
 import { Effect, Option } from "effect"
 import { toolError } from "./schema.js"
@@ -61,6 +61,11 @@ export interface RunRecord {
   lastUsed: string
   sessionID: string | null
   configDigest: string | null
+  /** Where project mode resolves for this run's session. A child worktree is
+   * outside the parent's tree, so it records the parent's directory and
+   * activation reads the parent's project.json instead of walking up from the
+   * worktree. Absent on records written before this field existed. */
+  projectDirectory?: string
   supersededReason?: string
   stopRequested?: boolean
   worktree?: WorktreeState
@@ -455,4 +460,26 @@ export async function bySession(root: string, sessionID: string): Promise<RunRec
       return undefined
     }),
   )
+}
+
+// The run that owns a worktree directory, if any. Activation has no session id
+// (the plugin instance runs per Location), so a run session is found by the
+// directory the host opened and activated through the project directory the
+// delegate recorded. Both sides are canonicalized: a data root reached through
+// a symlink and a relative path must still name the same worktree.
+export async function byDirectory(root: string, directory: string): Promise<RunRecord | undefined> {
+  const wanted = await canonicalPath(directory)
+  const dir = path.join(root, "runs")
+  const entries = await readdir(dir).catch(() => [] as string[])
+  for (const entry of entries) {
+    if (entry.startsWith(".")) continue
+    const record = await readJson<RunRecord>(path.join(dir, entry, "run.json")).catch(() => undefined)
+    if (record === undefined || typeof record.directory !== "string") continue
+    if ((await canonicalPath(record.directory)) === wanted) return record
+  }
+  return undefined
+}
+
+function canonicalPath(p: string): Promise<string> {
+  return realpath(p).catch(() => path.resolve(p))
 }

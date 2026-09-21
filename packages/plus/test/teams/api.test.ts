@@ -1,18 +1,23 @@
 import { expect, test } from "bun:test"
+import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
 import { Session } from "@opencode/schema/session"
-import { Effect, Schema } from "effect"
+import { Effect, Exit, Schema, Scope } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { context } from "../harness.js"
-import { createState } from "../../src/index.js"
+import { context, fullContext } from "../harness.js"
+import plus, { activationDirectory, createHandlers, createPlusApi, createState } from "../../src/index.js"
+import { formatMarkdown } from "../../src/agents/files.js"
+import { load, save } from "../../src/instructions/store.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { lastReceipt } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
-import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { gc } from "../../src/teams/lifecycle.js"
+import { byDirectory, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { read } from "../../src/project.js"
 
 // Real temp git repositories plus a real temp state root (scoped
 // XDG_DATA_HOME redirect, restored afterwards). The session domain is a
@@ -187,14 +192,348 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(sessions.prompted).toHaveLength(1)
       expect(sessions.prompted[0]?.sessionID).toBe(value.session)
       expect(sessions.prompted[0]?.text).toContain("Fix the agent filter in the query module")
-      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(true)
-      // Raw git sees the Plus-only untracked file; team's dirty accounting ignores it.
-      expect(await git(value.directory, ["status", "--porcelain"])).toBe("?? .opencodeplus/")
+      // The child worktree carries no copied project config: it is activated
+      // through the parent directory recorded on its run (item 13).
+      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      expect(await git(value.directory, ["status", "--porcelain"])).toBe("")
+      expect(persisted?.projectDirectory).toBe(repo.dir)
     } finally {
       await removeRepo(repo.dir)
     }
   })
 }, 30000)
+
+test("delegate activates the child through the parent project, with no copy", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      // Parent runs in a Plus project; the child worktree is outside its tree.
+      // (enable() itself resolves upward, so write the parent's own file.)
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "project.json"),
+        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+      )
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_project",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "project-1" }), callerFor(parent))) as {
+        run: string
+        session: string
+        directory: string
+      }
+      // The child carries no project config at all...
+      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      // ...and the activation seam resolves the parent's project through the
+      // run record the delegate wrote, so Plus activates in the child worktree
+      // with the parent's protectedAgents, not a copy and not a stray ancestor.
+      const child = await loadRun(root, value.run)
+      expect(child?.projectDirectory).toBe(repo.dir)
+      const activation = await activationDirectory(value.directory)
+      expect(activation).toBe(repo.dir)
+      expect(await read(activation)).toEqual({ version: 1, protectedAgents: ["muse-implementer"] })
+      // Item 13 evidence: no copy in the child, activation through the record.
+      console.log(
+        `[T5 item 13] child ${value.directory}\n  child/.opencodeplus/project.json exists: false\n` +
+          `  run.projectDirectory: ${String(child?.projectDirectory)}\n` +
+          `  activationDirectory(child): ${activation}\n` +
+          `  project.read(activation): ${JSON.stringify(await read(activation))}`,
+      )
+      // The recorded directory is the worktree the child's session opened in.
+      expect(child?.directory).toBe(value.directory)
+      expect((sessions.created[0] as { location: { directory: string } }).location.directory).toBe(value.directory)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// The host's session create runs inside `delegate`: it resolves the location
+// directory (`FileSystem.realPath`), activation reads it, and the plugin's
+// startup sweep runs against the same runs root. This test drives that exact
+// window with the real `create`, the real `gc` and a real `realpath`.
+test("the first delegate registers the child run before the host opens its session", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_gc_race",
+      })
+      await saveRun(root, parent)
+
+      const during = {
+        resolveError: undefined as string | undefined,
+        activation: undefined as string | undefined,
+        sessionID: undefined as string | null | undefined,
+        orphansRemoved: undefined as string[] | undefined,
+        afterSweepError: undefined as string | undefined,
+      }
+      const resolveCode = (error: { code?: string }) => error.code ?? String(error)
+      const sessions = recordSession()
+      const domain = {
+        ...sessions.domain,
+        create: (input: unknown) =>
+          Effect.promise(async () => {
+            const location = (input as { location: { directory: string } }).location.directory
+            during.resolveError = await fs.realpath(location).then(
+              () => undefined,
+              resolveCode,
+            )
+            during.activation = await activationDirectory(location)
+            during.sessionID = (await byDirectory(root, location))?.sessionID
+            // The real sweep a plugin instance runs against this data root,
+            // while the delegate is between `create` and its next write.
+            during.orphansRemoved = (await gc(root)).orphansRemoved
+            during.afterSweepError = await fs.realpath(location).then(
+              () => undefined,
+              resolveCode,
+            )
+            return { id: Session.ID.make("ses_child_gc_race") }
+          }),
+      } as unknown as SessionDomain
+
+      const api = createTeamApi(context({ session: domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "gc-race-1" }), callerFor(parent))) as {
+        run: string
+        directory: string
+      }
+
+      // The host's realPath boundary: the directory it resolves exists, and it
+      // still exists after the sweep that ran during session creation.
+      expect(await fs.realpath(value.directory)).toBe(value.directory)
+      expect(during.resolveError).toBeUndefined()
+      expect(during.afterSweepError).toBeUndefined()
+      expect(during.orphansRemoved).toEqual([])
+      expect(during.activation).toBe(repo.dir)
+      expect(during.sessionID).toBeNull()
+      expect((await loadRun(root, value.run))?.sessionID).toBe("ses_child_gc_race")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// The real plugin entrypoint, the shared harness host, and the real activation
+// path: a Location whose directory is the child worktree must install the
+// parent project's team agents and the team/instructions tools, and closing
+// the plugin scope must dispose them.
+test("activation in a child worktree installs the parent project's agents and tools", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus", "teams", "crew"), { recursive: true })
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "project.json"),
+        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+      )
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "teams", "crew", "alpha.md"),
+        formatMarkdown({ description: "crew/alpha" }, "crew alpha body"),
+      )
+      const loaded = await load(repo.dir)
+      const enabled = await save(repo.dir, {
+        expectedProjectRevision: loaded.projectRevision,
+        expectedGlobalRevision: loaded.globalRevision,
+        records: [
+          ...loaded.records,
+          { type: "team", level: "project", team: "crew", enabled: true, updated: new Date().toISOString() },
+        ],
+      })
+      expect(enabled.ok).toBe(true)
+
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_activation",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "activation-1" }), callerFor(parent))) as {
+        directory: string
+      }
+
+      // A plugin instance whose Location is the child worktree: the harness
+      // records the session-creation seam but nothing about activation.
+      const ctx = fullContext({ directory: value.directory })
+      const pluginCtx = {
+        ...ctx,
+        rpc: Object.assign(
+          () => {
+            throw new Error("unused rpc.client")
+          },
+          {
+            register: () => Effect.succeed({ dispose: Effect.void, events: { emit: () => Effect.void } }),
+          },
+        ),
+      } as Context
+      const scope = await Effect.runPromise(Scope.make())
+      try {
+        await Effect.runPromise(plus.effect(pluginCtx).pipe(Effect.provideService(Scope.Scope, scope)))
+        const toolIds = await installedToolIds(ctx)
+        expect(toolIds).toContain("team_delegate")
+        expect(toolIds).toContain("team_status")
+        expect(toolIds.filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
+        const listed = await Effect.runPromise(ctx.agent.list())
+        expect(listed.data.map((agent) => String(agent.id))).toContain("alpha")
+        console.log(
+          `[T5 item 13] child plugin activation through the real entrypoint\n` +
+            `  location: ${value.directory}\n` +
+            `  team tools installed: ${toolIds.filter((id) => id.startsWith("team_")).length}\n` +
+            `  instructions tools installed: ${toolIds.filter((id) => id.startsWith("instructions_")).length}\n` +
+            `  team member agents installed: ${listed.data.map((agent) => String(agent.id)).filter((id) => id === "alpha").join(", ")}`,
+        )
+      } finally {
+        await Effect.runPromise(Scope.close(scope, Exit.void))
+      }
+      // Activation is real and scoped: the child instance's registrations went
+      // away with it.
+      expect(await installedToolIds(ctx)).toEqual([])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// Guards, snapshot and mutate all resolve the same directory activation does:
+// the run's recorded projectDirectory, never the copy-free child worktree.
+test("project guards, snapshot and mutate resolve a child worktree through its run's projectDirectory", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "project.json"),
+        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+      )
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_api_project",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const value = required(await api.delegate(delegateInput({ requestID: "api-inherit-1" }), callerFor(parent))) as {
+        directory: string
+      }
+
+      // The child worktree carries no config, and no ancestor of it is enabled.
+      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      const ctx = fullContext({ directory: value.directory })
+      const state = createState()
+      const handlers = createHandlers(ctx, state, { builtins: [] })
+      const status = await Effect.runPromise(handlers["project.status"](undefined, throwingContext({})))
+      expect(status).toEqual({ enabled: true, directory: repo.dir })
+      const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+      const childApi = createPlusApi(ctx, state, { builtins: [] })
+      const mutated = await childApi.mutate({
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [],
+      })
+      expect(mutated.ok).toBe(true)
+      console.log(
+        `[T5 item 13] child API resolves the inherited project\n` +
+          `  location: ${value.directory}\n` +
+          `  project.status: ${JSON.stringify(status)}\n` +
+          `  snapshot revisions: project=${snapshot.revision} global=${snapshot.globalRevision}\n` +
+          `  mutate ok: ${mutated.ok}`,
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// The session create is the one step that can fail after the run is on disk;
+// the pre-registered record must not keep claiming a bounds slot forever.
+test("a failed session create retires the pre-registered child run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_create_fail",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const domain = {
+        ...sessions.domain,
+        create: () => Effect.die(new Error("host session create failed")),
+      } as unknown as SessionDomain
+
+      const api = createTeamApi(context({ session: domain }), createState())
+      const error = rejected(await api.delegate(delegateInput({ requestID: "create-fail-1" }), callerFor(parent)))
+      expect(error.code).toBe("E_INTERNAL")
+
+      const entries = await fs.readdir(path.join(root, "runs"))
+      const records = (await Promise.all(entries.map((entry) => loadRun(root, entry)))).filter(
+        (record): record is RunRecord => record !== undefined && record.parent === parent.id,
+      )
+      expect(records).toHaveLength(1)
+      expect(records[0]?.state).toBe("superseded")
+      expect(records[0]?.sessionID).toBeNull()
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// Declared-error side channel for handlers that fail: the harness context
+// records which error type a handler selected.
+interface CapturedError {
+  type: string
+  message: string
+  data?: unknown
+}
+
+function throwingContext(captured: { current?: CapturedError }): {
+  error: (type: string, message: string, data?: unknown) => never
+} {
+  return {
+    error: (type, message, data) => {
+      const failure: CapturedError = data === undefined ? { type, message } : { type, message, data }
+      captured.current = failure
+      throw failure
+    },
+  }
+}
+
+async function installedToolIds(ctx: Context): Promise<string[]> {
+  const ids: string[] = []
+  await Effect.runPromise(
+    Effect.scoped(
+      ctx.tool.transform((editor) => {
+        for (const tool of editor.list()) ids.push(String((tool as { id?: unknown }).id ?? tool.name))
+      }),
+    ),
+  )
+  return ids
+}
 
 test("delegate rejects E_ROLE when an implementer delegates", async () => {
   await withIsolatedTeamsRoot(async (root) => {

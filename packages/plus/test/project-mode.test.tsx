@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin/tui"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createSignal } from "solid-js"
+import { disable, enable, read } from "../src/project.js"
 import type { Status } from "../src/rpc.js"
 import { createProjectMode } from "../src/tui/project-mode.js"
 
@@ -150,5 +154,53 @@ test("a failing status request surfaces an error toast", async () => {
     expect(harness.toasts[0].variant).toBe("error")
   } finally {
     mode.dispose()
+  }
+})
+
+test("an explicit disabled marker stops the upward walk and enable replaces it", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "plus-project-mode-"))
+  try {
+    const root = join(tmp, "repo")
+    const nested = join(root, "packages", "plus")
+    await mkdir(nested, { recursive: true })
+    await enable(root)
+    await disable(nested)
+    // The nearest config is an explicit opt-out: the enabled ancestor no
+    // longer applies below it, and the ancestor itself is untouched.
+    expect(await read(nested)).toBeUndefined()
+    expect(await read(root)).toEqual({ version: 1, protectedAgents: [] })
+    const marker = JSON.parse(await Bun.file(join(nested, ".opencodeplus", "project.json")).text()) as unknown
+    expect(marker).toEqual({ version: 1, protectedAgents: [], enabled: false })
+    // Enable in the disabled directory replaces the marker for that subtree.
+    expect(await enable(nested)).toEqual({ version: 1, protectedAgents: [] })
+    expect(await read(nested)).toEqual({ version: 1, protectedAgents: [] })
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
+// Project mode resolves upward: a session opened below an enabled directory
+// reads the same project, and the nearest config wins. A team worktree outside
+// the parent's tree carries no copy and is activated through the run record's
+// projectDirectory instead (packages/plus/src/index.ts activationDirectory).
+test("project mode resolves upward from a nested directory to the nearest config", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "plus-project-mode-"))
+  try {
+    const root = join(tmp, "repo")
+    const nested = join(root, "packages", "plus")
+    await mkdir(nested, { recursive: true })
+    await enable(root)
+    expect(await read(nested)).toEqual({ version: 1, protectedAgents: [] })
+
+    await mkdir(join(root, "packages", ".opencodeplus"), { recursive: true })
+    await writeFile(
+      join(root, "packages", ".opencodeplus", "project.json"),
+      `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+    )
+    expect(await read(nested)).toEqual({ version: 1, protectedAgents: ["muse-implementer"] })
+    // The root's own config is unchanged by the nested one.
+    expect(await read(root)).toEqual({ version: 1, protectedAgents: [] })
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
   }
 })

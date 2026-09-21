@@ -1,7 +1,6 @@
-import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises"
-import { isAbsolute, join, relative } from "node:path"
+import { mkdir, realpath, stat } from "node:fs/promises"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Effect } from "effect"
-import { read, type ProjectConfig } from "../project.js"
 import { git, gitRaw } from "./git.js"
 import { toolError } from "./schema.js"
 import { lock } from "./store.js"
@@ -45,7 +44,6 @@ export interface CreateOptions {
   name: string
   base: string
   workspaceRoot: string
-  projectDirectory: string
 }
 
 export interface Created {
@@ -54,44 +52,11 @@ export interface Created {
   head: string
 }
 
-function messageOf(error: unknown): string {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = (error as { message: unknown }).message
-    if (typeof message === "string" && message.length > 0) return message
-  }
-  return String(error)
-}
-
-// The child's worktree must be a Plus project or Plus never activates there
-// and core cannot resolve the child's own role agent. When the checkout
-// already carries `.opencodeplus/project.json` (the repository tracks it)
-// the file is left alone; otherwise the parent's config is copied so the
-// child inherits the user-controlled `protectedAgents` list verbatim,
-// falling back to the default when the parent has none.
-function ensureProjectConfig(dir: string, projectDirectory: string): Promise<void> {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const target = join(dir, ".opencodeplus", "project.json")
-      const present = yield* io(() => stat(target)).pipe(
-        Effect.as(true),
-        Effect.catchIf(() => true, () => Effect.succeed(false)),
-      )
-      if (present) return
-      const parent = yield* io(() => read(projectDirectory)).pipe(
-        Effect.catchIf(() => true, () => Effect.succeed(undefined)),
-      )
-      const config: ProjectConfig = parent ?? { version: 1, protectedAgents: [] }
-      const payload = `${JSON.stringify(config, null, 2)}\n`
-      yield* io(() => mkdir(join(dir, ".opencodeplus"), { recursive: true })).pipe(
-        Effect.mapError((error) => toolError("E_PROJECT", `Cannot write Plus project config: ${messageOf(error)}`)),
-      )
-      yield* io(() => writeFile(target, payload, "utf8")).pipe(
-        Effect.mapError((error) => toolError("E_PROJECT", `Cannot write Plus project config: ${messageOf(error)}`)),
-      )
-    }),
-  )
-}
-
+// The child's worktree carries no copied `.opencodeplus/project.json`: project
+// mode resolves upward from the parent directory the run records as its
+// `projectDirectory`, so the child inherits the parent's project while no
+// second copy can drift. See project.ts and run.ts.
+//
 // The one directory the team owns for a repository: every worktree `create`
 // makes lives under it, and it is the only area `orphans` may report.
 export function ownedRoot(workspaceRoot: string, repoKey: string): string {
@@ -106,17 +71,26 @@ export function mergeArea(owned: string): string {
 
 export async function create(root: string, opts: CreateOptions): Promise<Created> {
   const ts = stamp()
-  const dir = join(ownedRoot(opts.workspaceRoot, opts.repoKey), opts.role, `${opts.name}-${ts}`)
+  // Resolve once, absolutely: the run record, the host's Location and git must
+  // all name one directory even when the caller's workspace root is relative.
+  const dir = resolve(ownedRoot(opts.workspaceRoot, opts.repoKey), opts.role, `${opts.name}-${ts}`)
   const branch = `team/${opts.role}/${opts.name}-${ts}`
   return lock(root, "repo", opts.repoKey, async () => {
     const verify = await gitRaw(opts.repoRoot, ["rev-parse", "--verify", `${opts.base}^{commit}`])
     if (verify.code !== 0)
       throw toolError("E_BASE", `Unknown base "${opts.base}": ${verify.err || verify.out}`, "ocp-main")
     if (await exists(dir)) throw toolError("E_WT_EXISTS", `Worktree directory already exists: ${dir}`)
+    // A brand-new data root has no worktrees/ yet. Creating the parent chain
+    // before git runs means the first delegate's directory exists as named, so
+    // nothing that resolves it (the host's FileSystem.realPath, the writes
+    // below) can miss it.
+    await mkdir(dirname(dir), { recursive: true })
     await git(opts.repoRoot, ["worktree", "add", "-b", branch, dir, verify.out])
     const head = await git(dir, ["rev-parse", "HEAD"])
-    await ensureProjectConfig(dir, opts.projectDirectory)
-    return { dir, branch, head }
+    // Hand back the canonical directory: the host realpaths the location it is
+    // given, and a data root reached through a symlink would otherwise yield two
+    // names for one worktree.
+    return { dir: await real(dir), branch, head }
   })
 }
 
@@ -126,28 +100,15 @@ export interface RemoveOptions {
   force?: boolean
 }
 
+// A plain `git worktree remove`: the child carries no Plus-written file, so
+// there is nothing to delete first and nothing to special-case.
 export async function remove(root: string, dir: string, opts: RemoveOptions): Promise<void> {
   if (!(await exists(dir))) return
   await lock(root, "repo", opts.repoKey, async () => {
     if (!(await exists(dir))) return
-    await removeUntrackedPlusConfig(dir)
     const extra = opts.force === true ? ["--force"] : []
     await git(opts.repoRoot, ["worktree", "remove", ...extra, dir])
   })
-}
-
-// The Plus-written `.opencodeplus/project.json` is untracked and outside the
-// worker's scope, so it would block a non-force `git worktree remove`.
-// Delete it when untracked (a tracked copy is left alone) before removing.
-function removeUntrackedPlusConfig(dir: string): Promise<void> {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const tracked = yield* io(() => gitRaw(dir, ["ls-files", "--error-unmatch", "--", ".opencodeplus/project.json"]))
-      if (tracked.code === 0) return
-      yield* io(() => rm(join(dir, ".opencodeplus", "project.json"), { force: true })).pipe(Effect.ignore)
-      yield* io(() => rm(join(dir, ".opencodeplus"), { recursive: false })).pipe(Effect.ignore)
-    }).pipe(Effect.ignore),
-  )
 }
 
 export interface WorktreeEntry {
