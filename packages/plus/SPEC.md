@@ -889,6 +889,51 @@ Error codes carrying `accepted` today:
 - `E_REQUEST_ID`: reuse guidance (`"pick a new requestID"`)
 - `E_TOO_LONG`: brief length guidance (`"pass briefFile"`)
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
+- `E_BUSY`: `followup` with `delivery:"now"` against a working child refuses with
+  `{"delivery":"queue"}`; the queued form is then delivered by the child's own
+  idle handoff. (`stop` on a working child also raises `E_BUSY`, with no `accepted`.)
+
+New input and output fields:
+- `wait` input `ack?: boolean` (default `true`). Output gains
+  `acknowledged: RunID[]` — exactly the owned children whose settled attempt
+  this call wrote `runs/<run>/ack.json` for. `ack:false` reads the same
+  outcomes and acknowledges nothing, so `acknowledged` is `[]`.
+- `status` entries gain `acked: { attempt, at } | null`, read back from
+  `runs/<run>/ack.json` (`RunAck` in `teams/schema.ts`). `status` itself never
+  acknowledges, so `wait`'s `acknowledged` and `status`'s `acked` always agree.
+
+### Run state follows the host session (`teams/lifecycle.ts`)
+
+A run's state is driven by its host session, not by whether the agent called a
+tool. `index.ts` subscribes once to `session.idle`,
+`session.execution.failed` and `session.execution.interrupted`
+(`SessionRunEvents`), resolves `sessionID → run` with `run.bySession`, and
+ignores sessions with no run. `onSessionIdle` then, in this order:
+
+1. settles the open attempt — `failed` on `session.execution.failed`,
+   `interrupted` on `session.execution.interrupted`, otherwise `no_report`
+   (walked forward through `finishing` by `run.toFinishing`). An attempt whose
+   `report-<n>.json` already exists belongs to `finish` and is left alone;
+2. moves the run `working → idle` (`turn_ended`) or `starting → idle`
+   (`connected`);
+3. tells the parent once: one `child.settled` inbox item naming the run, the
+   attempt, the settled status and the report path, guarded by `notified` on
+   the attempt. An idle parent is prompted with it immediately; a working
+   parent receives it through its own idle handoff;
+4. drains the inbox with `inbox.take` into ONE new attempt (trigger
+   `followup`), prompts the run's session with the rendered items and moves it
+   `idle → working`. Items already recorded on an attempt's `inbox` list (a
+   followup that was delivered immediately to an already idle child) are
+   consumed without being prompted again.
+
+`InboxKind` gains `child.settled`; `partition` and `batchNotify` classify it
+with `notify` and `system`, so a batch of settlements reaches a parent as one
+synthetic text.
+
+`lifecycle.sweep(ctx, root)` is the one periodic tick: `startSweep` runs it at
+`policy.sweep.tickMs` (default 2000 ms) forked on the plugin scope, so it is
+cancelled with the plugin and never runs in a unit test that does not start it.
+It carries dead-run reconciliation today and is the single place GC is added.
 
 ## §11 Tools, log, and query
 

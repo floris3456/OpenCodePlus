@@ -1,0 +1,385 @@
+import { expect, test } from "bun:test"
+import type { SessionDomain } from "@opencode/plugin/effect/session"
+import { Effect } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { context } from "../harness.js"
+import { createState } from "../../src/index.js"
+import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
+import { peek, put } from "../../src/teams/inbox.js"
+import { SessionRunEvents, onSessionEvent, onSessionIdle } from "../../src/teams/lifecycle.js"
+import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { atomicJson } from "../../src/teams/store.js"
+
+// Real run records in a real temp state root, driven by the same synthetic
+// event payloads the host publishes. No mocks of the run store: every
+// assertion reads run.json and the inbox back through their own modules.
+async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const tmp = await fs.mkdtemp(path.join(parent, "plus-team-events-"))
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = tmp
+  try {
+    return await fn(path.join(tmp, "opencode", "opencodeplus", "teams"))
+  } finally {
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+    await fs.rm(tmp, { recursive: true, force: true })
+  }
+}
+
+function recordSession() {
+  const prompted: Array<{ sessionID: string; text: string }> = []
+  const domain = {
+    prompt: (input: { sessionID: unknown; text: unknown }) => {
+      prompted.push({ sessionID: String(input.sessionID), text: String(input.text) })
+      return Effect.succeed(undefined as never)
+    },
+    wait: () => Effect.succeed(undefined),
+  } as unknown as SessionDomain
+  return { prompted, domain }
+}
+
+function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
+  const now = new Date().toISOString()
+  return {
+    role: "muse-implementer",
+    kind: "w",
+    repo: "opencode",
+    repoKey: "opencode",
+    directory: "/tmp/wt-team-events",
+    paths: [],
+    branch: "team/implementer/test",
+    base: "0123456789abcdef0123456789abcdef01234567",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    state: "idle",
+    attempts: [],
+    task: null,
+    parent: null,
+    children: [],
+    briefSha: "abc",
+    bundle: "team-events-test",
+    budget: {},
+    createdAt: now,
+    lastUsed: now,
+    sessionID: null,
+    configDigest: null,
+    history: [],
+    ...overrides,
+  }
+}
+
+function callerFor(record: RunRecord): TeamCaller {
+  return { sessionID: String(record.sessionID ?? "ses_unknown"), agent: record.role, run: record }
+}
+
+function idleEvent(sessionID: string) {
+  return { type: "session.idle", properties: { sessionID } }
+}
+
+function workingChild(id: string, parent: string | null, sessionID: string): RunRecord {
+  const now = new Date().toISOString()
+  return baseRun({
+    id,
+    state: "working",
+    attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    parent,
+    task: "T1",
+    sessionID,
+  })
+}
+
+test("the three settling session events are the ones we subscribe to", () => {
+  expect([...SessionRunEvents].toSorted()).toEqual([
+    "session.execution.failed",
+    "session.execution.interrupted",
+    "session.idle",
+  ])
+})
+
+test("a turn that ends without finish leaves the run idle and the attempt no_report", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-aaaaaaaaaaaaaaaa", null, "ses_child_001")
+    await saveRun(root, child)
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_001"))
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts).toHaveLength(1)
+    expect(moved?.attempts[0]?.state).toBe("no_report")
+    expect(moved?.attempts[0]?.endedAt).toBeDefined()
+    expect(sessions.prompted).toHaveLength(0)
+  })
+})
+
+test("a starting child reaches idle when its first turn ends", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const child = baseRun({
+      id: "w-bbbbbbbbbbbbbbbb",
+      state: "starting",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_child_002",
+    })
+    await saveRun(root, child)
+    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_002"))
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts[0]?.state).toBe("no_report")
+    expect(moved?.history[moved.history.length - 1]).toMatchObject({ from: "starting", to: "idle", trigger: "connected" })
+  })
+})
+
+test("execution.failed settles the attempt failed and the run idle", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-cccccccccccccccc", null, "ses_child_003")
+    await saveRun(root, child)
+    await onSessionEvent(context({ session: recordSession().domain }), root, {
+      type: "session.execution.failed",
+      properties: { sessionID: "ses_child_003" },
+    })
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts[0]?.state).toBe("failed")
+  })
+})
+
+test("execution.interrupted settles the attempt interrupted and the run idle", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-dddddddddddddddd", null, "ses_child_004")
+    await saveRun(root, child)
+    await onSessionEvent(context({ session: recordSession().domain }), root, {
+      type: "session.execution.interrupted",
+      properties: { sessionID: "ses_child_004" },
+    })
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts[0]?.state).toBe("interrupted")
+  })
+})
+
+test("an attempt whose report is already written is left to finish", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-eeeeeeeeeeeeeeee", null, "ses_child_005")
+    await saveRun(root, child)
+    await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { status: "done", summary: "Landed." })
+    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_005"))
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts[0]?.state).toBe("streaming")
+  })
+})
+
+test("a session with no run and an unknown event type are both ignored", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-ffffffffffffffff", null, "ses_child_006")
+    await saveRun(root, child)
+    const ctx = context({ session: recordSession().domain })
+    expect(await onSessionEvent(ctx, root, idleEvent("ses_not_a_run"))).toBeUndefined()
+    expect(await onSessionEvent(ctx, root, { type: "session.created", properties: { sessionID: "ses_child_006" } })).toBeUndefined()
+    expect((await loadRun(root, child.id))?.state).toBe("working")
+  })
+})
+
+test("a superseded run is not moved by a late idle event", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const child = baseRun({
+      id: "w-1111111111111111",
+      state: "superseded",
+      attempts: [{ n: 1, state: "interrupted", startedAt: now, trigger: "delegate", endedAt: now }],
+      sessionID: "ses_child_007",
+    })
+    await saveRun(root, child)
+    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_007"))
+    expect((await loadRun(root, child.id))?.state).toBe("superseded")
+  })
+})
+
+test("a followup queued while working is delivered as a new attempt on idle", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-2222222222222222", null, "ses_child_008")
+    await saveRun(root, child)
+    await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "Also cover the empty-list case." })
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_008"))
+    const moved = await loadRun(root, child.id)
+    expect(moved?.state).toBe("working")
+    expect(moved?.attempts).toHaveLength(2)
+    expect(moved?.attempts[0]?.state).toBe("no_report")
+    expect(moved?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.sessionID).toBe("ses_child_008")
+    expect(sessions.prompted[0]?.text).toBe("Also cover the empty-list case.")
+    expect(await peek(root, child.id)).toEqual([])
+  })
+})
+
+test("two queued followups arrive as one prompt and one attempt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-3333333333333333", null, "ses_child_009")
+    await saveRun(root, child)
+    await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "First correction." })
+    await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "Second correction." })
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_009"))
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.text).toBe("First correction.\n\nSecond correction.")
+    expect((await loadRun(root, child.id))?.attempts).toHaveLength(2)
+  })
+})
+
+test("a followup already delivered to an idle child is not prompted twice", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      role: "opus-orchestrator",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_parent_010",
+      children: ["w-4444444444444444"],
+    })
+    const child = baseRun({
+      id: "w-4444444444444444",
+      state: "idle",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+      parent: parent.id,
+      sessionID: "ses_child_010",
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const api = createTeamApi(ctx, createState())
+    const queued = await api.followup(
+      { run: child.id, requestID: "dup-1", prompt: "Continue in place: tighten the error message." },
+      callerFor(parent),
+    )
+    expect(queued.ok).toBe(true)
+    expect(sessions.prompted).toHaveLength(1)
+    await onSessionEvent(ctx, root, idleEvent("ses_child_010"))
+    const moved = await loadRun(root, child.id)
+    expect(sessions.prompted).toHaveLength(1)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts).toHaveLength(2)
+    expect(moved?.attempts[1]?.state).toBe("no_report")
+    expect(await peek(root, child.id)).toEqual([])
+  })
+})
+
+test("a settled child puts exactly one child.settled item in a working parent's inbox", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      role: "opus-orchestrator",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_parent_011",
+      children: ["w-5555555555555555"],
+    })
+    const child = workingChild("w-5555555555555555", parent.id, "ses_child_011")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, idleEvent("ses_child_011"))
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.kind).toBe("child.settled")
+    expect(items[0]?.from).toBe(child.id)
+    expect(items[0]?.text).toContain(child.id)
+    expect(items[0]?.text).toContain("attempt 1 no_report")
+    expect(items[0]?.text).toContain("report: none")
+    // A working parent is not prompted; its own idle drain delivers this.
+    expect(sessions.prompted).toHaveLength(0)
+    expect((await loadRun(root, child.id))?.attempts[0]?.notified).toBe(true)
+    await onSessionEvent(ctx, root, idleEvent("ses_child_011"))
+    expect(await peek(root, parent.id)).toHaveLength(1)
+  })
+})
+
+test("the settlement names the report status and path when the child reported", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      role: "opus-orchestrator",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_parent_012",
+      children: ["w-6666666666666666"],
+    })
+    const child = baseRun({
+      id: "w-6666666666666666",
+      state: "idle",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+      parent: parent.id,
+      task: "T7",
+      sessionID: "ses_child_012",
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await atomicJson(path.join(root, "runs", child.id, "report-1.json"), {
+      status: "done",
+      summary: "Filter fixed and covered.\nmore detail",
+    })
+    await onSessionEvent(context({ session: recordSession().domain }), root, idleEvent("ses_child_012"))
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.text).toContain("settled: done")
+    expect(items[0]?.text).toContain("summary: Filter fixed and covered.")
+    expect(items[0]?.text).toContain(path.join(root, "runs", child.id, "report-1.md"))
+  })
+})
+
+test("an idle parent is prompted with the settlement immediately", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      role: "opus-orchestrator",
+      kind: "main",
+      state: "idle",
+      attempts: [{ n: 1, state: "no_report", startedAt: now, trigger: "prepare", endedAt: now }],
+      sessionID: "ses_parent_013",
+      children: ["w-7777777777777777"],
+    })
+    const child = workingChild("w-7777777777777777", parent.id, "ses_child_013")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, idleEvent("ses_child_013"))
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.sessionID).toBe("ses_parent_013")
+    expect(sessions.prompted[0]?.text).toContain(child.id)
+    const movedParent = await loadRun(root, parent.id)
+    expect(movedParent?.state).toBe("working")
+    expect(movedParent?.attempts).toHaveLength(2)
+    expect(movedParent?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
+    expect(await peek(root, parent.id)).toEqual([])
+  })
+})
+
+test("a run with no session is never prompted and keeps its pending inbox", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const child = baseRun({
+      id: "w-8888888888888888",
+      state: "idle",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+      sessionID: null,
+    })
+    await saveRun(root, child)
+    await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "Never delivered." })
+    const sessions = recordSession()
+    await onSessionIdle(context({ session: sessions.domain }), root, child)
+    expect(sessions.prompted).toHaveLength(0)
+    expect(await peek(root, child.id)).toHaveLength(1)
+  })
+})

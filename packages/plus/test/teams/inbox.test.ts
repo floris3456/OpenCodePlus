@@ -82,6 +82,20 @@ describe("inbox", () => {
     expect(mixed.taken).toEqual([notifyItem, systemItem])
   })
 
+  test("child.settled is synthetic and batches with the other synthetic kinds", async () => {
+    const runID = "w-0123456789abcdef"
+    const settled: InboxItem = { id: "01J00000000000000000000001", kind: "child.settled", from: "w-child", text: "settled: done", at: 1 }
+    const notifyItem: InboxItem = { id: "01J00000000000000000000002", kind: "notify", from: "c1", text: "line 2", at: 2 }
+    const followupItem: InboxItem = { id: "01J00000000000000000000003", kind: "followup", from: "p", text: "follow", at: 3 }
+    const p = partition([followupItem, notifyItem, settled])
+    expect(p.synthetic).toEqual([settled, notifyItem])
+    expect(p.prompts).toEqual([followupItem])
+    expect(batchNotify([followupItem, notifyItem, settled]).text).toBe("settled: done\nline 2")
+    const written = await put(dir, runID, { kind: "child.settled", from: "w-child", text: "settled: done" })
+    expect((await peek(dir, runID))[0]).toEqual(written)
+    expect(await take(dir, runID)).toEqual([written])
+  })
+
   test("empty inbox returns empty lists and zero bytes", async () => {
     expect(await peek(dir, "w-empty00000000000")).toEqual([])
     expect(await take(dir, "w-empty00000000000")).toEqual([])

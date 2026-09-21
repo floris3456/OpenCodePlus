@@ -643,8 +643,23 @@ export const WaitInput = Schema.Struct({
   runs: Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
   timeoutMs: Schema.optional(Schema.Number),
   until: Schema.optional(Schema.Literals(["settled", "idle"])),
+  /** Acknowledge the settled outcome of owned children (default true); the
+   * acknowledged run ids come back in the result. */
+  ack: Schema.optional(Schema.Boolean),
 })
 export type WaitInput = typeof WaitInput.Type
+
+// runs/<run>/ack.json: the parent's receipt for one settled attempt. wait
+// writes it, status reads it back as `acked`, and the settlement notice is
+// never repeated for an acknowledged attempt.
+export const RunAck = Schema.Struct({
+  by: Schema.String,
+  attempt: Schema.Number,
+  attemptState: Schema.String,
+  at: Schema.String,
+  until: Schema.Literals(["settled", "idle"]),
+})
+export type RunAck = typeof RunAck.Type
 
 export const DiffInput = Schema.Struct({
   run: RunID,

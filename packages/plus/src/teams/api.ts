@@ -38,6 +38,7 @@ import {
   occupiesSlot,
   saveRun,
   startAttempt,
+  toFinishing,
   transition,
   type RunRecord,
 } from "./run.js"
@@ -59,6 +60,7 @@ import {
   Report,
   ResumeInput,
   ReviewInput,
+  RunAck,
   RunID,
   SetChecksInput,
   ShutdownRequestInput,
@@ -549,7 +551,7 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
 
   const fresh = (await loadRun(root, stored.id)) ?? stored
   const terminal = args.status === "done" || args.status === "done_with_concerns" ? "succeeded" : "reported"
-  const moved = attemptTransition(finishAttempt(fresh), terminal, "validated")
+  const moved = attemptTransition(toFinishing(fresh), terminal, "validated")
   // The finished attempt means the session turn ended, so the run is idle
   // again (02 §1 working → idle on turn_ended). Runs still in starting
   // reach the same idle via connected; already-idle runs need no move.
@@ -636,12 +638,13 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller): P
   if (!Number.isInteger(timeoutMs) || timeoutMs < 10000)
     return fail("E_TIMEOUT_MIN", `timeoutMs ${String(args.timeoutMs)} is below the 10000ms floor.`, { timeoutMs: 10000 })
   const until = args.until ?? "settled"
+  const ack = args.ack ?? true
   for (const id of args.runs) {
     if ((await loadRun(root, id)) === undefined)
       return fail("E_NOT_VISIBLE", `Run ${id} is not in this namespace.`, "a run id from list{}")
   }
   const settledNow = await settledIds(root, args.runs, until)
-  if (settledNow.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settledNow, until))
+  if (settledNow.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settledNow, until, ack))
   // Race the host's session.wait per listed run against the timeout; no
   // polling loop by the model.
   const sessions = ctx.session
@@ -667,15 +670,21 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller): P
       await Promise.race([...racers, new Promise((resolve) => setTimeout(resolve, remaining))])
     }
     const settled = await settledIds(root, args.runs, until)
-    if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until))
+    if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until, ack))
     await new Promise((resolve) => setTimeout(resolve, Math.min(150, Math.max(deadline - Date.now(), 0))))
   }
   const settled = await settledIds(root, args.runs, until)
-  if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until))
+  if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until, ack))
   await Effect.runPromise(Effect.promise(() => reconcile(ctx, root)).pipe(Effect.ignore))
   const resettled = await settledIds(root, args.runs, until)
-  if (resettled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, resettled, until))
-  return succeeded({ settled: [], timedOut: true, stillOpen: [...args.runs], overBudget: await overBudgetIds(root, args.runs) })
+  if (resettled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, resettled, until, ack))
+  return succeeded({
+    settled: [],
+    acknowledged: [],
+    timedOut: true,
+    stillOpen: [...args.runs],
+    overBudget: await overBudgetIds(root, args.runs),
+  })
 }
 
 async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Promise<TeamApiResult> {
@@ -887,21 +896,6 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
   return commits
 }
 
-// Walk a working attempt to finishing so finish can mark it terminal. Only
-// the queued → admitted → streaming → finishing chain is legal here; a
-// terminal attempt is refused before this runs.
-function finishAttempt(record: RunRecord): RunRecord {
-  const last = record.attempts[record.attempts.length - 1]
-  if (last === undefined) return record
-  let next = record
-  if (last.state === "queued") next = attemptTransition(next, "admitted", "admit")
-  const admitted = next.attempts[next.attempts.length - 1]
-  if (admitted !== undefined && admitted.state === "admitted") next = attemptTransition(next, "streaming", "first_event")
-  const streaming = next.attempts[next.attempts.length - 1]
-  if (streaming !== undefined && streaming.state === "streaming") next = attemptTransition(next, "finishing", "finish")
-  return next
-}
-
 async function latestReport(root: string, runID: string): Promise<{ n: number; jsonPath: string; data: Record<string, unknown> } | undefined> {
   const dir = path.join(root, "runs", runID)
   const entries = await readdir(dir).catch(() => [])
@@ -1002,6 +996,7 @@ async function statusOf(root: string, id: string) {
           },
     children: [...record.children],
     parent: record.parent,
+    acked: await ackedAt(root, id),
     budget: {
       turnsUsed: record.attempts.length,
       turns: record.budget.turns ?? 0,
@@ -1046,14 +1041,23 @@ async function overBudgetIds(root: string, ids: readonly string[]): Promise<stri
   return out
 }
 
-async function waitResult(root: string, callerID: string, runs: readonly string[], settled: readonly string[], until: "settled" | "idle") {
+async function waitResult(
+  root: string,
+  callerID: string,
+  runs: readonly string[],
+  settled: readonly string[],
+  until: "settled" | "idle",
+  ack: boolean,
+) {
   const entries: Array<{ run: string; attemptState: string; report: { status: string; summary: string; path: string } | null }> = []
+  const acknowledged: string[] = []
   for (const id of settled) {
     const record = await loadRun(root, id)
     const last = record?.attempts[record.attempts.length - 1]
     entries.push({ run: id, attemptState: last?.state ?? "queued", report: last === undefined ? null : await waitReport(root, id, last.n) })
     // Waiting acknowledges owned outcomes so the sweeper stops re-nudging.
-    if (record !== undefined && record.parent === callerID)
+    // ack:false reads the same outcomes without taking responsibility for them.
+    if (ack && record !== undefined && record.parent === callerID) {
       await atomicJson(path.join(root, "runs", id, "ack.json"), {
         by: callerID,
         attempt: last?.n ?? 0,
@@ -1061,12 +1065,25 @@ async function waitResult(root: string, callerID: string, runs: readonly string[
         at: new Date().toISOString(),
         until,
       })
+      acknowledged.push(id)
+    }
   }
   const done = new Set(settled)
   return {
     settled: entries,
+    acknowledged,
     timedOut: false,
     stillOpen: runs.filter((id) => !done.has(id)),
     overBudget: await overBudgetIds(root, runs),
   }
+}
+
+// status never acknowledges; it reports what wait already acknowledged, so
+// the two agree on which outcomes the parent has taken responsibility for.
+async function ackedAt(root: string, runID: string): Promise<{ attempt: number; at: string } | null> {
+  const raw = await readJson<unknown>(path.join(root, "runs", runID, "ack.json"))
+  if (raw === undefined) return null
+  const parsed = Schema.decodeUnknownOption(RunAck)(raw)
+  if (Option.isNone(parsed)) return null
+  return { attempt: parsed.value.attempt, at: parsed.value.at }
 }

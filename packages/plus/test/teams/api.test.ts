@@ -690,6 +690,76 @@ test("wait returns the settled report for an already-terminal attempt", async ()
   })
 }, 30000)
 
+test("wait names what it acknowledged and status reports the same acked entry", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_ack",
+      })
+      await saveRun(root, parent)
+      const child = await finishChild(root, repo, PASSING_TEST)
+      await saveRun(root, { ...parent, children: [child.id] })
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
+      const before = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{
+        acked: { attempt: number; at: string } | null
+      }>
+      expect(before[0]?.acked).toBeNull()
+      const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000 }, callerFor(parent))) as {
+        acknowledged: string[]
+        settled: Array<{ run: string }>
+      }
+      expect(value.acknowledged).toEqual([child.id])
+      const after = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{
+        attempt: number
+        acked: { attempt: number; at: string } | null
+      }>
+      expect(after[0]?.acked?.attempt).toBe(after[0]?.attempt ?? -1)
+      expect(typeof after[0]?.acked?.at).toBe("string")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("wait with ack:false reads the outcome without acknowledging it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_noack",
+      })
+      await saveRun(root, parent)
+      const child = await finishChild(root, repo, PASSING_TEST)
+      await saveRun(root, { ...parent, children: [child.id] })
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
+      const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000, ack: false }, callerFor(parent))) as {
+        acknowledged: string[]
+        settled: Array<{ run: string; attemptState: string }>
+      }
+      expect(value.settled[0]?.attemptState).toBe("succeeded")
+      expect(value.acknowledged).toEqual([])
+      expect(await Bun.file(path.join(root, "runs", child.id, "ack.json")).exists()).toBe(false)
+      const entries = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{ acked: unknown }>
+      expect(entries[0]?.acked).toBeNull()
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
 test("wait rejects an unknown run with E_NOT_VISIBLE", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
