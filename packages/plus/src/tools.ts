@@ -871,6 +871,11 @@ function updateRuleRow(
       api.updateRule({
         level: address.level,
         agent: address.agent,
+        // The row's own address decides where a first write (an override of
+        // this curated/mined row) materialises: a Teams-catalogue row must
+        // create a Teams rule, not an Agents one. A matched record keeps its
+        // stored catalogue server-side, so this only matters for a new one.
+        ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
         tool: parsed.tool,
         id: parsed.ruleId,
         label,

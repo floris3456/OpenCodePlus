@@ -590,9 +590,9 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
-| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` |
+| `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` |
 | `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` |
-| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` |
+| `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` |
 
 `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
 `RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
@@ -606,7 +606,12 @@ upserts a `RuleRecord` by `(tool, id)`, so editing a curated or mined row
 materialises a custom override of the same identity; blank `keywords`
 derive server-side via `keywordsForPattern` like `rule.add`. `message` is
 trimmed, a blank one clears the stored text, and an omitted one on
-`rule.update` preserves it. Curated-identity
+`rule.update` preserves it. `catalogue` names the addressed row's
+catalogue: a first write (the override) lands in it, so a Teams row
+materialises a Teams rule while the Agents form stays keyless; a matched
+record keeps its stored `level`, `agent`, `catalogue` and `team`, so an
+address `catalogue` never retargets it and a message edit cannot move a
+Teams rule into the Agents catalogue. Curated-identity
 policy: a stored record whose `tool` + `id` matches a curated rule is treated
 as an override of that curated rule. This is accepted reserved-identity
 semantics, not an unconditional compatibility guarantee. `rule.add`,
@@ -1050,7 +1055,9 @@ Tool permission rules carry the same field:
   it through the tools, and the TUI rule dialog prompts for it after keywords
   ("Message shown on refusal (optional)"). A blank message clears it; omitting
   it on `rule.update` leaves the stored text alone, so a label/pattern edit
-  never drops it.
+  never drops it. A matched record also keeps its stored `catalogue` and
+  `team`, so changing the message of a shared Teams rule never rewrites it as
+  an Agents rule; a first write takes the addressed row's catalogue.
 - `apply.ts` prefers the user record's message for a custom row and falls back
   to the curated message for a curated row; a mined row has none and keeps the
   generic refusal.

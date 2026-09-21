@@ -1374,6 +1374,66 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(curatedDelete.message).toContain("only user-created rules")
 })
 
+test("a Teams-catalogue rule keeps its catalogue through a message set, and a curated Teams row materialises a Teams override", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "shell", description: "Run shell. Use git push to publish.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+
+  const created = (await runOk(need(tools, "instructions_create"), {
+    kind: "rule",
+    tool: "shell",
+    id: "round3-team-edit",
+    label: "Round3 team edit",
+    patterns: ["printf round3-team-edit"],
+    message: "Round3 team edit refuses.",
+    level: "defaults",
+    catalogue: "teams",
+  })) as { id: string; item: string }
+  expect(created).toMatchObject({ id: "item:defaults:/teams:perm:shell:round3-team-edit", item: "perm:shell:round3-team-edit" })
+
+  // A message-only set through the real tool handler addresses the Teams row.
+  // The stored record must keep its catalogue, or the edit silently turns a
+  // Teams rule into an Agents one.
+  const edited = (await runOk(need(tools, "instructions_set"), { id: created.id, message: "Round3 team edit revised." })) as { status: string }
+  expect(edited.status).toContain("Updated")
+
+  const afterEdit = await snapshotOf(api)
+  const storedEdit = afterEdit.records.find((record) => record.type === "rule" && record.id === "round3-team-edit")
+  expect(storedEdit).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "Round3 team edit revised." })
+  const shownEdit = (await runOk(need(tools, "instructions_show"), { id: created.id })) as { message?: string }
+  expect(shownEdit.message).toBe("Round3 team edit revised.")
+
+  // The curated shell rule has no stored record here, so a message write from
+  // its Teams row is a first write and must land in the Teams catalogue.
+  const curatedRow = expandedTree(memoFromSnapshot(afterEdit)).find(
+    (node) =>
+      node.address?.item === "perm:shell:git-push" &&
+      node.address.level === "defaults" &&
+      node.address.agent === null &&
+      node.address.catalogue === "teams",
+  )
+  if (curatedRow === undefined) throw new Error("missing Teams-catalogue curated row")
+  const override = (await runOk(need(tools, "instructions_set"), { id: curatedRow.id, message: "no pushes in this team" })) as { status: string }
+  expect(override.status).toContain("Updated")
+
+  const afterOverride = await snapshotOf(api)
+  const storedOverride = afterOverride.records.find((record) => record.type === "rule" && record.id === "git-push")
+  expect(storedOverride).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "no pushes in this team" })
+  const shownOverride = (await runOk(need(tools, "instructions_show"), { id: curatedRow.id })) as { message?: string }
+  expect(shownOverride.message).toBe("no pushes in this team")
+
+  // The override is on disk in the global store under the Teams catalogue.
+  const globalText = await Bun.file(globalRecordsPath()).text()
+  expect(globalText).toContain('"id":"git-push"')
+  expect(globalText).toContain('"catalogue":"teams"')
+})
+
 // instructions_list reads api.snapshot(), so a team member's policy rows reach
 // the tool only through the boundary shape. The rows asserted here govern
 // permission actions with no tool row to hang under, so they exist nowhere
