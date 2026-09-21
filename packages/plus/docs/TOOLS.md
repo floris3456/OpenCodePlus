@@ -248,8 +248,8 @@ Defaults catalogue row, and that row is the returned `id`
 ### 4.3 The `instruction.disabled` contract
 
 `instructions.create kind:"instruction"` always fails with `INSTRUCTION_DISABLED`,
-whose text begins `instruction.disabled:`
-(`packages/plus/src/tools.ts:59`, `packages/plus/src/tools.ts:1161`). The
+whose text begins `instruction.disabled:` and names the Context catalogue
+rework (`packages/plus/src/tools.ts:59`, `packages/plus/src/tools.ts:1161`). The
 handlers `instruction.create` and `instruction.delete` return code
 `instruction.invalid` carrying the same text while `INSTRUCTIONS_DISABLED` is
 `true` (`packages/plus/src/index.ts:2132`, `packages/plus/src/index.ts:795`–
