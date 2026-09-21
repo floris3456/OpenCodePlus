@@ -75,9 +75,9 @@ A third gap is real, is **not** fixed here, and is stated plainly under 20i.
 | 14 | One notification per settled attempt, and only one | **20d** step 5 (the `child.settled` inbox item) and the run record's `"notified": true` on attempt 1 |
 | 15 | `wait` says what it acknowledged; `status` agrees | **20d** step 6 — `acknowledged: ["w-…"]` and `acked: {attempt: 1, …}` |
 | 16 | A landed child's worktree is removed; branch, records and receipts stay | **20d** step 7 |
-| 17 | Stale stopped/superseded runs are reaped by the system; dirty stopped is skipped | **20g**; `test/teams/gc.test.ts` for the dirty-skip and `--force` superseded cases |
-| 18 | An unclaimed worktree is removed by the same sweep | **20g** (`orphansRemoved`) |
-| 19 | `list` and `status` report worktree presence | **20d** step 7 (`"worktree": "removed"`); `test/teams/api-query.test.ts` — "list and statusOf reflect worktree states (present, removed, dirty)" |
+| 17 | Stale stopped/superseded runs are reaped by the system; dirty stopped is skipped | **20g**; `test/teams/gc.test.ts` for the dirty-skip, the `--force` superseded case, and (after the review) a removal that fails not being reported reaped |
+| 18 | An unclaimed worktree **under the team data root** is removed by the same sweep | **20g** (`orphansRemoved`); `test/teams/worktree.test.ts` — "orphans never reports a worktree outside the team's own root" |
+| 19 | `list` and `status` report worktree presence | `test/teams/tools.test.ts` — "team_status reports each run's worktree state through the registered tool", and `test/teams/api-query.test.ts` for `list`. The 20d capture below predates the fix the review forced; see "What the independent review changed" |
 
 ---
 
@@ -1286,13 +1286,66 @@ the plan requires, rather than raised as questions.
   taken by the earlier orchestrator, because Plus would not activate in a child
   worktree without it. Both decisions stand.
 
+## What the independent review changed
+
+`astra-reviewer` read this document, its evidence program and the source, and
+returned five findings. It was right about all five. Four were fixed on this
+branch, each with a test that fails on the commit before it
+(`fix(plus): bound the orphan sweep, report real GC outcomes, add worktree to
+status, union run scopes`):
+
+1. **The orphan sweep could delete a developer's own worktrees.** `orphans()`
+   listed *every* worktree of the repository and returned each one no run
+   record claimed; `gc()` then force-removed them. The plan's item 18 says only
+   "a worktree **under the team data root**". `orphans` now takes that boundary
+   as an argument — `ownedRoot(workspaceRoot, repoKey)`, the same expression
+   `create()` uses — and filters by real-path containment, so a caller cannot
+   forget it. The regression test reproduces the data-loss case on the old
+   code: a full `gc()` pass removing an unrelated checkout together with its
+   uncommitted file.
+2. **GC reported removals that never happened.** A `git worktree remove`
+   failure (a locked worktree is the concrete case) was swallowed and the run
+   was still saved `reaped` / `worktree: "removed"` — a lie that also dropped
+   the directory out of the same pass's known list. Removal is now judged by
+   the directory being gone afterwards; a failure keeps the run's state, keeps
+   it claimed, and appears in `GcResult.removeFailed`.
+3. **The registered `team_status` omitted `worktree`, so item 19 was half
+   unmet.** The tool calls the private `statusOf` in `api.ts`; the green test
+   exercised a *different*, exported `statusOf` in `api-query.ts` that the tool
+   never calls. `team_status` now reports the same value `list` does, proven
+   through the tool seam. The `team_status` outputs pasted in 20d above predate
+   this fix and therefore do not show the field; the current tool does.
+4. **Concurrent same-role edit scopes were last-run-wins, not the union this
+   document claimed.** Every run's row carried its own `deny edit *`, so under
+   core's last-match-wins evaluation a later run's row revoked an earlier run's
+   own scope. A role's rows are now built as a group — the first carries the
+   baseline deny, every row carries its own allows, the last carries the
+   never-editable denies — so two live runs of one role resolve to the union,
+   with each run keeping its own listable `perm:edit:run:<id>` row.
+
+The fifth finding is the `ask` gap in 20i, which the reviewer agreed was
+correctly out of scope to fix here and correctly disclosed, and which remains
+an unmet clause of item 9.
+
+Two decisions taken on that fix: the union is expressed once across a role's
+rows rather than repeated in full on every row — repeating it is more robust if
+a user disables one row of several, but duplicates the same rules N times in
+the permission list a reader sees; and a run whose worktree cannot be removed
+is now visible in `removeFailed` on every pass instead of being silently
+reaped.
+
 ## Handed to review
 
-1. Per-run edit scope is an agent-level rule, so two concurrent runs of the same
-   role share the union of their `scope.paths`.
-2. Core rules carry no message, so the per-denial explanation the deleted hook
+1. `ask` on a plugin tool cannot reach the TUI in this host, so item 9's
+   "honoured by every team tool" is unmet (20i). Completing it needs a core
+   gate on `options.permission` or `create` on the plugin permission domain.
+2. Per-run edit scope is an agent-level rule, so two concurrent runs of the
+   same role share the union of their `scope.paths`. They are now genuinely a
+   union; per-session isolation would need a row that belongs to a session
+   rather than an agent.
+3. Core rules carry no message, so the per-denial explanation the deleted hook
    used to show no longer reaches the model; the row's `text` carries it instead.
-3. Search narrowing ships, but delivery needs a `search` MCP server in user
+4. Search narrowing ships, but delivery needs a `search` MCP server in user
    config that Plus cannot ship.
-4. `ask` on a plugin tool cannot reach the TUI in this host (20i).
-5. A second `team_wait` re-acknowledges an already-acknowledged attempt.
+5. A second `team_wait` re-acknowledges an already-acknowledged attempt. The
+   acknowledged attempt does not move, so `wait` and `status` still agree.
