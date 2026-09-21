@@ -1385,6 +1385,162 @@ test("a user rule's own message reaches Permission.evaluate through apply", asyn
   expect(silentDeny).toEqual([{ action: "shell", resource: "git push *", effect: "deny" }])
 })
 
+// The perm rows of a Defaults-scope agent are visible at every level, so the
+// records a user actually saves for `build` carry level project or global.
+// Resolving them at the agent's discovered Defaults level found neither, and
+// the saved OFF installed nothing at all.
+function permScopeItems(): ApplyInput["items"] {
+  const permText = "Git push\ngit push *"
+  return [
+    { id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "Execute shell commands.", enabled: true, fingerprint: fingerprint("Execute shell commands.") },
+    {
+      id: "perm:shell:git-push",
+      kind: "perm",
+      group: "none",
+      title: "Git push",
+      text: permText,
+      enabled: true,
+      fingerprint: fingerprint(permText),
+      permTool: "shell",
+      ruleId: "git-push",
+      patterns: ["git push *"],
+      keywords: ["git push"],
+      provenance: [] as string[],
+    },
+  ]
+}
+
+const curatedGitPushDeny = { action: "shell", resource: "git push *", effect: "deny" as const, message: "pushing is not allowed here" }
+
+test("a Defaults-scope agent's perm row saved off at project level installs the core deny", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const agents = agentHarness([agentInfo("build", "upstream"), agentInfo("plan", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const records = [makeRecord({ item: "perm:shell:git-push", agent: "build", level: "project", state: "off" })]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: permScopeItems(),
+      records,
+      agents: [{ id: "build", level: "defaults" }, { id: "plan", level: "defaults" }],
+      scopes: { global: new Set<string>(), defaults: new Set(["build", "plan"]) },
+    }),
+  )
+  expect(applied.registrations.length).toBeGreaterThan(0)
+  const buildRules = agents.state.get("build")?.permissions ?? []
+  expect(buildRules.slice(-1)).toEqual([curatedGitPushDeny])
+  const denied = evaluate("shell", "git push origin", buildRules)
+  expect(denied.effect).toBe("deny")
+  expect(denied.message).toBe("pushing is not allowed here")
+  // The record names one agent, so the other Defaults built-in keeps the tool.
+  expect(agents.state.get("plan")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
+})
+
+test("a Defaults-scope agent resolves perm rows project -> global -> defaults -> shared", async () => {
+  const cases: { label: string; record: CustomizationRecord; denies: boolean }[] = [
+    { label: "project", record: makeRecord({ item: "perm:shell:git-push", agent: "build", level: "project", state: "off" }), denies: true },
+    { label: "global", record: makeRecord({ item: "perm:shell:git-push", agent: "build", level: "global", state: "off" }), denies: true },
+    { label: "defaults", record: makeRecord({ item: "perm:shell:git-push", agent: "build", level: "defaults", state: "off" }), denies: true },
+    { label: "shared", record: makeRecord({ item: "perm:shell:git-push", agent: null, level: "defaults", state: "off" }), denies: true },
+    // The Teams shared inventory is a different catalogue and never answers
+    // for a stand-alone agent.
+    { label: "teams shared", record: makeRecord({ item: "perm:shell:git-push", agent: null, level: "defaults", catalogue: "teams", state: "off" }), denies: false },
+  ]
+  for (const entry of cases) {
+    const agents = agentHarness([agentInfo("build", "upstream")])
+    const ctx = context({
+      agent: agents.domain,
+      session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+    })
+    await apply(
+      ctx,
+      makeInput({
+        items: permScopeItems(),
+        records: [entry.record],
+        agents: [{ id: "build", level: "defaults" }],
+        scopes: { global: new Set<string>(), defaults: new Set(["build"]) },
+      }),
+    )
+    const installed = agents.state.get("build")?.permissions ?? []
+    expect([entry.label, installed.some((rule) => rule.action === "shell" && rule.effect === "deny")]).toEqual([entry.label, entry.denies])
+  }
+  // Most specific still wins down that chain: a Project ON over a Defaults OFF
+  // leaves the tool alone.
+  const agents = agentHarness([agentInfo("build", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  await apply(
+    ctx,
+    makeInput({
+      items: permScopeItems(),
+      records: [
+        makeRecord({ item: "perm:shell:git-push", agent: "build", level: "defaults", state: "off" }),
+        makeRecord({ item: "perm:shell:git-push", agent: "build", level: "project", state: "on" }),
+      ],
+      agents: [{ id: "build", level: "defaults" }],
+      scopes: { global: new Set<string>(), defaults: new Set(["build"]) },
+    }),
+  )
+  expect(agents.state.get("build")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
+})
+
+test("only perm rows widen: a Defaults-scope agent's tool row keeps the discovered scope", async () => {
+  const agents = agentHarness([agentInfo("build", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
+  })
+  const discovered = await discoverFor(ctx)
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      records: [makeRecord({ item: "tool:coder", agent: "build", level: "project", state: "off" })],
+      agents: [{ id: "build", level: "defaults" }],
+      scopes: { global: new Set<string>(), defaults: new Set(["build"]) },
+    }),
+  )
+  expect(applied.registrations).toEqual([])
+  expect(agents.state.get("build")?.permissions.some((rule) => rule.action === "coder")).toBe(false)
+})
+
+test("a team-scoped agent keeps its established chain and the Teams catalogue", async () => {
+  const team = { level: "defaults" as Level, team: "alphateam" }
+  const cases: { label: string; record: CustomizationRecord; denies: boolean }[] = [
+    // The widened project step belongs to stand-alone agents only.
+    { label: "project", record: makeRecord({ item: "perm:shell:git-push", agent: "member", level: "project", state: "off" }), denies: false },
+    { label: "team", record: makeRecord({ item: "perm:shell:git-push", agent: "member", level: "defaults", team, state: "off" }), denies: true },
+    { label: "member", record: makeRecord({ item: "perm:shell:git-push", agent: "member", level: "defaults", state: "off" }), denies: true },
+    { label: "teams shared", record: makeRecord({ item: "perm:shell:git-push", agent: null, level: "defaults", catalogue: "teams", state: "off" }), denies: true },
+    // The Agents shared inventory never answers for a team member.
+    { label: "agents shared", record: makeRecord({ item: "perm:shell:git-push", agent: null, level: "defaults", state: "off" }), denies: false },
+  ]
+  for (const entry of cases) {
+    const agents = agentHarness([agentInfo("member", "upstream")])
+    const ctx = context({
+      agent: agents.domain,
+      session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+    })
+    await apply(
+      ctx,
+      makeInput({
+        items: permScopeItems(),
+        records: [entry.record],
+        agents: [{ id: "member", level: "defaults", team }],
+        scopes: { global: new Set<string>(), defaults: new Set(["member"]) },
+        teamAgents: ["member"],
+      }),
+    )
+    const installed = agents.state.get("member")?.permissions ?? []
+    expect([entry.label, installed.some((rule) => rule.action === "shell" && rule.effect === "deny")]).toEqual([entry.label, entry.denies])
+  }
+})
+
 test("a perm rule off scrubs whole-word lines, keeping head-only lines", async () => {
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({

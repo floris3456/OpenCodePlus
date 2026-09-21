@@ -1361,6 +1361,18 @@ path is skipped.
   otherwise level then agent); custom rules are globally unique by `(tool, id)`,
   not per level/agent (`rule.add`/`rule.remove`/`rule.update` match by tool+id
   only, ownership and logging follow the record actually matched).
+- Perm rows resolve from the Project level for an agent whose discovered
+  scope is Defaults and that carries no team, so the chain is
+  `project/A → global/A → defaults/A → shared` (`resolvedFor` in `apply.ts`).
+  A Defaults-scope agent (every host built-in: `build`, `plan`, `explore`, …)
+  owns a visible row under Project, Global and Defaults alike
+  (`nativeAgentsForLevel`/`specialAgentsForLevel` in `tree.ts`) and ops writes
+  at the row's own address, so the record a user actually saves carries
+  `{level:"project", agent:"build"}`; resolving at the discovered Defaults
+  level reached neither that record nor a Global one and the saved OFF
+  installed no deny and no refusal message at all. Every other item kind
+  keeps the discovered scope, and a team-scoped agent keeps its established
+  chain and the Teams catalogue unchanged.
 - Toggling any rule is a `CustomizationRecord` with state on/off on the
   `perm:<tool>:<rule>` item address, so `resolve()` already yields
   `enabled`. Every perm item OFF for an agent installs one core deny per
