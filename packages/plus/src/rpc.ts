@@ -63,11 +63,15 @@ export const ItemGroup = Schema.Union([
 // Mirrors PolicyEffects in instructions/model.ts. A team policy row carries
 // both sides of its own answer, and `ask` is a real core effect, so all three
 // effects have to round-trip for the row to mean the same thing on both sides.
+// `message` is what the rule says when it is the one refusing, so it has to
+// cross too for `instructions.show` to display it. A rule without one omits
+// the key, never sends `undefined`.
 export interface PolicyRule extends Schema.Schema.Type<typeof PolicyRule> {}
 export const PolicyRule = Schema.Struct({
   action: Schema.String,
   resource: Schema.String,
   effect: Schema.Union([Schema.Literal("allow"), Schema.Literal("deny"), Schema.Literal("ask")]),
+  message: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.PolicyRule" })
 
 export interface PolicyEffects extends Schema.Schema.Type<typeof PolicyEffects> {}

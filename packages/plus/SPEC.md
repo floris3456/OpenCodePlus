@@ -1007,8 +1007,11 @@ Three kinds of team policy rule carry one:
   `team_<tool> is outside the <kind> ceiling`.
 
 The per-run `ask`→`deny` override and the `perm:search:team-tavily` narrowing
-carry no message. `Plus.PolicyRule` (`src/rpc.ts`) does not yet carry the
-field, so the message reaches core but not the RPC snapshot the TUI reads.
+carry no message. `Plus.PolicyRule` (`src/rpc.ts`) carries the field too, so a
+message survives the snapshot the TUI and the tools read: `instructions_show`
+on a `perm:` row returns the row's `policy` — the `on` and `off` rules it
+installs, each with its own message — beside the row's patterns and resolved
+state, so a reader sees what the rule says when it refuses.
 
 Rows appear in a `Policy` group under the member's `Tools` group
 (`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
