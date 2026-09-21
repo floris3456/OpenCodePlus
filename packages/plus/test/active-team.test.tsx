@@ -661,3 +661,77 @@ test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working s
 
   output.renderer.destroy()
 })
+
+test("TeamMonitorTab ctrl+d surfaces warning toast when stop RPC is rejected", async () => {
+  let commands: any[] = []
+  const toasts: any[] = []
+
+  const fakeRuns = [
+    {
+      id: "w-run-idle",
+      role: "gemini-implementer",
+      state: "idle",
+      task: "T2",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T11:00:00.000Z",
+      sessionID: "ses_idle",
+      parent: "main-01",
+    },
+  ]
+
+  const white = RGBA.fromHex("#ffffff")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { default: white, subdued: white, action: { primary: { default: white, selected: white, focused: white } } },
+    background: { default: black, action: { primary: { default: black, selected: black, focused: black } } },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: () => () => {},
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async () => ({ runs: fakeRuns }),
+        "team.runs.stop": async () => {
+          throw new Error("Run is working; interrupt it first.")
+        },
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: {
+      layer: (factory: any) => {
+        const layer = factory()
+        if (layer.commands) commands = layer.commands
+      },
+    },
+    ui: {
+      toast: { show: (t: any) => toasts.push(t) },
+      router: { navigate: () => {} },
+    },
+  }
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => (
+      <TeamMonitorTab
+        sessionID="ses_root"
+        active={() => true}
+        close={() => {}}
+        context={context}
+      />
+    ),
+    output.renderer,
+  )
+
+  await output.renderOnce()
+  const actionCmd = commands.find((c) => c.id === "composer.team.action")
+  await actionCmd.run()
+  expect(toasts.some((t) => t.message === "Run is working; interrupt it first.")).toBe(true)
+
+  output.renderer.destroy()
+})

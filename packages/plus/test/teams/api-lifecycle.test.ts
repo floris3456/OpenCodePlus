@@ -595,3 +595,45 @@ test("stopRun on an unknown run fails run.unknown", async () => {
     expect(err.code).toBe("run.unknown")
   })
 })
+
+test("stopRun on already stopped run returns stopped without modifying history", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-stopped-stop-001", state: "stopped", sessionID: "ses_stopped_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "stopped" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.history).toHaveLength(0)
+  })
+})
+
+test("stopRun on superseded or reaped run preserves terminal state without modifying record", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const superseded = baseRun({ id: "w-sup-stop-001", state: "superseded", sessionID: "ses_sup_stop" })
+    const reaped = baseRun({ id: "w-reap-stop-001", state: "reaped", sessionID: "ses_reap_stop" })
+    await saveRun(root, superseded)
+    await saveRun(root, reaped)
+    const sessions = recordSession()
+    const resSup = required(await stopRun(context({ session: sessions.domain }), superseded.id)) as { run: string; state: string }
+    const resReap = required(await stopRun(context({ session: sessions.domain }), reaped.id)) as { run: string; state: string }
+    expect(resSup).toEqual({ run: superseded.id, state: "superseded" })
+    expect(resReap).toEqual({ run: reaped.id, state: "reaped" })
+    expect((await loadRun(root, superseded.id))?.state).toBe("superseded")
+    expect((await loadRun(root, reaped.id))?.state).toBe("reaped")
+  })
+})
+
+test("stopRun on ready run sets stopRequested and returns accurate state ready", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-ready-stop-001", state: "ready", sessionID: "ses_ready_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "ready" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("ready")
+    expect(stored?.stopRequested).toBe(true)
+  })
+})

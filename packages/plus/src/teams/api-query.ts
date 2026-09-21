@@ -17,6 +17,18 @@ function fail(code: string, message: string, accepted?: unknown): TeamApiResult 
   return { ok: false, error: { code, message, accepted } }
 }
 
+export function sortRuns(records: RunRecord[]): RunRecord[] {
+  return [...records].toSorted((a, b) => {
+    if (a.lastUsed !== b.lastUsed) return a.lastUsed < b.lastUsed ? 1 : -1
+    if (a.id === b.id) return 0
+    return a.id < b.id ? -1 : 1
+  })
+}
+
+export async function resolveHead(record: RunRecord): Promise<string> {
+  return git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
+}
+
 // Read-only listing: planners see every run in the namespace, every other
 // role sees its own run plus its direct children. Never writes, never
 // acknowledges, never transitions anything.
@@ -33,11 +45,7 @@ export async function listHandler(args: ListInput, caller: TeamCaller): Promise<
     if (args.parent !== undefined && record.parent !== args.parent) return false
     return true
   })
-  const sorted = [...filtered].toSorted((a, b) => {
-    if (a.lastUsed !== b.lastUsed) return a.lastUsed < b.lastUsed ? 1 : -1
-    if (a.id === b.id) return 0
-    return a.id < b.id ? -1 : 1
-  })
+  const sorted = sortRuns(filtered)
   const entries = []
   for (const record of sorted) entries.push(await entryOf(root, record))
   return succeeded(entries)
@@ -57,7 +65,7 @@ function visibleTo(all: RunRecord[], self: RunRecord): RunRecord[] {
 async function entryOf(root: string, record: RunRecord) {
   // Live worktree read with a stored fallback, so a gone worktree still
   // lists (mirrors statusOf in ./api.ts).
-  const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
+  const head = await resolveHead(record)
   return {
     run: record.id,
     role: record.role,
@@ -79,7 +87,7 @@ export async function statusOf(root: string, id: string) {
   if (record === undefined) {
     throw toolError("E_UNKNOWN_RUN", `Run ${id} not found in this namespace.`, "a run id from list{}")
   }
-  const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
+  const head = await resolveHead(record)
   return {
     run: record.id,
     role: record.role,
@@ -141,32 +149,28 @@ export interface NamespaceRunEntry {
   parent: string | null
 }
 
+export function namespaceRunEntryOf(record: RunRecord, head: string): NamespaceRunEntry {
+  return {
+    id: record.id,
+    role: record.role,
+    state: record.state,
+    task: record.task,
+    head,
+    worktree: record.worktree ?? "present",
+    lastUsed: record.lastUsed,
+    sessionID: record.sessionID,
+    parent: record.parent,
+  }
+}
+
 export async function listRunsForNamespace(root: string, args?: { all?: boolean }): Promise<NamespaceRunEntry[]> {
   const allRuns = await listRuns(root)
   const showAll = args?.all ?? false
-  const filtered = allRuns.filter((record) => {
-    if (!showAll && (record.state === "superseded" || record.state === "reaped")) return false
-    return true
-  })
-  const sorted = [...filtered].toSorted((a, b) => {
-    if (a.lastUsed !== b.lastUsed) return a.lastUsed < b.lastUsed ? 1 : -1
-    if (a.id === b.id) return 0
-    return a.id < b.id ? -1 : 1
-  })
+  const filtered = showAll ? allRuns : allRuns.filter((record) => record.state !== "superseded" && record.state !== "reaped")
+  const sorted = sortRuns(filtered)
   const entries: NamespaceRunEntry[] = []
   for (const record of sorted) {
-    const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
-    entries.push({
-      id: record.id,
-      role: record.role,
-      state: record.state,
-      task: record.task,
-      head,
-      worktree: record.worktree ?? "present",
-      lastUsed: record.lastUsed,
-      sessionID: record.sessionID,
-      parent: record.parent,
-    })
+    entries.push(namespaceRunEntryOf(record, await resolveHead(record)))
   }
   return entries
 }

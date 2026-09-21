@@ -1273,17 +1273,13 @@ export const Definition = Rpc.define({
     "team.runs.list": {
       input: PortableTeamRunsListInput,
       output: PortableTeamRunsListOutput,
-      errors: {
-        "project.disabled": PortableProjectDisabled,
-      },
+      errors: {},
     },
     "team.runs.stop": {
       input: PortableTeamRunsStopInput,
       output: PortableTeamRunsStopOutput,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "E_BUSY": PortableRunBusy,
-        "run.busy": PortableRunBusy,
         "run.unknown": PortableRunUnknown,
       },
     },

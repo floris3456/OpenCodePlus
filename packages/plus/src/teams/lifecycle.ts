@@ -170,8 +170,9 @@ export async function onSessionEvent(
   if (run === undefined) return undefined
 
   if (event.type === "session.execution.started") {
-    if (run.state === "stopped" || run.state === "dead") {
-      const working = transition(run, "working", "resume")
+    if (run.state === "idle" || run.state === "starting" || run.state === "stopped" || run.state === "dead") {
+      const trigger = run.state === "idle" ? "prompt" : "resume"
+      const working = transition(run, "working", trigger)
       await saveRun(root, working)
       return working
     }

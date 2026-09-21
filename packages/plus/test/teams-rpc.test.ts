@@ -1403,11 +1403,11 @@ test("team.runs.list returns namespace runs, sorted lastUsed desc, with all 9 fi
   expect(allList.runs.map((r) => r.id)).toEqual(["w-child-01", "w-child-02", "main-01"])
 })
 
-test("team.runs.stop stops any run in the namespace without owner check, reconciles dead, and fails E_BUSY when working", async () => {
+test("team.runs.stop stops any run in the namespace without owner check, reconciles dead, preserves terminal, and fails E_BUSY when working", async () => {
   const { project, teamsRoot } = await tempRoot()
   const ctx = fullContext({
     directory: project,
-    session: { interrupt: () => Effect.succeed(undefined) } as any,
+    session: { interrupt: () => Effect.succeed({ interrupted: true }) },
   })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -1429,10 +1429,17 @@ test("team.runs.stop stops any run in the namespace without owner check, reconci
     sessionID: "ses_working_01",
     parent: "someone-else",
   })
+  const runSuperseded = makeRunRecord({
+    id: "w-sup-01",
+    state: "superseded",
+    sessionID: null,
+    parent: "someone-else",
+  })
 
   await saveRun(teamsRoot, runIdle)
   await saveRun(teamsRoot, runDead)
   await saveRun(teamsRoot, runWorking)
+  await saveRun(teamsRoot, runSuperseded)
 
   // 1. Stop idle run (even though caller is not its parent) -> stopped
   const stopIdle = await Effect.runPromise(handlers["team.runs.stop"]({ run: "w-idle-01" }, throwingContext({})))
@@ -1445,7 +1452,12 @@ test("team.runs.stop stops any run in the namespace without owner check, reconci
   expect(stopDead).toEqual({ run: "w-dead-01", state: "stopped" })
   expect((await loadRun(teamsRoot, "w-dead-01"))?.state).toBe("stopped")
 
-  // 3. Stop working run -> fails with E_BUSY
+  // 3. Stop superseded run -> preserves terminal state without error
+  const stopSup = await Effect.runPromise(handlers["team.runs.stop"]({ run: "w-sup-01" }, throwingContext({})))
+  expect(stopSup).toEqual({ run: "w-sup-01", state: "superseded" })
+  expect((await loadRun(teamsRoot, "w-sup-01"))?.state).toBe("superseded")
+
+  // 4. Stop working run -> fails with E_BUSY
   const busy: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["team.runs.stop"]({ run: "w-working-01" }, throwingContext(busy)),
@@ -1453,4 +1465,13 @@ test("team.runs.stop stops any run in the namespace without owner check, reconci
     "E_BUSY",
   )
   expect(busy.current?.message).toContain("working")
+
+  // 5. Stop unknown run -> fails with run.unknown
+  const unknown: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.runs.stop"]({ run: "w-nonexistent" }, throwingContext(unknown)),
+    unknown,
+    "run.unknown",
+  )
+  expect(unknown.current?.message).toContain("not found")
 })

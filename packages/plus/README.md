@@ -199,8 +199,8 @@ agent's good manners: `index.ts` subscribes to `session.idle`,
 `session.execution.failed`, `session.execution.interrupted` and `session.execution.started`, maps the
 session to its run, and `teams/lifecycle.ts` settles the attempt, moves the run
 to `idle`, notifies the parent once and hands the pending inbox to the session
-as one new attempt. On `session.execution.started`, a run in `stopped` or `dead`
-transitions to `working` (trigger `resume`), resuming the run on human prompt.
+as one new attempt. On `session.execution.started`, a run in `idle`, `starting`, `stopped` or `dead`
+transitions to `working` (`prompt` for idle, `resume` for others), following the session into its execution turn. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`; its attempt is `no_report` when it did not.

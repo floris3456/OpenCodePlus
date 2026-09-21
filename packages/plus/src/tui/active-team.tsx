@@ -276,7 +276,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   function targetLocation() {
     const current = props.context.location
     if (current !== undefined) return { directory: current.directory, workspace: current.workspaceID }
-    const fallback = props.context.data?.location?.default?.()
+    const fallback = props.context.data.location.default()
     if (fallback === undefined) return undefined
     return { directory: fallback.directory, workspace: fallback.workspaceID }
   }
@@ -306,15 +306,11 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     if (!disposed) refreshRuns()
   })
 
-  let unsubscribeSession: (() => void) | undefined
-  if (typeof props.context.data?.listen === "function") {
-    unsubscribeSession = props.context.data.listen((event) => {
-      if (disposed) return
-      if (event.details?.type?.startsWith?.("session.")) {
-        refreshRuns()
-      }
-    })
-  }
+  const unsubscribeSession = props.context.data.listen((event) => {
+    if (!disposed && event.details.type.startsWith("session.")) {
+      refreshRuns()
+    }
+  })
 
   createEffect(() => {
     if (!props.active()) return
@@ -327,7 +323,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   onCleanup(() => {
     disposed = true
     unsubscribeTeams()
-    unsubscribeSession?.()
+    unsubscribeSession()
   })
 
   const ACTIVE_STATES = new Set(["working", "idle", "starting", "blocked_input", "stopping"])
@@ -361,7 +357,20 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   async function handleAction(run: TeamRunEntry) {
     if (run.state === "idle") {
       const location = targetLocation()
-      await plus["team.runs.stop"]({ run: run.id }, { location }).catch(() => undefined)
+      try {
+        await plus["team.runs.stop"]({ run: run.id }, { location })
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : typeof err === "object" && err !== null && "message" in err
+              ? String((err as { message: unknown }).message)
+              : "Failed to stop run"
+        props.context.ui.toast.show({
+          variant: "warning",
+          message,
+        })
+      }
       refreshRuns()
       return
     }

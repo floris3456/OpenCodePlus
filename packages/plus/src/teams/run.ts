@@ -111,8 +111,12 @@ export const TRANSITIONS: RunTransitionRow[] = [
     guard: "MCP team and team-query both connected within startTimeoutMs",
   },
   { from: "starting", to: "dead", trigger: "start_failed" },
+  // starting → working (execution started)
+  { from: "starting", to: "working", trigger: "resume" },
+  { from: "starting", to: "working", trigger: "prompt" },
   // idle → working
   { from: "idle", to: "working", trigger: "prompt" },
+  { from: "idle", to: "working", trigger: "resume" },
   // working → idle
   { from: "working", to: "idle", trigger: "turn_ended" },
   // working → blocked_input

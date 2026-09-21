@@ -1966,7 +1966,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("E_BUSY", result.error.message, data))
           if (result.error.code === "run.unknown")
             return yield* Effect.fail(context.error("run.unknown", result.error.message, data))
-          return yield* Effect.fail(context.error("E_BUSY", result.error.message, data))
+          return yield* Effect.fail(context.error("run.unknown", result.error.message, data))
         }
         return result.value as { run: string; state: string }
       }),

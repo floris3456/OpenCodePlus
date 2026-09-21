@@ -582,8 +582,8 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
 | `team.delete` | `{ level, team }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid` |
 | `team.list` | `void` | `TeamListOutput` | `project.disabled` |
-| `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | `project.disabled` |
-| `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `project.disabled`, `E_BUSY`, `run.busy`, `run.unknown` |
+| `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
+| `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `E_BUSY`, `run.unknown` |
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
@@ -888,8 +888,8 @@ RPC surface (`rpc.ts`, `index.ts`):
 - `team.list` (`Empty` → `TeamListOutput`): returns `{ teams: [{ level, team, enabled, members: [{ id, mode }] }] }`.
   Cheap read of discovered teams and their enabled states without computing an instructions snapshot.
   Discovered teams are sorted by level then team name; members are sorted by id in discoverTeams order.
-- `team.runs.list` (`TeamRunsListInput` → `TeamRunsListOutput`): returns `{ runs: [{ id, role, state, task, head, worktree, lastUsed, sessionID, parent }] }` for this data root (`teamsDataDir()`), sorted by `lastUsed` descending. When `all` is false or omitted, hides superseded and reaped runs.
-- `team.runs.stop` (`TeamRunsStopInput` → `TeamRunsStopOutput`): stops any run in the namespace by ID without ownership checks (`idle` transitions to `stopping → stopped`, `dead` reconciles to `stopped`, `working` returns error `E_BUSY`). Returns `{ run, state }`.
+- `team.runs.list` (`TeamRunsListInput` → `TeamRunsListOutput`): returns `{ runs: [{ id, role, state, task, head, worktree, lastUsed, sessionID, parent }] }` for this data root (`teamsDataDir()`), sorted by `lastUsed` descending. When `all` is false or omitted, hides superseded and reaped runs. Namespace-wide human read independent of project mode.
+- `team.runs.stop` (`TeamRunsStopInput` → `TeamRunsStopOutput`): stops any run in the namespace by ID without ownership checks (`idle` transitions to `stopping → stopped`, `dead` reconciles to `stopped`, `working` returns error `E_BUSY`, terminal runs like `superseded`/`reaped` remain preserved). Returns `{ run, state }`. Namespace-wide human operation independent of project mode.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
@@ -1127,8 +1127,9 @@ tool. `index.ts` subscribes to `session.idle`, `session.execution.failed`,
 `session.execution.interrupted`, and `session.execution.started`
 (`SessionRunEvents`), resolves `sessionID → run` with `run.bySession`, and
 ignores sessions with no run. On `session.execution.started`, a run in
-`stopped` or `dead` state transitions to `working` (trigger `resume`), resuming
-the run when prompted. For turn-ending events (`session.idle`,
+`idle`, `starting`, `stopped`, or `dead` state transitions to `working` (trigger
+`prompt` for `idle`, `resume` for others). A `working` run is a no-op;
+`superseded` and `reaped` runs remain unchanged. For turn-ending events (`session.idle`,
 `session.execution.failed`, `session.execution.interrupted`), `onSessionIdle`
 then, in this order:
 
