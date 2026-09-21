@@ -3,8 +3,10 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { formatMarkdown } from "../src/agents/files.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
+import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
@@ -13,10 +15,13 @@ import { fullContext } from "./harness.js"
 
 const teamRoots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorDataHome = process.env.XDG_DATA_HOME
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = priorDataHome
   await Promise.all(teamRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -394,6 +399,45 @@ test("a team member's rules are rows under a Policy group, and team tools never 
   expect(nodes.some((node) => node.id === "item:project:Implementer:tool:team_delegate")).toBe(false)
   expect(nodes.some((node) => node.id === "item:defaults::tool:team_delegate")).toBe(false)
   expect(nodes.some((node) => node.id === `item:project:crew/:${member}:tool:team_delegate`)).toBe(true)
+})
+
+// The in-memory tree above proves policyGroup; this proves the rows still
+// read as policy rows after the server encodes them and a consumer decodes
+// them, which is the only path the Instructions screen and the tools ever see.
+test("a team member's policy rows survive the snapshot boundary into the Policy group", async () => {
+  const member = "gemini-implementer"
+  const parent = process.env.TMPDIR ?? os.tmpdir()
+  const root = await fs.mkdtemp(path.join(parent, "plus-tree-team-policy-"))
+  teamRoots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  process.env.XDG_DATA_HOME = path.join(root, "data")
+  const project = path.join(root, "project")
+  await enable(project)
+  const memberFile = path.join(projectTeamsPath(project), "crew", `${member}.md`)
+  await fs.mkdir(path.dirname(memberFile), { recursive: true })
+  await Bun.write(memberFile, formatMarkdown({ description: `crew/${member}` }, "role"))
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  const throwing = {
+    error: (type: string, message: string, data?: unknown): never => {
+      throw { type, message, data }
+    },
+  }
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwing))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
+  const shipped = snapshot.items.filter((item) => item.kind === "perm" && (item.agents ?? []).includes(member))
+  expect(shipped.length).toBeGreaterThan(0)
+  expect(shipped.filter((item) => item.policy === undefined)).toEqual([])
+  const nodes = expandedTree(memoInputOf(snapshot))
+  expect(nodes.find((node) => node.id === `group:project:crew/:${member}:tools:policy`)?.label).toBe("Policy")
+  const rows = childrenOf(nodes, `group:project:crew/:${member}:tools:policy`).map((node) => node.id)
+  expect(rows).toContain(`item:project:crew/:${member}:perm:shell:team-role`)
+  expect(rows).toContain(`item:project:crew/:${member}:perm:team_supersede:role-ceiling`)
+  // The actions with no tool row to hang under: only the Policy group lists
+  // them, so dropping `policy` at the boundary makes them unreachable.
+  expect(rows).toContain(`item:project:crew/:${member}:perm:external_directory:team-role`)
+  expect(rows).toContain(`item:project:crew/:${member}:perm:question:team-role`)
+  expect(rows).toContain(`item:project:crew/:${member}:perm:subagent:team-role`)
+  expect(rows).toContain(`item:project:crew/:${member}:perm:task:team-role`)
 })
 
 test("registered team member yields its Role/persona under System", () => {

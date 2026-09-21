@@ -34,10 +34,13 @@ import { agentHarness, agentInfo, catalogHarness, context, fullContext, modelInf
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorDataHome = process.env.XDG_DATA_HOME
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = priorDataHome
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -1306,6 +1309,36 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(deleted).toMatchObject({ tool: "shell" })
   const curatedDelete = await runFail(need(tools, "instructions_delete"), { id: row.id, confirm: true })
   expect(curatedDelete.message).toContain("only user-created rules")
+})
+
+// instructions_list reads api.snapshot(), so a team member's policy rows reach
+// the tool only through the boundary shape. The rows asserted here govern
+// permission actions with no tool row to hang under, so they exist nowhere
+// else in the tree.
+test("instructions_list returns a team member's policy rows for actions with no tool row", async () => {
+  const { project } = await tempProject()
+  process.env.XDG_DATA_HOME = path.join(path.dirname(project), "data")
+  const member = "gemini-implementer"
+  const memberFile = path.join(projectTeamsPath(project), "crew", `${member}.md`)
+  await fs.mkdir(path.dirname(memberFile), { recursive: true })
+  await Bun.write(memberFile, formatMarkdown({ description: `crew/${member}` }, "role"))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const enabled = await api.setTeamEnabled({ level: "project", team: "crew", enabled: true, actor: { type: "tui" } })
+  if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
+  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}` })) as {
+    rows: readonly { id: string }[]
+    total: number
+  }
+  expect(listed.total).toBeGreaterThan(0)
+  const ids = listed.rows.map((entry) => entry.id)
+  expect(ids).toContain(`item:project:crew/:${member}:perm:external_directory:team-role`)
+  expect(ids).toContain(`item:project:crew/:${member}:perm:question:team-role`)
+  expect(ids).toContain(`item:project:crew/:${member}:perm:subagent:team-role`)
+  expect(ids).toContain(`item:project:crew/:${member}:perm:task:team-role`)
+  expect(ids).toContain(`item:project:crew/:${member}:perm:shell:team-role`)
 })
 
 test("deleting a protected agent's custom rule through another agent's row is refused", async () => {

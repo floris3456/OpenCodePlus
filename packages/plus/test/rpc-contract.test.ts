@@ -722,6 +722,57 @@ test("new Code Mode keys decode and never encode as undefined", () => {
   expect(Schema.decodeUnknownSync(Plus.SnapshotCustomizationRecord)(encodedBareRecord)).toEqual(bareRecord)
 })
 
+test("team policy keys decode and never encode as undefined", () => {
+  const item: Plus.SnapshotItem = {
+    id: "perm:edit:run:w-1",
+    kind: "perm",
+    group: "none",
+    title: "Edit scope for run w-1",
+    text: "Edit scope for run w-1",
+    enabled: true,
+    fingerprint: "fp-run-1",
+    permTool: "edit",
+    permAction: "edit",
+    ruleId: "edit:run:w-1",
+    patterns: ["*", "packages/plus/**"],
+    runID: "w-1",
+    policy: {
+      on: [
+        { action: "edit", resource: "*", effect: "deny" },
+        { action: "edit", resource: "packages/plus/**", effect: "allow" },
+        { action: "team.delegate", resource: "*", effect: "ask" },
+      ],
+      off: [],
+    },
+  }
+  const encoded = Schema.encodeSync(Plus.SnapshotItem)(item)
+  expectRpcBody(encoded)
+  assertNoUndefinedValues(encoded)
+  expect(encoded.runID).toBe("w-1")
+  expect(encoded.policy?.on).toEqual([
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "packages/plus/**", effect: "allow" },
+    { action: "team.delegate", resource: "*", effect: "ask" },
+  ])
+  expect(encoded.policy?.off).toEqual([])
+  expect(Schema.decodeUnknownSync(Plus.SnapshotItem)(encoded)).toEqual(item)
+
+  const bare: Plus.SnapshotItem = {
+    id: "perm:shell:git-push",
+    kind: "perm",
+    group: "none",
+    title: "git push",
+    text: "git push *",
+    enabled: true,
+    fingerprint: "fp-git-push",
+    permTool: "shell",
+  }
+  const encodedBare = Schema.encodeSync(Plus.SnapshotItem)(bare)
+  expect("policy" in encodedBare).toBe(false)
+  expect("runID" in encodedBare).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.SnapshotItem)(encodedBare)).toEqual(bare)
+})
+
 test("AgentEntry origin round-trips and omits when unset", () => {
   for (const origin of ["native", "special", "plus", "user"] as const) {
     const entry: Plus.AgentEntry = { id: "alpha", scope: "project", origin, fileBacked: false }
