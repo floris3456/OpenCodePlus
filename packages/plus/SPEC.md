@@ -1384,7 +1384,7 @@ Plus ships a built-in search MCP server providing Exa code search and Tavily web
 
 On activation (`activate` / `ensureTooling`), Plus reads `ctx.mcp.transform` to check for an existing MCP server named `search`:
 - When absent (`editor.get("search") === undefined`), Plus registers its search server:
-  `editor.set("search", { type: "local", command: [process.execPath, <path to bin.ts|bin.js>], enabled: true })`
+  `editor.set("search", new Mcp.LocalConfig({ type: "local", command: [process.execPath, <path to bin.ts|bin.js>] }))`
   and reloads MCP via `ctx.mcp.reload()`. The registration is tracked and disposes cleanly on deactivation.
 - When present, Plus leaves the existing configuration untouched and logs `search MCP already configured; not replacing`.
 

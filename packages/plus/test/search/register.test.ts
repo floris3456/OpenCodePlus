@@ -59,7 +59,7 @@ test("register-when-absent registers search MCP server with local command and re
   const before = await getServer(baseMcp.domain, "search")
   expect(before).toBeUndefined()
 
-  const binPath = resolveSearchBinPath()
+  const binPath = await resolveSearchBinPath()
   const registration = await registerSearchMcp(ctx, binPath)
   expect(registration).toBeDefined()
 
@@ -67,7 +67,6 @@ test("register-when-absent registers search MCP server with local command and re
   expect(after).toBeDefined()
   expect(after.type).toBe("local")
   expect(after.command).toEqual([process.execPath, binPath])
-  expect(after.enabled).toBe(true)
 
   if (registration) {
     await Effect.runPromise(registration.dispose)
@@ -87,7 +86,7 @@ test("leave-when-present leaves existing search MCP server untouched and returns
   const before = await getServer(baseMcp.domain, "search")
   expect(before).toEqual(existingConfig)
 
-  const binPath = resolveSearchBinPath()
+  const binPath = await resolveSearchBinPath()
   const registration = await registerSearchMcp(ctx, binPath)
   expect(registration).toBeUndefined()
 
@@ -116,7 +115,7 @@ test("full activation registers search MCP when absent and reflects it in instru
   const server = await getServer(baseMcp.domain, "search")
   expect(server).toBeDefined()
   expect(server.type).toBe("local")
-  expect(server.command).toEqual([process.execPath, resolveSearchBinPath()])
+  expect(server.command).toEqual([process.execPath, await resolveSearchBinPath()])
 })
 
 test("full activation leaves existing search MCP server when present", async () => {

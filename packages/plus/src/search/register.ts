@@ -1,19 +1,19 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
+import { Mcp } from "@opencode/schema/mcp"
 import { Deferred, Effect } from "effect"
-import fsSync from "node:fs"
 import { fileURLToPath } from "node:url"
 import { runRegistration } from "../instructions/apply.js"
 
-export function resolveSearchBinPath(): string {
+export async function resolveSearchBinPath(): Promise<string> {
   const tsPath = fileURLToPath(new URL("./bin.ts", import.meta.url))
-  const jsPath = fileURLToPath(new URL("./bin.js", import.meta.url))
-  return fsSync.existsSync(tsPath) ? tsPath : jsPath
+  if (await Bun.file(tsPath).exists()) return tsPath
+  return fileURLToPath(new URL("./bin.js", import.meta.url))
 }
 
 export async function registerSearchMcp(
   ctx: Context,
-  binPath = resolveSearchBinPath(),
+  binPath?: string,
 ): Promise<Registration | undefined> {
   const existing = await Effect.runPromise(
     Effect.scoped(
@@ -32,13 +32,17 @@ export async function registerSearchMcp(
     return undefined
   }
 
+  const resolvedBinPath = binPath ?? (await resolveSearchBinPath())
+
   const registration = await runRegistration(ctx.mcp.transform, (editor) => {
     if (editor.get("search") !== undefined) return
-    editor.set("search", {
-      type: "local",
-      command: [process.execPath, binPath],
-      enabled: true,
-    } as any)
+    editor.set(
+      "search",
+      new Mcp.LocalConfig({
+        type: "local",
+        command: [process.execPath, resolvedBinPath],
+      }),
+    )
   })
 
   await Effect.runPromise(ctx.mcp.reload())

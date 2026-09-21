@@ -4,9 +4,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio"
 import { resolveSearchBinPath } from "../../src/search/register.js"
 
 test("search MCP server spawns over stdio, lists tools, and reports missing keys", async () => {
+  const binPath = await resolveSearchBinPath()
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [resolveSearchBinPath()],
+    args: [binPath],
     env: {
       ...process.env,
       TAVILY_API_KEY: "",
@@ -55,9 +56,10 @@ test("search MCP server performs real call when TAVILY_API_KEY is present", asyn
     return
   }
 
+  const binPath = await resolveSearchBinPath()
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [resolveSearchBinPath()],
+    args: [binPath],
     env: {
       ...process.env,
       TAVILY_API_KEY: realKey,
