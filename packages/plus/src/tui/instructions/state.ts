@@ -49,7 +49,7 @@ function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | S
     )
 }
 
-function toRpcRecords(
+export function toRpcRecords(
   customizations: readonly CustomizationRecord[],
   splits: readonly (SplitRecord & { updated?: string })[],
   models?: readonly ModelRecord[],
@@ -109,6 +109,7 @@ function toRpcRecords(
         label: record.label,
         patterns: [...record.patterns],
         keywords: [...record.keywords],
+        ...(record.message === undefined ? {} : { message: record.message }),
         updated: record.updated,
       }),
     ),

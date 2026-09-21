@@ -56,13 +56,13 @@ Permission rows hang directly off each native/plus tool row (after its sections)
 
 ## set and reset
 
-\`set({ id, text?, state?, pin?, active?, resolve? })\` — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`active\` is \`true\` to activate a model row exclusively at that level; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row (model rows clear only that level's active flag). On perm rows \`state\` toggles the rule (off installs core deny rules for that agent only); perm rows accept no text, pin, or resolve.
+\`set({ id, text?, state?, pin?, active?, resolve? })\` — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`active\` is \`true\` to activate a model row exclusively at that level; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row (model rows clear only that level's active flag). On perm rows \`state\` toggles the rule (off installs core deny rules for that agent only); \`message\` (or \`label\`/\`patterns\`/\`keywords\`) edits the rule; perm rows accept no text, pin, or resolve.
 
 Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that agent's catalog entry (first description line only, truncated at 120 characters), and \`pin\` overrides the registry default; the synthetic \`tool:execute\` row is toggle-only and \`off\` removes Code Mode entirely. Filter them with \`namespace:<name>\`, \`pinned:true|false\`, and \`execute:true|false\`, e.g. \`list({ where: "codemode:true pinned:true" })\`.
 
 Models are live: each agent subtree opens with a \`Models\` group holding the union down the chain plus the agent's upstream model. \`set({ id, active:true })\` (or bare \`set({ id })\`) activates one candidate exclusively at that level; \`reset({ id })\` clears that level's active flag; \`create({ kind:"model", providerID, modelID, variant?, level?, agent? })\` adds a candidate; \`delete({ id, confirm:true })\` removes the candidate at that level. Filter with \`item:model\` and \`active:true|false\`.
 
-Permission rules are live: turning a rule \`off\` installs core deny rules \`{ action, resource, effect: "deny" }\` for that agent only (appended; core evaluates last-match-wins) and scrubs matching lines from tool descriptions, system parts, the base part, and catalog descriptions. \`show\` on a perm row previews the scrub. \`create({ kind:"rule", tool, id, label, patterns, keywords?, level?, agent? })\` adds a custom rule; \`delete({ id, confirm:true })\` removes only user-created rules. An agent may change its own rules; only \`protectedAgents\`, \`confirm:true\`, and project mode guard writes.
+Permission rules are live: turning a rule \`off\` installs core deny rules \`{ action, resource, effect: "deny" }\` for that agent only (appended; core evaluates last-match-wins) and scrubs matching lines from tool descriptions, system parts, the base part, and catalog descriptions. \`show\` on a perm row previews the scrub and displays any refusal \`message\`. \`create({ kind:"rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds a custom rule; \`delete({ id, confirm:true })\` removes only user-created rules. \`set({ id, message })\` updates the refusal message shown to the model. An agent may change its own rules; only \`protectedAgents\`, \`confirm:true\`, and project mode guard writes.
 
 Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` spans any run (including empty and spaces), \`?\` matches exactly one character. For shell the resource is the parsed command text, so \`git *\` also matches a bare \`git\` (core rewrites a trailing " *" into an optional group). For file tools the resource is the file path (\`*.env*\`, \`**/.git/**\`); for webfetch the URL (\`*github.com*\`); for subagent/skill the exact agent/skill id. Keywords derive from the pattern (head plus subcommands, stopping at wildcards/flags: \`"git push *"\` scrubs lines mentioning "git push", not every "git" line).
 
@@ -82,7 +82,7 @@ Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` sp
 | mcp | \`name\`, \`config\` |
 | team | \`team\`, \`level\` |
 | model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\`, \`agent\`) |
-| rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ optional \`keywords\`, \`level\`, \`agent\`) |
+| rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ optional \`keywords\`, \`message\`, \`level\`, \`agent\`) |
 
 \`delete({ id, confirm: true })\` — refused without \`confirm: true\`. Only user-created rules can be deleted; curated/mined rule rows refuse with why.
 
