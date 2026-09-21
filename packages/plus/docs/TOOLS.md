@@ -9,9 +9,9 @@ present-tense descriptions of the source, not a history.
 
 | Surface | Registered at | Contents |
 | --- | --- | --- |
-| `instructions` namespace | `packages/plus/src/index.ts:3234` | 8 tools (`packages/plus/src/tools.ts:231`–`packages/plus/src/tools.ts:403`) |
-| `search` MCP server | `packages/plus/src/index.ts:3235` | 3 tools (`packages/plus/src/search/mcp.ts:36`–`packages/plus/src/search/mcp.ts:112`) |
-| `team` namespace | `packages/plus/src/index.ts:3260` | 14 tools (`packages/plus/src/teams/tools.ts:343`–`packages/plus/src/teams/tools.ts:468`) |
+| `instructions` namespace | `packages/plus/src/index.ts:3245` | 8 tools (`packages/plus/src/tools.ts:231`–`packages/plus/src/tools.ts:403`) |
+| `search` MCP server | `packages/plus/src/index.ts:3246` | 3 tools (`packages/plus/src/search/mcp.ts:36`–`packages/plus/src/search/mcp.ts:112`) |
+| `team` namespace | `packages/plus/src/index.ts:3271` | 14 tools (`packages/plus/src/teams/tools.ts:343`–`packages/plus/src/teams/tools.ts:468`) |
 
 - `instructions` declares `editor.namespace({ name: "instructions", … })`
   (`packages/plus/src/tools.ts:230`) with shared options
@@ -54,13 +54,14 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
 | `instructions_create` | `kind` plus kind fields (`packages/plus/src/tools.ts:181`) | `{ …created, id, item }` per kind (§4) |
-| `instructions_delete` | `id`, `confirm` | Removal result plus `status` (`packages/plus/src/tools.ts:217`, `packages/plus/src/tools.ts:1345`) |
+| `instructions_delete` | `id`, `confirm` | Removal result plus `status` (`packages/plus/src/tools.ts:217`, `packages/plus/src/tools.ts:1359`) |
 | `instructions_log` | `where`, `limit`, `offset` | Change-log entries, newest first (`packages/plus/src/tools.ts:222`, `packages/plus/src/tools.ts:104`) |
 
 `where` uses `key:value` terms; the structural keys (`kind`, `item`, `tool`,
 `group`, `server`, `namespace`, `level`, `catalogue`, `agent`, `state`, `team`,
 `run`, …) are listed in the `instructions-tools` teaching text
-(`packages/plus/src/instructions/teaching.ts:48`). The `server:` filter matches
+(`packages/plus/src/instructions/teaching.ts:48`,
+`packages/plus/src/instructions/query.ts:933`). The `server:` filter matches
 both tool rows that carry a `server` and the `mcp:<name>` inventory row itself
 (`packages/plus/src/instructions/query.ts:914`–`packages/plus/src/instructions/query.ts:925`).
 
@@ -70,18 +71,19 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 
 - Item rows render resolved text (default), upstream text, `mine`, `diff`
   (two unified diffs plus a one-line summary), `record`, or section ids
-  (`packages/plus/src/tools.ts:996`–`packages/plus/src/tools.ts:1017`).
+  (`packages/plus/src/tools.ts:962`, `packages/plus/src/tools.ts:1001`–
+  `packages/plus/src/tools.ts:1022`).
 - Perm rows additionally report `tool`, `rule`, `label`, `patterns`,
   `keywords`, `provenance`, `custom`, `enabled`, `source`, `scrub`, the
   `message` the model reads when the rule denies, and, for team policy rows,
-  both sides of the row's `policy` (`packages/plus/src/tools.ts:960`–
-  `packages/plus/src/tools.ts:993`).
+  both sides of the row's `policy` (`packages/plus/src/tools.ts:965`–
+  `packages/plus/src/tools.ts:998`).
 - Team and member rows carry no item address: `resolved` returns the entity
   (`level`, `team`, `enabled`/`members`, or the member registration) and
   `record` nests it under `record`; every other view fails
-  `view.unsupported:` (`packages/plus/src/tools.ts:935`–`packages/plus/src/tools.ts:946`).
+  `view.unsupported:` (`packages/plus/src/tools.ts:940`–`packages/plus/src/tools.ts:950`).
 - `assembled` accepts only `agent:<level>:<id>` and returns that agent's
-  assembled view (`packages/plus/src/tools.ts:915`–`packages/plus/src/tools.ts:927`).
+  assembled view (`packages/plus/src/tools.ts:920`–`packages/plus/src/tools.ts:932`).
 
 ### 2.2 `set` / `reset` / `split` / `delete`
 
@@ -115,11 +117,11 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 | `row.unknown:` | No tree row matches the id | `packages/plus/src/tools.ts:425` |
 | `agent.protected:` | The row belongs to a protected agent | `packages/plus/src/tools.ts:429` |
 | `delete.unconfirmed:` | `delete` was called without `confirm:true` | `packages/plus/src/tools.ts:369` |
-| `view.unsupported:` | The view is not available for that row kind | `packages/plus/src/tools.ts:918`, `packages/plus/src/tools.ts:942` |
-| `create.failed:` | The created row is not visible in the tree | `packages/plus/src/tools.ts:1337` |
+| `view.unsupported:` | The view is not available for that row kind | `packages/plus/src/tools.ts:923`, `packages/plus/src/tools.ts:947` |
+| `create.failed:` | The created row is not visible in the tree | `packages/plus/src/tools.ts:1342` |
 | `stale:` | A write conflicted twice | `packages/plus/src/tools.ts:649` |
-| `instruction.disabled:` | AGENTS.md create is disabled | `packages/plus/src/tools.ts:60`, `packages/plus/src/tools.ts:1161` |
-| `<code>: <message>` | Any failing API/RPC result keeps its code | `packages/plus/src/tools.ts:797`, `packages/plus/src/tools.ts:1128` |
+| `instruction.disabled:` | AGENTS.md create is disabled | `packages/plus/src/tools.ts:60`, `packages/plus/src/tools.ts:1166` |
+| `<code>: <message>` | Any failing API/RPC result keeps its code | `packages/plus/src/tools.ts:797`, `packages/plus/src/tools.ts:1133` |
 | `<label> cannot be …` | Row-level refusals (edit, resolve, toggle, delete) | `packages/plus/src/instructions/ops.ts:130`, `packages/plus/src/instructions/ops.ts:134` |
 
 ## 3. Row-id grammar
@@ -185,7 +187,7 @@ exist only at `defaults` (`packages/plus/src/instructions/tree.ts:486`–
 `team:<level>:<team>`, `model:<level>:<agent|''>:<provider>/<model>[@<variant>]`,
 `rule:<level>:<agent|''>:<tool>:<id>`, or
 `item|section:<level>:<agent|''>:<itemId>[:<sectionId>]`
-(`packages/plus/src/index.ts:2581`–`packages/plus/src/index.ts:2592`).
+(`packages/plus/src/index.ts:2592`–`packages/plus/src/index.ts:2604`).
 
 ## 4. `instructions.create` kinds and returned ids
 
@@ -193,19 +195,19 @@ exist only at `defaults` (`packages/plus/src/instructions/tree.ts:486`–
 Eight create and return `{ …created, id, item }`; `instruction` is refused.
 `id` is the tree row id that `show`, `set` and `delete` accept; `item` is the
 created item's own id (`packages/plus/src/tools.ts:94`,
-`packages/plus/src/tools.ts:159`–`packages/plus/src/tools.ts:162`).
+`packages/plus/src/instructions/ops.ts:159`–`packages/plus/src/instructions/ops.ts:162`).
 
 | `kind` | Required fields | Returned `id` | Returned `item` | Source |
 | --- | --- | --- | --- | --- |
-| `agent` | `id`, `prompt`; `scope` defaults `project` | `agent:<scope>:<id>` | agent id | `packages/plus/src/tools.ts:1108`–`packages/plus/src/tools.ts:1130` |
-| `skill` | `name`, `body` | `item:defaults::skill:<id>` | `skill:<id>` | `packages/plus/src/tools.ts:1132`–`packages/plus/src/tools.ts:1142` |
-| `base` | `id`, `title`, `text` | `item:defaults::base:<id>` | `base:<id>` | `packages/plus/src/tools.ts:1144`–`packages/plus/src/tools.ts:1156` |
-| `instruction` | (disabled) | — | — | `packages/plus/src/tools.ts:1158`–`packages/plus/src/tools.ts:1161` |
-| `mcp` | `name`, `config` | `item:defaults::mcp:<name>` | `mcp:<name>` | `packages/plus/src/tools.ts:1170`–`packages/plus/src/tools.ts:1180` |
-| `team` | `team`, `level` `project`/`global`; optional `template` | `team:<level>:<team>` | team name | `packages/plus/src/tools.ts:1182`–`packages/plus/src/tools.ts:1195` |
-| `member` | `team`, `level` `project`/`global`/`defaults`, `id`, `prompt`; optional `template`/`fields` | `team:<level>:<team>:<member>` | member id | `packages/plus/src/tools.ts:1197`–`packages/plus/src/tools.ts:1224` |
-| `model` | `providerID`, `modelID`; `level` defaults `project`; `agent` required unless level is `defaults` | `item:<level>:<owner>:model:<providerID>/<modelID>[@<variant>]` | item id | `packages/plus/src/tools.ts:1226`–`packages/plus/src/tools.ts:1265` |
-| `rule` | `tool`, `id`, `label`, `patterns`; `level` defaults `project` | `item:<level>:<owner>:perm:<tool>:<rule>` | item id | `packages/plus/src/tools.ts:1267`–`packages/plus/src/tools.ts:1308` |
+| `agent` | `id`, `prompt`; `scope` defaults `project` | `agent:<scope>:<id>` | agent id | `packages/plus/src/tools.ts:1113`–`packages/plus/src/tools.ts:1136` |
+| `skill` | `name`, `body` | `item:defaults::skill:<id>` | `skill:<id>` | `packages/plus/src/tools.ts:1137`–`packages/plus/src/tools.ts:1148` |
+| `base` | `id`, `title`, `text` | `item:defaults::base:<id>` | `base:<id>` | `packages/plus/src/tools.ts:1149`–`packages/plus/src/tools.ts:1162` |
+| `instruction` | (disabled) | — | — | `packages/plus/src/tools.ts:1163`–`packages/plus/src/tools.ts:1174` |
+| `mcp` | `name`, `config` | `item:defaults::mcp:<name>` | `mcp:<name>` | `packages/plus/src/tools.ts:1175`–`packages/plus/src/tools.ts:1186` |
+| `team` | `team`, `level` `project`/`global`; optional `template` | `team:<level>:<team>` | team name | `packages/plus/src/tools.ts:1187`–`packages/plus/src/tools.ts:1201` |
+| `member` | `team`, `level` `project`/`global`/`defaults`, `id`, `prompt`; optional `template`/`fields` | `team:<level>:<team>:<member>` | member id | `packages/plus/src/tools.ts:1202`–`packages/plus/src/tools.ts:1230` |
+| `model` | `providerID`, `modelID`; `level` defaults `project`; `agent` required unless level is `defaults` | `item:<level>:<owner>:model:<providerID>/<modelID>[@<variant>]` | item id | `packages/plus/src/tools.ts:1231`–`packages/plus/src/tools.ts:1271` |
+| `rule` | `tool`, `id`, `label`, `patterns`; `level` defaults `project` | `item:<level>:<owner>:perm:<tool>:<rule>` | item id | `packages/plus/src/tools.ts:1272`–`packages/plus/src/tools.ts:1314` |
 
 `<owner>` follows §3.2: the agent id for agent-owned rows, the catalogue
 segment for shared rows (`packages/plus/src/instructions/tree.ts:501`–
@@ -218,46 +220,46 @@ instruction and mcp create one file both catalogues list
 A create never formats an id: it resolves the row through the same tree that
 `show`, `set` and `delete` read, retrying 12 times at 100 ms, and fails
 `create.failed:` if the row never appears
-(`packages/plus/src/tools.ts:1314`–`packages/plus/src/tools.ts:1341`).
+(`packages/plus/src/tools.ts:1319`–`packages/plus/src/tools.ts:1346`).
 
 ### 4.1 Model: project + agent requirement
 
 `level` is `input.level ?? input.scope ?? "project"`
-(`packages/plus/src/tools.ts:1229`). At `project` or `global` level a model row
+(`packages/plus/src/tools.ts:1234`). At `project` or `global` level a model row
 must name an `agent`; otherwise create fails with
 `create model requires agent for project|global levels`
-(`packages/plus/src/tools.ts:1232`–`packages/plus/src/tools.ts:1234`). At
+(`packages/plus/src/tools.ts:1238`–`packages/plus/src/tools.ts:1239`). At
 `defaults`, an empty agent (or `_`) means the shared row (`agent: null`)
-(`packages/plus/src/tools.ts:1235`). The returned row is resolved at the
+(`packages/plus/src/tools.ts:1240`). The returned row is resolved at the
 written level and owner, so a project candidate is never reported as an
-inherited Defaults row (`packages/plus/src/tools.ts:1251`–
-`packages/plus/src/tools.ts:1263`).
+inherited Defaults row (`packages/plus/src/tools.ts:1256`–
+`packages/plus/src/tools.ts:1268`).
 
 ### 4.2 Rule: project storage, visible Defaults row
 
 `level` is `input.level ?? input.scope ?? "project"`
-(`packages/plus/src/tools.ts:1270`). An empty agent (or `_`) means a shared
-rule (`agent: null`) (`packages/plus/src/tools.ts:1273`). Shared inventory has
+(`packages/plus/src/tools.ts:1275`). An empty agent (or `_`) means a shared
+rule (`agent: null`) (`packages/plus/src/tools.ts:1279`). Shared inventory has
 exactly one set of rows, at `defaults`, because that is the one address the
 resolution chain falls through to (`packages/plus/src/instructions/tree.ts:486`–
 `packages/plus/src/instructions/tree.ts:499`). A rule with no agent therefore
 keeps its requested storage level but its only visible row is the shared
 Defaults catalogue row, and that row is the returned `id`
-(`packages/plus/src/tools.ts:1293`–`packages/plus/src/tools.ts:1305`).
+(`packages/plus/src/tools.ts:1298`–`packages/plus/src/tools.ts:1313`).
 
 ### 4.3 The `instruction.disabled` contract
 
 `instructions.create kind:"instruction"` always fails with `INSTRUCTION_DISABLED`,
 whose text begins `instruction.disabled:` and names the Context catalogue
-rework (`packages/plus/src/tools.ts:59`, `packages/plus/src/tools.ts:1161`). The
+rework (`packages/plus/src/tools.ts:59`, `packages/plus/src/tools.ts:1166`). The
 handlers `instruction.create` and `instruction.delete` return code
 `instruction.invalid` carrying the same text while `INSTRUCTIONS_DISABLED` is
-`true` (`packages/plus/src/index.ts:2132`, `packages/plus/src/index.ts:795`–
+`true` (`packages/plus/src/index.ts:2143`, `packages/plus/src/index.ts:795`–
 `packages/plus/src/index.ts:800`, `packages/plus/src/index.ts:831`–
 `packages/plus/src/index.ts:835`). The remaining eight kinds create, and each
 returned `id` round-trips through `show`, `set` and `delete` with no
 `row.unknown` (`packages/plus/src/tools.ts:94`,
-`packages/plus/src/tools.ts:1108`–`packages/plus/src/tools.ts:1308`).
+`packages/plus/src/tools.ts:1113`–`packages/plus/src/tools.ts:1314`).
 
 ## 5. `team` namespace
 
@@ -366,6 +368,7 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_PATHS` | Scope path outside the task worktree | `packages/plus/src/teams/api.ts:235`, `packages/plus/src/teams/api.ts:337` |
 | `E_REPO` | Unknown repo for delegate | `packages/plus/src/teams/api.ts:212` |
 | `E_BASE` | Unknown base ref | `packages/plus/src/teams/api.ts:222`, `packages/plus/src/teams/worktree.ts:81` |
+| `E_WT_EXISTS` | The worktree directory a delegate would create already exists | `packages/plus/src/teams/worktree.ts:82` |
 | `E_REASON` | `reason` too short or a required reason missing | `packages/plus/src/teams/api.ts:249` |
 | `E_SPARK` | `spark-implementer` brief outside its limits | `packages/plus/src/teams/api.ts:241` |
 | `E_TOO_LONG` | Objective or prompt over its cap | `packages/plus/src/teams/api.ts:305` |
@@ -384,6 +387,7 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_UNKNOWN_RUN` | Unknown run id | `packages/plus/src/teams/api-query.ts:88`, `packages/plus/src/teams/api.ts:1003` |
 | `E_NOT_CHILD` | Target is not a direct child | `packages/plus/src/teams/api-lifecycle.ts:27` |
 | `E_BUSY` | Target is working (or delivery:`now` while busy) | `packages/plus/src/teams/api-lifecycle.ts:84`, `packages/plus/src/teams/api-followup.ts:169` |
+| `E_NOT_DONE` | The child's latest report is not done/done_with_concerns | `packages/plus/src/teams/api-integrate.ts:71` |
 | `E_TERMINAL` | Target is terminal | `packages/plus/src/teams/api-followup.ts:66` |
 | `E_REVIEWER` | Followup addressed to a reviewer | `packages/plus/src/teams/api-followup.ts:74` |
 | `E_DEPS` | Plan dependency error (unknown, duplicate, cycle) | `packages/plus/src/teams/tasks.ts:161` |
@@ -410,8 +414,8 @@ Its outcome is one of four values
 | --- | --- | --- |
 | `allowed` | The body ran and no permission request intervened | `packages/plus/src/teams/tools.ts:522` |
 | `asked:allow` | A permission request named this call and it proceeded | `packages/plus/src/teams/tools.ts:522` |
-| `denied` | A rule denial, or a rejection carrying feedback | `packages/plus/src/teams/tools.ts:186`–`packages/plus/src/teams/tools.ts:199` |
-| `asked:deny` | The human rejected the permission request | `packages/plus/src/teams/tools.ts:225`–`packages/plus/src/teams/tools.ts:246` |
+| `denied` | A rule denial; the call raised no permission request | `packages/plus/src/teams/tools.ts:186`–`packages/plus/src/teams/tools.ts:199` |
+| `asked:deny` | A human rejection, whether or not it carries feedback | `packages/plus/src/teams/tools.ts:225`–`packages/plus/src/teams/tools.ts:246` |
 
 The `tool.call` payload is `run`, `actor`, `sessionID`, `tool`, `ok`, `code`,
 `durationMs` and `outcome` (`packages/plus/src/teams/tools.ts:139`). Per-call
@@ -521,10 +525,11 @@ core's `edit` action (`packages/plus/src/instructions/apply.ts:385`,
   (`packages/plus/src/tools.ts:516`).
 - `instructions_show` on a perm row returns the effective message: the user
   rule's own stored message wins, a curated row ships one, a mined row has none
-  (`packages/plus/src/tools.ts:968`, `packages/plus/src/tools.ts:1027`).
+  (`packages/plus/src/tools.ts:973`, `packages/plus/src/tools.ts:1035`).
 - The TUI rule dialog prompts `Message shown on refusal (optional)` and writes
   it through `rule.update`; the detail pane renders `message:` when present
-  (`packages/plus/src/tui/instructions/dialogs.tsx:802`,
+  (`packages/plus/src/tui/instructions/dialogs.tsx:814`–
+  `packages/plus/src/tui/instructions/dialogs.tsx:817`,
   `packages/plus/src/tui/instructions/detail-pane.tsx:507`).
 - Team policy messages: a native deny reads
   `<action>[ "<resource>"] is not available to <role>[; run checks with team_check]`
@@ -565,71 +570,73 @@ and on agent/member/model/rule creates
 (`packages/plus/src/tools.ts:284`, `packages/plus/src/tools.ts:375`). The API
 boundary applies the same rule to every write that arrives with a tool actor,
 including `instructions.mutate` with a caller-supplied actor
-(`packages/plus/src/index.ts:2335`–`packages/plus/src/index.ts:2345`); a
+(`packages/plus/src/index.ts:2339`–`packages/plus/src/index.ts:2356`); a
 missing actor normalizes to `{ type: "tui" }` and is never refused
-(`packages/plus/src/index.ts:2571`).
+(`packages/plus/src/index.ts:2583`).
 
 ## 8. RPC methods
 
 The plugin RPC definition id is `opencode.plus`
-(`packages/plus/src/rpc.ts:1092`). Inputs and outputs are the portable schemas
+(`packages/plus/src/rpc.ts:1099`). Inputs and outputs are the portable schemas
 listed before the method table; every write input accepts an optional `actor`
-(`packages/plus/src/rpc.ts:868`).
+(`packages/plus/src/rpc.ts:318`).
 
 | Method | Input → output | Declared errors | Definition |
 | --- | --- | --- | --- |
-| `project.status` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1095` |
-| `project.enable` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1099` |
-| `project.disable` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1103` |
-| `instructions.snapshot` | `Empty` → `PortableSnapshot` | `project.disabled` | `packages/plus/src/rpc.ts:1107` |
-| `instructions.refresh` | `Empty` → `PortableSnapshot` | `project.disabled` | `packages/plus/src/rpc.ts:1114` |
-| `instructions.mutate` | `PortableMutateInput` → `PortableMutateResult` | `project.disabled`, `agent.protected` | `packages/plus/src/rpc.ts:1121` |
-| `instructions.log` | `PortableLogInput` → `PortableLogOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1129` |
-| `instructions.assembled` | `PortableAssembledInput` → `PortableAssembled` | `project.disabled`, `agent.unknown` | `packages/plus/src/rpc.ts:1136` |
-| `agent.create` | `PortableCreateAgentInput` → `PortableAgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1144` |
-| `agent.rename` | `PortableRenameAgentInput` → `PortableRenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1154` |
-| `agent.delete` | `PortableDeleteAgentInput` → `PortableAgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1165` |
-| `skill.create` | `PortableCreateSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1175` |
-| `skill.import` | `PortableImportSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1184` |
-| `skill.delete` | `PortableDeleteSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` | `packages/plus/src/rpc.ts:1193` |
-| `base.create` | `PortableCreateBaseInput` → `PortableBaseRef` | `project.disabled`, `base.exists`, `base.invalid` | `packages/plus/src/rpc.ts:1202` |
-| `base.delete` | `PortableDeleteBaseInput` → `PortableBaseRef` | `project.disabled`, `base.missing`, `base.invalid` | `packages/plus/src/rpc.ts:1211` |
-| `instruction.create` | `PortableCreateInstructionInput` → `PortableInstructionRef` | `project.disabled`, `instruction.exists`, `instruction.invalid` | `packages/plus/src/rpc.ts:1220` |
-| `instruction.delete` | `PortableDeleteInstructionInput` → `PortableInstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` | `packages/plus/src/rpc.ts:1229` |
-| `mcp.add` | `PortableAddMcpInput` → `PortableMcpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` | `packages/plus/src/rpc.ts:1238` |
-| `mcp.remove` | `PortableMcpRef` → `PortableMcpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` | `packages/plus/src/rpc.ts:1247` |
-| `team.create` | `PortableCreateTeamInput` → `PortableTeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` | `packages/plus/src/rpc.ts:1256` |
-| `team.setEnabled` | `PortableSetTeamEnabledInput` → `PortableTeamRef` | `project.disabled`, `team.unknown`, `team.invalid` | `packages/plus/src/rpc.ts:1267` |
-| `team.addAgent` | `PortableTeamAddAgentInput` → `PortableAgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1276` |
-| `team.removeAgent` | `PortableTeamRemoveAgentInput` → `PortableAgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1288` |
-| `team.delete` | `PortableDeleteTeamInput` → `PortableDeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1299` |
-| `team.list` | `Empty` → `PortableTeamListOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1309` |
-| `team.runs.list` | `PortableTeamRunsListInput` → `PortableTeamRunsListOutput` | — | `packages/plus/src/rpc.ts:1316` |
-| `team.runs.stop` | `PortableTeamRunsStopInput` → `PortableTeamRunsStopOutput` | `E_BUSY`, `run.unknown` | `packages/plus/src/rpc.ts:1321` |
-| `model.add` | `PortableModelAddInput` → `PortableModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1329` |
-| `model.remove` | `PortableModelRemoveInput` → `PortableModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1339` |
-| `catalog.models` | `Empty` → `PortableCatalogModelsOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1349` |
-| `rule.add` | `PortableRuleAddInput` → `PortableRuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1356` |
-| `rule.remove` | `PortableRuleRemoveInput` → `PortableRuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1366` |
-| `rule.update` | `PortableRuleUpdateInput` → `PortableRuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1376` |
+| `project.status` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1101` |
+| `project.enable` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1105` |
+| `project.disable` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1109` |
+| `instructions.snapshot` | `Empty` → `PortableSnapshot` | `project.disabled` | `packages/plus/src/rpc.ts:1113` |
+| `instructions.refresh` | `Empty` → `PortableSnapshot` | `project.disabled` | `packages/plus/src/rpc.ts:1120` |
+| `instructions.mutate` | `PortableMutateInput` → `PortableMutateResult` | `project.disabled`, `agent.protected` | `packages/plus/src/rpc.ts:1127` |
+| `instructions.log` | `PortableLogInput` → `PortableLogOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1135` |
+| `instructions.assembled` | `PortableAssembledInput` → `PortableAssembled` | `project.disabled`, `agent.unknown` | `packages/plus/src/rpc.ts:1142` |
+| `agent.create` | `PortableCreateAgentInput` → `PortableAgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1150` |
+| `agent.rename` | `PortableRenameAgentInput` → `PortableRenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1160` |
+| `agent.delete` | `PortableDeleteAgentInput` → `PortableAgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1171` |
+| `skill.create` | `PortableCreateSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1181` |
+| `skill.import` | `PortableImportSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1190` |
+| `skill.delete` | `PortableDeleteSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` | `packages/plus/src/rpc.ts:1199` |
+| `base.create` | `PortableCreateBaseInput` → `PortableBaseRef` | `project.disabled`, `base.exists`, `base.invalid` | `packages/plus/src/rpc.ts:1208` |
+| `base.delete` | `PortableDeleteBaseInput` → `PortableBaseRef` | `project.disabled`, `base.missing`, `base.invalid` | `packages/plus/src/rpc.ts:1217` |
+| `instruction.create` | `PortableCreateInstructionInput` → `PortableInstructionRef` | `project.disabled`, `instruction.exists`, `instruction.invalid` | `packages/plus/src/rpc.ts:1226` |
+| `instruction.delete` | `PortableDeleteInstructionInput` → `PortableInstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` | `packages/plus/src/rpc.ts:1235` |
+| `mcp.add` | `PortableAddMcpInput` → `PortableMcpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` | `packages/plus/src/rpc.ts:1244` |
+| `mcp.remove` | `PortableMcpRef` → `PortableMcpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` | `packages/plus/src/rpc.ts:1253` |
+| `team.create` | `PortableCreateTeamInput` → `PortableTeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` | `packages/plus/src/rpc.ts:1262` |
+| `team.setEnabled` | `PortableSetTeamEnabledInput` → `PortableTeamRef` | `project.disabled`, `team.unknown`, `team.invalid` | `packages/plus/src/rpc.ts:1273` |
+| `team.addAgent` | `PortableTeamAddAgentInput` → `PortableAgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1282` |
+| `team.removeAgent` | `PortableTeamRemoveAgentInput` → `PortableAgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1294` |
+| `team.delete` | `PortableDeleteTeamInput` → `PortableDeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1305` |
+| `team.list` | `Empty` → `PortableTeamListOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1315` |
+| `team.runs.list` | `PortableTeamRunsListInput` → `PortableTeamRunsListOutput` | — | `packages/plus/src/rpc.ts:1322` |
+| `team.runs.stop` | `PortableTeamRunsStopInput` → `PortableTeamRunsStopOutput` | `E_BUSY`, `run.unknown` | `packages/plus/src/rpc.ts:1327` |
+| `model.add` | `PortableModelAddInput` → `PortableModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1335` |
+| `model.remove` | `PortableModelRemoveInput` → `PortableModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1345` |
+| `catalog.models` | `Empty` → `PortableCatalogModelsOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1355` |
+| `rule.add` | `PortableRuleAddInput` → `PortableRuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1362` |
+| `rule.remove` | `PortableRuleRemoveInput` → `PortableRuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1372` |
+| `rule.update` | `PortableRuleUpdateInput` → `PortableRuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1382` |
 
-Events: `project.changed` (`packages/plus/src/rpc.ts:1387`),
-`instructions.changed` (`packages/plus/src/rpc.ts:1390`) and `teams.changed`
-(`packages/plus/src/rpc.ts:1393`).
+Events: `project.changed` (`packages/plus/src/rpc.ts:1393`),
+`instructions.changed` (`packages/plus/src/rpc.ts:1396`) and `teams.changed`
+(`packages/plus/src/rpc.ts:1399`).
 
-`team.list` returns teams, not runs (`packages/plus/src/rpc.ts:1309`); the
+`team.list` returns teams, not runs (`packages/plus/src/rpc.ts:1315`); the
 agent-facing `team_list` tool lists runs visible to the caller's role (§5.2).
 `team.runs.list` is namespace-wide: it reads every `runs/<id>/run.json` under
 the Plus data root, hides `superseded`/`reaped` unless `all: true`, and sorts
 by `lastUsed` descending (`packages/plus/src/teams/api-query.ts:166`–
 `packages/plus/src/teams/api-query.ts:176`,
 `packages/plus/src/teams/api-query.ts:20`). Its handler passes `{ all }`
-straight through (`packages/plus/src/index.ts:2027`). `team.runs.stop` is the
-human stop: idle runs are interrupted and moved `stopping` → `stopped`, a
-`working` run fails `E_BUSY`, a `dead` run is reconciled to `stopped`, and a
-`stopped`/`stopping`/terminal run answers with its current state
+straight through
+(`packages/plus/src/index.ts:2038`–`packages/plus/src/index.ts:2042`).
+`team.runs.stop` is the human stop: idle runs are interrupted and moved
+`stopping` → `stopped`, a `working` run fails `E_BUSY`, a `dead` run is
+reconciled to `stopped`, and a `stopped`/`stopping`/terminal run answers with
+its current state
 (`packages/plus/src/teams/api-lifecycle.ts:80`–`packages/plus/src/teams/api-lifecycle.ts:103`,
-`packages/plus/src/index.ts:2033`).
+`packages/plus/src/index.ts:2044`).
 
 ## 9. Team composer tab
 
