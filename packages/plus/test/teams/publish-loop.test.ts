@@ -9,10 +9,13 @@ import { agentHarness, agentInfo, context, fullContext, skillHarness } from "../
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorDataHome = process.env.XDG_DATA_HOME
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = priorDataHome
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -21,6 +24,9 @@ async function tempRoot(): Promise<{ project: string }> {
   const root = await fs.mkdtemp(path.join(parent, "plus-publish-loop-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  // Live run scopes become policy rows, so the data dir is part of the
+  // fingerprint's inputs and must not be the developer's real one.
+  process.env.XDG_DATA_HOME = path.join(root, "data")
   return { project: path.join(root, "project") }
 }
 
@@ -102,4 +108,44 @@ test("second publish with fielded builtin member is a no-op", async () => {
   expect(agents.reloads).toBe(reloads)
   const again = await Effect.runPromise(ctx.agent.list())
   expect(again.data.some((entry) => String(entry.id) === "fielded")).toBe(true)
+})
+
+// The member policy rows are perm items carrying `policy`, so they are part of
+// the publish fingerprint. A member dropped on re-discovery would therefore not
+// just lose its rules: it would flip the fingerprint on every pass and dispose
+// and reinstall the whole registration set in a loop.
+test("second publish with the built-in team enabled is a no-op", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  const location = fullContext({ directory: project }).location
+  const skillState = skillHarness([])
+  const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  const ctx = context({
+    location,
+    agent: agents.domain,
+    skill,
+    tool: fullContext({ directory: project }).tool,
+    mcp: fullContext({ directory: project }).mcp,
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})),
+  )
+  const deniesShell = (permissions: readonly { action: string; resource: string; effect: string }[]) =>
+    permissions.some((rule) => rule.action === "shell" && rule.resource === "*" && rule.effect === "deny")
+  const installed = await Effect.runPromise(ctx.agent.list())
+  expect(deniesShell(installed.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
+  const afterEnable = state.fingerprint
+  const installs = agents.transforms
+  const disposes = agents.disposes
+  const reloads = agents.reloads
+  await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+  expect(state.fingerprint).toBe(afterEnable)
+  expect(agents.transforms).toBe(installs)
+  expect(agents.disposes).toBe(disposes)
+  expect(agents.reloads).toBe(reloads)
+  const republished = await Effect.runPromise(ctx.agent.list())
+  expect(deniesShell(republished.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
 })
