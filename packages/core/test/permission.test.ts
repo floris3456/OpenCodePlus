@@ -148,6 +148,43 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("refuses with the denying rule's own message when it carries one", () =>
+    Effect.gen(function* () {
+      const reason = `".git/**" is version-control or paused-tool state and is never editable.`
+      const rule: Permission.Rule = { action: "edit", resource: ".git/**", effect: "deny", message: reason }
+      expect(Permission.evaluate("edit", ".git/HEAD", [rule])).toEqual(rule)
+
+      yield* setup([rule])
+      const service = yield* Permission.Service
+      const edit = assertion({ action: "edit", resources: [".git/HEAD"] })
+      const blocked = yield* service.assert(edit).pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(Permission.BlockedError)
+      expect(blocked.message).toBe(reason)
+
+      yield* setRules([{ action: "edit", resource: ".git/**", effect: "deny" }])
+      expect((yield* service.assert(edit).pipe(Effect.flip)).message).toBe("Permission denied: edit")
+    }),
+  )
+
+  it.effect("carries an asking rule's message as request metadata", () =>
+    Effect.gen(function* () {
+      const why = "delegating starts a run; the human decides"
+      yield* setup([{ action: "team.delegate", resource: "*", effect: "ask", message: why }])
+      const delegate = { action: "team.delegate", resources: ["*"] }
+      const { service, fiber, request } = yield* waitForRequest({
+        ...delegate,
+        metadata: { tool: "team_delegate" },
+      })
+      expect(request.metadata).toEqual({ tool: "team_delegate", message: why })
+      yield* service.reply({ requestID: request.id, reply: "once" })
+      yield* Fiber.join(fiber)
+
+      yield* setRules([{ action: "team.delegate", resource: "*", effect: "ask" }])
+      const plain = yield* service.ask(assertion({ id: Permission.ID.create("per_plain"), ...delegate }))
+      expect((yield* service.get(plain.id))?.metadata).toBeUndefined()
+    }),
+  )
+
   it.effect("allows managed output reads without granting external directory access", () =>
     Effect.gen(function* () {
       yield* setup([

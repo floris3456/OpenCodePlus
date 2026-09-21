@@ -157,20 +157,26 @@ const layer = Layer.effect(
       return merge(agent?.permissions ?? missingAgentPermissions, session.permissions ?? [])
     })
 
-    function denied(input: Pick<Request, "action" | "resources">, rules: Permission.Ruleset) {
-      return input.resources.some((resource) => evaluate(input.action, resource, rules).effect === "deny")
+    function denial(input: Pick<Request, "action" | "resources">, rules: Permission.Ruleset) {
+      return input.resources
+        .map((resource) => evaluate(input.action, resource, rules))
+        .find((rule) => rule.effect === "deny")
     }
 
     function relevant(input: AssertInput, rules: Permission.Ruleset) {
       return rules.filter((rule) => Wildcard.match(input.action, rule.action))
     }
 
+    // The winning rule travels with the outcome: a denying rule's own message
+    // becomes the reason the model reads, and an asking rule's becomes the
+    // request's `metadata.message` so the human is told why they are asked.
     const evaluateInput = Effect.fnUntraced(function* (input: AssertInput) {
       const rules = yield* configured(input.sessionID, input.agent)
-      if (denied(input, rules)) return { effect: "deny" as const, rules }
+      const denied = denial(input, rules)
+      if (denied) return { effect: "deny" as const, message: denied.message, rules, rule: denied }
       const all = [...rules, ...(yield* savedRules())]
-      const effects = input.resources.map((resource) => evaluate(input.action, resource, all).effect)
-      const effect: Permission.Effect = effects.includes("ask") ? "ask" : "allow"
+      const matched = input.resources.map((resource) => evaluate(input.action, resource, all))
+      const asked = matched.find((rule) => rule.effect === "ask")
       const event = yield* hooks.trigger("permission", "evaluate", {
         sessionID: input.sessionID,
         agent: input.agent,
@@ -178,19 +184,19 @@ const layer = Layer.effect(
         resources: input.resources,
         metadata: input.metadata,
         source: input.source,
-        effect,
+        effect: asked === undefined ? "allow" : "ask",
       })
-      return { effect: event.effect, message: event.message, rules: all }
+      return { effect: event.effect, message: event.message, rules: all, rule: asked }
     })
 
-    function request(input: AssertInput, message?: string): Request {
+    function request(input: AssertInput, message?: string, rule?: Permission.Rule): Request {
       return {
         id: input.id ?? ID.create(),
         sessionID: input.sessionID,
         action: input.action,
         resources: input.resources,
         save: input.save,
-        metadata: input.metadata,
+        metadata: rule?.message === undefined ? input.metadata : { ...input.metadata, message: rule.message },
         source: input.source,
         message,
       }
@@ -213,7 +219,7 @@ const layer = Layer.effect(
 
     const ask = Effect.fn("Permission.ask")(function* (input: AssertInput) {
       const result = yield* evaluateInput(input)
-      const value = request(input, result.message)
+      const value = request(input, result.message, result.rule)
       if (result.effect === "ask") yield* create(value, input.agent)
       return { id: value.id, effect: result.effect }
     })
@@ -232,7 +238,7 @@ const layer = Layer.effect(
               })
             }
             if (result.effect === "allow") return
-            const item = yield* create(request(input, result.message), input.agent)
+            const item = yield* create(request(input, result.message, result.rule), input.agent)
             return yield* restore(Deferred.await(item.deferred)).pipe(
               // Deliberate defect tunnel: leaves wrap execution in blanket `mapError`, which
               // must not convert a user's decline into model-facing tool output. The decline
