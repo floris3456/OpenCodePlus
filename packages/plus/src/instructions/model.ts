@@ -111,6 +111,12 @@ export interface PolicyRule {
   readonly action: string
   readonly resource: string
   readonly effect: "allow" | "deny" | "ask"
+  /**
+   * Why this rule answers the way it does, in the words the agent should read.
+   * `apply.ts` installs it onto `Permission.Rule.message`, so core sends it to
+   * the model instead of the generic refusal when this rule is the one denying.
+   */
+  readonly message?: string
 }
 
 export interface PolicyEffects {

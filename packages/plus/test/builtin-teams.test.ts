@@ -122,7 +122,14 @@ test("every member gets one ceiling row per out-of-ceiling tool and none for its
         continue
       }
       expect(row?.enabled).toBe(false)
-      expect(row?.policy?.off).toEqual([{ action: `team.${tool}`, resource: "*", effect: "deny" }])
+      expect(row?.policy?.off).toEqual([
+        {
+          action: `team.${tool}`,
+          resource: "*",
+          effect: "deny",
+          message: `team_${tool} is outside the ${resolved.kind} ceiling`,
+        },
+      ])
     }
     // Per-run edit scope is never a role property: it only exists while a run does.
     expect(rows.some((item) => item.runID !== undefined)).toBe(false)

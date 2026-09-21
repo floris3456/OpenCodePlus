@@ -980,6 +980,36 @@ Row ids the producer emits, per member of an enabled team:
   never block on `ask`. The row carries `runID` and is filterable with
   `run:<id>`.
 
+#### Rule messages
+
+`Permission.Rule` (`packages/schema/src/permission.ts`) carries an optional
+`message`. When that rule is the one that denies, core's `assert` refuses with
+it instead of `Permission denied: <action>`, so the model reads the reason;
+when the rule asks, the message rides on the request as `metadata.message` so
+the TUI can say why it is asking. A rule with no message encodes exactly as it
+did before the field existed. A rule answers for a *pattern*, not for one call,
+so the quoted subject in these texts is the rule's own resource.
+
+Three kinds of team policy rule carry one:
+
+- Edit scope (`perm:edit:run:<runID>`), the two texts the round-1 permission
+  hook sent, word for word:
+  `"<resource>" is outside your scope.paths [<union of the role's live scopes>]. Report it in needs=[{kind:"path"...}].`
+  on the `deny edit *`, and
+  `"<resource>" is version-control or paused-tool state and is never editable, even inside scope.paths [<union>]. Report it in needs=[{kind:"path"...}].`
+  on `deny edit .git/**` and `deny edit .opencodeplus/**` (the `, even inside
+  scope.paths […]` clause is dropped when the run declares no paths).
+- Native denies (`perm:<action>:team-role`):
+  `<action> is not available to <member>` for a `*` resource,
+  `<action> "<resource>" is not available to <member>` for a narrower one, and
+  `shell is not available to <member>; run checks with team_check` for shell.
+- Ceiling denies (`perm:team_<tool>:role-ceiling`):
+  `team_<tool> is outside the <kind> ceiling`.
+
+The per-run `ask`→`deny` override and the `perm:search:team-tavily` narrowing
+carry no message. `Plus.PolicyRule` (`src/rpc.ts`) does not yet carry the
+field, so the message reaches core but not the RPC snapshot the TUI reads.
+
 Rows appear in a `Policy` group under the member's `Tools` group
 (`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
 governs, because several of them govern an action with no tool row to hang

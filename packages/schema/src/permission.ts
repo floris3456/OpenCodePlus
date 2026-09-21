@@ -60,6 +60,10 @@ export const Rule = Schema.Struct({
   action: Schema.String,
   resource: Schema.String,
   effect: Effect,
+  // Why this rule answers the way it does, in the words the agent should read.
+  // A denying rule sends it to the model instead of the generic refusal; an
+  // asking rule carries it on the request as `metadata.message`.
+  message: Schema.String.pipe(optional),
 }).annotate({ identifier: "Permission.Rule" })
 
 export const Ruleset = Schema.Array(Rule).annotate({ identifier: "Permission.Ruleset" })

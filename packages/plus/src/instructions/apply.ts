@@ -314,7 +314,7 @@ async function applySkills(
 
 function pushRule(
   editor: AgentEditor,
-  rule: { agent: string; action: string; resource: string; effect: PolicyRule["effect"] },
+  rule: { agent: string; action: string; resource: string; effect: PolicyRule["effect"]; message?: string },
   team: ReadonlySet<string>,
 ) {
   // Core evaluates permissions last-match-wins, so appending is always
@@ -329,7 +329,14 @@ function pushRule(
   // old skip-if-absent behaviour.
   if (!editor.get(rule.agent) && !team.has(rule.agent)) return
   editor.update(rule.agent, (agent) => {
-    agent.permissions.push({ action: rule.action, resource: rule.resource, effect: rule.effect })
+    agent.permissions.push({
+      action: rule.action,
+      resource: rule.resource,
+      effect: rule.effect,
+      // Omitted rather than undefined: a rule with no message must encode
+      // exactly as it did before rule messages existed.
+      ...(rule.message === undefined ? {} : { message: rule.message }),
+    })
   })
 }
 
@@ -363,8 +370,9 @@ function permDenials(input: ApplyInput): { agent: string; action: string; resour
 // rules when it resolves disabled. The rules are the row's whole answer — the
 // role ceiling, the native denies and a live run's edit scope all arrive here
 // — so a project or global override of the row changes what lands with no
-// other code path involved.
-function policyRules(input: ApplyInput): { agent: string; action: string; resource: string; effect: PolicyRule["effect"] }[] {
+// other code path involved. A rule's `message` travels with it: core sends it
+// to the model in place of the generic refusal when that rule denies.
+function policyRules(input: ApplyInput): { agent: string; action: string; resource: string; effect: PolicyRule["effect"]; message?: string }[] {
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       const policy = item.policy
@@ -372,7 +380,7 @@ function policyRules(input: ApplyInput): { agent: string; action: string; resour
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
       const rules = resolved.enabled ? policy.on : policy.off
-      return rules.map((rule) => ({ agent: agent.id, action: rule.action, resource: rule.resource, effect: rule.effect }))
+      return rules.map((rule) => ({ agent: agent.id, ...rule }))
     }),
   )
 }
