@@ -1,8 +1,8 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createMemo, createRoot, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { TextAttributes } from "@opentui/core"
-import { Definition, type TeamLevel, type TeamListEntry } from "../rpc.js"
+import { Definition, type TeamLevel, type TeamListEntry, type TeamRunEntry } from "../rpc.js"
 
 type SessionItem = ReturnType<Plugin.Context["data"]["session"]["list"]>[number]
 
@@ -209,13 +209,17 @@ export function createActiveTeam(context: Plugin.Context) {
       },
     })
 
+    const [showInactiveSignal, setShowInactiveSignal] = createSignal(false)
+
     const disposeComposerTab = context.ui.composer?.tab({
       id: "team",
       label: "Team",
-      hints: () => {
-        const shortcut = context.keymap.shortcuts("composer.team.select")?.[0] ?? "return"
-        return [{ label: "select", shortcut }]
-      },
+      hints: () => [
+        { label: "move", shortcut: "↑↓" },
+        { label: "attach", shortcut: "⏎" },
+        { label: showInactiveSignal() ? "inactive" : "active", shortcut: "ctrl+a" },
+        { label: "stop|resume", shortcut: "ctrl+d" },
+      ],
       render: (input) => (
         <TeamMonitorTab
           sessionID={input.sessionID}
@@ -223,6 +227,8 @@ export function createActiveTeam(context: Plugin.Context) {
           close={input.close}
           activeTeam={activeTeam}
           context={context}
+          showInactive={showInactiveSignal}
+          setShowInactive={setShowInactiveSignal}
         />
       ),
     }) ?? (() => {})
@@ -244,119 +250,140 @@ export function createActiveTeam(context: Plugin.Context) {
   })
 }
 
-function sessionAgent(s: SessionItem): string | undefined {
-  if (s.agent) return s.agent
-  const title = (s as any).title as string | undefined
-  const match = title?.match(/@(\w+) subagent/)
-  return match ? match[1] : undefined
-}
-
 export interface TeamMonitorTabProps {
   sessionID: string
   active: () => boolean
   close: () => void
-  activeTeam: () => ActiveTeamInfo | undefined
+  activeTeam?: () => ActiveTeamInfo | undefined
   context: Plugin.Context
-}
-
-export interface TeamMemberRow {
-  id: string
-  mode: string
-  model: string
-  status: "running" | "idle" | "none"
-  sessionID?: string
-  current: boolean
+  showInactive?: () => boolean
+  setShowInactive?: (val: boolean | ((prev: boolean) => boolean)) => void
 }
 
 export function TeamMonitorTab(props: TeamMonitorTabProps) {
+  const plus = props.context.client.rpc(Definition)
   const [store, setStore] = createStore({ selected: 0 })
+  const [internalShowInactive, setInternalShowInactive] = createSignal(false)
+  const showInactive = () => (props.showInactive ? props.showInactive() : internalShowInactive())
+  const setShowInactive = (val: boolean | ((prev: boolean) => boolean)) => {
+    if (props.setShowInactive) props.setShowInactive(val)
+    else setInternalShowInactive(val)
+  }
 
-  const hostAgents = createMemo(() => {
-    return props.context.data.location.agent.list(props.context.location) ??
-      props.context.data.location.agent.list() ??
-      []
+  const [runs, setRuns] = createSignal<readonly TeamRunEntry[]>([])
+  let disposed = false
+
+  function targetLocation() {
+    const current = props.context.location
+    if (current !== undefined) return { directory: current.directory, workspace: current.workspaceID }
+    const fallback = props.context.data.location.default()
+    if (fallback === undefined) return undefined
+    return { directory: fallback.directory, workspace: fallback.workspaceID }
+  }
+
+  function refreshRuns() {
+    if (disposed) return
+    const location = targetLocation()
+    void plus["team.runs.list"]({ all: showInactive() }, { location }).then(
+      (output) => {
+        if (disposed) return
+        setRuns(output.runs)
+      },
+      () => {
+        if (disposed) return
+        setRuns([])
+      },
+    )
+  }
+
+  createEffect(() => {
+    targetLocation()
+    showInactive()
+    refreshRuns()
   })
 
-  const currentSession = createMemo(() => props.context.data.session.get(props.sessionID))
-
-  const rootSessionID = createMemo(() => {
-    const current = currentSession()
-    return current ? props.context.data.session.root(current.id) : props.sessionID
+  const unsubscribeTeams = plus.events.on("teams.changed", () => {
+    if (!disposed) refreshRuns()
   })
 
-  const familySessions = createMemo(() => {
-    const root = rootSessionID()
-    const all = props.context.data.session.list()
-    const byID = new Map(all.map((s) => [s.id, s]))
-    function findRoot(s: SessionItem): string {
-      if (!s.parentID) return s.id
-      const parent = byID.get(s.parentID)
-      return parent ? findRoot(parent) : s.id
+  const unsubscribeSession = props.context.data.listen((event) => {
+    if (!disposed && event.details.type.startsWith("session.")) {
+      refreshRuns()
     }
-    return all.filter((s) => findRoot(s) === root || s.id === root)
-  })
-
-  const currentAgentID = createMemo(() => {
-    const fromAgents = props.context.ui.agents.current?.()
-    if (fromAgents) return fromAgents
-    return currentSession()?.agent
-  })
-
-  const members = createMemo<TeamMemberRow[]>(() => {
-    const team = props.activeTeam()
-    if (!team) return []
-
-    const agents = hostAgents()
-    const sessions = familySessions()
-    const currentId = currentAgentID()
-
-    return team.members.map((memberId) => {
-      const agent = agents.find((a) => a.id === memberId)
-      const mode = agent?.mode ?? "primary"
-      const model = agent?.model?.id ?? "default"
-
-      const matchingSessions = sessions.filter((s) => sessionAgent(s) === memberId)
-      let status: "running" | "idle" | "none" = "none"
-      let sessionID: string | undefined = undefined
-
-      if (matchingSessions.length > 0) {
-        const running = matchingSessions.find((s) => props.context.data.session.status(s.id) === "running")
-        if (running) {
-          status = "running"
-          sessionID = running.id
-        } else {
-          status = "idle"
-          sessionID = matchingSessions[matchingSessions.length - 1].id
-        }
-      }
-
-      return {
-        id: memberId,
-        mode,
-        model,
-        status,
-        sessionID,
-        current: memberId === currentId,
-      }
-    })
   })
 
   createEffect(() => {
     if (!props.active()) return
-    const list = members()
-    if (list.length === 0) return
+    const interval = setInterval(() => {
+      refreshRuns()
+    }, 2000)
+    onCleanup(() => clearInterval(interval))
+  })
+
+  onCleanup(() => {
+    disposed = true
+    unsubscribeTeams()
+    unsubscribeSession()
+  })
+
+  const ACTIVE_STATES = new Set(["working", "idle", "starting", "blocked_input", "stopping"])
+  const INACTIVE_STATES = new Set(["stopped", "dead", "superseded", "reaped"])
+
+  const visibleRuns = createMemo(() => {
+    const list = runs()
+    const allowed = showInactive() ? INACTIVE_STATES : ACTIVE_STATES
+    return list.filter((r) => allowed.has(r.state))
+  })
+
+  createEffect(() => {
+    if (!props.active()) return
+    const list = visibleRuns()
+    if (list.length === 0) {
+      if (store.selected !== 0) setStore("selected", 0)
+      return
+    }
     if (store.selected >= list.length) {
       setStore("selected", Math.max(0, list.length - 1))
     }
   })
 
-  function selectMember(member: TeamMemberRow) {
-    if (member.sessionID) {
-      props.context.ui.router.navigate({ type: "session", sessionID: member.sessionID })
+  function attachRun(run: TeamRunEntry) {
+    if (run.sessionID) {
+      props.context.ui.router.navigate({ type: "session", sessionID: run.sessionID })
       props.close()
-    } else {
-      props.context.ui.agents.set?.(member.id)
-      props.close()
+    }
+  }
+
+  async function handleAction(run: TeamRunEntry) {
+    if (run.state === "idle") {
+      const location = targetLocation()
+      try {
+        await plus["team.runs.stop"]({ run: run.id }, { location })
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : typeof err === "object" && err !== null && "message" in err
+              ? String((err as { message: unknown }).message)
+              : "Failed to stop run"
+        props.context.ui.toast.show({
+          variant: "warning",
+          message,
+        })
+      }
+      refreshRuns()
+      return
+    }
+    if (run.state === "stopped" || run.state === "dead") {
+      attachRun(run)
+      return
+    }
+    if (run.state === "working") {
+      props.context.ui.toast.show({
+        variant: "warning",
+        message: "Run must be interrupted first",
+      })
+      return
     }
   }
 
@@ -367,7 +394,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     commands: [
       {
         id: "composer.team.up",
-        title: "Previous team member",
+        title: "Previous run",
         group: "Composer",
         run() {
           if (store.selected === 0) {
@@ -379,22 +406,44 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       },
       {
         id: "composer.team.down",
-        title: "Next team member",
+        title: "Next run",
         group: "Composer",
         run() {
-          const list = members()
+          const list = visibleRuns()
           if (list.length === 0) return
           setStore("selected", (prev) => (prev + 1) % list.length)
         },
       },
       {
         id: "composer.team.select",
-        title: "Select team member",
+        title: "Attach run",
         group: "Composer",
         run() {
-          const list = members()
-          const member = list[store.selected]
-          if (member) selectMember(member)
+          const list = visibleRuns()
+          const run = list[store.selected]
+          if (run) attachRun(run)
+        },
+      },
+      {
+        id: "composer.team.toggle_activity",
+        title: "Toggle inactive runs",
+        group: "Composer",
+        bind: "ctrl+a",
+        run() {
+          setStore("selected", 0)
+          setShowInactive((prev) => !prev)
+          refreshRuns()
+        },
+      },
+      {
+        id: "composer.team.action",
+        title: "Stop or resume run",
+        group: "Composer",
+        bind: "ctrl+d",
+        run() {
+          const list = visibleRuns()
+          const run = list[store.selected]
+          if (run) void handleAction(run)
         },
       },
     ],
@@ -402,74 +451,68 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
 
   return (
     <Show
-      when={props.activeTeam()}
+      when={visibleRuns().length > 0}
       fallback={
         <box paddingLeft={1}>
-          <text fg={props.context.theme.text.subdued}>No active team — select one with ctrl+x a</text>
+          <text fg={props.context.theme.text.subdued}>
+            {showInactive() ? "No inactive runs" : "No active runs"}
+          </text>
         </box>
       }
     >
-      <Show
-        when={members().length > 0}
-        fallback={
-          <box paddingLeft={1}>
-            <text fg={props.context.theme.text.subdued}>No team members</text>
-          </box>
-        }
-      >
-        <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5}>
-          <For each={members()}>
-            {(member, index) => {
-              const isSelected = createMemo(() => index() === store.selected)
-              return (
-                <box
-                  flexDirection="row"
-                  paddingLeft={1}
-                  paddingRight={1}
-                  backgroundColor={
-                    isSelected()
-                      ? props.context.theme.background.action.primary.focused
-                      : member.current
-                        ? props.context.theme.background.action.primary.selected
-                        : props.context.theme.background.action.primary.default
-                  }
-                  onMouseMove={() => setStore("selected", index())}
-                  onMouseUp={() => {
-                    setStore("selected", index())
-                    selectMember(member)
-                  }}
-                >
-                  <box flexGrow={1} minWidth={0} flexDirection="row">
-                    <text
-                      fg={
-                        isSelected()
-                          ? props.context.theme.text.action.primary.focused
-                          : member.current
-                            ? props.context.theme.text.action.primary.selected
-                            : props.context.theme.text.action.primary.default
-                      }
-                      attributes={isSelected() ? TextAttributes.BOLD : undefined}
-                      wrapMode="none"
-                    >
-                      {member.id} — {member.mode} — {member.model}
-                    </text>
-                  </box>
+      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5}>
+        <For each={visibleRuns()}>
+          {(run, index) => {
+            const isSelected = createMemo(() => index() === store.selected)
+            const isCurrent = createMemo(() => run.sessionID === props.sessionID)
+            return (
+              <box
+                flexDirection="row"
+                paddingLeft={1}
+                paddingRight={1}
+                backgroundColor={
+                  isSelected()
+                    ? props.context.theme.background.action.primary.focused
+                    : isCurrent()
+                      ? props.context.theme.background.action.primary.selected
+                      : props.context.theme.background.action.primary.default
+                }
+                onMouseMove={() => setStore("selected", index())}
+                onMouseUp={() => {
+                  setStore("selected", index())
+                  attachRun(run)
+                }}
+              >
+                <box flexGrow={1} minWidth={0} flexDirection="row">
                   <text
                     fg={
                       isSelected()
                         ? props.context.theme.text.action.primary.focused
-                        : props.context.theme.text.subdued
+                        : isCurrent()
+                          ? props.context.theme.text.action.primary.selected
+                          : props.context.theme.text.action.primary.default
                     }
+                    attributes={isSelected() ? TextAttributes.BOLD : undefined}
                     wrapMode="none"
                   >
-                    {member.status}
+                    {run.id} — {run.role} — {run.state}{run.task ? ` — ${run.task}` : ""}
                   </text>
                 </box>
-              )
-            }}
-          </For>
-        </scrollbox>
-      </Show>
+                <text
+                  fg={
+                    isSelected()
+                      ? props.context.theme.text.action.primary.focused
+                      : props.context.theme.text.subdued
+                  }
+                  wrapMode="none"
+                >
+                  {run.state}
+                </text>
+              </box>
+            )
+          }}
+        </For>
+      </scrollbox>
     </Show>
   )
 }

@@ -346,16 +346,70 @@ test("createActiveTeam registers composer tab and hints, cleans up on dispose", 
   expect(registeredTab.id).toBe("team")
   expect(registeredTab.label).toBe("Team")
   const hints = registeredTab.hints()
-  expect(hints).toEqual([{ label: "select", shortcut: "return" }])
+  expect(hints).toEqual([
+    { label: "move", shortcut: "↑↓" },
+    { label: "attach", shortcut: "⏎" },
+    { label: "active", shortcut: "ctrl+a" },
+    { label: "stop|resume", shortcut: "ctrl+d" },
+  ])
 
   manager.dispose()
   expect(tabUnregistered).toBe(true)
 })
 
-test("TeamMonitorTab renders fallback when no team is active, and lists members with mode/model/status when active", async () => {
-  const [activeTeamSignal, setActiveTeamSignal] = createSignal<any>(undefined)
-  const [currentAgentSignal] = createSignal<string>("coder")
+test("TeamMonitorTab renders active runs by default, toggles to inactive with ctrl+a, and navigates with select", async () => {
+  let commands: any[] = []
   let closeCalled = 0
+  let navigated: any = undefined
+  const toasts: any[] = []
+  const stopCalled: string[] = []
+
+  const fakeRuns = [
+    {
+      id: "w-run-active",
+      role: "gemini-implementer",
+      state: "working",
+      task: "T4",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T12:00:00.000Z",
+      sessionID: "ses_active",
+      parent: "main-01",
+    },
+    {
+      id: "w-run-idle",
+      role: "muse-implementer",
+      state: "idle",
+      task: "T5",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T11:00:00.000Z",
+      sessionID: "ses_idle",
+      parent: "main-01",
+    },
+    {
+      id: "w-run-stopped",
+      role: "deepseek-implementer",
+      state: "stopped",
+      task: "T3",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T10:00:00.000Z",
+      sessionID: "ses_stopped",
+      parent: "main-01",
+    },
+    {
+      id: "w-run-dead",
+      role: "coder-implementer",
+      state: "dead",
+      task: null,
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T09:00:00.000Z",
+      sessionID: "ses_dead",
+      parent: "main-01",
+    },
+  ]
 
   const white = RGBA.fromHex("#ffffff")
   const gray = RGBA.fromHex("#888888")
@@ -364,118 +418,6 @@ test("TeamMonitorTab renders fallback when no team is active, and lists members 
     text: {
       default: white,
       subdued: gray,
-      action: {
-        primary: { default: white, selected: white, focused: white },
-      },
-    },
-    background: {
-      default: black,
-      action: {
-        primary: { default: black, selected: black, focused: black },
-      },
-    },
-  }
-
-  const mockSessions = [
-    { id: "ses_root", agent: "coder", projectID: "p" },
-    { id: "ses_child_running", parentID: "ses_root", agent: "reviewer", projectID: "p" },
-    { id: "ses_child_idle", parentID: "ses_root", agent: "coder", projectID: "p" },
-  ]
-
-  const mockAgents = [
-    { id: "coder", mode: "primary", model: { id: "gpt-5", providerID: "openai" } },
-    { id: "reviewer", mode: "subagent", model: { id: "claude-3-5-sonnet", providerID: "anthropic" } },
-    { id: "scout", mode: "primary" },
-  ]
-
-  const context: any = {
-    location: { directory: "/my/project" },
-    theme: testTheme,
-    data: {
-      location: {
-        agent: {
-          list: () => mockAgents,
-        },
-      },
-      session: {
-        list: () => mockSessions,
-        get: (id: string) => mockSessions.find((s) => s.id === id),
-        root: () => "ses_root",
-        status: (id: string) => (id === "ses_child_running" ? "running" : "idle"),
-      },
-    },
-    keymap: {
-      layer: () => {},
-    },
-    ui: {
-      agents: {
-        current: () => currentAgentSignal(),
-        set: () => {},
-      },
-      router: {
-        navigate: () => {},
-      },
-    },
-  }
-
-  const output = await createTestRenderer({ width: 100, height: 20 })
-  render(
-    () => (
-      <TeamMonitorTab
-        sessionID="ses_root"
-        active={() => true}
-        close={() => closeCalled++}
-        activeTeam={activeTeamSignal}
-        context={context}
-      />
-    ),
-    output.renderer,
-  )
-
-  await output.renderOnce()
-  expect(output.captureCharFrame()).toContain("No active team — select one with ctrl+x a")
-
-  setActiveTeamSignal({
-    team: "dev-team",
-    name: "dev-team",
-    level: "project",
-    members: ["coder", "reviewer", "scout"],
-  })
-
-  await output.renderOnce()
-  const frame = output.captureCharFrame()
-  expect(frame).toContain("coder — primary — gpt-5")
-  expect(frame).toContain("idle")
-  expect(frame).toContain("reviewer — subagent — claude-3-5-sonnet")
-  expect(frame).toContain("running")
-  expect(frame).toContain("scout — primary — default")
-  expect(frame).toContain("none")
-
-  output.renderer.destroy()
-})
-
-test("TeamMonitorTab keymap commands: navigate on member with session, select agent on member without session, up closes when at 0", async () => {
-  let commands: any[] = []
-  let closeCalled = 0
-  let navigated: any = undefined
-  let selectedAgent: any = undefined
-
-  const mockSessions = [
-    { id: "ses_root", agent: "coder", projectID: "p" },
-    { id: "ses_sub", parentID: "ses_root", agent: "coder", projectID: "p" },
-  ]
-
-  const mockAgents = [
-    { id: "coder", mode: "primary", model: { id: "gpt-5", providerID: "openai" } },
-    { id: "scout", mode: "primary" },
-  ]
-
-  const white = RGBA.fromHex("#ffffff")
-  const black = RGBA.fromHex("#000000")
-  const testTheme = {
-    text: {
-      default: white,
-      subdued: white,
       action: { primary: { default: white, selected: white, focused: white } },
     },
     background: {
@@ -488,15 +430,23 @@ test("TeamMonitorTab keymap commands: navigate on member with session, select ag
     location: { directory: "/my/project" },
     theme: testTheme,
     data: {
-      location: {
-        agent: { list: () => mockAgents },
-      },
-      session: {
-        list: () => mockSessions,
-        get: (id: string) => mockSessions.find((s) => s.id === id),
-        root: () => "ses_root",
-        status: () => "idle",
-      },
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: () => () => {},
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async (args: { all?: boolean }) => ({
+          runs: fakeRuns.filter((r) => {
+            if (!args.all && (r.state === "superseded" || r.state === "reaped")) return false
+            return true
+          }),
+        }),
+        "team.runs.stop": async (args: { run: string }) => {
+          stopCalled.push(args.run)
+          return { run: args.run, state: "stopped" }
+        },
+        events: { on: () => () => {} },
+      }),
     },
     keymap: {
       layer: (factory: any) => {
@@ -505,12 +455,7 @@ test("TeamMonitorTab keymap commands: navigate on member with session, select ag
       },
     },
     ui: {
-      agents: {
-        current: () => "coder",
-        set: (id: string) => {
-          selectedAgent = id
-        },
-      },
+      toast: { show: (t: any) => toasts.push(t) },
       router: {
         navigate: (dest: any) => {
           navigated = dest
@@ -519,12 +464,7 @@ test("TeamMonitorTab keymap commands: navigate on member with session, select ag
     },
   }
 
-  const activeTeam = () => ({
-    team: "dev-team",
-    name: "dev-team",
-    level: "project" as const,
-    members: ["coder", "scout"],
-  })
+  const [showInactiveSignal, setShowInactiveSignal] = createSignal(false)
 
   const output = await createTestRenderer({ width: 100, height: 20 })
   render(
@@ -533,7 +473,255 @@ test("TeamMonitorTab keymap commands: navigate on member with session, select ag
         sessionID="ses_root"
         active={() => true}
         close={() => closeCalled++}
-        activeTeam={activeTeam}
+        context={context}
+        showInactive={showInactiveSignal}
+        setShowInactive={setShowInactiveSignal}
+      />
+    ),
+    output.renderer,
+  )
+
+  await output.renderOnce()
+
+  // 1. Default view: active runs (w-run-active, w-run-idle)
+  const defaultFrame = output.captureCharFrame()
+  expect(defaultFrame).toContain("w-run-active — gemini-implementer — working — T4")
+  expect(defaultFrame).toContain("w-run-idle — muse-implementer — idle — T5")
+  expect(defaultFrame).not.toContain("w-run-stopped")
+  expect(defaultFrame).not.toContain("w-run-dead")
+
+  expect(commands.length).toBe(5)
+  const upCmd = commands.find((c) => c.id === "composer.team.up")
+  const downCmd = commands.find((c) => c.id === "composer.team.down")
+  const selectCmd = commands.find((c) => c.id === "composer.team.select")
+  const toggleCmd = commands.find((c) => c.id === "composer.team.toggle_activity")
+  const actionCmd = commands.find((c) => c.id === "composer.team.action")
+
+  // Enter on index 0 (w-run-active) navigates to its sessionID
+  selectCmd.run()
+  expect(navigated).toEqual({ type: "session", sessionID: "ses_active" })
+  expect(closeCalled).toBe(1)
+
+  // 2. Toggle to inactive runs with ctrl+a
+  toggleCmd.run()
+  await new Promise((r) => setTimeout(r, 10))
+  await output.renderOnce()
+
+  const inactiveFrame = output.captureCharFrame()
+  expect(inactiveFrame).toContain("w-run-stopped — deepseek-implementer — stopped — T3")
+  expect(inactiveFrame).toContain("w-run-dead — coder-implementer — dead")
+  expect(inactiveFrame).not.toContain("w-run-active")
+  expect(inactiveFrame).not.toContain("w-run-idle")
+
+  // Enter on inactive row (w-run-stopped) attaches to its session
+  selectCmd.run()
+  expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
+  expect(closeCalled).toBe(2)
+
+  // 3. Toggle back to active
+  toggleCmd.run()
+  await new Promise((r) => setTimeout(r, 10))
+  await output.renderOnce()
+  expect(output.captureCharFrame()).toContain("w-run-active")
+
+  output.renderer.destroy()
+})
+
+test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working shows warning toast", async () => {
+  let commands: any[] = []
+  let closeCalled = 0
+  let navigated: any = undefined
+  const toasts: any[] = []
+  const stopCalled: string[] = []
+
+  const fakeRuns = [
+    {
+      id: "w-run-working",
+      role: "gemini-implementer",
+      state: "working",
+      task: "T1",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T12:00:00.000Z",
+      sessionID: "ses_working",
+      parent: "main-01",
+    },
+    {
+      id: "w-run-idle",
+      role: "muse-implementer",
+      state: "idle",
+      task: "T2",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T11:00:00.000Z",
+      sessionID: "ses_idle",
+      parent: "main-01",
+    },
+    {
+      id: "w-run-stopped",
+      role: "deepseek-implementer",
+      state: "stopped",
+      task: "T3",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T10:00:00.000Z",
+      sessionID: "ses_stopped",
+      parent: "main-01",
+    },
+  ]
+
+  const white = RGBA.fromHex("#ffffff")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { default: white, subdued: white, action: { primary: { default: white, selected: white, focused: white } } },
+    background: { default: black, action: { primary: { default: black, selected: black, focused: black } } },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: () => () => {},
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async () => ({ runs: fakeRuns }),
+        "team.runs.stop": async (args: { run: string }) => {
+          stopCalled.push(args.run)
+          return { run: args.run, state: "stopped" }
+        },
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: {
+      layer: (factory: any) => {
+        const layer = factory()
+        if (layer.commands) commands = layer.commands
+      },
+    },
+    ui: {
+      toast: { show: (t: any) => toasts.push(t) },
+      router: {
+        navigate: (dest: any) => {
+          navigated = dest
+        },
+      },
+    },
+  }
+
+  const [showInactiveSignal, setShowInactiveSignal] = createSignal(false)
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => (
+      <TeamMonitorTab
+        sessionID="ses_root"
+        active={() => true}
+        close={() => closeCalled++}
+        context={context}
+        showInactive={showInactiveSignal}
+        setShowInactive={setShowInactiveSignal}
+      />
+    ),
+    output.renderer,
+  )
+
+  await output.renderOnce()
+  const upCmd = commands.find((c) => c.id === "composer.team.up")
+  const downCmd = commands.find((c) => c.id === "composer.team.down")
+  const actionCmd = commands.find((c) => c.id === "composer.team.action")
+  const toggleCmd = commands.find((c) => c.id === "composer.team.toggle_activity")
+
+  // At index 0 (w-run-working): ctrl+d shows "Run must be interrupted first" toast
+  actionCmd.run()
+  expect(toasts.some((t) => t.message === "Run must be interrupted first")).toBe(true)
+  expect(stopCalled).toHaveLength(0)
+
+  // Move down to index 1 (w-run-idle): ctrl+d calls stop
+  downCmd.run()
+  await output.renderOnce()
+  actionCmd.run()
+  expect(stopCalled).toEqual(["w-run-idle"])
+
+  // Up when at index 0 closes the composer
+  upCmd.run()
+  await output.renderOnce()
+  upCmd.run()
+  expect(closeCalled).toBe(1)
+
+  // Toggle to inactive (w-run-stopped): ctrl+d attaches/resumes
+  toggleCmd.run()
+  await new Promise((r) => setTimeout(r, 10))
+  await output.renderOnce()
+
+  actionCmd.run()
+  expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
+  expect(closeCalled).toBe(2)
+
+  output.renderer.destroy()
+})
+
+test("TeamMonitorTab ctrl+d surfaces warning toast when stop RPC is rejected", async () => {
+  let commands: any[] = []
+  const toasts: any[] = []
+
+  const fakeRuns = [
+    {
+      id: "w-run-idle",
+      role: "gemini-implementer",
+      state: "idle",
+      task: "T2",
+      head: "abcdef",
+      worktree: "present",
+      lastUsed: "2026-09-10T11:00:00.000Z",
+      sessionID: "ses_idle",
+      parent: "main-01",
+    },
+  ]
+
+  const white = RGBA.fromHex("#ffffff")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { default: white, subdued: white, action: { primary: { default: white, selected: white, focused: white } } },
+    background: { default: black, action: { primary: { default: black, selected: black, focused: black } } },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: () => () => {},
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async () => ({ runs: fakeRuns }),
+        "team.runs.stop": async () => {
+          throw new Error("Run is working; interrupt it first.")
+        },
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: {
+      layer: (factory: any) => {
+        const layer = factory()
+        if (layer.commands) commands = layer.commands
+      },
+    },
+    ui: {
+      toast: { show: (t: any) => toasts.push(t) },
+      router: { navigate: () => {} },
+    },
+  }
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => (
+      <TeamMonitorTab
+        sessionID="ses_root"
+        active={() => true}
+        close={() => {}}
         context={context}
       />
     ),
@@ -541,29 +729,9 @@ test("TeamMonitorTab keymap commands: navigate on member with session, select ag
   )
 
   await output.renderOnce()
-  expect(commands.length).toBe(3)
-  const upCmd = commands.find((c) => c.id === "composer.team.up")
-  const downCmd = commands.find((c) => c.id === "composer.team.down")
-  const selectCmd = commands.find((c) => c.id === "composer.team.select")
-
-  // Currently at index 0 (coder). Coder has a session ("ses_sub").
-  selectCmd.run()
-  expect(navigated).toEqual({ type: "session", sessionID: "ses_sub" })
-  expect(closeCalled).toBe(1)
-
-  // Move down to index 1 (scout). Scout has NO session.
-  downCmd.run()
-  await output.renderOnce()
-  selectCmd.run()
-  expect(selectedAgent).toEqual("scout")
-  expect(closeCalled).toBe(2)
-
-  // Move up to index 0 (coder).
-  upCmd.run()
-  await output.renderOnce()
-  // At index 0, pressing up closes composer:
-  upCmd.run()
-  expect(closeCalled).toBe(3)
+  const actionCmd = commands.find((c) => c.id === "composer.team.action")
+  await actionCmd.run()
+  expect(toasts.some((t) => t.message === "Run is working; interrupt it first.")).toBe(true)
 
   output.renderer.destroy()
 })

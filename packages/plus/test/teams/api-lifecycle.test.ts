@@ -10,7 +10,7 @@ import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
 import { loadRun, saveRun, isAttemptTerminal, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
-import { stopHandler, supersedeHandler } from "../../src/teams/api-lifecycle.js"
+import { stopHandler, stopRun, supersedeHandler } from "../../src/teams/api-lifecycle.js"
 import { onSessionIdle } from "../../src/teams/lifecycle.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 
@@ -549,5 +549,91 @@ test("supersede on an idle child with terminal attempt does not interrupt", asyn
     } finally {
       await removeRepo(repo.dir)
     }
+  })
+})
+
+test("stopRun on an idle run in the namespace stops it without ownership check", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-idle-stop-001", state: "idle", sessionID: "ses_idle_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "stopped" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+    expect(sessions.interrupted).toHaveLength(1)
+  })
+})
+
+test("stopRun on a working run fails E_BUSY", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-working-stop-001", state: "working", sessionID: "ses_working_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const err = rejected(await stopRun(context({ session: sessions.domain }), run.id))
+    expect(err.code).toBe("E_BUSY")
+    expect(err.message).toContain("working")
+  })
+})
+
+test("stopRun on a dead run reconciles to stopped", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-dead-stop-001", state: "dead", sessionID: "ses_dead_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "stopped" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+  })
+})
+
+test("stopRun on an unknown run fails run.unknown", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const sessions = recordSession()
+    const err = rejected(await stopRun(context({ session: sessions.domain }), "w-nonexistent"))
+    expect(err.code).toBe("run.unknown")
+  })
+})
+
+test("stopRun on already stopped run returns stopped without modifying history", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-stopped-stop-001", state: "stopped", sessionID: "ses_stopped_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "stopped" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.history).toHaveLength(0)
+  })
+})
+
+test("stopRun on superseded or reaped run preserves terminal state without modifying record", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const superseded = baseRun({ id: "w-sup-stop-001", state: "superseded", sessionID: "ses_sup_stop" })
+    const reaped = baseRun({ id: "w-reap-stop-001", state: "reaped", sessionID: "ses_reap_stop" })
+    await saveRun(root, superseded)
+    await saveRun(root, reaped)
+    const sessions = recordSession()
+    const resSup = required(await stopRun(context({ session: sessions.domain }), superseded.id)) as { run: string; state: string }
+    const resReap = required(await stopRun(context({ session: sessions.domain }), reaped.id)) as { run: string; state: string }
+    expect(resSup).toEqual({ run: superseded.id, state: "superseded" })
+    expect(resReap).toEqual({ run: reaped.id, state: "reaped" })
+    expect((await loadRun(root, superseded.id))?.state).toBe("superseded")
+    expect((await loadRun(root, reaped.id))?.state).toBe("reaped")
+  })
+})
+
+test("stopRun on ready run sets stopRequested and returns accurate state ready", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-ready-stop-001", state: "ready", sessionID: "ses_ready_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "ready" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("ready")
+    expect(stored?.stopRequested).toBe(true)
   })
 })

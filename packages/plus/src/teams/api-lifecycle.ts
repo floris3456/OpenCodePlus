@@ -7,7 +7,7 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { gitRaw } from "./git.js"
 import { put } from "./inbox.js"
 import { io } from "./io.js"
-import { attemptTransition, isAttemptTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
+import { attemptTransition, isAttemptTerminal, isTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
 import { StopInput, SupersedeInput } from "./schema.js"
 import { readJson } from "./store.js"
 import { setState } from "./tasks.js"
@@ -75,6 +75,31 @@ async function waitForNotWorking(root: string, runID: string, waitMs: number): P
     current = await loadRun(root, runID)
   }
   return current
+}
+
+export async function stopRun(ctx: Context, runID: string): Promise<TeamApiResult> {
+  const root = teamsDataDir()
+  const run = await loadRun(root, runID)
+  if (run === undefined) return fail("run.unknown", `Run ${runID} not found in this namespace.`)
+  if (run.state === "working") return fail("E_BUSY", `Run ${runID} is working; interrupt it first.`)
+  if (run.state === "stopped") return succeeded({ run: run.id, state: "stopped" })
+  if (run.state === "stopping") return succeeded({ run: run.id, state: "stopping" })
+  if (isTerminal(run.state)) return succeeded({ run: run.id, state: run.state })
+  if (run.state === "idle") {
+    await interruptSession(ctx, run.sessionID)
+    const stopping = transition(run, "stopping", "shutdown")
+    const stopped = transition(stopping, "stopped", "exited")
+    await saveRun(root, stopped)
+    return succeeded({ run: run.id, state: "stopped" })
+  }
+  if (run.state === "dead") {
+    const stopped = transition(run, "stopped", "reconcile")
+    await saveRun(root, stopped)
+    return succeeded({ run: run.id, state: "stopped" })
+  }
+  const updated: RunRecord = { ...run, stopRequested: true }
+  await saveRun(root, updated)
+  return succeeded({ run: run.id, state: updated.state })
 }
 
 export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCaller): Promise<TeamApiResult> {

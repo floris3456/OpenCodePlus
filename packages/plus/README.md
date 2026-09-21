@@ -88,7 +88,17 @@ Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl
 
 Teams: project teams in `<project>/.opencodeplus/teams/<team>/<id>.md`, global teams in `<configDir>/opencodeplus/teams/<team>/<id>.md`, Defaults overlay in `<configDir>/opencodeplus/teams-defaults/<team>/<id>.md` (same-id overlay files replace built-in members, new ids append; still `level: "defaults"`).
 
-RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/list` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes); events `project.changed`, `instructions.changed`, `teams.changed`. The binding contract is `SPEC.md`.
+RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/list`, `team.runs.list/stop` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `project.changed`, `instructions.changed`, `teams.changed`. The binding contract is `SPEC.md`.
+
+## Team tab
+
+Arrow-down in the composer switches to the `Team` tab, which lists runs in the current namespace (not members):
+- One row per run showing `id`, `role`, `state`, and `task`, newest first.
+- Default view shows active runs (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
+- `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`); hint bar indicates which view is active.
+- `Enter` attaches by navigating to that run's session (`sessionID`).
+- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session, or displays a warning message that a `working` run must be interrupted first.
+- Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
 
 ## Tools
 
@@ -186,10 +196,11 @@ creates a root `main` run bound to that session automatically. There is no
 
 A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.idle`,
-`session.execution.failed` and `session.execution.interrupted`, maps the
+`session.execution.failed`, `session.execution.interrupted` and `session.execution.started`, maps the
 session to its run, and `teams/lifecycle.ts` settles the attempt, moves the run
 to `idle`, notifies the parent once and hands the pending inbox to the session
-as one new attempt.
+as one new attempt. On `session.execution.started`, a run in `idle`, `starting`, `stopped` or `dead`
+transitions to `working` (`prompt` for idle, `resume` for others), following the session into its execution turn. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`; its attempt is `no_report` when it did not.

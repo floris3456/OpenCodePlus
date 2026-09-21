@@ -8,9 +8,10 @@ import { agentBody } from "../src/instructions/discover.js"
 import { parseTeamFields } from "../src/instructions/teams-apply.js"
 import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
-import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
+import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructions/teams.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
+import { loadRun, saveRun, type RunRecord } from "../src/teams/run.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
@@ -19,19 +20,23 @@ const UPDATED = "2026-01-01T00:00:00.000Z"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorXdgDataHome = process.env.XDG_DATA_HOME
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorXdgDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = priorXdgDataHome
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-async function tempRoot(): Promise<{ project: string }> {
+async function tempRoot(): Promise<{ project: string; teamsRoot: string }> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-teams-rpc-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
-  return { project: path.join(root, "project") }
+  process.env.XDG_DATA_HOME = path.join(root, "share")
+  return { project: path.join(root, "project"), teamsRoot: teamsDataDir() }
 }
 
 async function writeTeamAgent(teamDir: string, id: string, body = "role"): Promise<string> {
@@ -1304,4 +1309,169 @@ test("enable team with special override reaches host agent.system and agent.mode
   expect(exploreRestored?.system).toBe("upstream explore text")
   expect(exploreRestored?.model).toBeUndefined()
   expect(state.activeModels.get("explore")).toBeUndefined()
+})
+
+function makeRunRecord(overrides: Partial<RunRecord> & { id: string }): RunRecord {
+  const now = new Date().toISOString()
+  return {
+    role: "gemini-implementer",
+    kind: "w",
+    repo: "opencode",
+    repoKey: "opencode",
+    directory: "/tmp/wt-rpc-test",
+    paths: [],
+    branch: "team/test",
+    base: "0123456789abcdef0123456789abcdef01234567",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    state: "idle",
+    attempts: [],
+    task: null,
+    parent: null,
+    children: [],
+    briefSha: "abc",
+    bundle: "test",
+    budget: {},
+    createdAt: now,
+    lastUsed: now,
+    sessionID: null,
+    configDigest: null,
+    history: [],
+    ...overrides,
+  }
+}
+
+test("team.runs.list returns namespace runs, sorted lastUsed desc, with all 9 fields, and all:false hides superseded/reaped", async () => {
+  const { project, teamsRoot } = await tempRoot()
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+
+  const run1 = makeRunRecord({
+    id: "main-01",
+    role: "opus-orchestrator",
+    state: "working",
+    task: "T1",
+    lastUsed: "2026-09-10T10:00:00.000Z",
+    sessionID: "ses_main_01",
+    parent: null,
+  })
+  const run2 = makeRunRecord({
+    id: "w-child-01",
+    role: "gemini-implementer",
+    state: "idle",
+    task: "T2",
+    lastUsed: "2026-09-10T12:00:00.000Z",
+    sessionID: "ses_child_01",
+    parent: "main-01",
+  })
+  const run3 = makeRunRecord({
+    id: "w-child-02",
+    role: "deepseek-implementer",
+    state: "superseded",
+    task: null,
+    lastUsed: "2026-09-10T11:00:00.000Z",
+    sessionID: null,
+    parent: "main-01",
+  })
+
+  await saveRun(teamsRoot, run1)
+  await saveRun(teamsRoot, run2)
+  await saveRun(teamsRoot, run3)
+
+  // 1. Default (all: false) hides superseded run3; sorted lastUsed desc (run2 then run1)
+  const defaultList = await Effect.runPromise(handlers["team.runs.list"]({ all: false }, throwingContext({})))
+  expect(defaultList.runs).toHaveLength(2)
+  expect(defaultList.runs.map((r) => r.id)).toEqual(["w-child-01", "main-01"])
+
+  // Check all 9 fields for run2
+  const entry2 = defaultList.runs[0]
+  expect(entry2).toEqual({
+    id: "w-child-01",
+    role: "gemini-implementer",
+    state: "idle",
+    task: "T2",
+    head: run2.head,
+    worktree: "present",
+    lastUsed: "2026-09-10T12:00:00.000Z",
+    sessionID: "ses_child_01",
+    parent: "main-01",
+  })
+  expectRpcBody(defaultList)
+
+  // 2. all: true includes superseded run3, sorted lastUsed desc: run2 (12:00), run3 (11:00), run1 (10:00)
+  const allList = await Effect.runPromise(handlers["team.runs.list"]({ all: true }, throwingContext({})))
+  expect(allList.runs).toHaveLength(3)
+  expect(allList.runs.map((r) => r.id)).toEqual(["w-child-01", "w-child-02", "main-01"])
+})
+
+test("team.runs.stop stops any run in the namespace without owner check, reconciles dead, preserves terminal, and fails E_BUSY when working", async () => {
+  const { project, teamsRoot } = await tempRoot()
+  const ctx = fullContext({
+    directory: project,
+    session: { interrupt: () => Effect.succeed({ interrupted: true }) },
+  })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+
+  const runIdle = makeRunRecord({
+    id: "w-idle-01",
+    state: "idle",
+    sessionID: "ses_idle_01",
+    parent: "someone-else",
+  })
+  const runDead = makeRunRecord({
+    id: "w-dead-01",
+    state: "dead",
+    sessionID: "ses_dead_01",
+    parent: "someone-else",
+  })
+  const runWorking = makeRunRecord({
+    id: "w-working-01",
+    state: "working",
+    sessionID: "ses_working_01",
+    parent: "someone-else",
+  })
+  const runSuperseded = makeRunRecord({
+    id: "w-sup-01",
+    state: "superseded",
+    sessionID: null,
+    parent: "someone-else",
+  })
+
+  await saveRun(teamsRoot, runIdle)
+  await saveRun(teamsRoot, runDead)
+  await saveRun(teamsRoot, runWorking)
+  await saveRun(teamsRoot, runSuperseded)
+
+  // 1. Stop idle run (even though caller is not its parent) -> stopped
+  const stopIdle = await Effect.runPromise(handlers["team.runs.stop"]({ run: "w-idle-01" }, throwingContext({})))
+  expect(stopIdle).toEqual({ run: "w-idle-01", state: "stopped" })
+  expect((await loadRun(teamsRoot, "w-idle-01"))?.state).toBe("stopped")
+  expectRpcBody(stopIdle)
+
+  // 2. Stop dead run -> reconciled to stopped
+  const stopDead = await Effect.runPromise(handlers["team.runs.stop"]({ run: "w-dead-01" }, throwingContext({})))
+  expect(stopDead).toEqual({ run: "w-dead-01", state: "stopped" })
+  expect((await loadRun(teamsRoot, "w-dead-01"))?.state).toBe("stopped")
+
+  // 3. Stop superseded run -> preserves terminal state without error
+  const stopSup = await Effect.runPromise(handlers["team.runs.stop"]({ run: "w-sup-01" }, throwingContext({})))
+  expect(stopSup).toEqual({ run: "w-sup-01", state: "superseded" })
+  expect((await loadRun(teamsRoot, "w-sup-01"))?.state).toBe("superseded")
+
+  // 4. Stop working run -> fails with E_BUSY
+  const busy: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.runs.stop"]({ run: "w-working-01" }, throwingContext(busy)),
+    busy,
+    "E_BUSY",
+  )
+  expect(busy.current?.message).toContain("working")
+
+  // 5. Stop unknown run -> fails with run.unknown
+  const unknown: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.runs.stop"]({ run: "w-nonexistent" }, throwingContext(unknown)),
+    unknown,
+    "run.unknown",
+  )
+  expect(unknown.current?.message).toContain("not found")
 })

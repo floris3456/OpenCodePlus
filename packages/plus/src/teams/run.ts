@@ -111,8 +111,12 @@ export const TRANSITIONS: RunTransitionRow[] = [
     guard: "MCP team and team-query both connected within startTimeoutMs",
   },
   { from: "starting", to: "dead", trigger: "start_failed" },
+  // starting → working (execution started)
+  { from: "starting", to: "working", trigger: "resume" },
+  { from: "starting", to: "working", trigger: "prompt" },
   // idle → working
   { from: "idle", to: "working", trigger: "prompt" },
+  { from: "idle", to: "working", trigger: "resume" },
   // working → idle
   { from: "working", to: "idle", trigger: "turn_ended" },
   // working → blocked_input
@@ -125,6 +129,9 @@ export const TRANSITIONS: RunTransitionRow[] = [
   { from: "working", to: "stopping", trigger: "stop_force", guard: "human" },
   // stopping → stopped
   { from: "stopping", to: "stopped", trigger: "exited" },
+  // stopped → working (resumed by session prompt)
+  { from: "stopped", to: "working", trigger: "resume" },
+  { from: "stopped", to: "working", trigger: "prompt" },
   // stopped → starting (resume / followup(queue) / wait-triggered nudge)
   { from: "stopped", to: "starting", trigger: "resume", guard: "slot available" },
   { from: "stopped", to: "starting", trigger: "followup", guard: "slot available" },
@@ -132,6 +139,9 @@ export const TRANSITIONS: RunTransitionRow[] = [
   // idle/working → dead (liveness probe fails x2)
   { from: "idle", to: "dead", trigger: "probe_failed" },
   { from: "working", to: "dead", trigger: "probe_failed" },
+  // dead → working (resumed by session prompt)
+  { from: "dead", to: "working", trigger: "resume" },
+  { from: "dead", to: "working", trigger: "prompt" },
   // dead → starting (replaces registration)
   { from: "dead", to: "starting", trigger: "resume" },
   // dead → stopped (reconciler after deadGraceMs with no parent action)
