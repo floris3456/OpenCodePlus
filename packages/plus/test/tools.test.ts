@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
@@ -1984,6 +1984,58 @@ test("instructions_set on a team-special row persists team-scoped record", async
 })
 
 // ---------------------------------------------------------------------------
+// Round-3 evidence capture: labeled stdout of the values these flows really
+// return, for docs/round3-instructions-output.md. No assertion reads it and no
+// behavior depends on it. The only normalized text is the disposable mkdtemp
+// prefix; long strings become a clearly labeled projection.
+
+const ROUND3_TEXT_LIMIT = 200
+// The check harness truncates the head of a run's stdout but keeps stderr
+// whole, so each labeled line is printed on both streams: console.log as the
+// test runs and one console.error block when this file finishes. No assertion
+// reads either.
+const round3Lines: string[] = []
+
+function round3Capture(label: string, value: unknown, project: string): void {
+  const line = `[round3] ${label} ${JSON.stringify(round3Value(value, project))}`
+  round3Lines.push(line)
+  console.log(line)
+}
+
+afterAll(() => {
+  for (const line of round3Lines) console.error(line)
+})
+
+// The assembled view lists every visible system, tool and skill text. The
+// round-trip needs the row identity, so keep that and the visible ids and
+// replace the assembled bodies with this labeled projection.
+function round3ShowValue(step: { readonly name: string }, shown: Record<string, unknown>): unknown {
+  if (step.name !== "agent") return shown
+  return {
+    id: shown.id,
+    view: shown.view,
+    agent: shown.agent,
+    systemEntries: Array.isArray(shown.system) ? shown.system.length : 0,
+    toolIds: Array.isArray(shown.tools) ? (shown.tools as readonly { id?: unknown }[]).map((tool) => tool.id) : [],
+    skillIds: Array.isArray(shown.skills) ? (shown.skills as readonly { id?: unknown }[]).map((skill) => skill.id) : [],
+    projection: "assembled text bodies replaced by their ids and a system entry count",
+  }
+}
+
+function round3Value(value: unknown, project: string): unknown {
+  if (typeof value === "string") {
+    const normalized = project.length === 0 ? value : value.split(project).join("<project>")
+    if (normalized.length <= ROUND3_TEXT_LIMIT) return normalized
+    return `<projection ${normalized.length} chars>: ${normalized.slice(0, ROUND3_TEXT_LIMIT)}…`
+  }
+  if (Array.isArray(value)) return value.map((entry) => round3Value(entry, project))
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, round3Value(entry, project)]))
+  }
+  return value
+}
+
+// ---------------------------------------------------------------------------
 // create returns the row id show/set/delete accept
 
 test("every enabled create kind returns the row id show and delete accept, and delete removes the row", async () => {
@@ -2115,19 +2167,35 @@ test("every enabled create kind returns the row id show and delete accept, and d
     const row = await known(step.id)
     if (row === undefined) throw new Error(`create ${step.name} did not put ${step.id} in the tree`)
     expect(row.kind).toBe(step.kind)
+    round3Capture(`round-trip ${step.name}: create`, { request: step.input, output, row: { id: row.id, kind: row.kind } }, project)
     const shown = (await runOk(show, {
       id: step.id,
       ...(step.show?.view === undefined ? {} : { view: step.show.view }),
     })) as Record<string, unknown>
     expect(shown).toMatchObject({ id: step.id, ...(step.show?.expect ?? {}) })
+    round3Capture(
+      `round-trip ${step.name}: show`,
+      { request: { id: step.id, view: step.show?.view ?? "resolved" }, output: round3ShowValue(step, shown) },
+      project,
+    )
     if (step.showFail !== undefined) {
       const refused = await runFail(show, { id: step.id, view: step.showFail })
       expect(refused.message).toContain("view.unsupported")
       expect(refused.message).not.toContain("row.unknown")
+      round3Capture(
+        `round-trip ${step.name}: show ${step.showFail} refusal`,
+        { request: { id: step.id, view: step.showFail }, error: refused.message },
+        project,
+      )
     }
     const deleted = (await runOk(del, { id: step.id, confirm: true })) as { status: string }
     expect(deleted.status).toBe(step.status)
     if (step.gone === true) expect(await known(step.id)).toBeUndefined()
+    round3Capture(
+      `round-trip ${step.name}: delete`,
+      { request: { id: step.id, confirm: true }, output: deleted, rowStillInTree: (await known(step.id)) !== undefined },
+      project,
+    )
   }
 })
 
@@ -2203,12 +2271,28 @@ test("create returns the created level's model and rule row, not the identical D
     globalRule: true,
     projectRule: false,
   })
+  round3Capture(
+    "levels create outputs (model and rule at defaults / project / global)",
+    {
+      noAgentModelError: invalidModel.message,
+      sharedModel,
+      sharedRule,
+      storedShared,
+      projectModel,
+      globalModel,
+      projectRule,
+      globalRule,
+      storedGlobalRule,
+    },
+    project,
+  )
 
   for (const id of [sharedModel.id, sharedRule.id, projectModel.id, globalModel.id, projectRule.id, globalRule.id]) {
     const snapshot = await snapshotOf(api)
     if (!expandedTree(memoFromSnapshot(snapshot)).some((node) => node.id === id)) throw new Error(`missing created row ${id}`)
     const deleted = (await runOk(del, { id, confirm: true })) as { status: string }
     expect(deleted.status).toContain("Removed")
+    round3Capture("levels delete round-trip", { request: { id, confirm: true }, output: deleted }, project)
   }
   // Delete of the returned id removed the written records.
   const remaining = (await load(project)).records.filter((record) => record.type === "model" || record.type === "rule")
@@ -2248,7 +2332,12 @@ test("create kind member adds members at project and defaults level and returns 
   // Colon team names and nested member ids both round-trip, and a padded team
   // name is normalized exactly as team.addAgent normalizes it, so the write and
   // the row lookup agree.
-  await runOk(create, { kind: "team", team: "crew:one", level: "project" })
+  const crewOne = await runOk(create, { kind: "team", team: "crew:one", level: "project" })
+  round3Capture(
+    "member flow: create team crew:one",
+    { request: { kind: "team", team: "crew:one", level: "project" }, output: crewOne },
+    project,
+  )
   const member = (await runOk(create, {
     kind: "member",
     team: " crew:one ",
@@ -2260,6 +2349,15 @@ test("create kind member adds members at project and defaults level and returns 
   expect(member.item).toBe("nested/beta")
   const memberPath = path.join(projectTeamsPath(project), "crew:one", "nested", "beta.md")
   expect(await Bun.file(memberPath).text()).toContain("beta role")
+  round3Capture(
+    "member flow: create project member (padded colon team, nested member id)",
+    {
+      request: { kind: "member", team: " crew:one ", level: "project", id: "nested/beta", prompt: "beta role" },
+      output: member,
+      file: { path: memberPath, text: await Bun.file(memberPath).text() },
+    },
+    project,
+  )
 
   // The member entity view and its subtree: the team is disabled, so the host
   // has not registered the member; enabling the team registers it.
@@ -2267,20 +2365,33 @@ test("create kind member adds members at project and defaults level and returns 
   expect(disabledView).toMatchObject({ kind: "member", level: "project", team: "crew:one", member: "nested/beta", registered: false })
   const recordView = (await runOk(show, { id: member.id, view: "record" })) as { record: Record<string, unknown> }
   expect(recordView.record).toMatchObject({ kind: "member", team: "crew:one", member: "nested/beta" })
+  round3Capture(
+    "member flow: project member resolved + record views (team disabled)",
+    { request: { id: member.id }, resolved: disabledView, record: recordView },
+    project,
+  )
   const subtree = expandedTree(memoFromSnapshot(await snapshotOf(api)))
   const memberRows = subtree.filter((node) => node.id.includes("nested/beta")).map((node) => node.id)
   const subtreeTool = "item:project:crew:one/:nested/beta:tool:shell"
   expect(memberRows).toContain("group:project:crew:one/:nested/beta:tools")
   expect(memberRows).toContain(subtreeTool)
+  round3Capture("member flow: project member subtree rows", { subtreeTool, memberRows }, project)
   const toggled = (await runOk(need(tools, "instructions_set"), { id: subtreeTool, state: "off" })) as { status: string }
   expect(toggled.status).toBe('Disabled "shell"')
+  round3Capture("member flow: subtree row set", { request: { id: subtreeTool, state: "off" }, output: toggled }, project)
   const enabled = await api.setTeamEnabled({ level: "project", team: "crew:one", enabled: true, actor: { type: "tui" } })
   if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
   const enabledView = (await runOk(show, { id: member.id })) as Record<string, unknown>
   expect(enabledView).toMatchObject({ kind: "member", registered: true })
+  round3Capture("member flow: project member view after team enable", { enableResult: enabled.value, resolved: enabledView }, project)
 
   // A global member created through a padded team name.
-  await runOk(create, { kind: "team", team: "gcrew", level: "global" })
+  const gcrew = await runOk(create, { kind: "team", team: "gcrew", level: "global" })
+  round3Capture(
+    "member flow: create team gcrew (global)",
+    { request: { kind: "team", team: "gcrew", level: "global" }, output: gcrew },
+    project,
+  )
   const globalMember = (await runOk(create, {
     kind: "member",
     team: " gcrew ",
@@ -2294,6 +2405,16 @@ test("create kind member adds members at project and defaults level and returns 
   expect(await Bun.file(globalMemberPath).text()).toContain("global member role")
   const globalView = (await runOk(show, { id: globalMember.id })) as Record<string, unknown>
   expect(globalView).toMatchObject({ kind: "member", level: "global", team: "gcrew", member: "gmember" })
+  round3Capture(
+    "member flow: create global member (padded team name)",
+    {
+      request: { kind: "member", team: " gcrew ", level: "global", id: "gmember", prompt: "global member role" },
+      output: globalMember,
+      file: { path: globalMemberPath, text: await Bun.file(globalMemberPath).text() },
+      resolved: globalView,
+    },
+    project,
+  )
 
   // Defaults level writes the same overlay the TUI writes for a built-in team.
   const overlay = (await runOk(create, {
@@ -2311,16 +2432,42 @@ test("create kind member adds members at project and defaults level and returns 
   expect(snapshot.teams?.find((team) => team.team === "ship")).toMatchObject({ overlay: ["rookie"] })
   const overlayShown = (await runOk(show, { id: overlay.id })) as Record<string, unknown>
   expect(overlayShown).toMatchObject({ kind: "member", level: "defaults", team: "ship", member: "rookie" })
+  round3Capture(
+    "member flow: create Defaults overlay member (padded built-in team name)",
+    {
+      request: { kind: "member", team: " ship ", level: "defaults", id: "rookie", prompt: "rookie role" },
+      output: overlay,
+      file: { path: overlayPath, text: await Bun.file(overlayPath).text() },
+      snapshotTeam: snapshot.teams?.find((team) => team.team === "ship"),
+      resolved: overlayShown,
+    },
+    project,
+  )
 
   const removedMember = (await runOk(del, { id: member.id, confirm: true })) as { status: string }
   expect(removedMember.status).toBe("Deleted team member nested/beta")
   expect(await Bun.file(memberPath).exists()).toBe(false)
+  round3Capture(
+    "member flow: delete project member",
+    { request: { id: member.id, confirm: true }, output: removedMember, fileExists: await Bun.file(memberPath).exists() },
+    project,
+  )
   const removedGlobal = (await runOk(del, { id: globalMember.id, confirm: true })) as { status: string }
   expect(removedGlobal.status).toBe("Deleted team member gmember")
   expect(await Bun.file(globalMemberPath).exists()).toBe(false)
+  round3Capture(
+    "member flow: delete global member",
+    { request: { id: globalMember.id, confirm: true }, output: removedGlobal, fileExists: await Bun.file(globalMemberPath).exists() },
+    project,
+  )
   const removedOverlay = (await runOk(del, { id: overlay.id, confirm: true })) as { status: string }
   expect(removedOverlay.status).toBe("Deleted team member rookie")
   expect(await Bun.file(overlayPath).exists()).toBe(false)
+  round3Capture(
+    "member flow: delete Defaults overlay member",
+    { request: { id: overlay.id, confirm: true }, output: removedOverlay, fileExists: await Bun.file(overlayPath).exists() },
+    project,
+  )
 })
 
 test("create kind member forwards the agent fields to team.addAgent", async () => {
@@ -2375,6 +2522,11 @@ test("create kind member forwards the agent fields to team.addAgent", async () =
   })
   expect(request.fields).toEqual({ description: "fielded desc", mode: "subagent" })
   expect(await Bun.file(path.join(projectTeamsPath(project), "crew", "fielded.md")).text()).toContain("fielded role")
+  round3Capture(
+    "member flow: agent fields forwarded to team.addAgent",
+    { output: created, forwarded: request },
+    project,
+  )
 })
 
 test("create kind team passes the template to team.create and produces the template's members", async () => {
@@ -2422,6 +2574,17 @@ test("create kind team passes the template to team.create and produces the templ
   const rows = expandedTree(memoFromSnapshot(snapshot))
   expect(rows.some((node) => node.id === "team:project:mine:editor")).toBe(true)
   expect(rows.some((node) => node.id === "team:project:mine:reviewer")).toBe(true)
+  round3Capture(
+    "team template: create kind team with template",
+    {
+      request: { kind: "team", team: "mine", level: "project", template: "review" },
+      output: created,
+      show: shownTeam,
+      snapshotTeam: snapshot.teams?.find((team) => team.team === "mine"),
+      memberRows: rows.filter((node) => node.id.startsWith("team:project:mine")).map((node) => node.id),
+    },
+    project,
+  )
   // The same handler the TUI's team.create calls wrote the member files.
   const teamDir = path.join(projectTeamsPath(project), "mine")
   const [editorMember, reviewerMember] = registry[0]!.members
@@ -2429,6 +2592,14 @@ test("create kind team passes the template to team.create and produces the templ
   const editorText = await Bun.file(path.join(teamDir, "editor.md")).text()
   expect(editorText).toBe(formatMarkdown(editorMember.fields as never, editorMember.body))
   expect(await Bun.file(path.join(teamDir, "reviewer.md")).text()).toBe(formatMarkdown(undefined, reviewerMember.body))
+  round3Capture(
+    "team template: member files written",
+    {
+      editorFile: { path: path.join(teamDir, "editor.md"), text: editorText },
+      reviewerFile: { path: path.join(teamDir, "reviewer.md"), text: await Bun.file(path.join(teamDir, "reviewer.md")).text() },
+    },
+    project,
+  )
 })
 
 test("create kind instruction is refused with instruction.disabled and writes nothing", async () => {
@@ -2438,4 +2609,16 @@ test("create kind instruction is refused with instruction.disabled and writes no
   expect(error.message).toContain("Context catalogue")
   expect(await Bun.file(path.join(project, "AGENTS.md")).exists()).toBe(false)
   expect(await Bun.file(path.join(project, ".opencode", "AGENTS.md")).exists()).toBe(false)
+  round3Capture(
+    "instruction.disabled: create kind instruction is refused and writes nothing",
+    {
+      request: { kind: "instruction", name: "AGENTS.md", text: "guide" },
+      error: error.message,
+      filesWritten: {
+        projectAgentsMd: await Bun.file(path.join(project, "AGENTS.md")).exists(),
+        dotOpencodeAgentsMd: await Bun.file(path.join(project, ".opencode", "AGENTS.md")).exists(),
+      },
+    },
+    project,
+  )
 })
