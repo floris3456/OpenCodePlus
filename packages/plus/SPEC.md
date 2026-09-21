@@ -1215,14 +1215,22 @@ export interface SetInput { readonly id: string; readonly text?: string; readonl
 export interface ResetInput { readonly id: string }
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
-  | { readonly kind: "agent"; readonly id: string; readonly prompt: string }
+  | { readonly kind: "agent"; readonly id: string; readonly prompt: string; readonly scope?: "project" | "global"; readonly template?: string; readonly fields?: CreateAgentFields }
   | { readonly kind: "skill"; readonly name: string; readonly body: string }
   | { readonly kind: "base"; readonly id: string; readonly title: string; readonly text: string }
   | { readonly kind: "instruction"; readonly name: string; readonly text: string }
   | { readonly kind: "mcp"; readonly name: string; readonly config: Record<string, unknown> }
-  | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global" }
-  | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
-  | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
+  | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global"; readonly template?: string }
+  | { readonly kind: "member"; readonly team: string; readonly level: "project" | "global" | "defaults"; readonly id: string; readonly prompt: string; readonly template?: string; readonly fields?: CreateAgentFields }
+  | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
+  | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
+// Every kind resolves to CreatedRow: { id, item }, where id is the row id
+// show/set/delete accept and item names the created thing inside its row kind
+// (`skill:…`, `model:…`, `perm:…`, or the agent/team/member id). The RPC's own
+// fields (path, name, level, agent, tool, providerID, modelID, …) pass through
+// beside them. A create whose written row is not in the tree fails with
+// create.failed and never returns a hand-formatted id.
+export interface CreatedRow { readonly id: string; readonly item: string }
 export interface DeleteInput { readonly id: string; readonly confirm: true }
 ```
 
@@ -1250,18 +1258,40 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   override at that row (on a model row clears only that level's active flag).
   `split` boundaries are `{ id, name, start }` with
   character offsets into the row text; `add: { name, text }` appends a new
-  trailing section; perm and model rows cannot be split. `create` writes one row per call; `create` with
+  trailing section; perm and model rows cannot be split. `create` writes one row per call and returns `CreatedRow` fields: `id` is the
+  row id `show`, `set` and `delete` accept for that row, `item` names the
+  created thing inside its row kind (`skill:…`, `base:…`, `mcp:…`, `model:…`,
+  `perm:…`, or the agent/team/member id), and the RPC's own fields pass through
+  beside them. `create` with `kind: "agent"` needs `id` + `prompt` (`scope`
+  defaults to project, `template`/`fields` optional). `create` with
   `kind: "team"` creates the team directory DISABLED (enabling stays a
-  separate `set` on the team row); `create` with `kind: "model"` needs
-  `providerID` + `modelID` (`level` defaults to `project`, `agent` is
-  required for project/global levels); `create` with `kind: "rule"` needs
-  `tool` + `id` + `label` + `patterns` (patterns are core wildcards, not
-  regex); `message` is the optional refusal text the model reads.
-  `create` takes an optional `catalogue` (`agents|teams`, default
-  `agents`) that picks which catalogue a shared (`agent: null`) `model` or
-  `rule` lands in; `base`, `instruction` and `mcp` create one file both
-  catalogues list, so `catalogue` does not change what is written. `delete`
-  without
+  separate `set` on the team row) and passes an optional `template` through
+  `team.create`, so the members match the TUI's templated team create.
+  `create` with `kind: "member"` needs `team` + `level` + `id` + `prompt` and
+  calls `team.addAgent`, so `level: "defaults"` writes the same Defaults
+  overlay the TUI writes and `template`/`fields` are the agent fields
+  `kind: "agent"` takes. `create` with `kind: "model"` needs `providerID` +
+  `modelID` (`variant`/`level`/`agent` optional); a model with no `agent` is
+  shared and defaults to the `defaults` level, while an agent-qualified model
+  defaults to `project` and requires an `agent` for project/global levels.
+  `create` with `kind: "rule"` needs `tool` + `id` + `label` + `patterns`
+  (patterns are core wildcards, not regex); `message` is the optional refusal
+  text the model reads; a rule with no `agent` is shared and defaults to the
+  `defaults` level. The returned row is resolved through the same tree the
+  TUI shows, at the created level and owner: a project or global create is
+  never reported as the identical Defaults row, and a shared create returns
+  the canonical visible Defaults catalogue row (`item:defaults::…`, or
+  `item:defaults:/teams:…` for `catalogue: "teams"`). A create whose row
+  cannot be found fails with `create.failed` and does not invent an id; file-
+  derived rows (skills, MCP servers) are given a short window for the host's
+  watcher to publish them before that failure. `create` takes an optional
+  `catalogue` (`agents|teams`, default `agents`) that picks which catalogue a
+  shared (`agent: null`) `model` or `rule` lands in; `base`, `instruction` and
+  `mcp` create one file both catalogues list, so `catalogue` does not change
+  what is written. `create` with `kind: "instruction"` is refused with
+  `instruction.disabled` pending the Context catalogue: native opencode applies
+  AGENTS.md files and no instruction row is created or bare-name enabled.
+  `delete` without
   `confirm: true` fails with `delete.unconfirmed` and writes nothing;
   on a model row it removes the candidate at that level, and only
   user-created (`custom`) rules can be deleted.
@@ -1477,8 +1507,10 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 
 | error | meaning |
 | `row.unknown` | no row has that id; `list` again for the current id |
+| `create.failed` | the write landed but its row is not in the tree; re-read with `instructions_list` |
 | `agent.protected` | that agent is in `protectedAgents` |
 | `delete.unconfirmed` | retry with `confirm: true` |
+| `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; native opencode applies AGENTS.md files |
 | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
 | `project.disabled` | project mode is off and no tool changes that |
 

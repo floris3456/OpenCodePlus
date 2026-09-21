@@ -7,6 +7,10 @@ import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import {
   activateModelRow,
   addSection,
+  createdAgentRow,
+  createdItemRow,
+  createdMemberRow,
+  createdTeamRow,
   editRefusalForLabel,
   isModelRowId,
   isPermRowId,
@@ -22,11 +26,24 @@ import {
   teamPlan,
   toggle,
   unknownRowRefusal,
+  type CreatedRow,
   type OpFailure,
   type RemovalPlan,
 } from "./instructions/ops.js"
 import { query } from "./instructions/query.js"
-import { applies, parseModelItemId, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
+import {
+  applies,
+  catalogueField,
+  modelItemId,
+  parseModelItemId,
+  parsePermItemId,
+  permItemId,
+  resolve,
+  resolveSplit,
+  scopesOf,
+  threeWay,
+  upstreamForEdit,
+} from "./instructions/model.js"
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import type { CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput } from "./instructions/tree.js"
@@ -66,11 +83,13 @@ const SplitDescription =
   "Pass boundaries [{id,name,start}] to set manual sections, or add {name,text} to append one."
 
 const CreateDescription =
-  "Create a file-backed row, a team directory, a model candidate, or a permission rule (TUI `a`).\n" +
+  "Create a file-backed row, a team directory, a team member, a model candidate, or a permission rule (TUI `a`).\n" +
   "Kinds: agent (id+prompt, scope defaults to project, template/fields optional), skill (name+body),\n" +
   "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled),\n" +
-  "model (providerID+modelID, variant/level/agent optional; level defaults to project),\n" +
+  "member (team+level+id+prompt, template/fields optional; level defaults writes the Defaults overlay),\n" +
+  "model (providerID+modelID, variant/level/agent optional),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads).\n" +
+  "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
   "base/instruction/mcp create one file both catalogues list, so catalogue does not change what is written."
 
@@ -165,6 +184,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("instruction"),
     Schema.Literal("mcp"),
     Schema.Literal("team"),
+    Schema.Literal("member"),
     Schema.Literal("model"),
     Schema.Literal("rule"),
   ]),
@@ -1032,7 +1052,7 @@ function recordOfRow(
 function createRow(
   api: PlusApi,
   input: {
-    kind: "agent" | "skill" | "base" | "instruction" | "mcp" | "team" | "model" | "rule"
+    kind: "agent" | "skill" | "base" | "instruction" | "mcp" | "team" | "member" | "model" | "rule"
     id?: string
     prompt?: string
     scope?: "project" | "global" | "defaults"
@@ -1080,14 +1100,20 @@ function createRow(
         }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      const row = yield* createdRowOrFail(api, (memo) => createdAgentRow(memo, scope, created.value.id), `agent "${created.value.id}"`)
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "skill") {
       if (input.name === undefined || input.body === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create skill requires name and body" }))
       const created = yield* Effect.promise(() => api.createSkill({ name: input.name as string, body: input.body as string, actor }))
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) => createdItemRow(memo, { level: "defaults", agent: null, item: `skill:${created.value.id}` }),
+        `skill "${created.value.id}"`,
+      )
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "base") {
       if (input.id === undefined || input.title === undefined || input.text === undefined)
@@ -1096,7 +1122,12 @@ function createRow(
         api.createBase({ id: input.id as string, title: input.title as string, text: input.text as string, actor }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) => createdItemRow(memo, { level: "defaults", agent: null, item: `base:${created.value.id}` }),
+        `base "${created.value.id}"`,
+      )
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "instruction") {
       // OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
@@ -1115,24 +1146,64 @@ function createRow(
         return yield* Effect.fail(new Tool.Error({ message: "create mcp requires name and config" }))
       const created = yield* Effect.promise(() => api.addMcp({ name: input.name as string, config: { ...(input.config as Record<string, unknown>) }, actor }))
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) => createdItemRow(memo, { level: "defaults", agent: null, item: `mcp:${created.value.name}` }),
+        `MCP server "${created.value.name}"`,
+      )
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "team") {
       if (input.team === undefined || input.level === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create team requires team and level" }))
       const created = yield* Effect.promise(() =>
-        api.createTeam({ level: input.level as "project" | "global", team: input.team as string, actor }),
+        api.createTeam({
+          level: input.level as "project" | "global",
+          team: input.team as string,
+          ...(input.template === undefined ? {} : { template: input.template }),
+          actor,
+        }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      const row = yield* createdRowOrFail(api, (memo) => createdTeamRow(memo, created.value.level, created.value.team), `team "${created.value.team}"`)
+      return { output: { ...created.value, id: row.id, item: row.item } }
+    }
+    if (input.kind === "member") {
+      const level = input.level
+      const team = input.team
+      if (team === undefined || level === undefined || input.id === undefined || input.prompt === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create member requires team, level, id, and prompt" }))
+      const snapshot = yield* snapshotOrFail(api)
+      const teammate = input.id.trim()
+      if (teammate !== "" && snapshot.protectedAgents.includes(teammate))
+        return yield* Effect.fail(protectedError(teammate))
+      const created = yield* Effect.promise(() =>
+        // `fields` reaches team.addAgent through the conditional spread without
+        // widening the RPC input type; team.addAgent renders them exactly as a
+        // top-level agent.create does.
+        api.addTeamAgent({
+          level,
+          team,
+          id: input.id as string,
+          prompt: input.prompt as string,
+          ...(input.template === undefined ? {} : { template: input.template }),
+          ...(input.fields === undefined ? {} : { fields: input.fields }),
+          actor,
+        }),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      const row = yield* createdRowOrFail(api, (memo) => createdMemberRow(memo, level, team, created.value.id), `team member "${created.value.id}"`)
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "model") {
       if (input.providerID === undefined || input.modelID === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create model requires providerID and modelID" }))
-      const level = input.level ?? input.scope ?? "project"
+      const rawAgent = input.agent?.trim() ?? ""
+      // A model with no agent is a shared Defaults row (the only level shared
+      // rows resolve at); an agent-qualified model defaults to the project.
+      const level = input.level ?? input.scope ?? (rawAgent.length === 0 || rawAgent === "_" ? "defaults" : "project")
       if (level !== "project" && level !== "global" && level !== "defaults")
         return yield* Effect.fail(new Tool.Error({ message: "create model requires level project|global|defaults" }))
-      const rawAgent = input.agent?.trim() ?? ""
       if (level !== "defaults" && rawAgent.length === 0)
         return yield* Effect.fail(new Tool.Error({ message: "create model requires agent for project|global levels" }))
       const agent = level === "defaults" && (rawAgent.length === 0 || rawAgent === "_") ? null : rawAgent
@@ -1151,15 +1222,31 @@ function createRow(
         }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      // The row is resolved at the written level and owner, so a project or
+      // global candidate is never reported as the Defaults row that happens
+      // to carry the same model.
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) =>
+          createdItemRow(memo, {
+            level: created.value.level,
+            agent: created.value.agent,
+            item: modelItemId(created.value),
+            ...catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
+          }),
+        `model "${created.value.providerID}/${created.value.modelID}"`,
+      )
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "rule") {
       if (input.tool === undefined || input.id === undefined || input.label === undefined || input.patterns === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create rule requires tool, id, label, and patterns" }))
-      const level = input.level ?? input.scope ?? "project"
+      const rawAgent = input.agent?.trim() ?? ""
+      // A rule with no agent is a shared Defaults row (the only level shared
+      // rows resolve at); an agent-qualified rule defaults to the project.
+      const level = input.level ?? input.scope ?? (rawAgent.length === 0 || rawAgent === "_" ? "defaults" : "project")
       if (level !== "project" && level !== "global" && level !== "defaults")
         return yield* Effect.fail(new Tool.Error({ message: "create rule requires level project|global|defaults" }))
-      const rawAgent = input.agent?.trim() ?? ""
       const agent = rawAgent.length === 0 || rawAgent === "_" ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
       if (agent !== null && snapshot.protectedAgents.includes(agent))
@@ -1179,9 +1266,51 @@ function createRow(
         }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: created.value }
+      // The row is resolved at the written level and owner, so a project or
+      // global rule is never reported as an inherited Defaults row.
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) =>
+          createdItemRow(memo, {
+            level: created.value.level,
+            agent: created.value.agent,
+            item: permItemId(created.value.tool, created.value.id),
+            ...catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
+          }),
+        `rule "${created.value.tool}:${created.value.id}"`,
+      )
+      return { output: { ...created.value, id: row.id, item: row.item } }
     }
     return yield* Effect.fail(new Tool.Error({ message: `create unknown kind ${input.kind}` }))
+  })
+}
+
+// Resolve the row a create just wrote through the same tree show, set and
+// delete read. There is no fallback id: a create that cannot find its row
+// fails with create.failed instead of returning a string those tools refuse.
+// File-derived rows (skills, MCP servers) reach the tree only after the host's
+// own watcher rescans and reloads its registry, so the lookup gives that
+// publish a short window before it gives up; it is still the row that decides
+// the returned id, never a formatted string.
+const ROW_WAIT_ATTEMPTS = 12
+
+function createdRowOrFail(
+  api: PlusApi,
+  resolve: (memo: MemoInput) => CreatedRow | undefined,
+  label: string,
+): Effect.Effect<CreatedRow, Tool.Error> {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < ROW_WAIT_ATTEMPTS; attempt++) {
+      const snapshot = yield* snapshotOrFail(api)
+      const row = resolve(memoFromSnapshot(snapshot))
+      if (row !== undefined) return row
+      if (attempt < ROW_WAIT_ATTEMPTS - 1) yield* Effect.sleep("100 millis")
+    }
+    return yield* Effect.fail(
+      new Tool.Error({
+        message: `create.failed: created ${label} but its row is missing from the instructions tree; re-read with instructions_list`,
+      }),
+    )
   })
 }
 
