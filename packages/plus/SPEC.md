@@ -582,6 +582,8 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `team.removeAgent` | `{ level, team, id }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid` |
 | `team.delete` | `{ level, team }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid` |
 | `team.list` | `void` | `TeamListOutput` | `project.disabled` |
+| `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | `project.disabled` |
+| `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `project.disabled`, `E_BUSY`, `run.busy`, `run.unknown` |
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
@@ -886,6 +888,8 @@ RPC surface (`rpc.ts`, `index.ts`):
 - `team.list` (`Empty` → `TeamListOutput`): returns `{ teams: [{ level, team, enabled, members: [{ id, mode }] }] }`.
   Cheap read of discovered teams and their enabled states without computing an instructions snapshot.
   Discovered teams are sorted by level then team name; members are sorted by id in discoverTeams order.
+- `team.runs.list` (`TeamRunsListInput` → `TeamRunsListOutput`): returns `{ runs: [{ id, role, state, task, head, worktree, lastUsed, sessionID, parent }] }` for this data root (`teamsDataDir()`), sorted by `lastUsed` descending. When `all` is false or omitted, hides superseded and reaped runs.
+- `team.runs.stop` (`TeamRunsStopInput` → `TeamRunsStopOutput`): stops any run in the namespace by ID without ownership checks (`idle` transitions to `stopping → stopped`, `dead` reconciles to `stopped`, `working` returns error `E_BUSY`). Returns `{ run, state }`.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
@@ -901,6 +905,16 @@ TUI wiring (`state.ts` `space` → real `team.setEnabled` + snapshot refresh, `a
 badge). A created team starts disabled. Built-in teams cannot be created or
 deleted (though their members are editable through the Defaults overlay). Store
 persistence and the RPC surface are implemented.
+
+### Run-backed Team composer tab (`tui/active-team.tsx`)
+
+In a chat, arrow-down to the `Team` composer tab shows runs in the current namespace (not members), one row per run displaying `id`, `role`, `state`, and `task`, newest first.
+- Default view displays active runs (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
+- `ctrl+a` toggles to inactive runs (`stopped`, `dead`, `superseded`, `reaped`), newest first, and back; the hint bar indicates which view is active.
+- `Enter` (`composer.team.select`) on any row, active or inactive, attaches by navigating to that run's session (`sessionID`).
+- `ctrl+d` (`composer.team.action`): on an `idle` run, stops the run; on a `stopped` or `dead` run, resumes by attaching to its session; on a `working` run, displays a toast warning that the run must be interrupted first.
+- Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
+- The list automatically refreshes on `teams.changed`, host session lifecycle events, and on a 2 s periodic interval while the tab is active.
 
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
@@ -1109,10 +1123,14 @@ Which component writes which outcome, and why exactly one line is written per ga
 ### Run state follows the host session (`teams/lifecycle.ts`)
 
 A run's state is driven by its host session, not by whether the agent called a
-tool. `index.ts` subscribes once to `session.idle`,
-`session.execution.failed` and `session.execution.interrupted`
+tool. `index.ts` subscribes to `session.idle`, `session.execution.failed`,
+`session.execution.interrupted`, and `session.execution.started`
 (`SessionRunEvents`), resolves `sessionID → run` with `run.bySession`, and
-ignores sessions with no run. `onSessionIdle` then, in this order:
+ignores sessions with no run. On `session.execution.started`, a run in
+`stopped` or `dead` state transitions to `working` (trigger `resume`), resuming
+the run when prompted. For turn-ending events (`session.idle`,
+`session.execution.failed`, `session.execution.interrupted`), `onSessionIdle`
+then, in this order:
 
 1. settles the open attempt — `failed` on `session.execution.failed`,
    `interrupted` on `session.execution.interrupted`, otherwise `no_report`

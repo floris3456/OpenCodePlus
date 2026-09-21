@@ -10,7 +10,7 @@ import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
 import { loadRun, saveRun, isAttemptTerminal, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
-import { stopHandler, supersedeHandler } from "../../src/teams/api-lifecycle.js"
+import { stopHandler, stopRun, supersedeHandler } from "../../src/teams/api-lifecycle.js"
 import { onSessionIdle } from "../../src/teams/lifecycle.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 
@@ -549,5 +549,49 @@ test("supersede on an idle child with terminal attempt does not interrupt", asyn
     } finally {
       await removeRepo(repo.dir)
     }
+  })
+})
+
+test("stopRun on an idle run in the namespace stops it without ownership check", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-idle-stop-001", state: "idle", sessionID: "ses_idle_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "stopped" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+    expect(sessions.interrupted).toHaveLength(1)
+  })
+})
+
+test("stopRun on a working run fails E_BUSY", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-working-stop-001", state: "working", sessionID: "ses_working_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const err = rejected(await stopRun(context({ session: sessions.domain }), run.id))
+    expect(err.code).toBe("E_BUSY")
+    expect(err.message).toContain("working")
+  })
+})
+
+test("stopRun on a dead run reconciles to stopped", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-dead-stop-001", state: "dead", sessionID: "ses_dead_stop" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
+    expect(result).toEqual({ run: run.id, state: "stopped" })
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+  })
+})
+
+test("stopRun on an unknown run fails run.unknown", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const sessions = recordSession()
+    const err = rejected(await stopRun(context({ session: sessions.domain }), "w-nonexistent"))
+    expect(err.code).toBe("run.unknown")
   })
 })

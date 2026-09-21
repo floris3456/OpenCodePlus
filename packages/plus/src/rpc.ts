@@ -592,6 +592,50 @@ export const TeamListOutput = Schema.Struct({
   teams: Schema.Array(TeamListEntry),
 }).annotate({ identifier: "Plus.TeamListOutput" })
 
+export interface TeamRunEntry extends Schema.Schema.Type<typeof TeamRunEntry> {}
+export const TeamRunEntry = Schema.Struct({
+  id: Schema.String,
+  role: Schema.String,
+  state: Schema.String,
+  task: Schema.NullOr(Schema.String),
+  head: Schema.String,
+  worktree: Schema.String,
+  lastUsed: Schema.String,
+  sessionID: Schema.NullOr(Schema.String),
+  parent: Schema.NullOr(Schema.String),
+}).annotate({ identifier: "Plus.TeamRunEntry" })
+
+export interface TeamRunsListInput extends Schema.Schema.Type<typeof TeamRunsListInput> {}
+export const TeamRunsListInput = Schema.Struct({
+  all: Schema.optional(Schema.Boolean),
+}).annotate({ identifier: "Plus.TeamRunsListInput" })
+
+export interface TeamRunsListOutput extends Schema.Schema.Type<typeof TeamRunsListOutput> {}
+export const TeamRunsListOutput = Schema.Struct({
+  runs: Schema.Array(TeamRunEntry),
+}).annotate({ identifier: "Plus.TeamRunsListOutput" })
+
+export interface TeamRunsStopInput extends Schema.Schema.Type<typeof TeamRunsStopInput> {}
+export const TeamRunsStopInput = Schema.Struct({
+  run: Schema.String,
+}).annotate({ identifier: "Plus.TeamRunsStopInput" })
+
+export interface TeamRunsStopOutput extends Schema.Schema.Type<typeof TeamRunsStopOutput> {}
+export const TeamRunsStopOutput = Schema.Struct({
+  run: Schema.String,
+  state: Schema.String,
+}).annotate({ identifier: "Plus.TeamRunsStopOutput" })
+
+export interface RunBusy extends Schema.Schema.Type<typeof RunBusy> {}
+export const RunBusy = Schema.Struct({
+  message: Schema.String,
+}).annotate({ identifier: "Plus.RunBusy" })
+
+export interface RunUnknown extends Schema.Schema.Type<typeof RunUnknown> {}
+export const RunUnknown = Schema.Struct({
+  message: Schema.String,
+}).annotate({ identifier: "Plus.RunUnknown" })
+
 export interface TeamsChanged extends Schema.Schema.Type<typeof TeamsChanged> {}
 export const TeamsChanged = Schema.Struct({}).annotate({ identifier: "Plus.TeamsChanged" })
 
@@ -934,6 +978,24 @@ const PortableDeleteTeamResult = Schema.toStandardSchemaV1(
 const PortableTeamListOutput = Schema.toStandardSchemaV1(
   TeamListOutput.annotate({ identifier: "Plus.TeamListOutput" }),
 )
+const PortableTeamRunsListInput = Schema.toStandardSchemaV1(
+  TeamRunsListInput.annotate({ identifier: "Plus.TeamRunsListInput" }),
+)
+const PortableTeamRunsListOutput = Schema.toStandardSchemaV1(
+  TeamRunsListOutput.annotate({ identifier: "Plus.TeamRunsListOutput" }),
+)
+const PortableTeamRunsStopInput = Schema.toStandardSchemaV1(
+  TeamRunsStopInput.annotate({ identifier: "Plus.TeamRunsStopInput" }),
+)
+const PortableTeamRunsStopOutput = Schema.toStandardSchemaV1(
+  TeamRunsStopOutput.annotate({ identifier: "Plus.TeamRunsStopOutput" }),
+)
+const PortableRunBusy = Schema.toStandardSchemaV1(
+  RunBusy.annotate({ identifier: "Plus.RunBusy" }),
+)
+const PortableRunUnknown = Schema.toStandardSchemaV1(
+  RunUnknown.annotate({ identifier: "Plus.RunUnknown" }),
+)
 const PortableTeamsChanged = Schema.toStandardSchemaV1(
   TeamsChanged.annotate({ identifier: "Plus.TeamsChanged" }),
 )
@@ -1206,6 +1268,23 @@ export const Definition = Rpc.define({
       output: PortableTeamListOutput,
       errors: {
         "project.disabled": PortableProjectDisabled,
+      },
+    },
+    "team.runs.list": {
+      input: PortableTeamRunsListInput,
+      output: PortableTeamRunsListOutput,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+      },
+    },
+    "team.runs.stop": {
+      input: PortableTeamRunsStopInput,
+      output: PortableTeamRunsStopOutput,
+      errors: {
+        "project.disabled": PortableProjectDisabled,
+        "E_BUSY": PortableRunBusy,
+        "run.busy": PortableRunBusy,
+        "run.unknown": PortableRunUnknown,
       },
     },
     "model.add": {

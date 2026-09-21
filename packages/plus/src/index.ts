@@ -24,6 +24,8 @@ import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
+import { listRunsForNamespace } from "./teams/api-query.js"
+import { stopRun } from "./teams/api-lifecycle.js"
 import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
@@ -1948,6 +1950,25 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
           return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
         }
         return result.value
+      }),
+    "team.runs.list": (input, context) =>
+      Effect.gen(function* () {
+        const root = teamsDataDir()
+        const runs = yield* Effect.promise(() => listRunsForNamespace(root, input))
+        return { runs }
+      }),
+    "team.runs.stop": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => stopRun(ctx, input.run))
+        if (!result.ok) {
+          const data = { message: result.error.message }
+          if (result.error.code === "E_BUSY")
+            return yield* Effect.fail(context.error("E_BUSY", result.error.message, data))
+          if (result.error.code === "run.unknown")
+            return yield* Effect.fail(context.error("run.unknown", result.error.message, data))
+          return yield* Effect.fail(context.error("E_BUSY", result.error.message, data))
+        }
+        return result.value as { run: string; state: string }
       }),
     "model.add": (input, context) =>
       Effect.gen(function* () {

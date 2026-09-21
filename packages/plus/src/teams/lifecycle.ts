@@ -152,7 +152,10 @@ const OUTCOMES: Record<string, SessionOutcome> = {
   "session.execution.interrupted": "interrupted",
 }
 
-export const SessionRunEvents: ReadonlySet<string> = new Set(Object.keys(OUTCOMES))
+export const SessionRunEvents: ReadonlySet<string> = new Set([
+  ...Object.keys(OUTCOMES),
+  "session.execution.started",
+])
 
 /** Maps one host session event onto its run, if any. Sessions without a run are ignored. */
 export async function onSessionEvent(
@@ -160,13 +163,23 @@ export async function onSessionEvent(
   root: string,
   event: { type: string; properties?: Record<string, unknown>; data?: unknown },
 ): Promise<RunRecord | undefined> {
-  const outcome = OUTCOMES[event.type]
-  if (outcome === undefined) return undefined
   const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
   const sessionID = payload.sessionID
   if (typeof sessionID !== "string" || sessionID.length === 0) return undefined
   const run = await bySession(root, sessionID)
   if (run === undefined) return undefined
+
+  if (event.type === "session.execution.started") {
+    if (run.state === "stopped" || run.state === "dead") {
+      const working = transition(run, "working", "resume")
+      await saveRun(root, working)
+      return working
+    }
+    return undefined
+  }
+
+  const outcome = OUTCOMES[event.type]
+  if (outcome === undefined) return undefined
   return onSessionIdle(ctx, root, run, outcome)
 }
 

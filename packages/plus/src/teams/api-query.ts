@@ -128,3 +128,45 @@ async function listRuns(root: string): Promise<RunRecord[]> {
   }
   return out
 }
+
+export interface NamespaceRunEntry {
+  id: string
+  role: string
+  state: string
+  task: string | null
+  head: string
+  worktree: string
+  lastUsed: string
+  sessionID: string | null
+  parent: string | null
+}
+
+export async function listRunsForNamespace(root: string, args?: { all?: boolean }): Promise<NamespaceRunEntry[]> {
+  const allRuns = await listRuns(root)
+  const showAll = args?.all ?? false
+  const filtered = allRuns.filter((record) => {
+    if (!showAll && (record.state === "superseded" || record.state === "reaped")) return false
+    return true
+  })
+  const sorted = [...filtered].toSorted((a, b) => {
+    if (a.lastUsed !== b.lastUsed) return a.lastUsed < b.lastUsed ? 1 : -1
+    if (a.id === b.id) return 0
+    return a.id < b.id ? -1 : 1
+  })
+  const entries: NamespaceRunEntry[] = []
+  for (const record of sorted) {
+    const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
+    entries.push({
+      id: record.id,
+      role: record.role,
+      state: record.state,
+      task: record.task,
+      head,
+      worktree: record.worktree ?? "present",
+      lastUsed: record.lastUsed,
+      sessionID: record.sessionID,
+      parent: record.parent,
+    })
+  }
+  return entries
+}

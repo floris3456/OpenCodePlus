@@ -90,10 +90,11 @@ function workingChild(id: string, parent: string | null, sessionID: string): Run
   })
 }
 
-test("the three settling session events are the ones we subscribe to", () => {
+test("the four session events are the ones we subscribe to", () => {
   expect([...SessionRunEvents].toSorted()).toEqual([
     "session.execution.failed",
     "session.execution.interrupted",
+    "session.execution.started",
     "session.idle",
   ])
 })
@@ -381,5 +382,66 @@ test("a run with no session is never prompted and keeps its pending inbox", asyn
     await onSessionIdle(context({ session: sessions.domain }), root, child)
     expect(sessions.prompted).toHaveLength(0)
     expect(await peek(root, child.id)).toHaveLength(1)
+  })
+})
+
+test("session.execution.started resumes a stopped run to working", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({
+      id: "w-stopped-001",
+      state: "stopped",
+      sessionID: "ses_stopped_001",
+    })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const moved = await onSessionEvent(context({ session: sessions.domain }), root, {
+      type: "session.execution.started",
+      properties: { sessionID: "ses_stopped_001" },
+    })
+    expect(moved?.state).toBe("working")
+    const loaded = await loadRun(root, run.id)
+    expect(loaded?.state).toBe("working")
+    expect(loaded?.history[loaded.history.length - 1]?.from).toBe("stopped")
+    expect(loaded?.history[loaded.history.length - 1]?.to).toBe("working")
+  })
+})
+
+test("session.execution.started resumes a dead run to working", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({
+      id: "w-dead-001",
+      state: "dead",
+      sessionID: "ses_dead_001",
+    })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const moved = await onSessionEvent(context({ session: sessions.domain }), root, {
+      type: "session.execution.started",
+      properties: { sessionID: "ses_dead_001" },
+    })
+    expect(moved?.state).toBe("working")
+    const loaded = await loadRun(root, run.id)
+    expect(loaded?.state).toBe("working")
+    expect(loaded?.history[loaded.history.length - 1]?.from).toBe("dead")
+    expect(loaded?.history[loaded.history.length - 1]?.to).toBe("working")
+  })
+})
+
+test("session.execution.started on an idle or working run ignores the event", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const idleRun = baseRun({
+      id: "w-idle-001",
+      state: "idle",
+      sessionID: "ses_idle_001",
+    })
+    await saveRun(root, idleRun)
+    const sessions = recordSession()
+    const result = await onSessionEvent(context({ session: sessions.domain }), root, {
+      type: "session.execution.started",
+      properties: { sessionID: "ses_idle_001" },
+    })
+    expect(result).toBeUndefined()
+    const loaded = await loadRun(root, idleRun.id)
+    expect(loaded?.state).toBe("idle")
   })
 })
