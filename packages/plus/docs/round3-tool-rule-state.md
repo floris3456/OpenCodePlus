@@ -22,11 +22,12 @@ The old mapping dropped two optional fields the rest of the pipeline carries:
   record written in the Teams catalogue was re-targeted to the Agents
   catalogue — and a Teams-catalogue state record no longer matched its own row.
 
-`message` was already preserved on the round-trip paths that were covered
-(`store.ts` `stable`/`parseV2`, `snapshot.ts` `ruleOf`, `tui/instructions/state.ts`
-`toRpcRecords`), and `catalogue` was preserved by `toRecord`
-(`src/index.ts:2694`) and `snapshot.ts` `recordOf`. Only the tool serializer
-omitted them, so `instructions_create` + `instructions_set state:"off"` +
+`message` was already preserved on every round-trip path that was covered
+(`store.ts` `stable`/`parseV2`, `snapshot.ts` `ruleOf`,
+`tui/instructions/state.ts` `toRpcRecords`), and `catalogue` was preserved by
+`toRecord` (`src/index.ts:2694`) and `snapshot.ts` `recordOf` — but not by the
+tool serializer, and not by `toRpcRecords` either (closed by the companion fix
+below). So `instructions_create` + `instructions_set state:"off"` +
 `instructions_show` returned a rule with no message and, for a Teams rule, the
 wrong catalogue.
 
@@ -157,20 +158,80 @@ $ tsgo --noEmit -p tsconfig.test.json
 
 ## SPEC / README
 
-- `SPEC.md` "Tool permission rules" list: one bullet stating that a state-only
-  `set` resubmits the whole record set through `toSnapshotRecords`, which
-  carries `message` on every rule and `catalogue` on every shared record,
-  exactly like `toRecord` and `toRpcRecords`.
+- `SPEC.md` "Tool permission rules" list: one bullet stating that the two
+  whole-set resubmissions — `set` with `state` alone through `tools.ts`
+  `toSnapshotRecords`, and every TUI write through
+  `tui/instructions/state.ts` `toRpcRecords` — carry `message` on every rule
+  and `catalogue` on every shared record, exactly like `toRecord`, so toggling
+  one row never drops another rule's message or moves a Teams-catalogue rule
+  into the Agents catalogue.
 - `README.md` "Permission rules" paragraph: one sentence with the same
-  statement.
+  statement (extended by the companion fix to name `toRpcRecords`).
 
-## Observation outside this task's scope
+## Companion fix — `tui/instructions/state.ts` `toRpcRecords`
 
-`tui/instructions/state.ts` `toRpcRecords` (`:101`) still omits `catalogue`
-(while carrying `message`), so a TUI-originated whole-set `instructions.mutate`
-can still re-target a Teams-catalogue shared record into the Agents catalogue.
-That file is outside this task's edit scope (`tools.ts` only); reported to the
-parent rather than changed here.
+The observation that used to sit here was wrong to leave open: the follow-up
+task "T2 TUI rule mutations retain shared catalogue identity" closed it.
+`toRpcRecords` (`src/tui/instructions/state.ts:60`) now spreads `catalogue`
+on customization (`:73`), split (`:92`), model (`:104`) and rule (`:118`)
+records with the same absent-key semantics `toSnapshotRecords` uses, so a
+shared Defaults record written in the Teams catalogue stays in the Teams
+catalogue when the TUI resubmits the whole record set. `message` stays on
+rules (`:124`), exactly as before. Resolution, precedence and ordering are
+untouched: the TUI payload gains only keys the records already had, and an
+unset field still encodes without its key.
+
+`test/tui-rule-state.test.ts` drives the real `createHandlers`, `memoInputOf`,
+`toRpcRecords` and `instructions.mutate` plus the real `toggle` and
+`addSection` ops — the expressions `createInstructionsState`'s `persist` runs —
+and reads back from the snapshot and from disk: a Teams shared rule keeps its
+`message`, `catalogue` and state; an unrelated Agents shared rule keeps its
+message and stays keyless; a rule with no message gains none; a
+Teams-catalogue model record and a Teams-catalogue split survive the same
+whole-set write.
+
+### Check receipts for the companion fix
+
+`bun test test/tui-rule-state.test.ts test/route.test.tsx` (cwd
+`packages/plus`), before the fix, tree `4bfdd438` — exit 1, both new tests
+fail on the dropped key (the route suite stayed green, 65 pass):
+
+```
+184 |     expect(payloadTeamsRule?.catalogue).toBe("teams")
+                                  ^
+error: expect(received).toBe(expected)
+
+Expected: "teams"
+Received: undefined
+...
+(fail) TUI whole-set resubmissions retain rule messages and catalogue identity >
+  a Teams shared rule's message, catalogue and state survive beside an unrelated Agents rule [30.97ms]
+(fail) TUI whole-set resubmissions retain rule messages and catalogue identity >
+  a Teams-catalogue section write keeps its split in the Teams catalogue [7.16ms]
+
+ 65 pass
+ 1 skip
+ 2 fail
+Ran 68 tests across 2 files.
+```
+
+The same command after the fix (tree `d29f98dc`, exit 0):
+
+```
+(pass) TUI whole-set resubmissions retain rule messages and catalogue identity >
+  a Teams shared rule's message, catalogue and state survive beside an unrelated Agents rule [32.98ms]
+(pass) TUI whole-set resubmissions retain rule messages and catalogue identity >
+  a Teams-catalogue section write keeps its split in the Teams catalogue [8.79ms]
+
+ 67 pass
+ 1 skip
+ 0 fail
+ 430 expect() calls
+Ran 68 tests across 2 files. [30.18s]
+```
+
+`bun run typecheck` (cwd `packages/plus`) — exit 0, `$ tsgo --noEmit -p
+tsconfig.test.json`.
 
 ## Deferred
 

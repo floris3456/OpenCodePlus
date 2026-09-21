@@ -1056,12 +1056,14 @@ Tool permission rules carry the same field:
   generic refusal.
 - `instructions_show` on a perm row returns `message` when the row has one,
   and the TUI detail pane prints it under `provenance`.
-- A state-only write — `set` with `state` alone — resubmits the whole record
-  set through `tools.ts` `toSnapshotRecords`, which carries `message` on every
-  rule and `catalogue` on every shared (`agent === null`) record, exactly like
-  `toRecord` (`index.ts`) and `toRpcRecords` (`tui/instructions/state.ts`).
-  Toggling one row therefore never drops another rule's message and never moves
-  a Teams-catalogue rule into the Agents catalogue.
+- Two whole-set resubmissions carry the same optional fields. A state-only
+  write — `set` with `state` alone — goes through `tools.ts`
+  `toSnapshotRecords`; every TUI write (`persist` in
+  `tui/instructions/state.ts`) resubmits through `toRpcRecords`. Both carry
+  `message` on every rule and `catalogue` on every shared (`agent === null`)
+  record, exactly like `toRecord` (`index.ts`). Toggling one row therefore
+  never drops another rule's message and never moves a Teams-catalogue rule
+  into the Agents catalogue.
 
 Rows appear in a `Policy` group under the member's `Tools` group
 (`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
