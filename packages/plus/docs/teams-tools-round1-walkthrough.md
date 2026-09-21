@@ -1323,6 +1323,14 @@ status, union run scopes`):
    never-editable denies — so two live runs of one role resolve to the union,
    with each run keeping its own listable `perm:edit:run:<id>` row.
 
+A fifth defect I found while fixing the fourth, and fixed in the same pass
+(`fix(plus): keep the orphan sweep off live merge worktrees`): `merge.ts`
+creates its temporary worktree under the same owned root, claimed by no run
+record, so the 2-second sweep could delete it out from under a running
+`integrate`. The merge area is now excluded from orphan candidates. The
+consequence, stated rather than hidden: a merge worktree abandoned by a crash
+is no longer reclaimed by the sweep and stays until `git worktree prune`.
+
 The fifth finding is the `ask` gap in 20i, which the reviewer agreed was
 correctly out of scope to fix here and correctly disclosed, and which remains
 an unmet clause of item 9.
