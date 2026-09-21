@@ -593,10 +593,10 @@ task, so its row ends at the state. Every row is an active state.
 
 ## Item 7 — `ctrl+a` toggles to inactive runs and back
 
-**Source:** `packages/plus/docs/round3-t4-evidence.md` for the implementation; no pilotty
-capture exists yet.
+**Source:** `packages/plus/docs/round3-t4-evidence.md` for the implementation; the
+pilotty captures below are the parent's, from the final lab.
 
-Implementation: `ctrl+a` (`composer.team.toggle`, `inactive`/`active`) flips the filter to
+Implementation: `ctrl+a` (`composer.team.toggle_activity`, `inactive`/`active`) flips the filter to
 the inactive states (`stopped`, `dead`, `superseded`, `reaped`), newest first, and updates
 the hint bar, which the after capture above shows as `active ctrl+a`.
 
@@ -714,8 +714,8 @@ The hint bar names the view that is on: `active ctrl+a` in the active view,
 
 ## Item 8 — Enter on any row, active or inactive, attaches
 
-**Source:** `packages/plus/docs/round3-t4-evidence.md` (component test); no pilotty capture
-yet.
+**Source:** `packages/plus/docs/round3-t4-evidence.md` (component test); the pilotty
+captures below are the parent's, from the final lab.
 
 `Enter` runs `composer.team.select`, which navigates to that run's `sessionID` and closes
 the composer (the component test above covers the navigation).
@@ -832,7 +832,8 @@ After `Enter`:
 ## Item 9 — `ctrl+d` on a selected run: stop, resume, or interrupt-first
 
 **Source:** `packages/plus/docs/round3-t4-evidence.md`,
-`packages/plus/docs/round3-lifecycle.md` (in-process); no pilotty capture yet.
+`packages/plus/docs/round3-lifecycle.md` (in-process); the pilotty captures below are the
+parent's, from the final lab.
 
 Implementation: `ctrl+d` (`composer.team.action`) on an `idle` run stops it; on `stopped`
 or `dead` it attaches to the run's session (and `session.execution.started` moves the run
@@ -1635,7 +1636,7 @@ captures show. No source changed.
 ## Decisions recorded by this document
 
 - **D4 outcome:** the actual `Ctrl+D` reaches the tab; the tab keeps `ctrl+d` for
-  stop/resume and `ctrl+s` is not used (details and the pending live proof under item 9).
+  stop/resume and `ctrl+s` is not used (details and the live proof under item 9).
 - **`instruction.disabled`:** intentionally refused and an accepted Context pause, not a
   failed create; this document claims eight enabled create kinds, not nine (item 3).
 - The six final captures are taken in one lab, `tui-lab-r3f`, running the
