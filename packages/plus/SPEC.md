@@ -1406,3 +1406,76 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
 | `project.disabled` | project mode is off and no tool changes that |
 
+## Search MCP server (`src/search/mcp.ts`, `src/search/bin.ts`, `src/search/register.ts`)
+
+Plus ships a built-in search MCP server providing Exa code search and Tavily web search and extraction.
+
+### Registration and lifecycle
+
+On activation (`activate` / `ensureTooling`), Plus reads `ctx.mcp.transform` to check for an existing MCP server named `search`:
+- When absent (`editor.get("search") === undefined`), Plus registers its search server:
+  `editor.set("search", new Mcp.LocalConfig({ type: "local", command: [process.execPath, <path to bin.ts|bin.js>] }))`
+  and reloads MCP via `ctx.mcp.reload()`. The registration is tracked and disposes cleanly on deactivation.
+- When present, Plus leaves the existing configuration untouched and logs `search MCP already configured; not replacing`.
+
+The server entrypoint is `packages/plus/src/search/bin.ts`, which runs over stdio and gracefully exits on `SIGTERM`, `SIGINT`, or stdin `end`.
+
+### Tools and schemas
+
+The search server exposes three tools with the identical schemas used by the workspace build seat:
+
+1. `exa_code_search`
+   - Description: Search billions of GitHub repos, docs, Stack Overflow, and dev blogs for real, working code examples via Exa.
+   - Input schema:
+     - `query`: string, min length 1 (natural language description of code needed)
+     - `type`: enum `["fast", "auto", "neural", "keyword"]`, default `"fast"`
+     - `numResults`: integer, min 1, max 100, default 10
+     - `includeDomains`: optional array of strings
+     - `excludeDomains`: optional array of strings
+     - `startPublishedDate`: optional string
+     - `endPublishedDate`: optional string
+     - `contents`: optional object with `text` (boolean or `{ maxCharacters: number }`), `highlights` (boolean), `summary` (boolean), default `{ highlights: true }`
+2. `tavily_search`
+   - Description: Search the web via Tavily.
+   - Input schema:
+     - `query`: string, min 1, max 400
+     - `search_depth`: enum `["ultra-fast", "fast", "basic", "advanced"]`, default `"basic"`
+     - `topic`: enum `["general", "news", "finance"]`, default `"general"`
+     - `max_results`: integer, min 1, max 20, default 5
+     - `time_range`: optional enum `["day", "week", "month", "year"]`
+     - `include_domains`: optional array of strings
+     - `exclude_domains`: optional array of strings
+3. `tavily_extract`
+   - Description: Extract clean content from up to 20 URLs via Tavily.
+   - Input schema:
+     - `urls`: array of URL strings, min 1, max 20
+     - `extract_depth`: enum `["basic", "advanced"]`, default `"basic"`
+     - `query`: optional string
+     - `chunks_per_source`: optional integer, min 1, max 5
+     - `format`: enum `["markdown", "text"]`, default `"markdown"`
+
+When registered under the `search` server name, core exposes them to models with the prefixed IDs:
+- `search_exa_code_search`
+- `search_tavily_search`
+- `search_tavily_extract`
+
+### Authentication and error handling
+
+API keys are read at call time from the process environment:
+- `EXA_API_KEY` for `exa_code_search`
+- `TAVILY_API_KEY` for `tavily_search` and `tavily_extract`
+
+Keys are never written to any config file, row, test fixture, log, or commit.
+
+If a key is unset or empty, the tool returns a formatted tool error result rather than crashing or returning empty content:
+- Missing `EXA_API_KEY`: `{ error: "EXA_API_KEY is not set in the host environment" }` with `isError: true`
+- Missing `TAVILY_API_KEY`: `{ error: "TAVILY_API_KEY is not set in the host environment" }` with `isError: true`
+
+### Team prompts and per-role policy
+
+Built-in team prompts reference the search tools by their exact model-visible IDs:
+- `shared` prompt (all members): `search_exa_code_search` for external APIs.
+- `planner` prompt: `search_tavily_search` and `search_tavily_extract` for documentation.
+
+The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available.
+

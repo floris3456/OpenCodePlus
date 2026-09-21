@@ -303,3 +303,16 @@ bun test test/route.test.tsx test/instructions-panes.test.tsx test/instructions-
 # Run package typecheck
 bun run typecheck
 ```
+
+## Search MCP server
+
+Plus ships a built-in local MCP server providing code and web search tools (`src/search/mcp.ts`, `src/search/bin.ts`, `src/search/register.ts`):
+
+- **Activation**: If the host has no MCP server named `search`, Plus registers its local stdio server command (`[process.execPath, <path to bin.ts|bin.js>]`) and reloads MCP. If an MCP server named `search` is already present, Plus leaves it alone and logs `search MCP already configured; not replacing`. The registration disposes cleanly on deactivation.
+- **Tools**:
+  - `exa_code_search`: code search over GitHub repos, docs, Stack Overflow, and blogs via Exa.
+  - `tavily_search`: web search via Tavily.
+  - `tavily_extract`: clean web content extraction from URLs via Tavily.
+  Under the `search` server name, core exposes them as `search_exa_code_search`, `search_tavily_search`, and `search_tavily_extract`.
+- **Environment variables**: Keys are read from `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment at call time and never persisted. A missing key returns a tool error result `{ error: "<KEY> is not set in the host environment" }` with `isError: true`.
+- **Team prompts & policy**: Built-in prompts name `search_exa_code_search` in the shared team body and `search_tavily_search` / `search_tavily_extract` in the planner body. The `perm:search:team-tavily` policy row disables Tavily search for implementer, reviewer, and scout roles while keeping code search enabled.

@@ -189,7 +189,22 @@ test("no built-in prompt names a tool that left the namespace", () => {
   ]
   for (const team of builtinTeams) {
     for (const member of team.members) {
-      for (const name of removed) expect(member.body).not.toContain(name)
+      for (const name of removed) {
+        const bare = new RegExp(`(?<![a-zA-Z0-9_])${name}(?![a-zA-Z0-9_])`)
+        expect(bare.test(member.body)).toBe(false)
+      }
     }
+  }
+})
+
+test("built-in prompts name search tools by their MCP-served ids", () => {
+  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
+  if (team === undefined) throw new Error("missing opencodeplus-team")
+  const planner = team.members.find((member) => member.id === "fable-planner")
+  expect(planner?.body).toContain("search_tavily_search")
+  expect(planner?.body).toContain("search_tavily_extract")
+
+  for (const member of team.members) {
+    expect(member.body).toContain("search_exa_code_search")
   }
 })
