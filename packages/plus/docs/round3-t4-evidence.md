@@ -11,7 +11,7 @@
   - `ctrl+a`: toggles to inactive runs (`stopped`, `dead`, `superseded`, `reaped`), newest first, and updates hint bar to reflect active/inactive state.
   - `Enter` (`composer.team.select`): navigates to `run.sessionID` (attaches) and closes composer.
   - `ctrl+d` (`composer.team.action`): on `idle` run stops the run; surfaces any rejection via a warning toast; on `stopped` or `dead` run resumes by attaching to its session; on `working` run displays warning toast `"Run must be interrupted first"`.
-  - Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
+  - Hint bar: `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint names the view that is on (`inactive ctrl+a` while the inactive view is showing), and `tabs ←/→` is the composer's own hint.
 - **Query Projection Sharing (`teams/api-query.ts`)**:
   - `sortRuns`, `resolveHead`, and `namespaceRunEntryOf` are shared between `listHandler`, `statusOf`, and `listRunsForNamespace` to avoid redundant sorting and mapping logic.
 - **Lifecycle Resume Edge (`run.ts`, `lifecycle.ts`)**:
