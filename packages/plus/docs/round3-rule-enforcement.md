@@ -258,10 +258,10 @@ $ tsgo --noEmit -p tsconfig.test.json
 
 The tool serializer defect that dropped `message` and `catalogue` from a
 state-only write is fixed and documented separately in
-[`round3-tool-rule-state.md`](round3-tool-rule-state.md); nothing about
-`src/tools.ts` is open for this task. That document's own note about
-`tui/instructions/state.ts` `toRpcRecords` omitting `catalogue` is the parent's
-to route — it is outside both tasks' edit scope.
+[`round3-tool-rule-state.md`](round3-tool-rule-state.md), which also covers the
+companion `tui/instructions/state.ts` serializer correction. Neither
+`src/tools.ts` nor the TUI serializer is open for this task; both are outside
+this task's edit scope and neither was changed or checked here.
 
 ## Deferred
 
