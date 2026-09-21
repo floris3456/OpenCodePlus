@@ -1,7 +1,7 @@
 # T2 — Rule messages everywhere: evidence and remaining scope
 
-Base: `f0522d90f2537ebcd4a516b50122e951f4503fc6` (no commit yet in this
-worktree; this file ships with the T2 checkpoint).
+Base: `f0522d90f2537ebcd4a516b50122e951f4503fc6`. The T2 checkpoint commit
+is `943db15974630eecbdf9fb185aa3714d4ec588d4`; this file ships with it.
 
 ## What this worker changed
 
@@ -104,3 +104,6 @@ should mention `message` for in-product help.
   above lands. The curated half is already provable in-session (curated
   message → `apply` → `Permission.evaluate`), which
   `test/apply.test.ts` covers without a lab.
+
+Status: in-scope work complete and checked; the end-state item remains
+blocked on the three files named above.
