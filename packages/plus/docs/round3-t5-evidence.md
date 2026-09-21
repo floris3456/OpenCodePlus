@@ -145,12 +145,12 @@ removed the worktree because no run record claimed it.
 **Passing-after** — the final `team-runtime` run, exit code 0:
 
 ```
-(pass) the first delegate registers the child run before the host opens its session [24.19ms]
+(pass) the first delegate registers the child run before the host opens its session [48.70ms]
 
  84 pass
  0 fail
  489 expect() calls
-Ran 84 tests across 5 files. [1.71s]
+Ran 84 tests across 5 files. [1.85s]
 ```
 
 The worktree text in `worktree.test.ts` was updated to say what it pins (the
@@ -211,10 +211,10 @@ Tests and captures:
   project, with no copy". Actual capture from the final run:
 
 ```
-[T5 item 13] child /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-WuJuIA/opencode/opencodeplus/teams/worktrees/opencode/implementer/t148cd-20260921-2028
+[T5 item 13] child /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-3muoXh/opencode/opencodeplus/teams/worktrees/opencode/implementer/t1d35a-20260921-2030
   child/.opencodeplus/project.json exists: false
-  run.projectDirectory: /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-repo-vJar8E
-  activationDirectory(child): /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-repo-vJar8E
+  run.projectDirectory: /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-repo-JxIAVx
+  activationDirectory(child): /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-repo-JxIAVx
   project.read(activation): {"version":1,"protectedAgents":["muse-implementer"]}
 ```
 
@@ -232,7 +232,7 @@ Tests and captures:
 
 ```
 [T5 item 13] child plugin activation through the real entrypoint
-  location: .../teams/worktrees/opencode/implementer/t1a58e-20260921-2029
+  location: /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-GOM6T3/opencode/opencodeplus/teams/worktrees/opencode/implementer/t12821-20260921-2030
   team tools installed: 14
   instructions tools installed: 8
   team member agents installed: alpha
@@ -248,8 +248,8 @@ Tests and captures:
 
 ```
 [T5 item 13] child API resolves the inherited project
-  location: .../teams/worktrees/opencode/implementer/t16818-20260921-2029
-  project.status: {"enabled":true,"directory":".../plus-team-api-repo-moShSV"}
+  location: /home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-EH6faH/opencode/opencodeplus/teams/worktrees/opencode/implementer/t186e7-20260921-2030
+  project.status: {"enabled":true,"directory":"/home/bliss/OpenCodePlus/run/team/development-models/runs/w-1e57ed56bbdb72c5/tmp/plus-team-api-repo-eyt2Zi"}
   snapshot revisions: project=0 global=0
   mutate ok: true
 ```
