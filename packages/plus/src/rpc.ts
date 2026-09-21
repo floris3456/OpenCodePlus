@@ -179,6 +179,7 @@ export const SnapshotRuleRecord = Schema.Struct({
   label: Schema.String,
   patterns: Schema.Array(Schema.String),
   keywords: Schema.Array(Schema.String),
+  message: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotRuleRecord" })
 
@@ -792,7 +793,8 @@ export const ModelInvalid = Schema.Struct({
 // with state on/off on the perm item address. Patterns are CORE RESOURCE
 // WILDCARDS over the parsed command text, NOT regex: `*` spans any run, `?`
 // matches one character. For shell the resource is the parsed command text,
-// so `git *` also matches a bare `git`.
+// so `git *` also matches a bare `git`. `message` is the optional refusal
+// text the model reads in place of the generic denial; blank clears it.
 export interface RuleAddInput extends Schema.Schema.Type<typeof RuleAddInput> {}
 export const RuleAddInput = Schema.Struct({
   level: Level,
@@ -803,6 +805,7 @@ export const RuleAddInput = Schema.Struct({
   label: Schema.String,
   patterns: Schema.Array(Schema.String),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+  message: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.RuleAddInput" })
 
 export interface RuleRemoveInput extends Schema.Schema.Type<typeof RuleRemoveInput> {}
@@ -822,6 +825,7 @@ export const RuleUpdateInput = Schema.Struct({
   label: Schema.String,
   patterns: Schema.Array(Schema.String),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+  message: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.RuleUpdateInput" })
 
 export interface RuleRef extends Schema.Schema.Type<typeof RuleRef> {}

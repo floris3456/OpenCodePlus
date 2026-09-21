@@ -1076,6 +1076,42 @@ test("rule remove drops customizations so re-adding the rule reads enabled:true"
   expect(row?.badges.state).toBe("on")
 })
 
+test("rule.add and rule.update accept an optional refusal message at the RPC boundary", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await Effect.runPromise(
+    handlers["rule.add"](
+      {
+        level: "project",
+        agent: null,
+        tool: "shell",
+        id: "no-push",
+        label: "No pushes",
+        patterns: ["git push --force *"],
+        message: "  force pushes are not allowed here  ",
+      },
+      throwingContext({}),
+    ),
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.items.find((item) => item.id === "perm:shell:no-push")?.custom).toBe(true)
+  // Both message-carrying update forms are accepted at the boundary: a blank
+  // message (clear) and an omitted one (leave the stored text alone).
+  await Effect.runPromise(
+    handlers["rule.update"](
+      { level: "project", agent: null, tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"], message: "" },
+      throwingContext({}),
+    ),
+  )
+  await Effect.runPromise(
+    handlers["rule.update"](
+      { level: "project", agent: null, tool: "shell", id: "no-push", label: "No force pushes", patterns: ["git push --force *"] },
+      throwingContext({}),
+    ),
+  )
+})
+
 test("skill delete drops item-addressed customizations so re-created skill resolves new body", async () => {
   const { project } = await tempRoot()
   await enable(project)

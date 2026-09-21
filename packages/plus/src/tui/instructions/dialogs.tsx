@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { Definition } from "../../rpc.js"
+import { Definition, type Plus } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
 import type { AddKind, TreeNode } from "../../instructions/tree.js"
 import type { InstructionsState } from "./state.js"
@@ -661,6 +661,13 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (disposed) return
     if (rawKeywords === undefined) return
     const keywords = rawKeywords.trim().length === 0 ? undefined : rawKeywords.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+    const rawMessage = await context.ui.dialog.prompt({
+      title: "Message shown on refusal (optional)",
+      placeholder: "force pushes are not allowed here",
+    })
+    if (disposed) return
+    if (rawMessage === undefined) return
+    const message = rawMessage.trim()
     if (level === undefined) {
       const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
         title: "Rule scope",
@@ -714,7 +721,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (level === undefined || agent === undefined) return
     try {
       const ref = await plus["rule.add"](
-        { level, agent, tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }) },
+        { level, agent, tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
         { location: context.location },
       )
       if (disposed) return
@@ -787,9 +794,22 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
             .split(",")
             .map((entry) => entry.trim())
             .filter((entry) => entry.length > 0)
+    // The stored message lives on the rule record, not the snapshot item, so
+    // a user rule can be edited back to the generic refusal by clearing it.
+    const storedRule = snapshot?.records.find(
+      (record): record is Plus.SnapshotRuleRecord => record.type === "rule" && record.tool === tool && record.id === ruleId,
+    )
+    const rawMessage = await context.ui.dialog.prompt({
+      title: "Message shown on refusal (optional)",
+      placeholder: "force pushes are not allowed here",
+      value: storedRule?.message ?? "",
+    })
+    if (disposed) return
+    if (rawMessage === undefined) return
+    const message = rawMessage.trim()
     try {
       const ref = await plus["rule.update"](
-        { level: address.level, agent: address.agent, tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }) },
+        { level: address.level, agent: address.agent, tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
         { location: context.location },
       )
       if (disposed) return

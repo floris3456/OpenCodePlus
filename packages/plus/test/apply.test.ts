@@ -20,7 +20,7 @@ import { discover } from "../src/instructions/discover.js"
 import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
 import { seedSystemInstruction } from "../src/instructions/teaching.js"
 import { catalogPath, fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
-import type { CustomizationRecord, Level } from "../src/instructions/model.js"
+import type { CustomizationRecord, Level, RuleRecord } from "../src/instructions/model.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 // Plus cannot depend on @opencode/core (core depends on Plus), so this
@@ -1287,10 +1287,102 @@ test("a perm rule off installs a core deny proved by Permission.evaluate (not a 
   const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }))
   expect(applied.registrations.length).toBeGreaterThan(0)
   const alphaRules = agents.state.get("alpha")?.permissions ?? []
-  expect(alphaRules.slice(-1)).toEqual([{ action: "shell", resource: "git push *", effect: "deny" }])
+  // The curated rule ships a message, so the installed deny carries it and
+  // the model reads it instead of the generic refusal.
+  expect(alphaRules.slice(-1)).toEqual([
+    { action: "shell", resource: "git push *", effect: "deny", message: "pushing is not allowed here" },
+  ])
   expect(agents.state.get("beta")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
-  expect(evaluate("shell", "git push origin", alphaRules).effect).toBe("deny")
+  const denied = evaluate("shell", "git push origin", alphaRules)
+  expect(denied.effect).toBe("deny")
+  expect(denied.message).toBe("pushing is not allowed here")
   expect(evaluate("shell", "git status", alphaRules).effect).not.toBe("deny")
+})
+
+test("a user rule's own message reaches Permission.evaluate through apply", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const permText = "No force pushes\ngit push --force *"
+  const items = [
+    { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: "shell tool", enabled: true, fingerprint: fingerprint("shell tool") },
+    {
+      id: "perm:shell:no-push",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "No force pushes",
+      text: permText,
+      enabled: true,
+      fingerprint: fingerprint(permText),
+      permTool: "shell",
+      ruleId: "no-push",
+      patterns: ["git push --force *"],
+      keywords: ["git push"],
+      provenance: [] as string[],
+      custom: true,
+    },
+  ]
+  const records = [makeRecord({ item: "perm:shell:no-push", agent: "alpha", level: "project", state: "off" })]
+  const rules: RuleRecord[] = [
+    {
+      type: "rule",
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "no-push",
+      label: "No force pushes",
+      patterns: ["git push --force *"],
+      keywords: ["git push"],
+      message: "force pushes are not allowed here",
+      updated: UPDATED,
+    },
+  ]
+  await apply(ctx, makeInput({ items, records, rules, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }))
+  const alphaRules = agents.state.get("alpha")?.permissions ?? []
+  expect(alphaRules.slice(-1)).toEqual([
+    { action: "shell", resource: "git push --force *", effect: "deny", message: "force pushes are not allowed here" },
+  ])
+  const denied = evaluate("shell", "git push --force origin", alphaRules)
+  expect(denied.effect).toBe("deny")
+  expect(denied.message).toBe("force pushes are not allowed here")
+  // A user rule with no message keeps the generic refusal, even when the
+  // curated identity it shadows ships one.
+  const silent = [
+    {
+      id: "perm:shell:git-push",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "Git push",
+      text: "Git push\ngit push *",
+      enabled: true,
+      fingerprint: fingerprint("Git push\ngit push *"),
+      permTool: "shell",
+      ruleId: "git-push",
+      patterns: ["git push *"],
+      keywords: ["git push"],
+      provenance: [] as string[],
+      custom: true,
+    },
+  ]
+  const silentRules: RuleRecord[] = [
+    {
+      type: "rule",
+      level: "project",
+      agent: "alpha",
+      tool: "shell",
+      id: "git-push",
+      label: "Git push",
+      patterns: ["git push *"],
+      keywords: ["git push"],
+      updated: UPDATED,
+    },
+  ]
+  await apply(ctx, makeInput({ items: silent, records: [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })], rules: silentRules, agents: [{ id: "alpha", level: "project" }] }))
+  const silentDeny = (agents.state.get("alpha")?.permissions ?? []).slice(-1)
+  expect(silentDeny).toEqual([{ action: "shell", resource: "git push *", effect: "deny" }])
 })
 
 test("a perm rule off scrubs whole-word lines, keeping head-only lines", async () => {

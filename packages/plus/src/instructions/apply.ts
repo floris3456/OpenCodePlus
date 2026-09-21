@@ -10,8 +10,8 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
-import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
-import { actionForToolId, scrubLines } from "./tool-permissions.js"
+import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
+import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
 export interface ApplyAgent {
@@ -31,6 +31,12 @@ export interface ApplyInput {
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
   readonly models?: readonly ModelRecord[]
+  /**
+   * User-added permission rules. A rule that denies installs its own
+   * `message` onto the core rule, so the model reads why instead of the
+   * generic refusal; curated rules ship their message in tool-permissions.ts.
+   */
+  readonly rules?: readonly RuleRecord[]
   /** Ids of the currently resolved (enabled) team winners; the only absent ids applyModels may create. */
   readonly teamAgents?: readonly string[]
 }
@@ -345,8 +351,9 @@ function pushRule(
 // Permission.evaluate is last-match-wins, appending is always sufficient.
 // The action comes from the per-rule `permAction` carried on the perm item by
 // discovery (the tool's own `options.permission`), falling back to the tool id
-// map (edit/write share core's `edit` action).
-function permDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
+// map (edit/write share core's `edit` action). A rule message travels with
+// every pattern the row denies, so the model reads why it was refused.
+function permDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny"; message?: string }[] {
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "perm") return []
@@ -360,9 +367,26 @@ function permDenials(input: ApplyInput): { agent: string; action: string; resour
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
       const action = item.permAction ?? actionForToolId(tool)
-      return item.patterns.map((pattern) => ({ agent: agent.id, action, resource: pattern, effect: "deny" as const }))
+      const message = ruleDenialMessage(input, item, tool)
+      return item.patterns.map((pattern) => ({
+        agent: agent.id,
+        action,
+        resource: pattern,
+        effect: "deny" as const,
+        ...(message === undefined ? {} : { message }),
+      }))
     }),
   )
+}
+
+// The refusal text a perm row installs. A user RuleRecord's own message wins
+// for the row it backs; a shipped curated rule carries one; a mined row has
+// none and keeps core's generic refusal.
+function ruleDenialMessage(input: ApplyInput, item: Item, tool: string): string | undefined {
+  const ruleId = item.ruleId
+  if (ruleId === undefined) return undefined
+  if (item.custom === true) return input.rules?.find((record) => record.tool === tool && record.id === ruleId)?.message
+  return curatedRuleMessage(tool, ruleId)
 }
 
 // Team role rules: every policy row resolved for the member it belongs to,

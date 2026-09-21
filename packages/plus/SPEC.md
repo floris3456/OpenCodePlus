@@ -187,9 +187,10 @@ presents the Section / Permission rule choice (`dialogs.tsx` `addFor`);
 every other splittable row keeps `add: "section"`. Scope and tool derive
 from the tool or perm row address (`scopeFromToolOrPermRow` /
 `toolFromToolOrPermRow`). `enter` on a perm row opens the rule editor
-(label → patterns → keywords, each prefilled; tool and rule id come from
-the snapshot item's `permTool`/`ruleId`, level and agent from the row
-address), persisting through `rule.update`, which upserts a `RuleRecord`
+(label → patterns → keywords → message, each prefilled; tool and rule id come
+from the snapshot item's `permTool`/`ruleId`, the message from the rule
+record, level and agent from the row address), persisting through
+`rule.update`, which upserts a `RuleRecord`
 by `tool` + `id` — so editing a curated or mined row materialises a custom
 override of the same identity.
 
@@ -500,6 +501,8 @@ export interface RuleRecord {
   readonly label: string
   readonly patterns: readonly string[]
   readonly keywords: readonly string[]
+  /** Refusal text the model reads when this rule denies; absent means the generic refusal. */
+  readonly message?: string
   readonly updated: string
 }
 ```
@@ -585,9 +588,9 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `model.add` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
-| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid` |
+| `rule.add` | `{ level, agent, tool, id, label, patterns, keywords?, message? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid` |
 | `rule.remove` | `{ level, agent, tool, id }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid` |
-| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords? }` | `RuleRef` | `project.disabled`, `rule.invalid` |
+| `rule.update` | `{ level, agent, tool, id, label, patterns, keywords?, message? }` | `RuleRef` | `project.disabled`, `rule.invalid` |
 
 `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
 `RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
@@ -599,7 +602,9 @@ globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
 `level`/`agent` are carried but not part of the lookup. `rule.update`
 upserts a `RuleRecord` by `(tool, id)`, so editing a curated or mined row
 materialises a custom override of the same identity; blank `keywords`
-derive server-side via `keywordsForPattern` like `rule.add`. Curated-identity
+derive server-side via `keywordsForPattern` like `rule.add`. `message` is
+trimmed, a blank one clears the stored text, and an omitted one on
+`rule.update` preserves it. Curated-identity
 policy: a stored record whose `tool` + `id` matches a curated rule is treated
 as an override of that curated rule. This is accepted reserved-identity
 semantics, not an unconditional compatibility guarantee. `updateRule`
@@ -620,7 +625,7 @@ of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,
 `SnapshotModelRecord` (`{ type: "model", level, agent, team?: { level, team }, providerID, modelID,
 variant?, active?: true, updated }`), and `SnapshotRuleRecord`
 (`{ type: "rule", level, agent, team?: { level, team }, tool, id, label, patterns, keywords,
-updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
+message?, updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
 "user"`, computed server-side), `model?` (`{ providerID, modelID,
 variant? }`), `ancestor?` (`boolean`, true when backed by an ancestor directory
 agent file), and `fileBacked`. `ModelAddInput` and `ModelRemoveInput` carry optional `team?: { level, team }`.
@@ -1013,6 +1018,23 @@ on a `perm:` row returns the row's `policy` — the `on` and `off` rules it
 installs, each with its own message — beside the row's patterns and resolved
 state, so a reader sees what the rule says when it refuses.
 
+Tool permission rules carry the same field:
+
+- Every curated rule in `tool-permissions.ts` ships a short one-line message
+  (for example `pushing is not allowed here`). `apply.ts` installs it on each
+  core deny the row emits when the rule is off.
+- A user `RuleRecord` carries an optional `message`. `rule.add` and
+  `rule.update` accept it, `create kind:"rule"` and `set` on a perm row carry
+  it through the tools, and the TUI rule dialog prompts for it after keywords
+  ("Message shown on refusal (optional)"). A blank message clears it; omitting
+  it on `rule.update` leaves the stored text alone, so a label/pattern edit
+  never drops it.
+- `apply.ts` prefers the user record's message for a custom row and falls back
+  to the curated message for a curated row; a mined row has none and keeps the
+  generic refusal.
+- `instructions_show` on a perm row returns `message` when the row has one,
+  and the TUI detail pane prints it under `provenance`.
+
 Rows appear in a `Policy` group under the member's `Tools` group
 (`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
 governs, because several of them govern an action with no tool row to hang
@@ -1170,7 +1192,7 @@ export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" 
 export type ToolResolve = "keep" | "take" | "edit"
 export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
 export interface ShowInput { readonly id: string; readonly view?: ToolView }
-export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[] }
+export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string }
 export interface ResetInput { readonly id: string }
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
@@ -1181,7 +1203,7 @@ export type CreateInput =
   | { readonly kind: "mcp"; readonly name: string; readonly config: Record<string, unknown> }
   | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global" }
   | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
-  | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
+  | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string }
 export interface DeleteInput { readonly id: string; readonly confirm: true }
 ```
 
@@ -1190,7 +1212,8 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `resolved`. On a perm row any view returns the rule view (`tool`, `rule`,
   `label`, `patterns`, `keywords`, `provenance`, `custom`, `enabled`,
   `source`, plus a scrub preview: `scrub.hidden` lines would drop,
-  `scrub.preview` shows up to 3). `assembled` renders the full effective prompt and accepts agent
+  `scrub.preview` shows up to 3; plus `message` when the rule has one — a
+  user rule's own text or the curated one it ships). `assembled` renders the full effective prompt and accepts agent
   row ids only (`agent:<level>:<id>`); any other id fails with
   `view.unsupported`. `record` returns the raw override including `pin`
   when set. `diff` returns two unified diffs (original→mine and
@@ -1199,7 +1222,9 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   tight. `set` with `active: true` activates a model row exclusively at that
   level (a bare `set` on a model row activates too; model rows refuse text,
   state, pin, and resolve); on a perm row `state` applies, or `label` +
-  `patterns` (`keywords` optional) to update the rule through `rule.update`
+  `patterns` (`keywords` optional) to update the rule through `rule.update`,
+  or `message` alone to set the refusal text (a message-only edit derives
+  label and patterns from the rule it edits)
   (no text, pin, active, or resolve). `set` with `resolve: "keep"`
   acks upstream keeping text, `"take"` drops stored text and follows upstream,
   `"edit"` stores `text` against current upstream. `reset` deletes the
@@ -1212,7 +1237,8 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `providerID` + `modelID` (`level` defaults to `project`, `agent` is
   required for project/global levels); `create` with `kind: "rule"` needs
   `tool` + `id` + `label` + `patterns` (patterns are core wildcards, not
-  regex). `create` takes an optional `catalogue` (`agents|teams`, default
+  regex); `message` is the optional refusal text the model reads.
+  `create` takes an optional `catalogue` (`agents|teams`, default
   `agents`) that picks which catalogue a shared (`agent: null`) `model` or
   `rule` lands in; `base`, `instruction` and `mcp` create one file both
   catalogues list, so `catalogue` does not change what is written. `delete`

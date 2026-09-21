@@ -568,6 +568,13 @@ export interface RuleRecord {
   readonly label: string
   readonly patterns: readonly string[]
   readonly keywords: readonly string[]
+  /**
+   * Why this rule refuses, in the words the model should read. `apply.ts`
+   * installs it onto core's `Permission.Rule.message`, so the model receives
+   * it instead of the generic refusal when this rule is the one denying.
+   * Absent means the generic refusal.
+   */
+  readonly message?: string
   readonly updated: string
 }
 

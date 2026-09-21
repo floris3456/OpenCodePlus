@@ -27,8 +27,8 @@ import {
 } from "./instructions/ops.js"
 import { query } from "./instructions/query.js"
 import { applies, parseModelItemId, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay, upstreamForEdit } from "./instructions/model.js"
-import { scrubLines } from "./instructions/tool-permissions.js"
-import type { CustomizationRecord, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
+import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
+import type { CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput } from "./instructions/tree.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { expandedTree } from "./instructions/tree.js"
@@ -55,7 +55,7 @@ const ShowDescription =
 const SetDescription =
   "Save an override, toggle, pin, activate a model, or resolve a review row (TUI Enter/Space/p/k/t/e).\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
-  "On a perm row with label+patterns (keywords optional) update the rule. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
+  "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -70,7 +70,7 @@ const CreateDescription =
   "Kinds: agent (id+prompt, scope defaults to project, template/fields optional), skill (name+body),\n" +
   "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled),\n" +
   "model (providerID+modelID, variant/level/agent optional; level defaults to project),\n" +
-  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex).\n" +
+  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads).\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
   "base/instruction/mcp create one file both catalogues list, so catalogue does not change what is written."
 
@@ -142,6 +142,7 @@ const SetInput = Schema.Struct({
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+  message: Schema.optionalKey(Schema.String),
 })
 
 const ResetInput = Schema.Struct({
@@ -188,6 +189,7 @@ const CreateInput = Schema.Struct({
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
+  message: Schema.optionalKey(Schema.String),
 })
 
 const DeleteInput = Schema.Struct({
@@ -692,16 +694,17 @@ function setPerm(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; label?: string; patterns?: readonly string[]; keywords?: readonly string[] },
+  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
-    if (input.label !== undefined || input.patterns !== undefined || input.keywords !== undefined)
+    if (input.label !== undefined || input.patterns !== undefined || input.keywords !== undefined || input.message !== undefined)
       return yield* updateRuleRow(api, snapshot, memo, id, actor, {
         ...(input.label === undefined ? {} : { label: input.label }),
         ...(input.patterns === undefined ? {} : { patterns: input.patterns }),
         ...(input.keywords === undefined ? {} : { keywords: input.keywords }),
+        ...(input.message === undefined ? {} : { message: input.message }),
       })
     if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
@@ -804,7 +807,7 @@ function updateRuleRow(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { label?: string; patterns?: readonly string[]; keywords?: readonly string[] },
+  input: { label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const found = findRow(memo, id)
@@ -812,8 +815,6 @@ function updateRuleRow(
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
     if (parsed === undefined) return yield* Effect.fail(unknownError(id))
-    if (input.label === undefined || input.patterns === undefined)
-      return yield* Effect.fail(new Tool.Error({ message: "set rule requires label and patterns" }))
     // Same global-identity protection as delete: the row's agent is whatever
     // subtree is open, so check the matched record's owner before writing, or
     // a protected owner's rule is editable through another agent's row. The
@@ -824,15 +825,24 @@ function updateRuleRow(
     )
     if (existing !== undefined && existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
       return yield* Effect.fail(protectedError(existing.agent))
+    // A message-only edit derives label and patterns from the rule it edits
+    // (the user record, else the upstream perm item it materialises), so
+    // `set({ id, message })` works without restating the whole rule.
+    const upstream = upstreamOf(memo, address)
+    const label = input.label ?? existing?.label ?? upstream?.title
+    const patterns = input.patterns ?? existing?.patterns ?? upstream?.patterns
+    if (label === undefined || patterns === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: "set rule requires label and patterns" }))
     const result = yield* Effect.promise(() =>
       api.updateRule({
         level: address.level,
         agent: address.agent,
         tool: parsed.tool,
         id: parsed.ruleId,
-        label: input.label as string,
-        patterns: [...(input.patterns as readonly string[])],
+        label,
+        patterns: [...patterns],
         ...(input.keywords === undefined ? {} : { keywords: [...input.keywords] }),
+        ...(input.message === undefined ? {} : { message: input.message }),
         actor,
       }),
     )
@@ -909,6 +919,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const provenance = upstream.provenance === undefined ? [] : [...upstream.provenance]
       const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
       const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
+      const message = ruleMessageOf(snapshot, upstream)
       return {
         output: {
           id,
@@ -923,6 +934,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           enabled: resolved.enabled,
           source: resolved.source,
           scrub: { hidden: scrubbed.hidden, preview: [...scrubbed.preview] },
+          // The refusal text the model reads when this rule denies: a user
+          // rule's own message or the curated one it ships.
+          ...(message === undefined ? {} : { message }),
           // Team policy rows only: the rules the row installs on either side,
           // each with the message it refuses with, so a reader sees what the
           // rule says and not just that it exists.
@@ -962,6 +976,20 @@ function upstreamOf(memo: MemoInput, address: { item: string; agent: string | nu
   const matches = memo.items.filter((item) => item.id === address.item)
   if (address.agent === null) return matches[0]
   return matches.find((item) => applies(item, address.agent as string)) ?? matches[0]
+}
+
+// The refusal text a perm row installs: a user rule's own stored message
+// wins, a curated row ships one, a mined row has none and keeps core's
+// generic refusal.
+function ruleMessageOf(snapshot: Plus.Snapshot, item: Item): string | undefined {
+  const tool = item.permTool
+  const rule = item.ruleId
+  if (tool === undefined || rule === undefined) return undefined
+  if (item.custom !== true) return curatedRuleMessage(tool, rule)
+  const record = snapshot.records.find(
+    (entry): entry is Plus.SnapshotRuleRecord => entry.type === "rule" && entry.tool === tool && entry.id === rule,
+  )
+  return record?.message
 }
 
 function recordOfRow(
@@ -1026,6 +1054,7 @@ function createRow(
     label?: string
     patterns?: readonly string[]
     keywords?: readonly string[]
+    message?: string
   },
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
@@ -1145,6 +1174,7 @@ function createRow(
           label: input.label as string,
           patterns: [...(input.patterns as string[])],
           ...(input.keywords === undefined ? {} : { keywords: [...input.keywords] }),
+          ...(input.message === undefined ? {} : { message: input.message }),
           actor,
         }),
       )
