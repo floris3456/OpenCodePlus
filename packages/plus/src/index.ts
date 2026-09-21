@@ -118,6 +118,7 @@ export type RefreshResult = SnapshotResult
 export type MutateResult =
   | { ok: true; value: Plus.MutateResult }
   | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+  | { ok: false; error: { code: "agent.protected"; message: string; data: Plus.AgentProtected } }
 
 export type LogResult =
   | { ok: true; value: Plus.LogOutput }
@@ -140,6 +141,7 @@ export type CreateAgentResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type RenameAgentResult =
@@ -151,6 +153,7 @@ export type RenameAgentResult =
         | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type DeleteAgentResult =
@@ -161,6 +164,7 @@ export type DeleteAgentResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type CreateSkillResult =
@@ -264,6 +268,7 @@ export type CreateTeamResult =
         | { code: "team.exists"; message: string; data: Plus.TeamExists }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "team.create"; message: string; data: Plus.TeamCreate }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type AddTeamAgentResult =
@@ -276,6 +281,7 @@ export type AddTeamAgentResult =
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type RemoveTeamAgentResult =
@@ -287,6 +293,7 @@ export type RemoveTeamAgentResult =
         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type DeleteTeamResult =
@@ -297,6 +304,7 @@ export type DeleteTeamResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type ListTeamsResult =
@@ -311,6 +319,7 @@ export type AddModelResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "model.exists"; message: string; data: Plus.ModelExists }
         | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type RemoveModelResult =
@@ -321,6 +330,7 @@ export type RemoveModelResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "model.missing"; message: string; data: Plus.ModelMissing }
         | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type CatalogModelsResult =
@@ -335,6 +345,7 @@ export type AddRuleResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "rule.exists"; message: string; data: Plus.RuleExists }
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type RemoveRuleResult =
@@ -345,6 +356,7 @@ export type RemoveRuleResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "rule.missing"; message: string; data: Plus.RuleMissing }
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export type UpdateRuleResult =
@@ -354,6 +366,7 @@ export type UpdateRuleResult =
       error:
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
 export interface PlusApi {
@@ -426,6 +439,20 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      const records: StoredRecord[] = [
+        ...input.records.map(toRecord),
+        ...loaded.records.filter((record) => record.type === "team"),
+      ]
+      // T3: a tool actor may not change a protected agent's row through a
+      // mutate either, no matter which level or row kind it addresses. Only
+      // changed rows count: a caller that carries a protected agent's records
+      // back unchanged (the normal full-snapshot mutate) is not refused.
+      const protectedRow = deltaRows(loaded.records, records).find(
+        (record): record is Exclude<StoredRecord, TeamRecord> =>
+          record.type !== "team" && record.agent !== null && config.protectedAgents.includes(record.agent),
+      )
+      const refusal = refuseProtectedForTool(input.actor, protectedRow?.agent, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const staleStore =
         input.expectedRevision !== loaded.projectRevision
           ? ("project" as const)
@@ -441,10 +468,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds) },
         }
       }
-      const records: StoredRecord[] = [
-        ...input.records.map(toRecord),
-        ...loaded.records.filter((record) => record.type === "team"),
-      ]
       const saved = await save(directory, {
         expectedProjectRevision: loaded.projectRevision,
         expectedGlobalRevision: loaded.globalRevision,
@@ -526,15 +549,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
         }
-      if (config.protectedAgents.includes(validated.id))
-        return {
-          ok: false as const,
-          error: {
-            code: "agent.invalid" as const,
-            message: `agent.protected: row belongs to protected agent "${validated.id}"`,
-            data: { id: input.id, reason: `agent.protected: row belongs to protected agent "${validated.id}"` },
-          },
-        }
+      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const seed = input.template === undefined ? undefined : await readTemplate(ctx, directory, input.template as string)
       if (input.template !== undefined && seed === undefined)
         return {
@@ -590,6 +606,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.invalid" as const, message: to.reason, data: { id: input.to, reason: to.reason } },
         }
+      const fromRefusal = refuseProtectedForTool(input.actor, from.id, config)
+      if (fromRefusal !== undefined) return { ok: false as const, error: fromRefusal }
+      const toRefusal = refuseProtectedForTool(input.actor, to.id, config)
+      if (toRefusal !== undefined) return { ok: false as const, error: toRefusal }
       const renamed = await rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id })
       if (!renamed.ok && renamed.reason === "missing-source")
         return {
@@ -624,6 +644,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
         }
+      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const removed = await remove({ scope: input.scope, projectDirectory: directory, id: validated.id })
       if (!removed.ok)
         return {
@@ -910,6 +932,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
         }
       }
+      // Seeding from a template copies every member file, so a tool actor may
+      // not clone a protected member into a new team.
+      const protectedMember = template?.members.find((member) => config.protectedAgents.includes(member.id))
+      const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
       const ensured = await fs.mkdir(root, { recursive: true }).then(
         () => ({ ok: true as const }),
@@ -1046,6 +1073,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
         }
+      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       if (input.id === "special")
         return {
           ok: false as const,
@@ -1140,6 +1169,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.invalid" as const, message: validated.reason, data: { id: input.id, reason: validated.reason } },
         }
+      const refusal = refuseProtectedForTool(input.actor, validated.id, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const known = await discoverTeams(input.level, directory, builtins)
       const found = known.find((team) => team.team === validatedTeam.team)
       if (found === undefined)
@@ -1219,6 +1250,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "team.unknown" as const, message: `Unknown team ${validated.team}`, data: { level: input.level, team: validated.team } },
         }
+      const protectedMember = found.agents.find((member) => config.protectedAgents.includes(member.id))
+      const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const teamsRoot = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
       const teamDir = path.join(teamsRoot, validated.team)
       let realTeamDir: string
@@ -1343,6 +1377,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const validated = validateModelRef(input.providerID, input.modelID, input.variant)
       if (!validated.ok)
         return {
@@ -1434,6 +1470,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const validated = validateModelRef(input.providerID, input.modelID, input.variant)
       if (!validated.ok)
         return {
@@ -1498,6 +1536,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
       if (!validated.ok)
         return {
@@ -1576,12 +1616,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { level: input.level, agent: input.agent, tool: validated.tool, id: validated.id },
           },
         }
-      const protectedRefusal = ruleProtectedRefusal(loaded.protectedAgents, existing)
-      if (protectedRefusal !== undefined)
-        return {
-          ok: false as const,
-          error: { code: "rule.invalid" as const, message: protectedRefusal, data: { tool: validated.tool, id: validated.id, reason: protectedRefusal } },
-        }
+      const refusal = refuseProtectedForTool(input.actor, existing.agent, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       const next = loaded.records.filter((record) => record !== existing)
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
@@ -1622,12 +1658,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const existing = loaded.records.find(
         (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
       )
-      const refusal = ruleProtectedRefusal(loaded.protectedAgents, existing)
-      if (refusal !== undefined)
-        return {
-          ok: false as const,
-          error: { code: "rule.invalid" as const, message: refusal, data: { tool: validated.tool, id: validated.id, reason: refusal } },
-        }
+      // The written row keeps the matched record's owner on an update (the
+      // upsert only adopts the caller's address when no record matched), so
+      // protection follows that effective owner, not the caller's row address.
+      const owner = existing === undefined ? input.agent : existing.agent
+      const refusal = refuseProtectedForTool(input.actor, owner, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
       // A message present in the update wins, including blank, which clears
       // the stored one. Absent leaves it alone, so a label/pattern edit
       // through `set` never drops a rule's message.
@@ -1723,7 +1759,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.mutate(input))
-        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+        if (!result.ok) {
+          if (result.error.code === "project.disabled")
+            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+        }
         return result.value
       }),
     "instructions.log": (input, context) =>
@@ -1750,6 +1790,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.exists")
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -1764,6 +1806,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
           if (result.error.code === "agent.exists")
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -1776,6 +1820,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.missing")
             return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -1898,6 +1944,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("team.exists", result.error.message, result.error.data))
           if (result.error.code === "team.invalid")
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.create", result.error.message, result.error.data))
         }
         return result.value
@@ -1926,6 +1974,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           if (result.error.code === "agent.exists")
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -1940,6 +1990,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
           if (result.error.code === "team.invalid")
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -1952,6 +2004,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "team.unknown")
             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -1991,6 +2045,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "model.exists")
             return yield* Effect.fail(context.error("model.exists", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -2003,6 +2059,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "model.missing")
             return yield* Effect.fail(context.error("model.missing", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -2015,6 +2073,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "rule.exists")
             return yield* Effect.fail(context.error("rule.exists", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -2027,6 +2087,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "rule.missing")
             return yield* Effect.fail(context.error("rule.missing", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -2037,6 +2099,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!result.ok) {
           if (result.error.code === "project.disabled")
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -2255,16 +2319,23 @@ function validateRuleIdentity(
   return { ok: true, tool: trimmedTool, id: trimmedId }
 }
 
-// Shared protected-agent guard for rule writes: protection follows the matched
-// record's owner, not the caller's row address, so a protected agent's custom
-// rule cannot be deleted or updated through another agent's globally displayed
-// row. Both removeRule and updateRule call this at the same PlusApi boundary
-// so the tools API, the RPC, and the TUI all inherit it.
-function ruleProtectedRefusal(protectedAgents: readonly string[], existing: RuleRecord | undefined): string | undefined {
-  if (existing === undefined) return undefined
-  if (existing.agent !== null && protectedAgents.includes(existing.agent))
-    return `agent.protected: row belongs to protected agent "${existing.agent}"`
-  return undefined
+// T3: protection is decided at the API boundary, not only in the tool
+// wrappers. A tool-originated write that addresses a protected agent's row is
+// refused no matter which surface forwarded it (tools, the RPC, or
+// instructions.mutate with a caller-supplied actor). A missing actor means the
+// TUI, and TUI writes are never refused. `agentId` is the owner of the row
+// being written (null for shared rows). Returns the declared error the caller
+// must fail with, or undefined when the write may proceed.
+function refuseProtectedForTool(
+  actor: Plus.Actor | undefined,
+  agentId: string | null | undefined,
+  config: { readonly protectedAgents: readonly string[] },
+): { code: "agent.protected"; message: string; data: Plus.AgentProtected } | undefined {
+  if (normalizeActor(actor).type !== "tool") return undefined
+  if (agentId === null || agentId === undefined || agentId === "") return undefined
+  if (!config.protectedAgents.includes(agentId)) return undefined
+  const reason = `agent.protected: row belongs to protected agent "${agentId}"`
+  return { code: "agent.protected" as const, message: reason, data: { agent: agentId, reason } }
 }
 
 function validateModelRef(

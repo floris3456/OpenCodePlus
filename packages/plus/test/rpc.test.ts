@@ -2257,3 +2257,273 @@ test("mcp remove drops customizations from global store so re-created mcp resolv
   expect(shownAfter.text).toBe(expectedNewText)
   expect(shownAfter.text).not.toBe("RESURRECTED MCP")
 })
+
+test("protected agents refuse tool-actor agent writes at the RPC boundary and allow TUI writes", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  // enable() writes the default config; put a protected agent in it.
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const agentFile = (id: string) => path.join(project, ".opencode", "agent", `${id}.md`)
+
+  // agent.create: a tool actor is refused and writes nothing.
+  const createRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "role", actor: { type: "tool" } }, throwingContext(createRefused)),
+    createRefused,
+    "agent.protected",
+  )
+  expect(createRefused.current?.message).toBe('agent.protected: row belongs to protected agent "alpha"')
+  expect(createRefused.current).toEqual({
+    type: "agent.protected",
+    message: 'agent.protected: row belongs to protected agent "alpha"',
+    data: { agent: "alpha", reason: 'agent.protected: row belongs to protected agent "alpha"' },
+  })
+  expect(await Bun.file(agentFile("alpha")).exists()).toBe(false)
+
+  // The TUI writes the same agent through the same boundary.
+  const created = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "role" }, throwingContext({})),
+  )
+  expect(created.id).toBe("alpha")
+  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
+  const other = await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "beta", prompt: "role" }, throwingContext({})),
+  )
+  expect(other.id).toBe("beta")
+
+  // agent.delete: refused for a tool actor, file stays.
+  const deleteRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.delete"]({ scope: "project", id: "alpha", actor: { type: "tool" } }, throwingContext(deleteRefused)),
+    deleteRefused,
+    "agent.protected",
+  )
+  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
+
+  // agent.rename from a protected id: refused, source intact.
+  const fromRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2", actor: { type: "tool" } }, throwingContext(fromRefused)),
+    fromRefused,
+    "agent.protected",
+  )
+  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
+  expect(await Bun.file(agentFile("alpha2")).exists()).toBe(false)
+
+  // agent.rename to a protected id: refused, nothing written at the target.
+  const toRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.rename"]({ scope: "project", from: "beta", to: "alpha", actor: { type: "tool" } }, throwingContext(toRefused)),
+    toRefused,
+    "agent.protected",
+  )
+  expect(await Bun.file(agentFile("beta")).exists()).toBe(true)
+  expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
+
+  // The TUI renames and deletes the protected agent's file.
+  const renamed = await Effect.runPromise(
+    handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2" }, throwingContext({})),
+  )
+  expect(renamed).toEqual({ from: "alpha", to: "alpha2", path: agentFile("alpha2") })
+  const deleted = await Effect.runPromise(
+    handlers["agent.delete"]({ scope: "project", id: "alpha2" }, throwingContext({})),
+  )
+  expect(deleted.id).toBe("alpha2")
+  expect(await Bun.file(agentFile("alpha2")).exists()).toBe(false)
+})
+
+test("protected agents refuse tool-actor model add/remove at the RPC boundary and allow TUI writes", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(
+    fullContext({ directory: project, models: [modelInfo("acme", "nova-2")] }),
+    createState(),
+  )
+
+  const refused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["model.add"](
+      { level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2", actor: { type: "tool" } },
+      throwingContext(refused),
+    ),
+    refused,
+    "agent.protected",
+  )
+  const afterRefusedAdd = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(afterRefusedAdd.records).toEqual([])
+
+  const added = await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  expect(added).toMatchObject({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" })
+
+  const removeRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["model.remove"](
+      { level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2", actor: { type: "tool" } },
+      throwingContext(removeRefused),
+    ),
+    removeRefused,
+    "agent.protected",
+  )
+  const kept = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(kept.records.some((record) => record.type === "model" && record.agent === "alpha")).toBe(true)
+
+  const removed = await Effect.runPromise(
+    handlers["model.remove"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  expect(removed).toMatchObject({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" })
+  const gone = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(gone.records).toEqual([])
+})
+
+test("protected agents refuse tool-actor rule writes at the RPC boundary and allow TUI writes", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(
+    fullContext({
+      directory: project,
+      tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    }),
+    createState(),
+  )
+
+  const addRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["rule.add"](
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"], actor: { type: "tool" } },
+      throwingContext(addRefused),
+    ),
+    addRefused,
+    "agent.protected",
+  )
+  expect((await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))).records).toEqual([])
+
+  const added = await Effect.runPromise(
+    handlers["rule.add"](
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom", patterns: ["danger *"] },
+      throwingContext({}),
+    ),
+  )
+  expect(added).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom" })
+
+  const updateRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["rule.update"](
+      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
+      throwingContext(updateRefused),
+    ),
+    updateRefused,
+    "agent.protected",
+  )
+  const survived = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const kept = survived.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
+  if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
+  expect(kept.label).toBe("Custom")
+
+  // The TUI edits the same rule through another agent's row; the owner stays alpha.
+  const edited = await Effect.runPromise(
+    handlers["rule.update"](
+      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Tui edit", patterns: ["danger *"] },
+      throwingContext({}),
+    ),
+  )
+  expect(edited).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Tui edit" })
+
+  const removeRefused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["rule.remove"]({ level: "project", agent: "beta", tool: "shell", id: "custom", actor: { type: "tool" } }, throwingContext(removeRefused)),
+    removeRefused,
+    "agent.protected",
+  )
+  const stillThere = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(stillThere.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+
+  const removed = await Effect.runPromise(
+    handlers["rule.remove"]({ level: "project", agent: "beta", tool: "shell", id: "custom" }, throwingContext({})),
+  )
+  expect(removed).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
+  const gone = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
+})
+
+test("instructions.mutate refuses a tool actor changing a protected agent's row and allows unchanged carries and TUI writes", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  await Bun.write(
+    path.join(project, ".opencodeplus", "project.json"),
+    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+  )
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+
+  const seeded = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" })] },
+      throwingContext({}),
+    ),
+  )
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error("expected seed mutate to succeed")
+  const warm = await Effect.runPromise(handlers["instructions.mutate"]({ expectedRevision: seeded.revision, expectedGlobalRevision: seeded.globalRevision, records: seeded.snapshot.records }, throwingContext({})))
+  expect(warm.ok).toBe(true)
+  if (!warm.ok) throw new Error("expected warm mutate to succeed")
+  const before = warm.snapshot
+
+  // A tool mutate that carries the protected row unchanged is a no-op, not a
+  // refusal: only the delta counts.
+  const carried = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: before.revision, expectedGlobalRevision: before.globalRevision, records: before.records, actor: { type: "tool" } },
+      throwingContext({}),
+    ),
+  )
+  expect(carried.ok).toBe(true)
+  if (!carried.ok) throw new Error("expected carried mutate to succeed")
+
+  const row = before.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
+  if (row === undefined || row.type !== "customization") throw new Error("expected seeded customization")
+  const refused: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: before.revision,
+        expectedGlobalRevision: before.globalRevision,
+        records: [{ ...row, text: "second" }],
+        actor: { type: "tool" },
+      },
+      throwingContext(refused),
+    ),
+    refused,
+    "agent.protected",
+  )
+  expect(refused.current?.data).toMatchObject({ agent: "alpha" })
+  const afterRefusal = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const kept = afterRefusal.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
+  if (kept === undefined || kept.type !== "customization") throw new Error("expected surviving customization")
+  expect(kept.text).toBe("first")
+
+  // The TUI writes the same change through the same boundary.
+  const tui = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: before.revision, expectedGlobalRevision: before.globalRevision, records: [{ ...row, text: "second" }] },
+      throwingContext({}),
+    ),
+  )
+  expect(tui.ok).toBe(true)
+  if (!tui.ok) throw new Error("expected TUI mutate to succeed")
+  const afterTui = tui.snapshot.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
+  if (afterTui === undefined || afterTui.type !== "customization") throw new Error("expected written customization")
+  expect(afterTui.text).toBe("second")
+})
