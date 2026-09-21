@@ -1489,7 +1489,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords)
+      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
       if (!validated.ok)
         return {
           ok: false as const,
@@ -1519,6 +1519,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         label: validated.label,
         patterns: validated.patterns,
         keywords: validated.keywords,
+        ...(validated.message === undefined ? {} : { message: validated.message }),
         updated: new Date().toISOString(),
       }
       const saved = await saveRuleRecords(directory, loaded, [...loaded.records, next])
@@ -1601,7 +1602,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords)
+      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
       if (!validated.ok)
         return {
           ok: false as const,
@@ -1618,6 +1619,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "rule.invalid" as const, message: refusal, data: { tool: validated.tool, id: validated.id, reason: refusal } },
         }
+      // A message present in the update wins, including blank, which clears
+      // the stored one. Absent leaves it alone, so a label/pattern edit
+      // through `set` never drops a rule's message.
+      const message = input.message === undefined ? existing?.message : validated.message
       const next: RuleRecord = {
         type: "rule",
         level: existing === undefined ? input.level : existing.level,
@@ -1627,6 +1632,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         label: validated.label,
         patterns: validated.patterns,
         keywords: validated.keywords,
+        ...(message === undefined ? {} : { message }),
         updated: new Date().toISOString(),
       }
       const nextRecords = existing === undefined ? [...loaded.records, next] : loaded.records.map((record) => (record === existing ? next : record))
@@ -2202,8 +2208,9 @@ function validateRuleRef(
   label: string,
   patterns: readonly string[],
   keywords?: readonly string[],
-): { ok: true; tool: string; id: string; label: string; patterns: string[]; keywords: string[] } | { ok: false; reason: string } {
-  return validateRuleInput({ tool, id, label, patterns, ...(keywords === undefined ? {} : { keywords }) })
+  message?: string,
+): { ok: true; tool: string; id: string; label: string; patterns: string[]; keywords: string[]; message?: string } | { ok: false; reason: string } {
+  return validateRuleInput({ tool, id, label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message === undefined ? {} : { message }) })
 }
 
 function validateRuleIdentity(
@@ -2693,6 +2700,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       label: record.label,
       patterns: [...record.patterns],
       keywords: [...record.keywords],
+      ...(record.message === undefined ? {} : { message: record.message }),
       updated: record.updated,
     }
   return {
@@ -3361,6 +3369,7 @@ function publishFresh(
           splits,
           scopes: publishScopes,
           models: modelRecords,
+          rules: rulesOf(stored.records),
           teamAgents: view.teamAgents.map((agent) => agent.id),
         })
       })
@@ -4179,6 +4188,7 @@ function toSnapshot(
             label: record.label,
             patterns: [...record.patterns],
             keywords: [...record.keywords],
+            ...(record.message === undefined ? {} : { message: record.message }),
             updated: record.updated,
           },
         ]

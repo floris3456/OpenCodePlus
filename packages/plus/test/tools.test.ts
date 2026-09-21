@@ -1312,10 +1312,12 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell" })) as { rows: readonly { id: string }[]; total: number }
   expect(listed.total).toBeGreaterThan(0)
   expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
-  const shown = (await runOk(need(tools, "instructions_show"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number } }
+  const shown = (await runOk(need(tools, "instructions_show"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
   expect(shown.patterns).toEqual(["git push *"])
   expect(shown.keywords).toContain("git push")
   expect(Array.isArray(shown.provenance)).toBe(true)
+  // A shipped curated rule carries a short refusal message, and show reads it.
+  expect(shown.message).toBe("pushing is not allowed here")
   const toggled = (await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }
   expect(toggled.status).toContain("Disabled")
   const afterOff = await snapshotOf(api)
@@ -1327,7 +1329,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(curatedShownRecord.record?.state).toBe("off")
   const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
   expect(textError.message).toContain("cannot be edited")
-  const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"] })) as { tool: string; id: string }
+  const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"], message: "force pushes are not allowed here" })) as { tool: string; id: string }
   expect(created).toMatchObject({ tool: "shell", id: "no-push" })
   const afterCreate = await snapshotOf(api)
   const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.address?.item === "perm:shell:no-push")
@@ -1339,6 +1341,9 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   }
   expect(customShownRecord.record?.type).toBe("rule")
   expect(customShownRecord.record?.patterns).toEqual(["git push --force *"])
+  // A message-only set derives label and patterns from the rule it edits.
+  const messaged = (await runOk(need(tools, "instructions_set"), { id: customRow.id, message: "no force pushes here" })) as { status: string }
+  expect(messaged.status).toContain("Updated")
   await runOk(need(tools, "instructions_set"), { id: customRow.id, state: "off" })
   const customBoth = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
     record: { type?: string; patterns?: readonly string[] } | null

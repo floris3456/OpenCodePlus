@@ -5,11 +5,13 @@ import { expect, test } from "bun:test"
 import { match } from "../../core/src/util/wildcard.js"
 import {
   commandHeads,
+  curatedRuleMessage,
   curatedRules,
   idRules,
   keywordsForPattern,
   mergeRules,
   mineDiscoveredRules,
+  validateRuleInput,
   type CuratedRule,
 } from "../src/instructions/tool-permissions.js"
 
@@ -33,6 +35,7 @@ test("every curated entry has at least one pattern and safe keywords", () => {
 test("curated registry covers the planned tool actions", () => {
   expect(rule("shell", "git-push").patterns).toEqual(["git push *"])
   expect(rule("shell", "git-push").keywords).toContain("git push")
+  expect(rule("shell", "git-push").message).toBe("pushing is not allowed here")
   expect(rule("shell", "rm-rf").patterns).toEqual(["rm -rf *"])
   expect(rule("shell", "sudo").patterns).toContain("sudo")
   expect(rule("shell", "docker").patterns).toContain("docker")
@@ -48,6 +51,18 @@ test("curated registry covers the planned tool actions", () => {
   expect(rule("webfetch", "localhost").patterns).toEqual(["*localhost*"])
   expect(rule("glob", "node-modules").patterns).toEqual(["*node_modules*"])
   expect(rule("grep", "git").patterns).toEqual(["*.git*"])
+})
+
+test("every curated rule ships a one-line refusal message", () => {
+  for (const entry of curatedRules) {
+    expect(`${entry.tool}:${entry.id} message`).toBeDefined()
+    const message = entry.message
+    if (message === undefined) throw new Error(`missing curated message for ${entry.tool}:${entry.id}`)
+    expect(message.trim().length).toBeGreaterThan(0)
+    expect(message.includes("\n")).toBe(false)
+  }
+  expect(curatedRuleMessage("shell", "git-push")).toBe("pushing is not allowed here")
+  expect(curatedRuleMessage("shell", "mined-only")).toBeUndefined()
 })
 
 test("keywordsForPattern keeps head plus subcommands, stopping at wildcards and flags", () => {
@@ -85,13 +100,13 @@ test("head-only patterns match bare and extended commands under the real matcher
 
 test("mergeRules lets the curated label win on a pattern-set collision", () => {
   const curated: CuratedRule[] = [
-    { tool: "shell", id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"] },
+    { tool: "shell", id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], message: "pushing is not allowed here" },
   ]
   const merged = mergeRules(curated, [
     { id: "mined", label: "Mined push", patterns: ["git push *"], keywords: ["git"], provenance: ["alpha", "beta"] },
   ])
   expect(merged).toEqual([
-    { id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], provenance: ["alpha", "beta"] },
+    { id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], provenance: ["alpha", "beta"], message: "pushing is not allowed here" },
   ])
 })
 
@@ -107,6 +122,24 @@ test("mergeRules matches pattern sets regardless of order and sorts most-mention
   expect(merged.map((entry) => entry.id)).toEqual(["pair", "once", "generic"])
   expect(merged[0]).toMatchObject({ label: "Pair", provenance: ["alpha", "beta", "gamma"] })
   expect(merged[2]).toMatchObject({ label: "Generic", provenance: [] })
+})
+
+test("validateRuleInput trims a message and drops a blank one", () => {
+  const withMessage = validateRuleInput({
+    tool: "shell",
+    id: "no-push",
+    label: "No pushes",
+    patterns: ["git push --force *"],
+    message: "  force pushes are not allowed here  ",
+  })
+  if (!withMessage.ok) throw new Error(withMessage.reason)
+  expect(withMessage.message).toBe("force pushes are not allowed here")
+  const blank = validateRuleInput({ tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"], message: "   " })
+  if (!blank.ok) throw new Error(blank.reason)
+  expect(blank.message).toBeUndefined()
+  const absent = validateRuleInput({ tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"] })
+  if (!absent.ok) throw new Error(absent.reason)
+  expect(absent.message).toBeUndefined()
 })
 
 test("command-head table has the planned heads at the planned depths", () => {

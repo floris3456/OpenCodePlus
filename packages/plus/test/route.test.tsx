@@ -1888,7 +1888,7 @@ test("a on a tool row offers Section or Permission rule and creates without scop
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { selects: ["rule"], prompts: ["No force pushes", "git push --force *", ""] },
+    dialogs: { selects: ["rule"], prompts: ["No force pushes", "git push --force *", "", "force pushes are not allowed here"] },
   })
   try {
     await gotoAgent(fixture, "Implementer")
@@ -1905,8 +1905,10 @@ test("a on a tool row offers Section or Permission rule and creates without scop
       agent: "Implementer",
       tool: "shell",
       label: "No force pushes",
+      message: "force pushes are not allowed here",
     })
     expect(fixture.fake.ruleAdds[0]?.patterns).toEqual(["git push --force *"])
+    expect(fixture.fake.dialogPrompts.map((entry) => entry[0])).toContain("Message shown on refusal (optional)")
     expect(fixture.fake.dialogSelects.length).toBe(1)
   } finally {
     fixture.destroy()
@@ -1920,7 +1922,7 @@ test("a on a generic row prompts for rule scope and creates a per-agent rule", a
     height: 40,
     dialogs: {
       selects: ["rule", "project"],
-      prompts: ["shell", "No force pushes", "git push --force *", "", "my-agent"],
+      prompts: ["shell", "No force pushes", "git push --force *", "", "", "my-agent"],
     },
   })
   try {
@@ -1970,20 +1972,28 @@ test("perm rows hang directly off the tool and enter opens the rule editor", asy
     ],
   })
   const liveSnapshots: Snapshot[] = [snapshot]
-  const ruleUpdates: { level: string; agent: string | null; tool: string; id: string; label: string; patterns: string[] }[] = []
+  const ruleUpdates: { level: string; agent: string | null; tool: string; id: string; label: string; patterns: string[]; message?: string }[] = []
   const fixture = await renderPlusFixture({
     snapshots: [],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["No force pushes", "git push --force *", ""] },
+    dialogs: { prompts: ["No force pushes", "git push --force *", "", "force pushes are not allowed here"] },
     render: (context) => {
       const rpc = context.client.rpc(Definition)
       const wired = {
         ...rpc,
         "instructions.snapshot": async () => liveSnapshots[liveSnapshots.length - 1],
         "instructions.refresh": async () => liveSnapshots[liveSnapshots.length - 1],
-        "rule.update": async (input: { level: "project" | "global" | "defaults"; agent: string | null; tool: string; id: string; label: string; patterns: string[]; keywords?: string[] }) => {
-          ruleUpdates.push({ level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label, patterns: [...input.patterns] })
+        "rule.update": async (input: { level: "project" | "global" | "defaults"; agent: string | null; tool: string; id: string; label: string; patterns: string[]; keywords?: string[]; message?: string }) => {
+          ruleUpdates.push({
+            level: input.level,
+            agent: input.agent,
+            tool: input.tool,
+            id: input.id,
+            label: input.label,
+            patterns: [...input.patterns],
+            ...(input.message === undefined ? {} : { message: input.message }),
+          })
           return { level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label }
         },
       }
@@ -2014,6 +2024,7 @@ test("perm rows hang directly off the tool and enter opens the rule editor", asy
       tool: "shell",
       id: "git-push",
       label: "No force pushes",
+      message: "force pushes are not allowed here",
     })
     expect(ruleUpdates[0]?.patterns).toEqual(["git push --force *"])
   } finally {
@@ -2084,6 +2095,89 @@ test("detail pane e starts text editing on a tool row but not on a permission ru
   }
 })
 
+test("detail pane shows a rule's refusal message, curated or user-set", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "tool:shell",
+        kind: "tool" as const,
+        group: "native" as const,
+        title: "shell",
+        text: "run shell commands",
+        enabled: true,
+        fingerprint: "fp-shell",
+      },
+      {
+        id: "perm:shell:git-push",
+        kind: "perm" as const,
+        group: "none" as const,
+        title: "Git push",
+        text: "Git push\ngit push *",
+        enabled: true,
+        fingerprint: "fp-push",
+        permTool: "shell",
+        ruleId: "git-push",
+        patterns: ["git push *"],
+        keywords: ["git push"],
+        provenance: [],
+      },
+      {
+        id: "perm:shell:my-rule",
+        kind: "perm" as const,
+        group: "none" as const,
+        title: "My rule",
+        text: "My rule\nmine *",
+        enabled: true,
+        fingerprint: "fp-mine",
+        permTool: "shell",
+        ruleId: "my-rule",
+        patterns: ["mine *"],
+        keywords: ["mine"],
+        provenance: [],
+        custom: true,
+      },
+    ],
+    records: [
+      {
+        type: "rule" as const,
+        level: "project" as const,
+        agent: "Implementer",
+        tool: "shell",
+        id: "my-rule",
+        label: "My rule",
+        patterns: ["mine *"],
+        keywords: ["mine"],
+        message: "mine is not allowed here",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await gotoAgent(fixture, "Implementer")
+    await expand(fixture)
+    await moveTo(fixture, "Tools")
+    await expand(fixture)
+    await moveToNext(fixture, "Native")
+    await expand(fixture)
+    await moveTo(fixture, "shell")
+    await expand(fixture)
+    await moveTo(fixture, "Git push")
+    await fixture.waitForFrame((frame) => frame.includes("message: pushing is not allowed here"))
+    expect(fixture.captureCharFrame()).toContain("message: pushing is not allowed here")
+    await moveTo(fixture, "My rule")
+    await fixture.waitForFrame((frame) => frame.includes("message: mine is not allowed here"))
+    expect(fixture.captureCharFrame()).toContain("message: mine is not allowed here")
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("addRule cancelling any prompt writes nothing, blank keywords saves with defaults", async () => {
   async function runAdd(prompts: readonly (string | undefined)[]) {
     const parent = process.env.TMPDIR ?? os.tmpdir()
@@ -2146,14 +2240,14 @@ test("addRule cancelling any prompt writes nothing, blank keywords saves with de
     if (!logged.ok) throw new Error("log failed")
     return { addCalls, refreshCalls, records: snap.value.records, logTotal: logged.value.total }
   }
-  for (const prompts of [[undefined], ["My Rule", undefined], ["My Rule", "git push *", undefined]] as const) {
+  for (const prompts of [[undefined], ["My Rule", undefined], ["My Rule", "git push *", undefined], ["My Rule", "git push *", "", undefined]] as const) {
     const result = await runAdd(prompts)
     expect(result.addCalls).toBe(0)
     expect(result.records).toEqual([])
     expect(result.logTotal).toBe(0)
     expect(result.refreshCalls).toBe(0)
   }
-  const saved = await runAdd(["My Rule", "git push --force *", ""])
+  const saved = await runAdd(["My Rule", "git push --force *", "", ""])
   expect(saved.addCalls).toBe(1)
   expect(saved.records).toHaveLength(1)
   const rule = saved.records.find((record) => record.type === "rule")
@@ -2234,7 +2328,7 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
     if (!logged.ok) throw new Error("log failed")
     return { updateCalls, refreshCalls, persisted, logTotal: logged.value.total }
   }
-  for (const prompts of [[undefined], ["New label", undefined], ["New label", "new *", undefined]] as const) {
+  for (const prompts of [[undefined], ["New label", undefined], ["New label", "new *", undefined], ["New label", "new *", "", undefined]] as const) {
     const result = await runEdit(prompts)
     expect(result.updateCalls).toBe(0)
     expect(result.persisted.label).toBe("Original")
@@ -2243,7 +2337,7 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
     expect(result.logTotal).toBe(0)
     expect(result.refreshCalls).toBe(0)
   }
-  const saved = await runEdit(["New label", "new pattern *", ""])
+  const saved = await runEdit(["New label", "new pattern *", "", ""])
   expect(saved.updateCalls).toBe(1)
   expect(saved.persisted.label).toBe("New label")
   expect(saved.persisted.patterns).toEqual(["new pattern *"])

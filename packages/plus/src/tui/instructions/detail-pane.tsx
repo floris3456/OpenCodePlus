@@ -3,10 +3,10 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
 import { applies, catalogueForAddress, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
-import { scrubLines } from "../../instructions/tool-permissions.js"
+import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, itemOf, recordOf } from "../../instructions/snapshot.js"
 import type { TreeNode } from "../../instructions/tree.js"
-import type { Level, Snapshot } from "../../rpc.js"
+import type { Level, Plus, Snapshot } from "../../rpc.js"
 import { badgeColor, badgeLabels } from "./tree-pane.js"
 
 export interface DetailPaneState {
@@ -152,20 +152,31 @@ export function scrubInfo(
 export function permDetail(
   node: TreeNode,
   snapshot: Snapshot,
-): { tool: string; rule: string; patterns: readonly string[]; keywords: readonly string[]; provenance: readonly string[]; custom: boolean } | undefined {
+): { tool: string; rule: string; patterns: readonly string[]; keywords: readonly string[]; provenance: readonly string[]; custom: boolean; message?: string } | undefined {
   const address = node.address
   if (address === undefined) return undefined
   const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream?.kind !== "perm") return undefined
   const parsed = parsePermItemId(address.item)
   if (parsed === undefined) return undefined
+  const tool = upstream.permTool ?? parsed.tool
+  const rule = upstream.ruleId ?? parsed.ruleId
+  // A user rule's own stored message wins; a curated row ships one; a mined
+  // row has none and keeps core's generic refusal.
+  const message =
+    upstream.custom === true
+      ? snapshot.records.find(
+          (record): record is Plus.SnapshotRuleRecord => record.type === "rule" && record.tool === tool && record.id === rule,
+        )?.message
+      : curatedRuleMessage(tool, rule)
   return {
-    tool: upstream.permTool ?? parsed.tool,
-    rule: upstream.ruleId ?? parsed.ruleId,
+    tool,
+    rule,
     patterns: upstream.patterns === undefined ? [] : [...upstream.patterns],
     keywords: upstream.keywords === undefined ? [] : [...upstream.keywords],
     provenance: upstream.provenance === undefined ? [] : [...upstream.provenance],
     custom: upstream.custom === true,
+    ...(message === undefined ? {} : { message }),
   }
 }
 
@@ -493,6 +504,13 @@ export function DetailPane(props: DetailPaneProps) {
                         <text flexShrink={0} fg={props.context.theme.text.subdued}>
                           {`provenance: ${detail().provenance.join(", ") || "(curated)"}`}
                         </text>
+                        <Show when={detail().message}>
+                          {(message) => (
+                            <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                              {`message: ${message()}`}
+                            </text>
+                          )}
+                        </Show>
                       </box>
                     )}
                   </Show>
