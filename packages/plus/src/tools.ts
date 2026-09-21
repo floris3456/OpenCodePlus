@@ -919,6 +919,12 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           enabled: resolved.enabled,
           source: resolved.source,
           scrub: { hidden: scrubbed.hidden, preview: [...scrubbed.preview] },
+          // Team policy rows only: the rules the row installs on either side,
+          // each with the message it refuses with, so a reader sees what the
+          // rule says and not just that it exists.
+          ...(upstream.policy === undefined
+            ? {}
+            : { policy: { on: [...upstream.policy.on], off: [...upstream.policy.off] } }),
         },
       }
     }

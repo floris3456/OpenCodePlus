@@ -3,19 +3,27 @@
 // project-level override changes the answer. No permission hook exists to
 // test any more.
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Agent } from "@opencode/schema/agent"
+import { Session } from "@opencode/schema/session"
+import { SessionMessage } from "@opencode/schema/session-message"
+import { Tool } from "@opencode/schema/tool"
+import { Effect, Schema } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createHandlers, createState } from "../../src/index.js"
+import { createHandlers, createPlusApi, createState } from "../../src/index.js"
 import { apply } from "../../src/instructions/apply.js"
+import { teamsDataDir } from "../../src/instructions/paths.js"
+import { itemOf } from "../../src/instructions/snapshot.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
-import { fingerprint, type CustomizationRecord } from "../../src/instructions/model.js"
+import { fingerprint, type CustomizationRecord, type Item, type PolicyEffects } from "../../src/instructions/model.js"
 import { enable } from "../../src/project.js"
+import { Plus } from "../../src/rpc.js"
 import { teamTools } from "../../src/teams/policy.js"
 import { saveRun } from "../../src/teams/run.js"
 import type { RunRecord } from "../../src/teams/run.js"
-import { agentHarness, agentInfo, context, fullContext } from "../harness.js"
+import { registerInstructionTools } from "../../src/tools.js"
+import { agentHarness, agentInfo, context, fullContext, toolHarness } from "../harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -336,6 +344,141 @@ test("a published member carries its native denies and ceiling while a non-membe
   expect(has(member, "team.*", "*", "deny")).toBe(false)
 
   expect(has(permissionsOf("build"), "team.*", "*", "deny")).toBe(true)
+})
+
+// The wire every reader outside the server goes through: the server encodes
+// each Item as a SnapshotItem, it travels as JSON, and itemOf rebuilds it. A
+// field missing from either side is silently dropped here, so the words a rule
+// refuses with reach a reader only if Plus.PolicyRule carries them too.
+function acrossSnapshotBoundary(source: readonly Item[]): Item[] {
+  const wire = source.map((item) => Schema.encodeSync(Plus.SnapshotItem)(item))
+  return Schema.decodeUnknownSync(Schema.Array(Plus.SnapshotItem))(JSON.parse(JSON.stringify(wire))).map(itemOf)
+}
+
+test("a rule keeps its message across the snapshot boundary, and a rule without one stays bare", () => {
+  const member = "gemini-implementer"
+  const run = { id: "w-0000000000000005", role: member, paths: ["packages/plus/src/*"] }
+  const crossed = acrossSnapshotBoundary(teamPolicyItems(policyMembersOf([member]), [run]))
+  const policyOf = (id: string): PolicyEffects | undefined => crossed.find((item) => item.id === id)?.policy
+
+  // A native deny.
+  expect(policyOf("perm:shell:team-role")?.off).toEqual([
+    {
+      action: "shell",
+      resource: "*",
+      effect: "deny",
+      message: `shell is not available to ${member}; run checks with team_check`,
+    },
+  ])
+  // A ceiling deny.
+  expect(policyOf("perm:team_delegate:role-ceiling")?.off).toEqual([
+    {
+      action: "team.delegate",
+      resource: "*",
+      effect: "deny",
+      message: "team_delegate is outside the implementer ceiling",
+    },
+  ])
+  // The per-run edit scope, whose deny rules carry the round-1 texts.
+  expect(policyOf(`perm:edit:run:${run.id}`)?.on).toEqual([
+    { action: "edit", resource: "*", effect: "deny", message: OUTSIDE_SCOPE },
+    { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
+    { action: "edit", resource: ".git/**", effect: "deny", message: forbiddenState(".git/**") },
+    { action: "edit", resource: ".opencodeplus/**", effect: "deny", message: forbiddenState(".opencodeplus/**") },
+  ])
+
+  // A rule with no message crosses exactly as it did before the field existed:
+  // the key is absent, never an encoded `undefined`.
+  const narrowed = policyOf("perm:search:team-tavily")?.off ?? []
+  expect(narrowed).toEqual([{ action: "search_tavily_*", resource: "*", effect: "deny" }])
+  expect(narrowed.some((rule) => "message" in rule)).toBe(false)
+  const scope = policyOf(`perm:edit:run:${run.id}`)?.on ?? []
+  expect(scope.filter((rule) => "message" in rule)).toHaveLength(3)
+})
+
+const showContext: Tool.Context = {
+  sessionID: Session.ID.make("ses_teampolicyshow"),
+  agent: Agent.ID.make("sol-orchestrator"),
+  messageID: SessionMessage.ID.make("msg_teampolicyshow"),
+  id: Tool.CallID.make("call_teampolicyshow"),
+  progress: () => Effect.void,
+}
+
+async function showPolicy(
+  tools: Map<string, Tool.Info & { readonly id: string }>,
+  id: string,
+): Promise<{ readonly tool: string; readonly policy?: PolicyEffects }> {
+  const show = tools.get("instructions_show")
+  if (show === undefined) throw new Error("missing tool instructions_show")
+  const output = await Effect.runPromise(show.execute({ id }, showContext).pipe(Effect.map((result) => result.output)))
+  return output as { readonly tool: string; readonly policy?: PolicyEffects }
+}
+
+// The reader's end of that wire, through the registered tool: instructions_show
+// on a perm row returns the row's policy, so a reader sees what the rule says
+// when it refuses and not merely that some rule exists.
+test("instructions_show on a team policy row reports the rules and the message each refuses with", async () => {
+  process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
+  process.env.XDG_DATA_HOME = join(dir, "data")
+  const project = join(dir, "project")
+  await enable(project)
+  const member = "gemini-implementer"
+  const run = makeRun({ id: "w-0000000000000006", role: member })
+  await saveRun(teamsDataDir(), run)
+  // fullContext keeps its own tool registry private, so the test installs the
+  // registry the instruction tools land in and reads them back out of it.
+  const registry = toolHarness(
+    teamTools.map((name) => ({
+      id: name,
+      description: `team ${name}`,
+      options: { namespace: "team", permission: `team.${name}` },
+    })),
+  )
+  const ctx = { ...fullContext({ directory: project }), tool: registry.domain }
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const enabled = await api.setTeamEnabled({ level: "defaults", team: "opencodeplus-team", enabled: true })
+  expect(enabled.ok).toBe(true)
+
+  const shell = await showPolicy(registry.tools, `item:defaults:${member}:perm:shell:team-role`)
+  expect(shell.tool).toBe("shell")
+  expect(shell.policy).toEqual({
+    on: [{ action: "shell", resource: "*", effect: "allow" }],
+    off: [
+      {
+        action: "shell",
+        resource: "*",
+        effect: "deny",
+        message: `shell is not available to ${member}; run checks with team_check`,
+      },
+    ],
+  })
+
+  const ceiling = await showPolicy(registry.tools, `item:defaults:${member}:perm:team_delegate:role-ceiling`)
+  expect(ceiling.tool).toBe("team_delegate")
+  expect(ceiling.policy).toEqual({
+    on: [{ action: "team.delegate", resource: "*", effect: "allow" }],
+    off: [
+      {
+        action: "team.delegate",
+        resource: "*",
+        effect: "deny",
+        message: "team_delegate is outside the implementer ceiling",
+      },
+    ],
+  })
+
+  const scope = await showPolicy(registry.tools, `item:defaults:${member}:perm:edit:run:${run.id}`)
+  expect(scope.tool).toBe("edit")
+  expect(scope.policy).toEqual({
+    on: [
+      { action: "edit", resource: "*", effect: "deny", message: OUTSIDE_SCOPE },
+      { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
+      { action: "edit", resource: ".git/**", effect: "deny", message: forbiddenState(".git/**") },
+      { action: "edit", resource: ".opencodeplus/**", effect: "deny", message: forbiddenState(".opencodeplus/**") },
+    ],
+    off: [],
+  })
 })
 
 test("a child run for a planner role overrides ask to deny on team.delegate", async () => {
