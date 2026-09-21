@@ -60,6 +60,22 @@ export const ItemGroup = Schema.Union([
   Schema.Literal("none"),
 ]).annotate({ identifier: "Plus.ItemGroup" })
 
+// Mirrors PolicyEffects in instructions/model.ts. A team policy row carries
+// both sides of its own answer, and `ask` is a real core effect, so all three
+// effects have to round-trip for the row to mean the same thing on both sides.
+export interface PolicyRule extends Schema.Schema.Type<typeof PolicyRule> {}
+export const PolicyRule = Schema.Struct({
+  action: Schema.String,
+  resource: Schema.String,
+  effect: Schema.Union([Schema.Literal("allow"), Schema.Literal("deny"), Schema.Literal("ask")]),
+}).annotate({ identifier: "Plus.PolicyRule" })
+
+export interface PolicyEffects extends Schema.Schema.Type<typeof PolicyEffects> {}
+export const PolicyEffects = Schema.Struct({
+  on: Schema.Array(PolicyRule),
+  off: Schema.Array(PolicyRule),
+}).annotate({ identifier: "Plus.PolicyEffects" })
+
 export interface SnapshotItem extends Schema.Schema.Type<typeof SnapshotItem> {}
 export const SnapshotItem = Schema.Struct({
   id: Schema.String,
@@ -84,6 +100,8 @@ export const SnapshotItem = Schema.Struct({
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
   provenance: Schema.optionalKey(Schema.Array(Schema.String)),
   custom: Schema.optionalKey(Schema.Boolean),
+  policy: Schema.optionalKey(PolicyEffects),
+  runID: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.SnapshotItem" })
 
 export interface Boundary extends Schema.Schema.Type<typeof Boundary> {}

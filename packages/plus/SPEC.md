@@ -610,7 +610,10 @@ Events: `project.changed`, `instructions.changed`, `teams.changed`.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
-`provenance`, `custom`; `SnapshotCustomizationRecord` carries `pin`, `team?` (`{ level, team }`);
+`provenance`, `custom`, `policy?` (`{ on, off }`, each an array of
+`{ action, resource, effect: "allow" | "deny" | "ask" }`) and `runID?`, the two
+fields that make a team policy row read as a policy row on the client side;
+`SnapshotCustomizationRecord` carries `pin`, `team?` (`{ level, team }`);
 `SnapshotSplitRecord` carries `team?` (`{ level, team }`);
 `AssembledTool` carries `codemode`, `pinned`. `SnapshotRecord` is the union
 of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { Schema } from "effect"
 import {
   fingerprint,
   type AgentSource,
@@ -8,7 +9,10 @@ import {
 } from "../src/instructions/model.js"
 import { buildMemo, type TeamInput } from "../src/instructions/resolve-memo.js"
 import { query } from "../src/instructions/query.js"
+import { itemOf } from "../src/instructions/snapshot.js"
+import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree } from "../src/instructions/tree.js"
+import { Plus } from "../src/rpc.js"
 import { badgeLabels } from "../src/tui/instructions/tree-pane.js"
 
 const OLD = "2026-01-01T00:00:00.000Z"
@@ -758,4 +762,27 @@ test("perm structural misses still resolve nothing", () => {
   expect(missed.rows).toHaveLength(0)
   expect(memo.whole.size).toBe(0)
   expect(memo.section.size).toBe(0)
+})
+
+// The wire boundary every consumer outside the server reads through: the
+// server encodes each Item as a SnapshotItem, it travels as JSON, and itemOf
+// rebuilds it. A field missing from either side is silently dropped here.
+function acrossSnapshotBoundary(source: readonly Item[]): Item[] {
+  const wire = source.map((item) => Schema.encodeSync(Plus.SnapshotItem)(item))
+  return Schema.decodeUnknownSync(Schema.Array(Plus.SnapshotItem))(JSON.parse(JSON.stringify(wire))).map(itemOf)
+}
+
+test("run matches a live run's edit scope row after the snapshot boundary", () => {
+  const member = "gemini-implementer"
+  const run = { id: "w-0000000000000001", role: member, paths: ["packages/plus/**"] }
+  const scoped = {
+    items: [...items(), ...acrossSnapshotBoundary(teamPolicyItems(policyMembersOf([member]), [run]))],
+    records: [],
+    agents: [...agents(), { id: member, scope: "project" as const, origin: "plus" as const }],
+    teams: [{ level: "project" as const, team: "crew", enabled: true, agents: [member] }],
+  }
+  const found = query(scoped, { where: `run:${run.id}` }).rows.map((row) => row.id)
+  expect(found).toContain(`item:project:crew/:${member}:perm:edit:run:${run.id}`)
+  expect(found.every((id) => id.endsWith(`perm:edit:run:${run.id}`))).toBe(true)
+  expect(query(scoped, { where: "run:w-0000000000000002" }).rows).toHaveLength(0)
 })

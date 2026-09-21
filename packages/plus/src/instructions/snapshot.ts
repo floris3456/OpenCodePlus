@@ -26,6 +26,15 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
     ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
     ...(item.custom === undefined ? {} : { custom: item.custom }),
+    ...(item.policy === undefined
+      ? {}
+      : {
+          policy: {
+            on: item.policy.on.map((rule) => ({ ...rule })),
+            off: item.policy.off.map((rule) => ({ ...rule })),
+          },
+        }),
+    ...(item.runID === undefined ? {} : { runID: item.runID }),
   }
 }
 
