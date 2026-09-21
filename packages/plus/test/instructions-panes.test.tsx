@@ -136,12 +136,22 @@ test("roots render with depth, badges, and collapsed review roll-up", () => {
   const nodes = tree({ items: items(), records: [], agents: agents(), expanded: new Set() })
   expect(nodes.map((node) => node.id)).toEqual(["root:project", "root:global", "root:defaults"])
   expect(nodes.map((node) => node.depth)).toEqual([0, 0, 0])
-  // Roots render only the roots while collapsed; the new Agents group and the
-  // shared Defaults groups appear once their root expands.
+  // Roots render only the roots while collapsed; the two catalogue groups
+  // appear once their root expands, and each catalogue's shared Defaults
+  // groups appear once that catalogue expands.
   const children = tree({ items: items(), records: [], agents: agents(), expanded: new Set(["root:project", "root:defaults"]) })
   expect(children.find((node) => node.id === "group:project:agents")?.depth).toBe(1)
   expect(children.find((node) => node.id === "group:defaults:agents")?.label).toBe("Agents")
-  expect(children.find((node) => node.id === "group:defaults::tools")?.depth).toBe(1)
+  expect(children.find((node) => node.id === "group:defaults:teams")?.label).toBe("Teams")
+  expect(children.find((node) => node.id === "group:defaults::tools")).toBeUndefined()
+  const inventories = tree({
+    items: items(),
+    records: [],
+    agents: agents(),
+    expanded: new Set(["root:defaults", "group:defaults:agents", "group:defaults:teams"]),
+  })
+  expect(inventories.find((node) => node.id === "group:defaults::tools")?.depth).toBe(2)
+  expect(inventories.find((node) => node.id === "group:defaults:/teams:tools")?.depth).toBe(2)
   // Roots are structural: no addressable state badge.
   expect(badgeLabels(nodes[0])).toEqual([])
   // Collapsed roots still report logical children as expandable.

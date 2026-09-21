@@ -746,6 +746,17 @@ test("toggle, reset, and model activation under a team special write records car
         modelID: "nova-2",
         updated: "2026-01-01T00:00:00.000Z",
       },
+      // A team special agent resolves through the Teams catalogue, so its
+      // candidate comes from the Teams copy of the shared row.
+      {
+        type: "model",
+        level: "defaults",
+        agent: null,
+        catalogue: "teams",
+        providerID: "acme",
+        modelID: "nova-2",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
     ],
     teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
   })

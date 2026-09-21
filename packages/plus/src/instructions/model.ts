@@ -18,13 +18,48 @@ export function sameTeam(
   return a.level === b.level && a.team === b.team
 }
 
-/** `agent === null` means a Defaults shared-inventory row. Only valid at level "defaults". */
+// The two catalogues the tree splits into. A stand-alone agent resolves
+// through the Agents catalogue's shared inventory; an agent launched as a
+// team member resolves through the Teams catalogue's. Absent means "agents"
+// everywhere so every record and row id written before the split keeps its
+// meaning.
+export type Catalogue = "agents" | "teams"
+
+export function catalogueOf(value: Catalogue | undefined): Catalogue {
+  return value ?? "agents"
+}
+
+/**
+ * The catalogue an address resolves through: its own when stated, else
+ * "teams" for a team-scoped address and "agents" otherwise.
+ */
+export function catalogueForAddress(address: { catalogue?: Catalogue; team?: TeamRef }): Catalogue {
+  if (address.catalogue !== undefined) return address.catalogue
+  return address.team !== undefined ? "teams" : "agents"
+}
+
+/**
+ * Catalogue equality for record lookup. Only the shared inventory
+ * (`agent === null`) is per catalogue: a per-agent record is one record that
+ * both catalogues read, which is what keeps every pre-split row id resolving.
+ */
+export function catalogueMatches(
+  agent: string | null,
+  left: Catalogue | undefined,
+  right: Catalogue | undefined,
+): boolean {
+  if (agent !== null) return true
+  return catalogueOf(left) === catalogueOf(right)
+}
+
+/** `agent === null` means a shared-inventory row of `catalogue`. Only valid at level "defaults". */
 export interface Address {
   readonly level: Level
   readonly agent: string | null
   readonly item: string
   readonly section: string | null
   readonly team?: TeamRef
+  readonly catalogue?: Catalogue
 }
 
 export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm"
@@ -134,10 +169,18 @@ export function modelCandidates(input: {
   level: Level
   agent: string | null
   team?: TeamRef
+  catalogue?: Catalogue
   upstream?: ModelRefLike
 }): ModelCandidate[] {
   const chain = resolutionChain(
-    { level: input.level, agent: input.agent, item: "", section: null, ...(input.team !== undefined ? { team: input.team } : {}) },
+    {
+      level: input.level,
+      agent: input.agent,
+      item: "",
+      section: null,
+      ...(input.team !== undefined ? { team: input.team } : {}),
+      ...(input.catalogue !== undefined ? { catalogue: input.catalogue } : {}),
+    },
     input.scopes,
   )
   const seen = new Map<string, ModelCandidate>()
@@ -146,7 +189,8 @@ export function modelCandidates(input: {
       (record) =>
         record.level === node.level &&
         record.agent === node.agent &&
-        sameTeam(record.team, node.team),
+        sameTeam(record.team, node.team) &&
+        catalogueMatches(node.agent, record.catalogue, node.catalogue),
     )
     for (const record of matches) {
       const key = modelKey(record)
@@ -180,10 +224,18 @@ export function resolveActiveModel(input: {
   level: Level
   agent: string | null
   team?: TeamRef
+  catalogue?: Catalogue
   upstream?: ModelRefLike
 }): ModelCandidate | undefined {
   const chain = resolutionChain(
-    { level: input.level, agent: input.agent, item: "", section: null, ...(input.team !== undefined ? { team: input.team } : {}) },
+    {
+      level: input.level,
+      agent: input.agent,
+      item: "",
+      section: null,
+      ...(input.team !== undefined ? { team: input.team } : {}),
+      ...(input.catalogue !== undefined ? { catalogue: input.catalogue } : {}),
+    },
     input.scopes,
   )
   for (const node of chain) {
@@ -192,6 +244,7 @@ export function resolveActiveModel(input: {
         record.level === node.level &&
         record.agent === node.agent &&
         sameTeam(record.team, node.team) &&
+        catalogueMatches(node.agent, record.catalogue, node.catalogue) &&
         record.active === true,
     )
     if (winner !== undefined)
@@ -212,33 +265,50 @@ export function resolveActiveModel(input: {
   return undefined
 }
 
+/** Everything that identifies a record's owner: level, agent, team, catalogue. */
+export interface RecordScope {
+  readonly level: Level
+  readonly agent: string | null
+  readonly team?: TeamRef
+  readonly catalogue?: Catalogue
+}
+
+/**
+ * The `catalogue` key a new record written at `address` carries. Only the
+ * shared inventory is per catalogue, and the Agents catalogue stays keyless so
+ * a record written before the split and one written after are byte-identical.
+ */
+export function catalogueField(address: { agent: string | null; catalogue?: Catalogue }): { catalogue?: Catalogue } {
+  if (address.agent !== null) return {}
+  if (catalogueOf(address.catalogue) === "agents") return {}
+  return { catalogue: "teams" }
+}
+
+export function scopedTo(record: RecordScope, address: RecordScope): boolean {
+  return (
+    record.level === address.level &&
+    record.agent === address.agent &&
+    sameTeam(record.team, address.team) &&
+    catalogueMatches(address.agent, record.catalogue, address.catalogue)
+  )
+}
+
 export function hasModelRecordAt(
   models: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
+  address: RecordScope,
   target: Pick<ModelRefLike, "providerID" | "modelID" | "variant">,
 ): boolean {
   return models.some(
     (record) =>
-      record.level === address.level &&
-      record.agent === address.agent &&
-      sameTeam(record.team, address.team) &&
+      scopedTo(record, address) &&
       record.providerID === target.providerID &&
       record.modelID === target.modelID &&
       record.variant === target.variant,
   )
 }
 
-export function hasModelActiveAt(
-  models: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
-): boolean {
-  return models.some(
-    (record) =>
-      record.level === address.level &&
-      record.agent === address.agent &&
-      sameTeam(record.team, address.team) &&
-      record.active === true,
-  )
+export function hasModelActiveAt(models: readonly ModelRecord[], address: RecordScope): boolean {
+  return models.some((record) => scopedTo(record, address) && record.active === true)
 }
 
 // Adding a candidate stores an inactive row; activation is a separate
@@ -247,15 +317,13 @@ export function hasModelActiveAt(
 // no-op). Records keep caller-supplied timestamps: this is pure content.
 export function addModelRecord(
   models: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
+  address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
   updated: string,
 ): ModelRecord[] {
   const exists = models.some(
     (record) =>
-      record.level === address.level &&
-      record.agent === address.agent &&
-      sameTeam(record.team, address.team) &&
+      scopedTo(record, address) &&
       record.providerID === target.providerID &&
       record.modelID === target.modelID &&
       record.variant === target.variant,
@@ -268,6 +336,7 @@ export function addModelRecord(
       level: address.level,
       agent: address.agent,
       ...(address.team !== undefined ? { team: address.team } : {}),
+      ...catalogueField(address),
       providerID: target.providerID,
       modelID: target.modelID,
       ...(target.variant === undefined ? {} : { variant: target.variant }),
@@ -282,7 +351,7 @@ export function addModelRecord(
 // choosing one must plant the level override rather than refuse.
 export function ensureActivateModel(
   models: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
+  address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
   updated: string,
 ): ModelRecord[] {
@@ -293,50 +362,25 @@ export function ensureActivateModel(
 // Reset clears only this level's active flag, leaving candidates in place so
 // the chain falls through to the next active below (or upstream). No active
 // at this address returns an identical list.
-export function clearModelActive(
-  models: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
-): ModelRecord[] {
-  const scoped = models.some(
-    (record) =>
-      record.level === address.level &&
-      record.agent === address.agent &&
-      sameTeam(record.team, address.team) &&
-      record.active === true,
-  )
+export function clearModelActive(models: readonly ModelRecord[], address: RecordScope): ModelRecord[] {
+  const scoped = models.some((record) => scopedTo(record, address) && record.active === true)
   if (!scoped) return [...models]
   return models.map((record) => {
-    if (
-      record.level !== address.level ||
-      record.agent !== address.agent ||
-      !sameTeam(record.team, address.team)
-    )
-      return record
+    if (!scopedTo(record, address)) return record
     if (record.active === undefined) return record
-    return {
-      type: "model",
-      level: record.level,
-      agent: record.agent,
-      ...(record.team !== undefined ? { team: record.team } : {}),
-      providerID: record.providerID,
-      modelID: record.modelID,
-      ...(record.variant === undefined ? {} : { variant: record.variant }),
-      updated: record.updated,
-    }
+    return cleared(record)
   })
 }
 
 export function removeModelRecord(
   models: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
+  address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
 ): ModelRecord[] {
   return models.filter(
     (record) =>
       !(
-        record.level === address.level &&
-        record.agent === address.agent &&
-        sameTeam(record.team, address.team) &&
+        scopedTo(record, address) &&
         record.providerID === target.providerID &&
         record.modelID === target.modelID &&
         record.variant === target.variant
@@ -406,13 +450,10 @@ export function parsePermItemId(id: string): { tool: string; ruleId: string } | 
 // no-op).
 export function activateModel(
   records: readonly ModelRecord[],
-  address: { level: Level; agent: string | null; team?: TeamRef },
+  address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
 ): ModelRecord[] {
-  const scoped = (record: ModelRecord) =>
-    record.level === address.level &&
-    record.agent === address.agent &&
-    sameTeam(record.team, address.team)
+  const scoped = (record: ModelRecord) => scopedTo(record, address)
   const wanted = (record: ModelRecord) =>
     record.providerID === target.providerID && record.modelID === target.modelID && record.variant === target.variant
   const targetRecord = records.find((record) => scoped(record) && wanted(record))
@@ -434,6 +475,7 @@ function cleared(record: ModelRecord): ModelRecord {
     level: record.level,
     agent: record.agent,
     ...(record.team !== undefined ? { team: record.team } : {}),
+    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
     providerID: record.providerID,
     modelID: record.modelID,
     ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -448,6 +490,8 @@ export interface CustomizationRecord {
   readonly item: string
   readonly section: string | null
   readonly team?: TeamRef
+  /** Shared-inventory rows only (`agent === null`); absent means the Agents catalogue. */
+  readonly catalogue?: Catalogue
   readonly text?: string
   readonly state?: "on" | "off"
   readonly pin?: boolean
@@ -463,6 +507,8 @@ export interface SplitRecord {
   readonly agent: string | null
   readonly item: string
   readonly team?: TeamRef
+  /** Shared-inventory rows only (`agent === null`); absent means the Agents catalogue. */
+  readonly catalogue?: Catalogue
   readonly boundaries: readonly { id: string; name: string; start: number }[]
   readonly updated: string
 }
@@ -476,6 +522,8 @@ export interface ModelRecord {
   readonly level: Level
   readonly agent: string | null
   readonly team?: TeamRef
+  /** Shared-inventory rows only (`agent === null`); absent means the Agents catalogue. */
+  readonly catalogue?: Catalogue
   readonly providerID: string
   readonly modelID: string
   readonly variant?: string
@@ -491,6 +539,8 @@ export interface RuleRecord {
   readonly level: Level
   readonly agent: string | null
   readonly team?: TeamRef
+  /** Shared-inventory rows only (`agent === null`); absent means the Agents catalogue. */
+  readonly catalogue?: Catalogue
   readonly tool: string
   readonly id: string
   readonly label: string
@@ -572,13 +622,7 @@ export function resolveSplit(input: SplitInput): Split {
   const chain = resolutionChain(input.address, input.scopes)
   const winner = chain
     .map((node) =>
-      input.splits.find(
-        (split) =>
-          split.item === input.address.item &&
-          split.level === node.level &&
-          split.agent === node.agent &&
-          sameTeam(split.team, node.team),
-      ),
+      input.splits.find((split) => split.item === input.address.item && scopedTo(split, node)),
     )
     .find((split) => split !== undefined)
   if (winner === undefined) return derive(input.text, input.title)
@@ -647,6 +691,7 @@ export function resolveResolution(
         level: input.address.level,
         agent: input.address.agent,
         ...(input.address.team !== undefined ? { team: input.address.team } : {}),
+        ...catalogueField(input.address),
         item: input.address.item,
         section: input.address.section,
         basedOn: "",
@@ -656,6 +701,7 @@ export function resolveResolution(
     level: input.address.level,
     agent: input.address.agent,
     ...(input.address.team !== undefined ? { team: input.address.team } : {}),
+    ...catalogueField(input.address),
     item: input.address.item,
     section: input.address.section,
     text: edited,
@@ -689,6 +735,7 @@ export function merge(
     level: address.level,
     agent: address.agent,
     ...(address.team !== undefined ? { team: address.team } : {}),
+    ...catalogueField(address),
     item: address.item,
     section: address.section,
     ...(text === undefined ? {} : { text }),
@@ -916,12 +963,7 @@ function sectionOverrides(input: ChainInput, chain: readonly ChainNode[]): Map<s
 }
 
 function sectionTextAt(input: ChainInput, node: ChainNode | Address, id: string): string | undefined {
-  return sectionRecords(input, id).find(
-    (record) =>
-      record.level === node.level &&
-      record.agent === node.agent &&
-      sameTeam(record.team, node.team),
-  )?.text
+  return sectionRecords(input, id).find((record) => scopedTo(record, node))?.text
 }
 
 function effectiveWholeText(input: ChainInput): string {
@@ -971,14 +1013,7 @@ function upstreamInput(
 
 function sectionState(input: ChainInput, chain: readonly ChainNode[], id: string): "on" | "off" | undefined {
   return chain
-    .map((node) =>
-      sectionRecords(input, id).find(
-        (record) =>
-          record.level === node.level &&
-          record.agent === node.agent &&
-          sameTeam(record.team, node.team),
-      )?.state,
-    )
+    .map((node) => sectionRecords(input, id).find((record) => scopedTo(record, node))?.state)
     .find((state) => state !== undefined)
 }
 
@@ -996,46 +1031,40 @@ export interface ChainNode {
   readonly level: Level
   readonly agent: string | null
   readonly team?: TeamRef
+  readonly catalogue?: Catalogue
 }
 
 // Resolution chain, most specific first, resolving text and state
-// independently: the first level supplying that field wins.
+// independently: the first level supplying that field wins. The chain ends in
+// the shared inventory of ONE catalogue: a team-scoped or teams-catalogue
+// address falls through to the Teams catalogue's "everyone" rows and never
+// sees the Agents catalogue's, and the reverse.
 export function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
+  const catalogue = catalogueForAddress(address)
   const nodes: ChainNode[] = []
   if (address.team !== undefined) {
-    nodes.push({ level: address.level, agent: address.agent, team: address.team })
+    nodes.push({ level: address.level, agent: address.agent, team: address.team, catalogue })
   }
-  nodes.push({ level: address.level, agent: address.agent })
+  nodes.push({ level: address.level, agent: address.agent, catalogue })
   if (address.level === "project") {
-    if (address.agent !== null && scopes.global.has(address.agent)) nodes.push({ level: "global", agent: address.agent })
-    if (address.agent !== null && scopes.defaults.has(address.agent)) nodes.push({ level: "defaults", agent: address.agent })
+    if (address.agent !== null && scopes.global.has(address.agent)) nodes.push({ level: "global", agent: address.agent, catalogue })
+    if (address.agent !== null && scopes.defaults.has(address.agent)) nodes.push({ level: "defaults", agent: address.agent, catalogue })
   }
   if (address.level === "global" && address.agent !== null && scopes.defaults.has(address.agent))
-    nodes.push({ level: "defaults", agent: address.agent })
-  if (!(address.level === "defaults" && address.agent === null)) nodes.push({ level: "defaults", agent: null })
+    nodes.push({ level: "defaults", agent: address.agent, catalogue })
+  if (!(address.level === "defaults" && address.agent === null)) nodes.push({ level: "defaults", agent: null, catalogue })
   return nodes
 }
 
 function at(records: readonly CustomizationRecord[], node: ChainNode | Address): CustomizationRecord | undefined {
-  return records.find(
-    (record) =>
-      record.level === node.level &&
-      record.agent === node.agent &&
-      sameTeam(record.team, node.team),
-  )
+  return records.find((record) => scopedTo(record, node))
 }
 
 function sameNode(
-  record: { level: Level; agent: string | null; item: string; section: string | null; team?: TeamRef },
+  record: { level: Level; agent: string | null; item: string; section: string | null; team?: TeamRef; catalogue?: Catalogue },
   address: Address,
 ): boolean {
-  return (
-    record.level === address.level &&
-    record.agent === address.agent &&
-    record.item === address.item &&
-    record.section === address.section &&
-    sameTeam(record.team, address.team)
-  )
+  return record.item === address.item && record.section === address.section && scopedTo(record, address)
 }
 
 function withoutUndefined(record: CustomizationRecord): CustomizationRecord {

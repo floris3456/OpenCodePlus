@@ -525,14 +525,21 @@ test("negation, OR, quotes, and combined terms", () => {
   expect(ids("kind:item,section")).toContain("section:project:Implementer:system:role:purpose")
   expect(ids("kind:item,section")).not.toContain("root:project")
   expect(ids('label:"Code Review"')).toContain("item:project:Implementer:skill:review")
+  // Two catalogues means two shared rows and, for a team member, one row per
+  // catalogue: the stand-alone id and the `<team>/:<member>` id.
   expect(ids("kind:item label:bash").sort()).toEqual(
     [
       "item:project:Implementer:tool:bash",
       "item:project:CrewMate:tool:bash",
+      "item:project:crew/:CrewMate:tool:bash",
       "item:global:Helper:tool:bash",
       "item:defaults:Template:tool:bash",
       "item:defaults::tool:bash",
+      "item:defaults:/teams:tool:bash",
     ].sort(),
+  )
+  expect(ids("kind:item label:bash catalogue:teams").sort()).toEqual(
+    ["item:project:crew/:CrewMate:tool:bash", "item:defaults:/teams:tool:bash"].sort(),
   )
 })
 

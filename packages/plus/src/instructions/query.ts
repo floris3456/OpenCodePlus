@@ -1,14 +1,15 @@
-import { applies, canReset, upstreamForEdit } from "./model.js"
+import { applies, canReset, catalogueForAddress, catalogueOf, upstreamForEdit } from "./model.js"
 import type {
   Address,
   AgentSource,
+  Catalogue,
   CustomizationRecord,
   Item,
   Level,
   SplitRecord,
 } from "./model.js"
 import { buildMemo, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { materialize, skeletonOf, toolPermRows, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { materialize, skeletonOf, teamsOwnerSegment, toolPermRows, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 
 export type Field =
@@ -127,7 +128,7 @@ function queryState(memo: Memo): QueryState {
   }
   const splits = new Map<string, SplitRecord[]>()
   for (const split of memo.ctx.splits) {
-    const key = JSON.stringify([split.level, split.agent, split.item])
+    const key = JSON.stringify([split.level, split.agent, split.item, catalogueOf(split.catalogue)])
     const list = splits.get(key) ?? []
     list.push(split)
     splits.set(key, list)
@@ -143,16 +144,22 @@ function atNode(
   records: readonly CustomizationRecord[],
   level: Level,
   agent: string | null,
+  catalogue: Catalogue,
 ): CustomizationRecord | undefined {
-  return records.find((record) => record.level === level && record.agent === agent)
+  return records.find(
+    (record) =>
+      record.level === level &&
+      record.agent === agent &&
+      (agent !== null || catalogueOf(record.catalogue) === catalogue),
+  )
 }
 
 function ownOf(state: QueryState, address: Address): CustomizationRecord | undefined {
-  return atNode(recsAt(state, address.item, address.section), address.level, address.agent)
+  return atNode(recsAt(state, address.item, address.section), address.level, address.agent, catalogueForAddress(address))
 }
 
-function splitOfAddress(state: QueryState, level: Level, agent: string | null, item: string): SplitRecord | undefined {
-  return state.splits.get(JSON.stringify([level, agent, item]))?.[0]
+function splitOfAddress(state: QueryState, address: Address): SplitRecord | undefined {
+  return state.splits.get(JSON.stringify([address.level, address.agent, address.item, catalogueForAddress(address)]))?.[0]
 }
 
 function lookupItem(state: QueryState, itemId: string, owner: string | null): Item | undefined {
@@ -192,10 +199,22 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
       // via splitOf and resolve every address even for structural misses.
       const address = lazy.address
       const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
+      // Perm rows hang off the tool row and share its owner path, which the
+      // row id already carries between `item:<level>:` and `:<itemId>`.
       const permRows =
         item === undefined || address === undefined
           ? []
-          : toolPermRows(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.depth + 1)
+          : toolPermRows(
+              state.memo.ctx,
+              state.memo,
+              address.level,
+              address.agent,
+              item,
+              lazy.depth + 1,
+              address.team,
+              address.catalogue,
+              lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1),
+            )
       for (const perm of permRows)
         push({ id: perm.id, kind: perm.kind, label: perm.label, depth: perm.depth, orphan: false, lazy: perm, parent: undefined, address: perm.address, sectionIds: [] })
       return
@@ -208,7 +227,7 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
   return out
 }
 
-const propagatingKeys = new Set(["level", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool"])
+const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool"])
 // pinned is resolved state like state:/modified: (per-row resolve through the
 // shared memo), so it must not propagate: a section inherits its whole row's
 // pin for display, but enumeration cannot skip sections from the item test.
@@ -247,32 +266,67 @@ function pushOrphans(
 ): void {
   const seen = new Set<string>()
   for (const record of state.memo.ctx.customizations) {
-    const key = JSON.stringify([record.level, record.agent, record.item, record.section])
+    const key = JSON.stringify([record.level, record.agent, record.item, record.section, catalogueOf(record.catalogue)])
     if (seen.has(key)) continue
     seen.add(key)
     if (record.section !== null && skipSections) continue
-    if (!isOrphan(state, record.level, record.agent, record.item, record.section)) continue
-    const address: Address = { level: record.level, agent: record.agent, item: record.item, section: record.section }
+    if (!isOrphan(state, record.level, record.agent, record.item, record.section, record.catalogue)) continue
+    const address: Address = {
+      level: record.level,
+      agent: record.agent,
+      item: record.item,
+      section: record.section,
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+    }
+    const owner = ownerSegmentOf(record.agent, record.catalogue)
     if (record.section === null)
-      push({ id: `item:${record.level}:${record.agent ?? ""}:${record.item}`, kind: "item", label: record.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
+      push({ id: `item:${record.level}:${owner}:${record.item}`, kind: "item", label: record.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
     else
-      push({ id: `section:${record.level}:${record.agent ?? ""}:${record.item}:${record.section}`, kind: "section", label: record.section, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
+      push({ id: `section:${record.level}:${owner}:${record.item}:${record.section}`, kind: "section", label: record.section, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
   }
   for (const split of state.memo.ctx.splits) {
-    const key = JSON.stringify([split.level, split.agent, split.item, null])
+    const key = JSON.stringify([split.level, split.agent, split.item, null, catalogueOf(split.catalogue)])
     if (seen.has(key)) continue
     seen.add(key)
-    if (!isOrphan(state, split.level, split.agent, split.item, null)) continue
-    push({ id: `item:${split.level}:${split.agent ?? ""}:${split.item}`, kind: "item", label: split.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address: { level: split.level, agent: split.agent, item: split.item, section: null }, sectionIds: [] })
+    if (!isOrphan(state, split.level, split.agent, split.item, null, split.catalogue)) continue
+    push({
+      id: `item:${split.level}:${ownerSegmentOf(split.agent, split.catalogue)}:${split.item}`,
+      kind: "item",
+      label: split.item,
+      depth: 0,
+      orphan: true,
+      lazy: undefined,
+      parent: undefined,
+      address: {
+        level: split.level,
+        agent: split.agent,
+        item: split.item,
+        section: null,
+        ...(split.catalogue === undefined ? {} : { catalogue: split.catalogue }),
+      },
+      sectionIds: [],
+    })
   }
 }
 
-function isOrphan(state: QueryState, level: Level, agent: string | null, itemId: string, section: string | null): boolean {
+function ownerSegmentOf(agent: string | null, catalogue: Catalogue | undefined): string {
+  if (agent !== null) return agent
+  return catalogueOf(catalogue) === "teams" ? teamsOwnerSegment : ""
+}
+
+function isOrphan(
+  state: QueryState,
+  level: Level,
+  agent: string | null,
+  itemId: string,
+  section: string | null,
+  catalogue?: Catalogue,
+): boolean {
   const item = lookupItem(state, itemId, agent)
   if (item === undefined) return true
   if (agent !== null && !state.agents.has(agent)) return true
   if (section === null) return false
-  return !splitOf(state.memo, level, agent, item).sections.some((entry) => entry.id === section)
+  return !splitOf(state.memo, level, agent, item, catalogue).sections.some((entry) => entry.id === section)
 }
 
 // Badge values come from the one tree path: materializing a lazy row runs
@@ -301,8 +355,8 @@ function resolvedTextOf(state: QueryState, candidate: Candidate): string {
     address === undefined || item === undefined
       ? ""
       : address.section === null
-        ? wholeOf(state.memo, address.level, address.agent, item).text
-        : sectionResolveOf(state.memo, address.level, address.agent, item, address.section).text
+        ? wholeOf(state.memo, address.level, address.agent, item, address.catalogue).text
+        : sectionResolveOf(state.memo, address.level, address.agent, item, address.section, address.catalogue).text
   candidate.resolvedText = text
   return text
 }
@@ -384,6 +438,24 @@ function agentOf(candidate: Candidate): string | null {
   return null
 }
 
+// The catalogue a row belongs to. Addressed rows answer from their address;
+// structural rows answer from the id, which carries the catalogue in its
+// second segment (`group:<level>:agents|teams`, `team:`/`agent:` prefixes) or
+// in the owner segment (`` vs `/teams`). Roots belong to neither.
+function catalogueOfCandidate(candidate: Candidate): Catalogue | undefined {
+  if (candidate.address !== undefined) return catalogueForAddress(candidate.address)
+  const id = candidate.id
+  if (candidate.kind === "root") return undefined
+  if (id.startsWith("team:")) return "teams"
+  if (id.startsWith("agent:")) return "agents"
+  const parts = id.split(":")
+  if (parts[0] === "group") {
+    if (parts[2] === "teams" || parts[2] === teamsOwnerSegment) return "teams"
+    return "agents"
+  }
+  return undefined
+}
+
 function itemKindOf(state: QueryState, candidate: Candidate): string | undefined {
   const address = candidate.address
   if (address === undefined) return undefined
@@ -425,7 +497,7 @@ function updatedOf(state: QueryState, candidate: Candidate): string | undefined 
   const own = ownOf(state, address)
   if (own?.updated !== undefined) return own.updated
   if (address.section !== null) return undefined
-  return splitOfAddress(state, address.level, address.agent, address.item)?.updated
+  return splitOfAddress(state, address)?.updated
 }
 
 // Precedence (model.ts resolutionChain): project/agent > global/agent > defaults/agent > defaults/shared.
@@ -595,6 +667,7 @@ const structuralKeys = new Set([
   "pinned",
   "execute",
   "level",
+  "catalogue",
   "agent",
   "state",
   "modified",
@@ -850,6 +923,14 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       const allowed = oneOf(key, alts, ["project", "global", "defaults"], term)
       return (candidate) => allowed.some((alt) => levelOf(candidate) === lower(alt))
     }
+    case "catalogue": {
+      const allowed = oneOf(key, alts, ["agents", "teams"], term)
+      return (candidate) => {
+        const catalogue = catalogueOfCandidate(candidate)
+        if (catalogue === undefined) return false
+        return allowed.some((alt) => catalogue === lower(alt))
+      }
+    }
     case "agent": {
       return (candidate) => {
         const agent = agentOf(candidate)
@@ -1011,7 +1092,7 @@ function hasOf(state: QueryState, candidate: Candidate, alt: string): boolean {
   const address = candidate.address
   if (address === undefined) return false
   if (alt === "record") return ownOf(state, address) !== undefined
-  if (alt === "split") return splitOfAddress(state, address.level, address.agent, address.item) !== undefined
+  if (alt === "split") return splitOfAddress(state, address) !== undefined
   if (alt === "sections") return candidate.sectionIds.length > 0
   const item = lookupItem(state, address.item, address.agent)
   return (ownOf(state, address)?.text ?? item?.text ?? "") !== ""

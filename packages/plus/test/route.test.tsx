@@ -94,6 +94,21 @@ async function gotoAgent(fixture: TestFixture, name: string): Promise<void> {
   await moveTo(fixture, name)
 }
 
+// The Defaults shared inventory belongs to a catalogue now, so reaching a
+// shared group means Defaults › Agents › <group> (or Defaults › Teams ›
+// <group> for the Teams catalogue's own copy).
+async function gotoDefaultsInventory(
+  fixture: TestFixture,
+  label: string,
+  catalogue: "Agents" | "Teams" = "Agents",
+): Promise<void> {
+  await moveTo(fixture, "Defaults")
+  await expand(fixture)
+  await moveTo(fixture, catalogue)
+  await expand(fixture)
+  await moveTo(fixture, label)
+}
+
 // Down-only walk that skips the current row first: used when several rows
 // share a label (each level has its own Agents group).
 async function moveToNext(fixture: TestFixture, label: string): Promise<void> {
@@ -525,7 +540,7 @@ test("a on a row without section support keeps the generic picker", async () => 
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::tools has no add, so a opens the generic picker.
-    await moveTo(fixture, "Tools")
+    await gotoDefaultsInventory(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => fixture.fake.skillCreates.length === 1)
     expect(fixture.fake.skillCreates.length).toBe(1)
@@ -544,7 +559,7 @@ test("add base prompts for id, title, and text", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::base carries the add:base affordance.
-    await moveTo(fixture, "Base")
+    await gotoDefaultsInventory(fixture, "Base")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.baseCreates.length).toBe(1)
@@ -564,7 +579,7 @@ test("add skill offers create with name and body", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::tools has no add, so a opens the generic picker.
-    await moveTo(fixture, "Tools")
+    await gotoDefaultsInventory(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.skillCreates.length).toBe(1)
@@ -583,7 +598,7 @@ test("add skill offers import from SKILL.md path", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Tools")
+    await gotoDefaultsInventory(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.skillImports.length).toBe(1)
@@ -602,7 +617,7 @@ test("add instruction prompts for name and text", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "System")
+    await gotoDefaultsInventory(fixture, "System")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => fixture.fake.instructionCreates.length === 1)
     expect(fixture.fake.instructionCreates.length).toBe(1)
@@ -622,7 +637,7 @@ test("add mcp prompts for name and JSON config", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::mcp carries the add:mcp affordance.
-    await moveTo(fixture, "MCP")
+    await gotoDefaultsInventory(fixture, "MCP")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.mcpAdds.length).toBe(1)
@@ -699,11 +714,8 @@ test("delete project skill calls skill.delete and the row disappears", async () 
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults group order from root:project: Agents, Global, Defaults —
-    // expand Defaults, then drill into Skills, the group row, and the item.
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "Skills")
+    // Defaults › Agents › Skills › Project › the item.
+    await gotoDefaultsInventory(fixture, "Skills")
     await expand(fixture)
     await moveTo(fixture, "Project")
     await expand(fixture)
@@ -738,10 +750,8 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Native skills hang under Defaults → Skills → Native.
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "Skills")
+    // Native skills hang under Defaults → Agents → Skills → Native.
+    await gotoDefaultsInventory(fixture, "Skills")
     await expand(fixture)
     await moveTo(fixture, "Native")
     await expand(fixture)
@@ -840,9 +850,7 @@ test("created project instruction deletes through instruction.delete and the row
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // Project-owned row offers d and deletes through the real handler.
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "System")
+    await gotoDefaultsInventory(fixture, "System")
     await expand(fixture)
     await moveTo(fixture, "AGENTS.md")
     await fixture.waitForFrame((frame) => frame.includes("Follow the guide."))
@@ -1065,9 +1073,7 @@ function reviewSnapshot(): Snapshot {
 // to catch up, not just sleep: the final wait targets the item row directly.
 async function gotoMcpItem(fixture: TestFixture): Promise<void> {
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  await moveTo(fixture, "Defaults")
-  await expand(fixture)
-  await moveTo(fixture, "MCP")
+  await gotoDefaultsInventory(fixture, "MCP")
   await expand(fixture)
   await moveTo(fixture, "sample")
   await fixture.waitForFrame((frame) => selectedRow(frame).includes("sample"))
@@ -1163,11 +1169,8 @@ test("s opens the manual splitter and saves two named sections", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults tools branch: expand Defaults, Tools, the Native subgroup,
-    // then move to the item.
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
+    // Defaults tools branch: Defaults › Agents › Tools › Native › the item.
+    await gotoDefaultsInventory(fixture, "Tools")
     await expand(fixture)
     await moveTo(fixture, "Native")
     await expand(fixture)
@@ -1461,8 +1464,9 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
-    // Whole base row: same refusal, navigated by label through Base.
-    await moveTo(fixture, "Base")
+    // Whole base row: same refusal, on the Defaults Agents-catalogue Base
+    // group (the agent's own Base group sits above the System group we are in).
+    await gotoDefaultsInventory(fixture, "Base")
     await expand(fixture)
     await moveTo(fixture, "gpt.txt")
     expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
@@ -1917,7 +1921,7 @@ test("a on a generic row prompts for rule scope and creates a per-agent rule", a
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Tools")
+    await gotoDefaultsInventory(fixture, "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
     expect(fixture.fake.ruleAdds[0]).toMatchObject({
@@ -3077,6 +3081,17 @@ test("space on a Models row under a team special persists the team-scoped record
           type: "model" as const,
           level: "defaults" as const,
           agent: null,
+          providerID: "acme",
+          modelID: "nova-2",
+          updated: "2026-09-14T00:00:00.000Z",
+        },
+        // A team special agent resolves through the Teams catalogue, which is
+        // where the store migration puts the second copy of every shared row.
+        {
+          type: "model" as const,
+          level: "defaults" as const,
+          agent: null,
+          catalogue: "teams" as const,
           providerID: "acme",
           modelID: "nova-2",
           updated: "2026-09-14T00:00:00.000Z",
