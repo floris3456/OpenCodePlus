@@ -33,7 +33,10 @@ changed; the captures only add reads:
 
 The only text substitution is the disposable `mkdtemp` project root replaced literally with
 `<project>` (`round3Value` in the test file). Config-dir paths (global teams, Defaults
-overlay) are quoted verbatim as returned. One line is a labeled projection: the agent's
+overlay) are quoted verbatim as returned. The only per-run values in the quoted block are
+the disposable `plus-tools-*` scratch suffix inside those config-dir paths and the `updated`
+timestamps carried by the `levels` line; a re-run at another head reproduces every other
+character. One line is a labeled projection: the agent's
 `view: "assembled"` readback lists every visible system/tool/skill text, so
 `round-trip agent: show` keeps the row identity, the visible tool/skill ids and the system
 entry count and carries `"projection": "assembled text bodies replaced by their ids and a
