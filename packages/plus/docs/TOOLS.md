@@ -596,8 +596,29 @@ instruction-delete cascade is not guarded because the handler returns
 
 The plugin RPC definition id is `opencode.plus`
 (`packages/plus/src/rpc.ts:1099`). Inputs and outputs are the portable schemas
-listed before the method table; every write input accepts an optional `actor`
-(`packages/plus/src/rpc.ts:318`).
+listed before the method table. Only some write inputs accept an optional
+`actor`: `instructions.mutate` (`packages/plus/src/rpc.ts:318`), every agent,
+model and rule write (`packages/plus/src/rpc.ts:406`,
+`packages/plus/src/rpc.ts:420`, `packages/plus/src/rpc.ts:434`,
+`packages/plus/src/rpc.ts:794`, `packages/plus/src/rpc.ts:806`,
+`packages/plus/src/rpc.ts:883`, `packages/plus/src/rpc.ts:892`,
+`packages/plus/src/rpc.ts:906`), and the four team writes `team.create`,
+`team.addAgent`, `team.removeAgent` and `team.delete`
+(`packages/plus/src/rpc.ts:535`, `packages/plus/src/rpc.ts:552`,
+`packages/plus/src/rpc.ts:560`, `packages/plus/src/rpc.ts:567`). The skill,
+base, instruction and MCP writes, plus `team.setEnabled` and `team.runs.stop`,
+carry no `actor` (`packages/plus/src/rpc.ts:438`–
+`packages/plus/src/rpc.ts:502`, `packages/plus/src/rpc.ts:510`,
+`packages/plus/src/rpc.ts:632`); the `Empty`-input `project.enable` and
+`project.disable` toggles take no input object at all
+(`packages/plus/src/index.ts:1763`, `packages/plus/src/index.ts:1777`). A write
+input without an `actor` cannot carry a tool actor over the RPC: where the
+handler takes an actor the boundary normalises it to `{ type: "tui" }`
+(`packages/plus/src/index.ts:2661`), so no tool-actor attribution and no
+`agent.protected` refusal can arise through those methods; the store writes
+among them reach a tool actor only through the tool-facing `PlusApi`, which
+accepts an optional `actor` on every write
+(`packages/plus/src/index.ts:386`–`packages/plus/src/index.ts:405`).
 
 | Method | Input → output | Declared errors | Definition |
 | --- | --- | --- | --- |

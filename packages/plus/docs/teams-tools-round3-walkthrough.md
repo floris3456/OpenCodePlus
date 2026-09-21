@@ -3,10 +3,12 @@
 - **Assembled at:** the parent's integrated round-3 branch. Blocks pasted from
   committed task evidence repeat the capture head their source document
   records. The six final live captures were taken by the orchestrator against
-  source `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7` — the last commit of the
-  round that changes a source file. Every commit after it, including this
-  document, is documentation only, so the product the captures show is the
-  product at the reviewed head.
+  source `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`. One later commit changes
+  source: `963f463e` adds the `refuseProtectedItemCascade` guard to four delete
+  handlers and its regression tests, and changes nothing about the Team tab, the
+  composer keymap, the permission-message path or the run lifecycle — so every
+  capture in this document still shows the current behaviour of what it
+  captures. Every other later commit is documentation only.
 - **Plan:** `docs/handoffs/2026-09-22-teams-tools-round3/plan.md`, "Expected end state".
   This document covers items 1–15 and the D4 outcome. Item 16 (`docs/TOOLS.md`) is T7;
   items 17–19 are the review gate and the parent's finish.
@@ -1617,21 +1619,37 @@ active agents and team-member defaults; unrelated tools (`tool:bash`) were exclu
 
 ## Assigned checks at the final head
 
-All six assigned checks run green, cwd `packages/plus`, each exit code `0`. The
-five test checks ran at `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`; the three
-documentation commits after it change no source file and no test file, and
-`plus-typecheck` is re-run at the final head.
+These are the current receipts at HEAD
+`1636101b00f904d5831edd3453c3f740a581ecde`, tree
+`084fc58e3abe96d6d9c99a4f4feb252e51c6f077`, `sourceChangedDuringCheck: false`.
+All six assigned checks run green, cwd `packages/plus`, each exit code `0`.
+`plus-rules` rose from 119 to 123 passes because commit `963f463e` added five
+protection regressions (four new test cases).
 
 | Check | Command | Result |
 | --- | --- | --- |
-| `plus-tools` | `bun test test/tools.test.ts test/teams-rpc.test.ts test/ops.test.ts` | 133 pass, 1 skip, 0 fail, 830 expect() |
-| `plus-rules` | `bun test test/tool-permissions.test.ts test/apply.test.ts test/rpc.test.ts` | 119 pass, 5 skip, 0 fail, 1178 expect() |
+| `plus-tools` | `bun test test/tools.test.ts test/teams-rpc.test.ts test/ops.test.ts` | 133 pass, 1 skip, 0 fail, 837 expect() |
+| `plus-rules` | `bun test test/tool-permissions.test.ts test/apply.test.ts test/rpc.test.ts` | 123 pass, 5 skip, 0 fail, 1222 expect() |
 | `plus-tui` | `bun test test/route.test.tsx test/active-team.test.tsx test/project-mode.test.tsx` | 80 pass, 1 skip, 0 fail, 460 expect() |
 | `team-runtime` | `bun test test/teams/tools.test.ts test/teams/audit.test.ts test/teams/worktree.test.ts test/teams/api.test.ts test/teams/api-lifecycle.test.ts test/teams/api-query.test.ts test/teams/lifecycle-events.test.ts` | 133 pass, 0 fail, 693 expect() |
 | `plus-search-query` | `bun test test/search/mcp.test.ts test/search/register.test.ts test/query.test.ts` | 72 pass, 0 fail, 2195 expect() |
 | `plus-typecheck` | `bun run typecheck` | `$ tsgo --noEmit -p tsconfig.test.json`, no output |
 
 Nothing in this document is pending.
+
+## The protection fix found by review
+
+Independent review of this branch finds a real defect: a tool actor's
+`rule.remove`, `skill.delete`, `base.delete` or `mcp.remove` can erase a
+protected agent's customization through the item-record cascade even when the
+addressed row is unprotected. `refuseProtectedItemCascade`
+(`packages/plus/src/index.ts:2420`) closes it, and each of the four delete
+handlers runs the guard before any write (`packages/plus/src/index.ts:728`,
+`packages/plus/src/index.ts:783`, `packages/plus/src/index.ts:908`,
+`packages/plus/src/index.ts:1645`). `packages/plus/test/rpc.test.ts` carries the
+regressions (`packages/plus/test/rpc.test.ts:2549`,
+`packages/plus/test/rpc.test.ts:2637`, `packages/plus/test/rpc.test.ts:2695`,
+`packages/plus/test/rpc.test.ts:2752`).
 
 ## Scope and secret-safety receipts
 
