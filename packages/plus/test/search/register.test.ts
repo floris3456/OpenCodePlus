@@ -3,23 +3,31 @@ import { Deferred, Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import type { Context } from "@opencode/plugin/effect/plugin"
 import type { MCPDomain } from "@opencode/plugin/effect/mcp"
-import type { Tool } from "@opencode/schema/tool"
+import { Agent } from "@opencode/schema/agent"
+import { Session } from "@opencode/schema/session"
+import { SessionMessage } from "@opencode/schema/session-message"
+import { Tool } from "@opencode/schema/tool"
 import { createHandlers, createPlusApi, createState } from "../../src/index.js"
+import { readKey } from "../../src/search/keys.js"
 import { registerSearchMcp, resolveSearchBinPath } from "../../src/search/register.js"
 import { enable } from "../../src/project.js"
 import { registerInstructionTools } from "../../src/tools.js"
-import { context, fullContext, mcpHarness } from "../harness.js"
+import { agentInfo, context, fullContext, mcpHarness, toolInfo } from "../harness.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 const priorDataHome = process.env.XDG_DATA_HOME
+const priorKeysDir = process.env.OPENCODEPLUS_SEARCH_KEYS_DIR
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
   if (priorDataHome === undefined) delete process.env.XDG_DATA_HOME
   else process.env.XDG_DATA_HOME = priorDataHome
+  if (priorKeysDir === undefined) delete process.env.OPENCODEPLUS_SEARCH_KEYS_DIR
+  else process.env.OPENCODEPLUS_SEARCH_KEYS_DIR = priorKeysDir
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -37,6 +45,31 @@ function throwingContext(): { error: (type: string, message: string, data?: unkn
       throw data === undefined ? { type, message } : { type, message, data }
     },
   }
+}
+
+function toolContext(agent = "alpha"): Tool.Context {
+  return {
+    sessionID: Session.ID.make("ses_tools_test"),
+    agent: Agent.ID.make(agent),
+    messageID: SessionMessage.ID.make("msg_tools_test"),
+    id: Tool.CallID.make("call_tools_test"),
+    progress: () => Effect.void,
+  }
+}
+
+async function readTools(ctx: Context): Promise<Map<string, Tool.Info & { readonly id: string }>> {
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const deferred = yield* Deferred.make<readonly (Tool.Info & { readonly id: string })[], never>()
+        yield* ctx.tool.transform((editor) => {
+          Deferred.doneUnsafe(deferred, Effect.succeed([...editor.list()]))
+        })
+        const list = yield* Deferred.await(deferred)
+        return new Map(list.map((tool) => [tool.id, tool]))
+      }),
+    ),
+  )
 }
 
 async function getServer(domain: MCPDomain, name: string): Promise<any> {
@@ -155,6 +188,7 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
   const ctx = context({
     ...fullContext({
       directory: project,
+      agents: [agentInfo("alpha", "upstream role")],
       tools: [
         {
           id: "bash",
@@ -165,23 +199,20 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
     mcp: baseMcp.domain,
   })
 
+  const exaTool: Tool.Info = {
+    ...toolInfo("exa_code_search", "Search code via Exa"),
+    origin: { type: "mcp", name: "search" },
+  }
+  const tavilyTool: Tool.Info = {
+    ...toolInfo("tavily_search", "Search web via Tavily"),
+    origin: { type: "mcp", name: "search" },
+  }
+
   await Effect.runPromise(
     Effect.scoped(
       ctx.tool.transform((editor) => {
-        editor.add({
-          name: "exa_code_search",
-          description: "Search code via Exa",
-          input: undefined as any,
-          origin: { type: "mcp", name: "search" },
-          execute: () => Effect.succeed({}),
-        } as any)
-        editor.add({
-          name: "tavily_search",
-          description: "Search web via Tavily",
-          input: undefined as any,
-          origin: { type: "mcp", name: "search" },
-          execute: () => Effect.succeed({}),
-        } as any)
+        editor.add(exaTool)
+        editor.add(tavilyTool)
       }),
     ),
   )
@@ -193,31 +224,68 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
 
   await Effect.runPromise(handlers["project.enable"](undefined, throwingContext()))
 
-  const tools = await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const deferred = yield* Deferred.make<readonly (Tool.Info & { readonly id: string })[], never>()
-        yield* ctx.tool.transform((editor) => {
-          Deferred.doneUnsafe(deferred, Effect.succeed([...editor.list()]))
-        })
-        const list = yield* Deferred.await(deferred)
-        return new Map(list.map((t) => [t.id, t]))
-      }),
-    ),
-  )
-
+  const tools = await readTools(ctx)
   const listTool = tools.get("instructions_list")
   expect(listTool).toBeDefined()
 
   const listOutput = await Effect.runPromise(
-    listTool!.execute({ where: "server:search" }, { sessionID: "s1", messageID: "m1", callID: "c1" } as any),
+    listTool!.execute({ where: "server:search" }, toolContext()),
   )
 
-  const output = (listOutput as any).output as { rows: Array<{ id: string }>; total: number }
-  const ids = output.rows.map((r) => r.id)
+  const output = listOutput.output as { rows: readonly { id: string }[]; total: number }
+  console.log("ACTUAL_INSTRUCTIONS_LIST_OUTPUT:\n" + JSON.stringify(output, null, 2))
 
+  const ids = output.rows.map((r) => r.id)
   expect(ids).toContain("item:defaults::mcp:search")
   expect(ids.some((id) => id.includes("tool:exa_code_search"))).toBe(true)
   expect(ids.some((id) => id.includes("tool:tavily_search"))).toBe(true)
   expect(ids.some((id) => id.includes("tool:bash"))).toBe(false)
+})
+
+test("reproducible key file read metadata with disposable sentinel", async () => {
+  const project = await tempProject()
+  const keysDir = path.join(project, "search")
+  await fs.mkdir(keysDir, { recursive: true })
+  process.env.OPENCODEPLUS_SEARCH_KEYS_DIR = keysDir
+
+  const sentinelExa = "sentinel-exa-" + crypto.randomUUID()
+  const exaKeyPath = path.join(keysDir, "exa.key")
+  await fs.writeFile(exaKeyPath, `${sentinelExa}\n`, { mode: 0o600 })
+  await fs.chmod(exaKeyPath, 0o600)
+
+  const sentinelTavily = "sentinel-tavily-" + crypto.randomUUID()
+  const tavilyKeyPath = path.join(keysDir, "tavily.key")
+  await fs.writeFile(tavilyKeyPath, `${sentinelTavily}\n`, { mode: 0o600 })
+  await fs.chmod(tavilyKeyPath, 0o600)
+
+  const exaStat = await fs.stat(exaKeyPath)
+  const exaRead = await readKey("exa")
+
+  const tavilyStat = await fs.stat(tavilyKeyPath)
+  const tavilyRead = await readKey("tavily")
+
+  const metadata = {
+    exa: {
+      path: exaKeyPath,
+      mode: `0${(exaStat.mode & 0o777).toString(8)}`,
+      size: exaStat.size,
+      mtime: exaStat.mtime.toISOString(),
+      sentinelMatch: exaRead === sentinelExa,
+      value: "[REDACTED (sentinel matched)]",
+    },
+    tavily: {
+      path: tavilyKeyPath,
+      mode: `0${(tavilyStat.mode & 0o777).toString(8)}`,
+      size: tavilyStat.size,
+      mtime: tavilyStat.mtime.toISOString(),
+      sentinelMatch: tavilyRead === sentinelTavily,
+      value: "[REDACTED (sentinel matched)]",
+    },
+  }
+
+  console.log("ACTUAL_KEY_METADATA:\n" + JSON.stringify(metadata, null, 2))
+  expect(metadata.exa.sentinelMatch).toBe(true)
+  expect(metadata.exa.mode).toBe("0600")
+  expect(metadata.tavily.sentinelMatch).toBe(true)
+  expect(metadata.tavily.mode).toBe("0600")
 })
