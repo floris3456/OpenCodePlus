@@ -634,9 +634,13 @@ human stop: idle runs are interrupted and moved `stopping` → `stopped`, a
 ## 9. Team composer tab
 
 The chat composer registers a tab `id: "team"`, `label: "Team"`
-(`packages/plus/src/tui/active-team.tsx:214`). Its hint bar reads
-`↑↓ move · ⏎ attach · ctrl+a active|inactive · ctrl+d stop|resume`
-(`packages/plus/src/tui/active-team.tsx:217`–`packages/plus/src/tui/active-team.tsx:222`).
+(`packages/plus/src/tui/active-team.tsx:214`). The tab contributes four hints —
+`move ↑↓`, `attach ⏎`, `active ctrl+a` and `stop|resume ctrl+d`
+(`packages/plus/src/tui/active-team.tsx:217`–`packages/plus/src/tui/active-team.tsx:222`);
+the composer renders them label-first and appends its own `tabs ←/→`, so the
+bar reads `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`. The
+`ctrl+a` hint names the view that is on: it reads `inactive ctrl+a` while the
+inactive view is showing.
 
 Rows are runs, one per run, rendered `id — role — state — task`
 (`packages/plus/src/tui/active-team.tsx:498`), newest first because the list

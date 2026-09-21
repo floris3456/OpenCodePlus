@@ -100,7 +100,7 @@ Arrow-down in the composer switches to the `Team` tab, which lists runs in the c
 - `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`); hint bar indicates which view is active.
 - `Enter` attaches by navigating to that run's session (`sessionID`).
 - `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first.
-- Hint bar: `↑↓ move · ⏎ attach · ctrl+a inactive|active · ctrl+d stop|resume`.
+- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint reads `inactive ctrl+a` while inactive runs are shown, and `tabs ←/→` is the composer's own hint.
 
 ## Tools
 
