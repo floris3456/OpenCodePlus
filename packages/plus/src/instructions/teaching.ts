@@ -29,18 +29,22 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 ## Row ids
 
-- \`item:<level>:<agent|''>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. An empty agent segment addresses the shared Defaults row. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`.
+- \`item:<level>:<owner>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`.
 - \`section:…:<sectionId>\` — one section inside a row; list exact ids with \`show({ id, view: "sections" })\`.
 - \`agent:<level>:<id>\` — one agent's subtree. Only these ids accept \`view: "assembled"\`.
 - \`team:<level>:<name>\` — one team.
 
 \`<level>\` is \`project\`, \`global\`, or \`defaults\`.
 
+## Catalogues
+
+The tree splits into two catalogues under every level: **Agents** and **Teams**. A stand-alone agent inherits only the Agents catalogue's shared Defaults rows; an agent launched as a team member inherits only the Teams catalogue's, then its team, then itself. \`<owner>\` names both the agent and the catalogue: the agent id or \`<team>/:<member>\` for a member's row, \`''\` for the Agents shared Defaults row (\`item:defaults::tool:reader\`) and \`/teams\` for the Teams one (\`item:defaults:/teams:tool:reader\`). Filter with \`catalogue:agents|teams\`. A member's row and its stand-alone row address the same record; only the shared tier they inherit differs.
+
 ## list
 
 \`list({ where?, fields?, sort?, limit?, offset? })\` — \`limit\` defaults to 40. \`where\` terms are ANDed; \`!key:value\` negates one term; \`a,b\` is OR within a single key; a bare word matches case-insensitively over label or id; \`key:>7d\` and \`key:<N\` compare ages and counts.
 
-Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|perm), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\`, \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
+Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|perm), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\`, \`catalogue\` (agents|teams), \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 

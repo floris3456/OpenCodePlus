@@ -44,14 +44,24 @@ function customization(overrides?: Partial<Extract<StoredRecord, { type: "custom
 
 test("load returns empty when both stores are absent", async () => {
   const { project } = await isolated()
-  expect(await load(project)).toEqual({ projectRevision: 0, globalRevision: 0, records: [], migrated: false })
+  expect(await load(project)).toEqual({
+    projectRevision: 0,
+    globalRevision: 0,
+    records: [],
+    migrated: false,
+    cataloguesMigrated: false,
+  })
 })
 
 test("save then load round-trips project and global records", async () => {
   const { project } = await isolated()
+  // A shared "everyone" row exists in both catalogues after the split, so the
+  // round-trip fixture carries both copies; migrateCatalogues covers the
+  // pre-split shape in test/catalogues.test.ts.
   const records: StoredRecord[] = [
     customization({ agent: "alpha", text: "custom" }),
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
+    customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
@@ -60,6 +70,7 @@ test("save then load round-trips project and global records", async () => {
   expect(loaded.projectRevision).toBe(1)
   expect(loaded.globalRevision).toBe(1)
   expect(loaded.migrated).toBe(false)
+  expect(loaded.cataloguesMigrated).toBe(false)
   expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
 })
 
@@ -118,6 +129,15 @@ test("split records round-trip", async () => {
       type: "split",
       level: "defaults",
       agent: null,
+      item: "tool:bash",
+      boundaries: [{ id: "purpose", name: "Purpose", start: 0 }],
+      updated: UPDATED,
+    },
+    {
+      type: "split",
+      level: "defaults",
+      agent: null,
+      catalogue: "teams",
       item: "tool:bash",
       boundaries: [{ id: "purpose", name: "Purpose", start: 0 }],
       updated: UPDATED,
@@ -493,11 +513,22 @@ test("model and rule records round-trip through save then load", async () => {
     model({ level: "global", agent: "beta", providerID: "anthropic", modelID: "claude-4" }),
     rule({}),
     rule({ level: "defaults", agent: null, tool: "read", id: "env", label: ".env files", patterns: ["*.env*"], keywords: ["env"] }),
+    rule({
+      level: "defaults",
+      agent: null,
+      catalogue: "teams",
+      tool: "read",
+      id: "env",
+      label: ".env files",
+      patterns: ["*.env*"],
+      keywords: ["env"],
+    }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1, changed: { project: true, global: true } })
   const loaded = await load(project)
   expect(loaded.migrated).toBe(false)
+  expect(loaded.cataloguesMigrated).toBe(false)
   expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
 })
 
@@ -529,6 +560,16 @@ test("unchanged save containing models and rules is a no-op", async () => {
     model({ level: "global", agent: "beta", providerID: "anthropic", modelID: "claude-4" }),
     rule({}),
     rule({ level: "defaults", agent: null, tool: "read", id: "env", label: ".env files", patterns: ["*.env*"], keywords: ["env"] }),
+    rule({
+      level: "defaults",
+      agent: null,
+      catalogue: "teams",
+      tool: "read",
+      id: "env",
+      label: ".env files",
+      patterns: ["*.env*"],
+      keywords: ["env"],
+    }),
   ]
   await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   const beforeProject = await Bun.file(projectRecordsPath(project)).text()

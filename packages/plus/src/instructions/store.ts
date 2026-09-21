@@ -2,7 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Option, Schema } from "effect"
 import type { Boundary } from "./sections.js"
-import type { CustomizationRecord, Level, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
+import type { Catalogue, CustomizationRecord, Level, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, projectRecordsPath } from "./paths.js"
 
@@ -19,6 +19,8 @@ export interface Loaded {
   readonly globalRevision: number
   readonly records: readonly StoredRecord[]
   readonly migrated: boolean
+  /** True when this load duplicated pre-split shared rows into the Teams catalogue. */
+  readonly cataloguesMigrated: boolean
 }
 
 export interface SaveInput {
@@ -54,6 +56,10 @@ const V2TeamRef = Schema.Struct({
   team: Schema.String,
 })
 
+// Shared-inventory rows only. Absent means the Agents catalogue, so every
+// record written before the catalogue split keeps its exact bytes and meaning.
+const CatalogueSchema = Schema.Union([Schema.Literal("agents"), Schema.Literal("teams")])
+
 const BoundarySchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -65,6 +71,7 @@ const V2Customization = Schema.Struct({
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
   team: Schema.optional(V2TeamRef),
+  catalogue: Schema.optional(CatalogueSchema),
   item: Schema.String,
   section: Schema.Union([Schema.String, Schema.Null]),
   text: Schema.optional(Schema.String),
@@ -81,6 +88,7 @@ const V2Split = Schema.Struct({
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
   team: Schema.optional(V2TeamRef),
+  catalogue: Schema.optional(CatalogueSchema),
   item: Schema.String,
   boundaries: Schema.Array(BoundarySchema),
   updated: Schema.String,
@@ -105,6 +113,7 @@ const V2Model = Schema.Struct({
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
   team: Schema.optional(V2TeamRef),
+  catalogue: Schema.optional(CatalogueSchema),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optional(Schema.String),
@@ -117,6 +126,7 @@ const V2Rule = Schema.Struct({
   level: LevelSchema,
   agent: Schema.Union([Schema.String, Schema.Null]),
   team: Schema.optional(V2TeamRef),
+  catalogue: Schema.optional(CatalogueSchema),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,
@@ -168,28 +178,82 @@ export async function load(projectDir: string): Promise<Loaded> {
   const global = await readFile(globalRecordsPath())
   const projectParsed = parseFile(project)
   const globalParsed = parseFile(global)
-  if (!projectParsed.migrated && !globalParsed.migrated)
+  if (!projectParsed.migrated && !globalParsed.migrated) {
+    const catalogues = migrateCatalogues([...projectParsed.records, ...globalParsed.records])
     return {
       projectRevision: projectParsed.revision,
       globalRevision: globalParsed.revision,
-      records: [...projectParsed.records, ...globalParsed.records],
+      records: catalogues.records,
       migrated: false,
+      cataloguesMigrated: catalogues.migrated,
     }
+  }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
   // those route into the global store, not the project file.
-  const routed = route(projectParsed.records.concat(globalParsed.records))
+  const catalogues = migrateCatalogues(projectParsed.records.concat(globalParsed.records))
+  const routed = route(catalogues.records)
   return {
     projectRevision: projectParsed.revision,
     globalRevision: globalParsed.revision,
     records: routed.project.concat(routed.global),
     migrated: true,
+    cataloguesMigrated: catalogues.migrated,
   }
+}
+
+// The catalogue split: before it there was one shared "everyone" inventory at
+// `{ level: "defaults", agent: null }`, and every agent — stand-alone or team
+// member — resolved through it. After it there are two, and a team member
+// reads only the Teams one. So a store with no catalogue anywhere is a
+// pre-split store: copy each shared row into the Teams catalogue so everything
+// that applied to everyone still applies to everyone.
+//
+// Idempotent by construction: the copies carry `catalogue: "teams"`, so the
+// "no record carries a catalogue" test is false on every later load, and a
+// store that already holds a Teams copy is returned untouched.
+export function migrateCatalogues(records: readonly StoredRecord[]): {
+  records: StoredRecord[]
+  migrated: boolean
+} {
+  const shared = records.filter((record) => isSharedDefaults(record))
+  if (shared.length === 0) return { records: [...records], migrated: false }
+  if (records.some((record) => record.type !== "team" && record.catalogue !== undefined))
+    return { records: [...records], migrated: false }
+  return { records: [...records, ...shared.map(intoTeamsCatalogue)], migrated: true }
+}
+
+function isSharedDefaults(record: StoredRecord): boolean {
+  if (record.type === "team") return false
+  return record.level === "defaults" && record.agent === null && record.team === undefined
+}
+
+function intoTeamsCatalogue(record: StoredRecord): StoredRecord {
+  if (record.type === "team") return record
+  return { ...record, catalogue: "teams" as Catalogue }
 }
 
 export async function save(projectDir: string, input: SaveInput): Promise<SaveResult> {
   // Fixed order (global then project) so two projects saving concurrently
   // cannot interleave: each save holds both gates across read+write.
   return withLock(globalGateKey(), () => withLock(projectGateKey(projectDir), () => write(projectDir, input)))
+}
+
+// Persist the catalogue duplication once, on the first load that sees a
+// pre-split store, so the copies land in one revision the log can name. A
+// store that needs nothing is read and left alone; a concurrent writer that
+// wins the revision race simply migrates on its own next load.
+export async function ensureCatalogues(
+  projectDir: string,
+): Promise<{ migrated: boolean; loaded: Loaded; revision: number }> {
+  const current = await load(projectDir)
+  if (!current.cataloguesMigrated) return { migrated: false, loaded: current, revision: current.globalRevision }
+  const saved = await save(projectDir, {
+    expectedProjectRevision: current.projectRevision,
+    expectedGlobalRevision: current.globalRevision,
+    records: current.records,
+  })
+  if (!saved.ok) return { migrated: false, loaded: saved.current, revision: saved.current.globalRevision }
+  return { migrated: true, loaded: await load(projectDir), revision: saved.globalRevision }
 }
 
 async function write(projectDir: string, input: SaveInput): Promise<SaveResult> {
@@ -200,9 +264,12 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
     return { ok: false, reason: "stale", store: projectStale ? "project" : "global", current }
   const routed = route(input.records)
   // A migrating load reroutes v1 rows across stores, so the first save must
-  // write v2 to both stores even when the rerouted records already match.
-  const projectChanged = current.migrated || !same(currentProjectRecords(current.records), routed.project)
-  const globalChanged = current.migrated || !same(currentGlobalRecords(current.records), routed.global)
+  // write v2 to both stores even when the rerouted records already match. The
+  // catalogue duplication is the same situation: both sides of `same` are
+  // already migrated, so only this flag makes the copies reach disk.
+  const forced = current.migrated || current.cataloguesMigrated
+  const projectChanged = forced || !same(currentProjectRecords(current.records), routed.project)
+  const globalChanged = forced || !same(currentGlobalRecords(current.records), routed.global)
   // An unchanged save is a no-op: neither file is touched, neither revision moves.
   if (!projectChanged && !globalChanged)
     return {
@@ -302,6 +369,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           level: record.level,
           agent: record.agent,
           ...(record.team === undefined ? {} : { team: record.team }),
+          ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
           item: record.item,
           boundaries: record.boundaries.map((boundary): Boundary => ({ ...boundary })),
           updated: record.updated,
@@ -314,6 +382,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           level: record.level,
           agent: record.agent,
           ...(record.team === undefined ? {} : { team: record.team }),
+          ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
           providerID: record.providerID,
           modelID: record.modelID,
           ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -328,6 +397,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           level: record.level,
           agent: record.agent,
           ...(record.team === undefined ? {} : { team: record.team }),
+          ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
           tool: record.tool,
           id: record.id,
           label: record.label,
@@ -342,6 +412,7 @@ function parseV2(lines: string[]): StoredRecord[] {
         level: record.level,
         agent: record.agent,
         ...(record.team === undefined ? {} : { team: record.team }),
+        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
         item: record.item,
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
@@ -436,6 +507,7 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 // order is total and an unchanged save stays a no-op.
 function sortKey(record: StoredRecord): string[] {
   const teamKey = record.type !== "team" && record.team !== undefined ? `${record.team.level}:${record.team.team}` : ""
+  const catalogueKey = record.type !== "team" ? (record.catalogue ?? "") : ""
   if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
   if (record.type === "model")
     return [
@@ -445,12 +517,22 @@ function sortKey(record: StoredRecord): string[] {
       record.variant ?? "",
       String(record.agent),
       teamKey,
+      catalogueKey,
       record.level,
       record.active === true ? "active" : "",
       record.updated,
     ]
-  if (record.type === "rule") return ["rule", record.tool, record.id, String(record.agent), teamKey, record.level, record.updated]
-  return [record.type, record.item, String(record.agent), teamKey, record.level, record.type === "customization" ? String(record.section) : ""]
+  if (record.type === "rule")
+    return ["rule", record.tool, record.id, String(record.agent), teamKey, catalogueKey, record.level, record.updated]
+  return [
+    record.type,
+    record.item,
+    String(record.agent),
+    teamKey,
+    catalogueKey,
+    record.level,
+    record.type === "customization" ? String(record.section) : "",
+  ]
 }
 
 export function stable(record: StoredRecord): StoredRecord {
@@ -468,6 +550,7 @@ export function stable(record: StoredRecord): StoredRecord {
       level: record.level,
       agent: record.agent,
       ...(record.team === undefined ? {} : { team: record.team }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       providerID: record.providerID,
       modelID: record.modelID,
       ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -480,6 +563,7 @@ export function stable(record: StoredRecord): StoredRecord {
       level: record.level,
       agent: record.agent,
       ...(record.team === undefined ? {} : { team: record.team }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       tool: record.tool,
       id: record.id,
       label: record.label,
@@ -493,6 +577,7 @@ export function stable(record: StoredRecord): StoredRecord {
       level: record.level,
       agent: record.agent,
       ...(record.team === undefined ? {} : { team: record.team }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       item: record.item,
       boundaries: record.boundaries.map((boundary) => ({ id: boundary.id, name: boundary.name, start: boundary.start })),
       updated: record.updated,
@@ -502,6 +587,7 @@ export function stable(record: StoredRecord): StoredRecord {
     level: record.level,
     agent: record.agent,
     ...(record.team === undefined ? {} : { team: record.team }),
+    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
     item: record.item,
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),

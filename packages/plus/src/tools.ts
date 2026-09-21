@@ -66,7 +66,9 @@ const CreateDescription =
   "Kinds: agent (id+prompt, scope defaults to project, template/fields optional), skill (name+body),\n" +
   "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled),\n" +
   "model (providerID+modelID, variant/level/agent optional; level defaults to project),\n" +
-  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex)."
+  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex).\n" +
+  "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
+  "base/instruction/mcp create one file both catalogues list, so catalogue does not change what is written."
 
 const DeleteDescription =
   "Delete a project-owned row; refuses without `confirm`.\n" +
@@ -173,6 +175,7 @@ const CreateInput = Schema.Struct({
   config: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   team: Schema.optionalKey(Schema.String),
   level: Schema.optionalKey(Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults")])),
+  catalogue: Schema.optionalKey(Plus.Catalogue),
   providerID: Schema.optionalKey(Schema.String),
   modelID: Schema.optionalKey(Schema.String),
   variant: Schema.optionalKey(Schema.String),
@@ -1004,6 +1007,7 @@ function createRow(
     config?: Record<string, unknown>
     team?: string
     level?: "project" | "global" | "defaults"
+    catalogue?: Plus.Catalogue
     providerID?: string
     modelID?: string
     variant?: string
@@ -1097,6 +1101,7 @@ function createRow(
         api.addModel({
           level,
           agent,
+          ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
           providerID: input.providerID as string,
           modelID: input.modelID as string,
           ...(input.variant === undefined ? {} : { variant: input.variant }),
@@ -1121,6 +1126,7 @@ function createRow(
         api.addRule({
           level,
           agent,
+          ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
           tool: input.tool as string,
           id: input.id as string,
           label: input.label as string,

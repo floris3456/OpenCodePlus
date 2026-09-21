@@ -7,24 +7,41 @@ migration (`src/instructions/store.ts`, `src/instructions/paths.ts`).
 
 ## Tree shape
 
-Three top-level roots in this order: `Project`, `Global`, `Defaults`.
-`Project` and `Global` each hold an `Agents` group (`[a: add agent]`) whose
-children are origin subgroups (`Native`, `Plus`, `User`, with `Special`
-nested under `Native`: `group:<level>:agents:native`,
+Three top-level roots in this order: `Project`, `Global`, `Defaults`. Each
+root holds exactly two **catalogues**, `Agents` (`group:<level>:agents`,
+`[a: add agent]`) and `Teams` (`group:<level>:teams`, `[a: add team]`). A
+catalogue owns its population and, at `Defaults`, its own shared inventory, and
+a row resolved through one catalogue never reads the other's inventory
+(`model.ts` `resolutionChain`).
+
+```
+Defaults
+  Agents                                    group:defaults:agents
+    Native / Special / Plus / User          (unchanged agent subtrees)
+    Models · Tools · Base · Skills · System · MCP     group:defaults::<category>
+  Teams                                     group:defaults:teams
+    <team> > <member>                       (unchanged team subtrees)
+    Models · Tools · Base · Skills · System · MCP     group:defaults:/teams:<category>
+```
+
+`Project` and `Global` carry the same two catalogue roots holding their own
+agents and teams; only `Defaults` carries shared inventories, because
+`{ level: "defaults", agent: null }` is the one address the resolution chain
+falls through to.
+
+The `Agents` catalogue's children are the origin subgroups (`Native`, `Plus`,
+`User`, with `Special` nested under `Native`: `group:<level>:agents:native`,
 `group:<level>:agents:native:special`, `group:<level>:agents:plus`,
 `group:<level>:agents:user`, all always emitted even when empty; agent rows
 keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the
 `User` subgroup, never on `Native`/`Special`/`Plus`) holding that level's
-agents with the identical subtree, plus a `Teams`
-group (`[a: add team]`) holding that level's on-disk teams, whose team rows
-(`team:<level>:<team>`, `add: "agent"`) hold member rows
-(`team:<level>:<team>:<member>`, `add: "agent"`) expanding to the same five agent groups. `Defaults` holds
-`Agents` (template agents in the same origin subgroups, each with the full subtree, `[a: add agent template]`),
-`Teams` (built-in shipped teams with working toggles whose team rows carry `add: "agent"` and whose member rows
-carry `add: "agent"` and expand to full agent subtrees, `[a: add team]` still creates at project or
-global, never
-defaults), and then the shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`,
-`System` `[a]`, `MCP` `[a: add MCP server]`. Built-in Native and Special agents
+agents with the identical subtree. The `Teams` catalogue holds that level's
+teams, whose team rows (`team:<level>:<team>`, `add: "agent"`) hold member
+rows (`team:<level>:<team>:<member>`, `add: "agent"`) expanding to the same
+five agent groups. At `Defaults` the `Agents` catalogue's agents are template
+agents (`[a: add agent template]`) and the `Teams` catalogue's teams are the
+built-in shipped teams with working toggles (`[a: add team]` still creates at
+project or global, never defaults). Built-in Native and Special agents
 project under every root with row id `agent:<level>:<id>` and are not
 removable (`actions.remove === false`). Ancestor-backed project agents are
 discovered through core's upward `.opencode` walk, are file-backed, and are not
@@ -83,24 +100,55 @@ registered the agent. The owner for those groups is the bare member id with
 the registered agent when one exists
 (`ctx.agents.find(a => a.id === member && a.scope === level) ?? find(a => a.id === member) ?? null`),
 so shared items (`agents === undefined`) populate for unregistered members
-while `system:role` appears only for registered ones. Item and section ids
-and their addresses stay identical to the Agents-group ones (they address the
-same records by design: level + agent + item, and `address.agent` stays the
-bare agent id). Only the five group ids get the team prefix to avoid
-colliding with the Agents-group ids for the same agent at the same level:
-`group:<level>:<team>/:<member>:models|tools|base|skills|system`, with nested
-Tools/Skills subgroup ids extending those prefixes. `dialogs.tsx`
-`scopeFromModelsGroup` accepts the `<team>/:<member>` owner form and strips
-the `<team>/:` prefix so `a` on a member's Models group adds for the member
-id.
+while `system:role` appears only for registered ones. A member's rows address
+the same records as its Agents-catalogue rows (level + agent + item, and
+`address.agent` stays the bare agent id), so an edit made under Teams and one
+made under Agents are one record — but they resolve through different
+catalogues, so they carry their own ids under the member's owner path:
+`group:<level>:<team>/:<member>:models|tools|base|skills|system` for the five
+groups (with nested Tools/Skills subgroup ids extending those prefixes) and
+`item:<level>:<team>/:<member>:<itemId>` /
+`section:<level>:<team>/:<member>:<itemId>:<id>` for their rows, whose address
+carries `catalogue: "teams"`. The flat `item:<level>:<member>:<itemId>` id
+still resolves: it is the stand-alone Agents-catalogue row for the same agent.
+`dialogs.tsx` `scopeFromModelsGroup` accepts the `<team>/:<member>` owner form
+and strips the `<team>/:` prefix so `a` on a member's Models group adds for the
+member id.
 
-`Defaults` holds `Agents` (template agents in the same origin subgroups Native,
-Plus, User, Special, each with the full subtree, `[a: add agent template]`),
-`Teams` (built-in shipped teams, each with working toggles whose team rows
-carry `add: "agent"` and whose member rows carry `add: "agent"` and expand to full agent subtrees,
-`[a: add team]` still creates
-at project or global, never defaults), and then the shared inventories:
-`Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`.
+### Catalogues (`model.ts`, `tree.ts`, `store.ts`)
+
+`Catalogue` is `"agents" | "teams"`, and absent always means `"agents"` — so
+every address, record and row id written before the split keeps its exact
+bytes and its exact meaning.
+
+- **Resolution.** `resolutionChain` ends in the shared inventory of ONE
+  catalogue: `{ level: "defaults", agent: null, catalogue }` where `catalogue`
+  is the address's own, or `"teams"` when the address carries a `team`. A
+  stand-alone agent therefore inherits only the Agents catalogue's "everyone"
+  rows and a team member only the Teams catalogue's, then its team, then
+  itself. An agent that is both resolves differently depending on which it was
+  launched as (`apply.ts` sets `team` for agents that come from an enabled
+  team); the detail pane names the catalogue on every addressed row.
+- **Records.** Only the shared inventory is per catalogue: `catalogue` is
+  written on `customization`, `split`, `model` and `rule` records with
+  `agent === null`, never on a per-agent record, which is one record both
+  catalogues read (`catalogueMatches`, `catalogueField`).
+- **Row ids.** The catalogue rides in the owner position the grammar already
+  has: `item:<level>::<itemId>` is the Agents inventory (unchanged) and
+  `item:<level>:/teams:<itemId>` the Teams one; group ids likewise
+  `group:defaults::<category>` and `group:defaults:/teams:<category>`. Agent
+  ids forbid `:` and never start with `/`, so `/teams` can never collide.
+- **Migration.** `store.migrateCatalogues` runs on every `load`: a store where
+  no record carries a `catalogue` is pre-split, so every shared Defaults row is
+  duplicated into the Teams catalogue and everything that applied to everyone
+  before still applies to everyone. `load` reports `cataloguesMigrated`;
+  `ensureCatalogues` persists it as one revision and `index.ts` appends one
+  `op: "migrate.catalogues"` log line (target `root:defaults`) naming that
+  revision. Idempotent: the copies carry `catalogue: "teams"`, so later loads
+  find nothing to do and log nothing.
+- **Deferred.** MCP server enablement is host-global (one `ctx.mcp` config), so
+  `apply.ts` reads it from the Agents catalogue; the Teams catalogue's `MCP`
+  rows exist for parity and their enablement is not applied separately.
 
 Code Mode grouping (`tree.ts`): inside each origin group, Code Mode tools
 sit under a `Code Mode` subgroup; below Native and OpenCodePlus it holds one
@@ -991,19 +1039,30 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `providerID` + `modelID` (`level` defaults to `project`, `agent` is
   required for project/global levels); `create` with `kind: "rule"` needs
   `tool` + `id` + `label` + `patterns` (patterns are core wildcards, not
-  regex). `delete` without
+  regex). `create` takes an optional `catalogue` (`agents|teams`, default
+  `agents`) that picks which catalogue a shared (`agent: null`) `model` or
+  `rule` lands in; `base`, `instruction` and `mcp` create one file both
+  catalogues list, so `catalogue` does not change what is written. `delete`
+  without
   `confirm: true` fails with `delete.unconfirmed` and writes nothing;
   on a model row it removes the candidate at that level, and only
   user-created (`custom`) rules can be deleted.
 - Row ids (same string in the TUI filter, tool calls, the log, and error
-  messages): `item:<level>:<agent|''>:<itemId>` (empty agent segment is the
-  shared Defaults row), `section:<level>:<agent|''>:<itemId>:<sectionId>`,
-  `agent:<level>:<id>`, `team:<level>:<name>`, `team:<level>:<name>:<member>`,
-  `team:<level>:<name>:special`, `team:<level>:<name>:special:<id>`, with
-  group prefix `group:<level>:<team>/:special:<id>:<group>`, and item ids
+  messages): `item:<level>:<owner>:<itemId>` and
+  `section:<level>:<owner>:<itemId>:<sectionId>`, where `<owner>` is the agent
+  id, `''` for the Agents-catalogue shared Defaults row, `/teams` for the
+  Teams-catalogue one, `<team>/:<member>` for a team member's row and
+  `<team>/:special:<id>` for a team special agent's. Plus `agent:<level>:<id>`,
+  `team:<level>:<name>`, `team:<level>:<name>:<member>`,
+  `team:<level>:<name>:special`, `team:<level>:<name>:special:<id>`, catalogue
+  roots `group:<level>:agents` and `group:<level>:teams`, inventory groups
+  `group:defaults::<category>` and `group:defaults:/teams:<category>`, member
+  group prefixes `group:<level>:<team>/:<member>:<group>` and
+  `group:<level>:<team>/:special:<id>:<group>`, and item ids
   `model:<providerID>/<modelID>[@<variant>]` and
   `perm:<toolId>:<ruleId>`. `<level>` is `project`,
-  `global`, or `defaults`.
+  `global`, or `defaults`. Every id that resolved before the catalogue split
+  still resolves and still means the Agents catalogue.
 - Guards: writes for agents listed in `protectedAgents` fail with
   `agent.protected`; unknown ids fail with `row.unknown`. A no-op or a
   refusal writes nothing and logs nothing.
@@ -1145,7 +1204,9 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   `item` is `tool|base|skill|system|mcp|model|perm`; `tool` is the parent
   tool id on perm rows (e.g. `tool:shell`); `group` is
   `native|plus|mcp|project|none`; `server` is the exact (case-insensitive)
-  MCP server name; `level` is `project|global|defaults`; `agent` is a
+  MCP server name; `level` is `project|global|defaults`; `catalogue` is
+  `agents|teams` (addressed rows answer from their address, structural rows
+  from their id; roots belong to neither and match nothing); `agent` is a
   case-insensitive substring match, `_` is the shared (agent-less) row; `state`
   is `on|off`; `modified`/`overridden` read the row's own stored text;
   `review` includes rolled-up descendant review; `source` is

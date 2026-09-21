@@ -1,7 +1,8 @@
-import { resolve, resolveSplit, scopesOf } from "./model.js"
+import { catalogueOf, resolve, resolveSplit, scopesOf } from "./model.js"
 import type {
   Address,
   AgentSource,
+  Catalogue,
   CustomizationRecord,
   Item,
   Level,
@@ -88,7 +89,7 @@ function textIndex(ctx: BuildContext): Map<string, TextEntry> {
   const index = new Map<string, TextEntry>()
   ctx.customizations.forEach((record) => {
     if (record.text === undefined) return
-    const key = textKey(record.level, record.agent, record.item)
+    const key = textKey(record.level, record.agent, record.item, record.catalogue)
     const entry = index.get(key)
     if (entry !== undefined) {
       if (record.section === null) entry.whole = true
@@ -100,20 +101,42 @@ function textIndex(ctx: BuildContext): Map<string, TextEntry> {
   return index
 }
 
-export function textEntryOf(memo: Memo, level: Level, owner: string | null, item: string): TextEntry | undefined {
-  return memo.texts.get(textKey(level, owner, item))
+export function textEntryOf(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: string,
+  catalogue?: Catalogue,
+): TextEntry | undefined {
+  return memo.texts.get(textKey(level, owner, item, catalogue))
 }
 
-function textKey(level: Level, owner: string | null, item: string): string {
-  return JSON.stringify([level, owner, item])
+// Index over raw records: only shared-inventory records carry a catalogue, so
+// a per-agent record lands in one bucket both catalogues read.
+function textKey(level: Level, owner: string | null, item: string, catalogue: Catalogue | undefined): string {
+  return JSON.stringify([level, owner, item, owner === null ? catalogueOf(catalogue) : "agents"])
 }
 
-function keyOf(level: Level, owner: string | null, item: string, section: string | null): string {
-  return JSON.stringify([level, owner, item, section])
+// Resolution keys always carry the catalogue: the same (level, owner, item)
+// row resolves differently under Agents and Teams because the chain ends in a
+// different shared inventory, so one cache entry would hand the team member
+// the stand-alone answer.
+function keyOf(
+  level: Level,
+  owner: string | null,
+  item: string,
+  section: string | null,
+  catalogue: Catalogue | undefined,
+): string {
+  return JSON.stringify([level, owner, item, section, catalogueOf(catalogue)])
 }
 
-export function wholeOf(memo: Memo, level: Level, owner: string | null, item: Item): Resolved {
-  const key = keyOf(level, owner, item.id, null)
+function addressOf(level: Level, owner: string | null, item: string, section: string | null, catalogue: Catalogue | undefined): Address {
+  return { level, agent: owner, item, section, ...(catalogue === undefined ? {} : { catalogue }) }
+}
+
+export function wholeOf(memo: Memo, level: Level, owner: string | null, item: Item, catalogue?: Catalogue): Resolved {
+  const key = keyOf(level, owner, item.id, null, catalogue)
   const cached = memo.whole.get(key)
   if (cached !== undefined) return cached
   const resolved = resolve({
@@ -121,30 +144,37 @@ export function wholeOf(memo: Memo, level: Level, owner: string | null, item: It
     records: memo.ctx.customizations,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,
-    address: { level, agent: owner, item: item.id, section: null },
+    address: addressOf(level, owner, item.id, null, catalogue),
   })
   memo.whole.set(key, resolved)
   return resolved
 }
 
-export function splitOf(memo: Memo, level: Level, owner: string | null, item: Item): Split {
-  const key = keyOf(level, owner, item.id, null)
+export function splitOf(memo: Memo, level: Level, owner: string | null, item: Item, catalogue?: Catalogue): Split {
+  const key = keyOf(level, owner, item.id, null, catalogue)
   const cached = memo.split.get(key)
   if (cached !== undefined) return cached
-  const whole = wholeOf(memo, level, owner, item)
+  const whole = wholeOf(memo, level, owner, item, catalogue)
   const split = resolveSplit({
     text: whole.text,
     title: item.title,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,
-    address: { level, agent: owner, item: item.id, section: null },
+    address: addressOf(level, owner, item.id, null, catalogue),
   })
   memo.split.set(key, split)
   return split
 }
 
-export function sectionResolveOf(memo: Memo, level: Level, owner: string | null, item: Item, section: string): Resolved {
-  const key = keyOf(level, owner, item.id, section)
+export function sectionResolveOf(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  section: string,
+  catalogue?: Catalogue,
+): Resolved {
+  const key = keyOf(level, owner, item.id, section, catalogue)
   const cached = memo.section.get(key)
   if (cached !== undefined) return cached
   const resolved = resolve({
@@ -152,7 +182,7 @@ export function sectionResolveOf(memo: Memo, level: Level, owner: string | null,
     records: memo.ctx.customizations,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,
-    address: { level, agent: owner, item: item.id, section },
+    address: addressOf(level, owner, item.id, section, catalogue),
   })
   memo.section.set(key, resolved)
   return resolved
@@ -160,11 +190,18 @@ export function sectionResolveOf(memo: Memo, level: Level, owner: string | null,
 
 // Review is false wherever no customization stores text, so those addresses
 // short-circuit with no resolve call at all.
-export function flagOf(memo: Memo, level: Level, owner: string | null, item: Item, section: string | null): boolean {
-  const key = keyOf(level, owner, item.id, section)
+export function flagOf(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  section: string | null,
+  catalogue?: Catalogue,
+): boolean {
+  const key = keyOf(level, owner, item.id, section, catalogue)
   const cached = memo.flag.get(key)
   if (cached !== undefined) return cached
-  const entry = memo.texts.get(textKey(level, owner, item.id))
+  const entry = memo.texts.get(textKey(level, owner, item.id, catalogue))
   if (entry === undefined) {
     memo.flag.set(key, false)
     return false
@@ -177,7 +214,10 @@ export function flagOf(memo: Memo, level: Level, owner: string | null, item: Ite
     memo.flag.set(key, false)
     return false
   }
-  const flag = section === null ? wholeOf(memo, level, owner, item).review : sectionResolveOf(memo, level, owner, item, section).review
+  const flag =
+    section === null
+      ? wholeOf(memo, level, owner, item, catalogue).review
+      : sectionResolveOf(memo, level, owner, item, section, catalogue).review
   memo.flag.set(key, flag)
   return flag
 }

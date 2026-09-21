@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
-import { applies, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
+import { applies, catalogueForAddress, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
 import { scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, itemOf, recordOf } from "../../instructions/snapshot.js"
@@ -332,12 +332,16 @@ function renderRanges(text: string, ranges: readonly ExcludedRange[]): { body: s
   return parts
 }
 
+// The catalogue is part of the address line because the same agent resolves
+// differently depending on which catalogue it was reached through: a
+// stand-alone agent row inherits the Agents catalogue's Defaults, a team
+// member row the Teams catalogue's.
 function addressLine(node: TreeNode): string | undefined {
   const address = node.address
   if (address === undefined) return undefined
   const head = address.agent === null ? displayLevel(address.level) : `${displayLevel(address.level)} · ${address.agent}`
   const tail = address.section === null ? address.item : `${address.item} · ${address.section}`
-  return `${head} · ${tail}`
+  return `${head} · catalogue: ${catalogueForAddress(address)} · ${tail}`
 }
 
 export function DetailPane(props: DetailPaneProps) {

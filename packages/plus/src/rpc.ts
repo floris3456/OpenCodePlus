@@ -22,6 +22,14 @@ export const TeamOwner = Schema.Struct({
   team: Schema.String,
 }).annotate({ identifier: "Plus.TeamOwner" })
 
+// The two catalogues the instructions tree splits into. Shared-inventory rows
+// only (`agent === null`); absent means the Agents catalogue, so every address
+// and record written before the split keeps its meaning.
+export type Catalogue = typeof Catalogue.Type
+export const Catalogue = Schema.Union([Schema.Literal("agents"), Schema.Literal("teams")]).annotate({
+  identifier: "Plus.Catalogue",
+})
+
 export interface Address extends Schema.Schema.Type<typeof Address> {}
 export const Address = Schema.Struct({
   level: Level,
@@ -29,6 +37,7 @@ export const Address = Schema.Struct({
   item: Schema.String,
   section: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
 }).annotate({ identifier: "Plus.Address" })
 
 export type ItemKind = typeof ItemKind.Type
@@ -95,6 +104,7 @@ export const SnapshotCustomizationRecord = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   item: Schema.String,
   section: Schema.NullOr(Schema.String),
   text: Schema.optionalKey(Schema.String),
@@ -112,6 +122,7 @@ export const SnapshotSplitRecord = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   item: Schema.String,
   boundaries: Schema.Array(Boundary),
   updated: Schema.String,
@@ -126,6 +137,7 @@ export const SnapshotModelRecord = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -139,6 +151,7 @@ export const SnapshotRuleRecord = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,
@@ -684,6 +697,7 @@ export const ModelAddInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -694,6 +708,7 @@ export const ModelRemoveInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -704,6 +719,7 @@ export const ModelRef = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
@@ -759,6 +775,7 @@ export interface RuleAddInput extends Schema.Schema.Type<typeof RuleAddInput> {}
 export const RuleAddInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  catalogue: Schema.optionalKey(Catalogue),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,

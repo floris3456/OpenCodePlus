@@ -162,11 +162,16 @@ test("identical subtree under each of the three roots", () => {
   }
 })
 
-test("Defaults holds Agents, Teams, plus the six shared inventories in order", () => {
+test("Defaults holds two catalogues, each owning its six shared inventories in order", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toEqual([
     "group:defaults:agents",
     "group:defaults:teams",
+  ])
+  expect(childrenOf(nodes, "group:defaults:agents").map((node) => node.id)).toEqual([
+    "group:defaults:agents:native",
+    "group:defaults:agents:plus",
+    "group:defaults:agents:user",
     "group:defaults::models",
     "group:defaults::tools",
     "group:defaults::base",
@@ -174,14 +179,25 @@ test("Defaults holds Agents, Teams, plus the six shared inventories in order", (
     "group:defaults::system",
     "group:defaults::mcp",
   ])
-  expect(childrenOf(nodes, "group:defaults:agents").map((node) => node.id)).toEqual([
-    "group:defaults:agents:native",
-    "group:defaults:agents:plus",
-    "group:defaults:agents:user",
+  expect(childrenOf(nodes, "group:defaults:teams").map((node) => node.id)).toEqual([
+    "group:defaults:/teams:models",
+    "group:defaults:/teams:tools",
+    "group:defaults:/teams:base",
+    "group:defaults:/teams:skills",
+    "group:defaults:/teams:system",
+    "group:defaults:/teams:mcp",
   ])
   expect(childrenOf(nodes, "group:defaults:agents:user").map((node) => node.id)).toEqual(["agent:defaults:Template"])
   const shared = nodes.find((node) => node.id === "item:defaults::mcp:sample")
   expect(shared?.address).toEqual({ level: "defaults", agent: null, item: "mcp:sample", section: null })
+  const teamShared = nodes.find((node) => node.id === "item:defaults:/teams:mcp:sample")
+  expect(teamShared?.address).toEqual({
+    level: "defaults",
+    agent: null,
+    item: "mcp:sample",
+    section: null,
+    catalogue: "teams",
+  })
 })
 
 test("Project and Global hold Agents and Teams groups", () => {
@@ -232,8 +248,9 @@ test("Teams group sits beside Agents at all three levels", () => {
     "group:defaults:agents",
     "group:defaults:teams",
   ])
-  expect(childrenOf(nodes, "group:defaults:teams")).toEqual([])
-  // Teams sort by name inside their group.
+  // No Defaults teams here, so the group holds only its own inventory.
+  expect(childrenOf(nodes, "group:defaults:teams").filter((node) => node.kind === "team")).toEqual([])
+  // Teams sort by name inside their group, ahead of the inventory groups.
   expect(childrenOf(nodes, "group:project:teams").map((node) => node.id)).toEqual(["team:project:crew", "team:project:side"])
 })
 
@@ -319,17 +336,21 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
     "group:project:crew/:CrewMate:skills",
     "group:project:crew/:CrewMate:system",
   ])
+  // Member rows carry the member's own `<team>/:<member>` owner path so the
+  // Teams-catalogue row and the stand-alone Agents-catalogue row stay two
+  // distinct ids for two distinct resolutions of the same records.
   const implementerTools = nodes
     .filter((node) => node.id.startsWith("item:project:Implementer:tool:"))
-    .map((node) => node.id.replace("item:project:Implementer:", "item:project:CrewMate:"))
+    .map((node) => node.id.replace("item:project:Implementer:", "item:project:crew/:CrewMate:"))
     .sort()
   expect(implementerTools.length).toBeGreaterThan(0)
   for (const id of implementerTools) {
     expect(nodes.some((node) => node.id === id)).toBe(true)
   }
-  const base = nodes.find((node) => node.id === "item:project:CrewMate:base:claude")
+  const base = nodes.find((node) => node.id === "item:project:crew/:CrewMate:base:claude")
   expect(base).toBeDefined()
   expect(base?.address?.agent).toBe("CrewMate")
+  expect(base?.address?.catalogue).toBe("teams")
 })
 
 test("registered team member yields its Role/persona under System", () => {
@@ -339,12 +360,27 @@ test("registered team member yields its Role/persona under System", () => {
     agents: [...agents(), { id: "CrewMate", scope: "project", base: "gpt" }],
     teams: [{ level: "project", team: "crew", enabled: false, agents: ["CrewMate"] }],
   })
-  const role = nodes.find((node) => node.id === "item:project:CrewMate:system:role")
+  const role = nodes.find((node) => node.id === "item:project:crew/:CrewMate:system:role")
   expect(role).toBeDefined()
-  expect(role?.address).toEqual({ level: "project", agent: "CrewMate", item: "system:role", section: null })
+  expect(role?.address).toEqual({
+    level: "project",
+    agent: "CrewMate",
+    item: "system:role",
+    section: null,
+    catalogue: "teams",
+  })
+  // The stand-alone row addresses the same record through the Agents chain.
+  expect(nodes.find((node) => node.id === "item:project:CrewMate:system:role")?.address).toEqual({
+    level: "project",
+    agent: "CrewMate",
+    item: "system:role",
+    section: null,
+  })
   const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
   expect(systemGroup).toBeDefined()
-  expect(childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:CrewMate:system:role")).toBe(true)
+  expect(
+    childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
+  ).toBe(true)
 })
 
 test("team Special group row and special agent subtrees across all three levels", () => {
@@ -442,6 +478,9 @@ test("a level with no teams renders an empty Teams group with the add affordance
   expect(nodes.some((node) => node.id === "group:global:teams")).toBe(true)
   expect(nodes.find((node) => node.id === "group:global:teams")?.add).toBe("team")
   expect(childrenOf(nodes, "group:global:teams").map((node) => node.id)).toEqual(["team:global:crew"])
+  // Only Defaults owns shared inventory: project and global catalogues hold
+  // just their populations.
+  expect(nodes.some((node) => node.id.startsWith("group:global:/teams:"))).toBe(false)
 })
 
 test("Defaults lists built-in team rows with toggles and member rows", () => {
@@ -451,7 +490,7 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
   expect(emptyGroup?.label).toBe("Teams")
   expect(emptyGroup?.depth).toBe(1)
   expect(emptyGroup?.add).toBe("team")
-  expect(childrenOf(empty, "group:defaults:teams")).toEqual([])
+  expect(childrenOf(empty, "group:defaults:teams").filter((node) => node.kind === "team")).toEqual([])
   expect(childrenOf(empty, "root:defaults").map((node) => node.id)).toContain("group:defaults:teams")
   const nodes = expandAll({
     items: items(),
@@ -472,6 +511,12 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
   expect(childrenOf(nodes, "group:defaults:teams").map((node) => node.id)).toEqual([
     "team:defaults:other",
     "team:defaults:ship",
+    "group:defaults:/teams:models",
+    "group:defaults:/teams:tools",
+    "group:defaults:/teams:base",
+    "group:defaults:/teams:skills",
+    "group:defaults:/teams:system",
+    "group:defaults:/teams:mcp",
   ])
   const enabled = nodes.find((node) => node.id === "team:defaults:ship")
   expect(enabled?.kind).toBe("team")
@@ -518,7 +563,7 @@ test("a team created from the Defaults Teams group is stored at project or globa
   const before = expandAll({ items: items(), records: [], agents: agents(), teams: [] })
   const defaultsGroup = before.find((node) => node.id === "group:defaults:teams")
   expect(defaultsGroup?.add).toBe("team")
-  expect(childrenOf(before, "group:defaults:teams")).toEqual([])
+  expect(childrenOf(before, "group:defaults:teams").filter((node) => node.kind === "team")).toEqual([])
   const created = await Effect.runPromise(handlers["team.create"]({ level: "project", team: "fresh" }, throwing))
   expect(created).toEqual({ level: "project", team: "fresh", enabled: false })
   expect(created.level).not.toBe("defaults")
@@ -541,7 +586,7 @@ test("a team created from the Defaults Teams group is stored at project or globa
       agents: team.agents,
     })),
   })
-  expect(childrenOf(after, "group:defaults:teams")).toEqual([])
+  expect(childrenOf(after, "group:defaults:teams").filter((node) => node.kind === "team")).toEqual([])
   expect(childrenOf(after, "group:project:teams").map((node) => node.id)).toEqual(["team:project:fresh"])
 })
 
@@ -779,12 +824,23 @@ test("expansion emits only expanded children", () => {
     "root:defaults",
     "group:defaults:agents",
     "group:defaults:teams",
+  ])
+  const agentsCatalogue = tree({ ...input, expanded: new Set(["root:defaults", "group:defaults:agents"]) })
+  expect(agentsCatalogue.map((node) => node.id)).toEqual([
+    "root:project",
+    "root:global",
+    "root:defaults",
+    "group:defaults:agents",
+    "group:defaults:agents:native",
+    "group:defaults:agents:plus",
+    "group:defaults:agents:user",
     "group:defaults::models",
     "group:defaults::tools",
     "group:defaults::base",
     "group:defaults::skills",
     "group:defaults::system",
     "group:defaults::mcp",
+    "group:defaults:teams",
   ])
 })
 
@@ -941,7 +997,7 @@ test("Code Mode groups repeat under the global and defaults roots", () => {
     "write",
   ])
   expect(nodes.find((node) => node.id === "group:defaults::tools:native:codemode:fs:read")).toBeUndefined()
-  expect(nodes.find((node) => node.id === "item:defaults::tool:read")?.depth).toBe(5)
+  expect(nodes.find((node) => node.id === "item:defaults::tool:read")?.depth).toBe(6)
   // expandedTree agrees with the expanded walk on every Code Mode group id.
   const flat = expandedTree({ items: codemodeAll(), records: [], agents: agents() })
   for (const id of [
@@ -1404,7 +1460,21 @@ test("nested agent id and team member group ids never collide", async () => {
   // under the old bare-`/` scheme. The `/:` marker keeps them distinct.
   const nodes = expandAll({
     items: items(),
-    records: [{ type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "shared", updated: UPDATED }],
+    // One shared candidate per catalogue, the shape the store migration
+    // produces: the stand-alone agent reads the Agents copy and the team
+    // member reads the Teams copy.
+    records: [
+      { type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "shared", updated: UPDATED },
+      {
+        type: "model" as const,
+        level: "defaults" as const,
+        agent: null,
+        catalogue: "teams" as const,
+        providerID: "acme",
+        modelID: "shared",
+        updated: UPDATED,
+      },
+    ],
     agents: [{ id: "crew/alpha", scope: "project", origin: "user" }],
     teams: [{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }],
   })

@@ -325,7 +325,12 @@ test("mutate routes project records to the project store and global/defaults rec
   const { load } = await import("../src/instructions/store.js")
   const stored = await load(project)
   expect(stored.records.filter((entry) => entry.level === "project")).toHaveLength(1)
-  expect(stored.records.filter((entry) => entry.level !== "project")).toHaveLength(2)
+  // The shared defaults row exists in both catalogues after the load-time
+  // catalogue migration, so the global store holds it twice plus the global row.
+  expect(stored.records.filter((entry) => entry.level !== "project")).toHaveLength(3)
+  expect(
+    stored.records.filter((entry) => entry.type === "customization" && entry.level === "defaults" && entry.catalogue === "teams"),
+  ).toHaveLength(1)
   const { projectRecordsPath, globalRecordsPath } = await import("../src/instructions/paths.js")
   const projectText = await Bun.file(projectRecordsPath(project)).text()
   expect(projectText).toContain(`"level":"project"`)

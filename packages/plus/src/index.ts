@@ -28,10 +28,10 @@ import { registerTeamPermissions } from "./teams/permissions.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { fingerprint, hasModelActiveAt, permItemId, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
+import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
-import { canonical, load, save, stable, type StoredRecord } from "./instructions/store.js"
+import { canonical, ensureCatalogues, load, save, stable, type StoredRecord } from "./instructions/store.js"
 import { builtinBody, defaultsOverlayTeamDir, discoverAllTeams, discoverBuiltinTeams, discoverTeams, globalDefaultsTeamsPath, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
@@ -397,7 +397,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const stored = await load(directory)
+      const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state.baselines, state.modelBaselines)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
@@ -409,7 +409,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const stored = await load(directory)
+      const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
       const teams = await snapshotTeams(directory, loaded.records, builtins)
@@ -1357,6 +1357,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.level === input.level &&
           record.agent === input.agent &&
           sameTeam(record.team, input.team) &&
+          catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
           record.providerID === validated.providerID &&
           record.modelID === validated.modelID &&
           record.variant === validated.variant,
@@ -1375,6 +1376,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         level: input.level,
         agent: input.agent,
         ...(input.team !== undefined ? { team: input.team } : {}),
+        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
         providerID: validated.providerID,
         modelID: validated.modelID,
         ...(validated.variant === undefined ? {} : { variant: validated.variant }),
@@ -1429,6 +1431,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.level === input.level &&
           record.agent === input.agent &&
           sameTeam(record.team, input.team) &&
+          catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
           record.providerID === validated.providerID &&
           record.modelID === validated.modelID &&
           record.variant === validated.variant,
@@ -1502,6 +1505,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         type: "rule",
         level: input.level,
         agent: input.agent,
+        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
         tool: validated.tool,
         id: validated.id,
         label: validated.label,
@@ -2613,6 +2617,25 @@ async function mcpConfigTarget(projectDirectory: string): Promise<string> {
   return path.join(projectDirectory, ".opencode", "opencode.json")
 }
 
+// The one place the catalogue split reaches disk. `load` already duplicates
+// every shared Defaults row into the Teams catalogue in memory, so resolution
+// is correct from the first read; this persists that duplication as one
+// revision and logs it once. Idempotent: a migrated store finds nothing to do
+// and logs nothing.
+async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeof load>>> {
+  const migration = await ensureCatalogues(directory)
+  if (migration.migrated)
+    await append(globalLogPath(), {
+      ts: new Date().toISOString(),
+      actor: { type: "tui" as const },
+      op: "migrate.catalogues",
+      target: "root:defaults",
+      summary: "migrate.catalogues: shared Defaults rows copied into the Teams catalogue",
+      revision: migration.revision,
+    })
+  return migration.loaded
+}
+
 function customizationsOf(records: readonly StoredRecord[]): CustomizationRecord[] {
   return records.filter((record): record is CustomizationRecord => record.type === "customization")
 }
@@ -2628,6 +2651,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       level: record.level,
       agent: record.agent,
       ...(record.team !== undefined ? { team: record.team } : {}),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       item: record.item,
       boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
       updated: record.updated,
@@ -2638,6 +2662,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       level: record.level,
       agent: record.agent,
       ...(record.team !== undefined ? { team: record.team } : {}),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       providerID: record.providerID,
       modelID: record.modelID,
       ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -2650,6 +2675,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       level: record.level,
       agent: record.agent,
       ...(record.team !== undefined ? { team: record.team } : {}),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       tool: record.tool,
       id: record.id,
       label: record.label,
@@ -2662,6 +2688,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
     level: record.level,
     agent: record.agent,
     ...(record.team !== undefined ? { team: record.team } : {}),
+    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
     item: record.item,
     section: record.section,
     ...(record.text === undefined ? {} : { text: record.text }),
@@ -3069,7 +3096,7 @@ function disposeTeamTooling(state: PlusState): Effect.Effect<void> {
 
 async function loadCurrent(directory: string): Promise<LoadedStores> {
   const config = await read(directory)
-  const stored = await load(directory)
+  const stored = await loadMigrated(directory)
   return { ...stored, protectedAgents: config?.protectedAgents ?? [] }
 }
 
@@ -4061,6 +4088,7 @@ function toSnapshot(
             level: record.level,
             agent: record.agent,
             ...(record.team !== undefined ? { team: record.team } : {}),
+            ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
             item: record.item,
             boundaries: record.boundaries.map((boundary) => ({ ...boundary })),
             updated: record.updated,
@@ -4073,6 +4101,7 @@ function toSnapshot(
             level: record.level,
             agent: record.agent,
             ...(record.team !== undefined ? { team: record.team } : {}),
+            ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
             providerID: record.providerID,
             modelID: record.modelID,
             ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -4087,6 +4116,7 @@ function toSnapshot(
             level: record.level,
             agent: record.agent,
             ...(record.team !== undefined ? { team: record.team } : {}),
+            ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
             tool: record.tool,
             id: record.id,
             label: record.label,
@@ -4105,6 +4135,7 @@ function toSnapshot(
           level: record.level,
           agent: record.agent,
           ...(record.team !== undefined ? { team: record.team } : {}),
+          ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
           item: record.item,
           section: record.section,
           ...(record.text === undefined ? {} : { text: record.text }),

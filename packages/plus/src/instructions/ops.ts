@@ -1,6 +1,8 @@
 import {
   addModelRecord,
   applies,
+  catalogueField,
+  catalogueOf,
   clearModelActive,
   ensureActivateModel,
   fingerprint,
@@ -11,9 +13,9 @@ import {
   resolve,
   resolveResolution,
   resolveSplit,
-  sameTeam,
+  scopedTo,
 } from "./model.js"
-import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./model.js"
+import type { Address, CustomizationRecord, Item, ModelRecord, RecordScope, RuleRecord, SplitRecord } from "./model.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { findLazy, materialize } from "./tree.js"
@@ -193,22 +195,24 @@ function pinRefusal(node: TreeNode, item: Item | undefined): string | undefined 
 }
 
 function sameAddress(
-  record: { level: Address["level"]; agent: string | null; item: string; section: string | null; team?: Address["team"] },
+  record: {
+    level: Address["level"]
+    agent: string | null
+    item: string
+    section: string | null
+    team?: Address["team"]
+    catalogue?: Address["catalogue"]
+  },
   address: Address,
 ): boolean {
-  return (
-    record.level === address.level &&
-    record.agent === address.agent &&
-    record.item === address.item &&
-    record.section === address.section &&
-    sameTeam(record.team, address.team)
-  )
+  return record.item === address.item && record.section === address.section && scopedTo(record, address)
 }
 
 function customizationsEqualWithoutUpdated(left: CustomizationRecord, right: CustomizationRecord): boolean {
   return (
     left.level === right.level &&
     left.agent === right.agent &&
+    catalogueOf(left.catalogue) === catalogueOf(right.catalogue) &&
     left.item === right.item &&
     left.section === right.section &&
     left.text === right.text &&
@@ -385,13 +389,7 @@ export function saveSplit(
   if (node.actions?.split !== true) return { refusal: `"${node.label}" cannot be split` }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  const existing = chain.splits.find(
-    (record) =>
-      record.level === address.level &&
-      record.agent === address.agent &&
-      record.item === address.item &&
-      sameTeam(record.team, address.team),
-  )
+  const existing = chain.splits.find((record) => record.item === address.item && scopedTo(record, address))
   if (existing !== undefined && boundariesEqual(existing.boundaries, boundaries))
     return {
       records: chain.customizations,
@@ -399,15 +397,7 @@ export function saveSplit(
       status: `Split "${node.label}"`,
       retryHint: `split "${node.label}" against a stale revision; retry to apply`,
     }
-  const rest = chain.splits.filter(
-    (record) =>
-      !(
-        record.level === address.level &&
-        record.agent === address.agent &&
-        record.item === address.item &&
-        sameTeam(record.team, address.team)
-      ),
-  )
+  const rest = chain.splits.filter((record) => !(record.item === address.item && scopedTo(record, address)))
   const nextSplits: SplitRecord[] = [
     ...rest,
     {
@@ -415,6 +405,7 @@ export function saveSplit(
       level: address.level,
       agent: address.agent,
       ...(address.team !== undefined ? { team: address.team } : {}),
+      ...catalogueField(address),
       item: address.item,
       boundaries: [...boundaries],
       updated: now(),
@@ -458,15 +449,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   const split = manual(currentText, boundaries)
   const added = split.sections.find((section) => section.start === nextStart && section.name === name)
   if (!added) return { refusal: `Could not add "${name}" to "${node.label}"` }
-  const rest = chain.splits.filter(
-    (record) =>
-      !(
-        record.level === address.level &&
-        record.agent === address.agent &&
-        record.item === address.item &&
-        sameTeam(record.team, address.team)
-      ),
-  )
+  const rest = chain.splits.filter((record) => !(record.item === address.item && scopedTo(record, address)))
   const nextSplits: SplitRecord[] = [
     ...rest,
     {
@@ -474,6 +457,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
       level: address.level,
       agent: address.agent,
       ...(address.team !== undefined ? { team: address.team } : {}),
+      ...catalogueField(address),
       item: address.item,
       boundaries,
       updated: now(),
@@ -761,6 +745,15 @@ function modelTargetOf(address: Address): { providerID: string; modelID: string;
   return parseModelItemId(address.item)
 }
 
+function modelScopeOf(address: Address): RecordScope {
+  return {
+    level: address.level,
+    agent: address.agent,
+    ...(address.team !== undefined ? { team: address.team } : {}),
+    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+  }
+}
+
 // Space on a model row activates it exclusively at that level, creating the
 // local row when the candidate is inherited. Activating the already-active
 // row is a no-op that still reports success without writing.
@@ -774,12 +767,7 @@ export function activateModelRow(input: MemoInput, rowId: string): ModelOpResult
   const target = modelTargetOf(address)
   if (target === undefined) return { refusal: `"${node.label}" cannot be toggled` }
   const models = modelsOfInput(input)
-  const next = ensureActivateModel(
-    models,
-    { level: address.level, agent: address.agent, ...(address.team !== undefined ? { team: address.team } : {}) },
-    target,
-    now(),
-  )
+  const next = ensureActivateModel(models, modelScopeOf(address), target, now())
   if (JSON.stringify(next) === JSON.stringify(models))
     return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
   return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
@@ -795,11 +783,7 @@ export function resetModelRow(input: MemoInput, rowId: string): ModelOpResult {
   if (address === undefined) return { refusal: `"${node.label}" has no override to reset` }
   if (node.actions?.reset !== true) return { refusal: `"${node.label}" has no override to reset` }
   const models = modelsOfInput(input)
-  const next = clearModelActive(models, {
-    level: address.level,
-    agent: address.agent,
-    ...(address.team !== undefined ? { team: address.team } : {}),
-  })
+  const next = clearModelActive(models, modelScopeOf(address))
   if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no override to reset` }
   return { models: next, status: `Reset "${node.label}" to default`, retryHint: `reset "${node.label}" against a stale revision; retry to apply` }
 }
@@ -815,11 +799,7 @@ export function removeModelRow(input: MemoInput, rowId: string): ModelOpResult {
   const target = modelTargetOf(address)
   if (target === undefined) return { refusal: `"${node.label}" cannot be deleted` }
   const models = modelsOfInput(input)
-  const addr = {
-    level: address.level,
-    agent: address.agent,
-    ...(address.team !== undefined ? { team: address.team } : {}),
-  }
+  const addr = modelScopeOf(address)
   if (!hasModelRecordAt(models, addr, target))
     return { refusal: `"${node.label}" cannot be deleted here: remove it at its source level` }
   const next = removeModelRecord(models, addr, target)
