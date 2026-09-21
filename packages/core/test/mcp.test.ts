@@ -672,8 +672,12 @@ test("joins concurrent stdio transport closes", async () => {
   )
 })
 
+// The wrapper is a CommonJS fixture that only Node can run, so guard on the executable the
+// way every other external-binary test here does rather than crashing on a spawn ENOENT.
 const testMcpDescendants =
-  process.platform === "win32" ? testEffect(hostEnvironmentLayer).live.skip : testEffect(hostEnvironmentLayer).live
+  process.platform === "win32" || !Bun.which("node")
+    ? testEffect(hostEnvironmentLayer).live.skip
+    : testEffect(hostEnvironmentLayer).live
 testMcpDescendants(
   "terminates MCP descendants after the wrapper exits successfully",
   Effect.gen(function* () {
