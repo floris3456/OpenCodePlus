@@ -132,6 +132,7 @@ const V2Rule = Schema.Struct({
   label: Schema.String,
   patterns: Schema.Array(Schema.String),
   keywords: Schema.Array(Schema.String),
+  message: Schema.optional(Schema.String),
   updated: Schema.String,
 })
 
@@ -403,6 +404,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           label: record.label,
           patterns: [...record.patterns],
           keywords: [...record.keywords],
+          ...(record.message === undefined ? {} : { message: record.message }),
           updated: record.updated,
         },
       ]
@@ -569,6 +571,7 @@ export function stable(record: StoredRecord): StoredRecord {
       label: record.label,
       patterns: [...record.patterns],
       keywords: [...record.keywords],
+      ...(record.message === undefined ? {} : { message: record.message }),
       updated: record.updated,
     }
   if (record.type === "split")

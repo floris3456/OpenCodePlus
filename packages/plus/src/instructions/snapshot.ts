@@ -97,7 +97,7 @@ function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
   }
 }
 
-function ruleOf(record: Plus.SnapshotRuleRecord): RuleRecord {
+export function ruleOf(record: Plus.SnapshotRuleRecord): RuleRecord {
   return {
     type: "rule",
     level: record.level,
@@ -108,6 +108,7 @@ function ruleOf(record: Plus.SnapshotRuleRecord): RuleRecord {
     label: record.label,
     patterns: [...record.patterns],
     keywords: [...record.keywords],
+    ...(record.message === undefined ? {} : { message: record.message }),
     updated: record.updated,
   }
 }
