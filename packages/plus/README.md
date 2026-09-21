@@ -254,11 +254,19 @@ as one new attempt.
     and the reply observer writes the line for the invocation its request named — so a sibling that
     completes first cannot consume a pending call's refusal line.
 - Project mode resolves **upward**: `project.read(directory)` walks parent directories to the nearest
-  `.opencodeplus/project.json`, so any session below an enabled checkout reads the same project.
+  `.opencodeplus/project.json`, so any session below an enabled checkout reads the same project. A
+  config carrying `enabled: false` is an explicit opt-out: it stops the walk and reports disabled.
+  `project.disable` writes that marker in the directory it is given instead of deleting the file, so a
+  nested directory can leave an enabled ancestor's project; `project.enable` replaces the marker.
 - Team worktrees are not Plus projects: `team_delegate` writes no `.opencodeplus/project.json` into a
   child worktree, and removal is a plain `git worktree remove`. The child's run records the parent's
-  project directory as `projectDirectory`, and Plus activation for the child session resolves project
-  mode through that directory (the worktree itself sits outside the parent's tree).
+  project directory as `projectDirectory` **before the host creates the session**, and Plus activation
+  for the child session resolves project mode through that directory (the worktree itself sits outside
+  the parent's tree). Registering the starting run first also keeps the periodic GC from collecting the
+  new worktree as an orphan in the window before the record would otherwise be written, and the RPC
+  project guards, `snapshot`, `mutate` and `project.status` resolve the same directory as activation, so
+  a child chat sees and edits the project it inherited. `project.enable`/`project.disable` still act on
+  the Location's own directory.
 - `worktree.create` returns the canonical directory and creates its parent chain before `git worktree
   add`, so the first delegate in a brand-new data root hands the host a directory it can `realpath`.
 

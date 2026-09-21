@@ -11,7 +11,7 @@ import { fingerprint } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructions/teams.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
-import { enable } from "../src/project.js"
+import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
 
@@ -31,7 +31,12 @@ async function tempRoot(): Promise<{ project: string }> {
   const root = await fs.mkdtemp(path.join(parent, "plus-teams-rpc-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
-  return { project: path.join(root, "project") }
+  const project = path.join(root, "project")
+  // Project mode resolves upward, so an ancestor of TMPDIR can be enabled
+  // (the development workspace is). The fixture writes its own explicit
+  // disabled marker; tests that need project mode call enable(project).
+  await disable(project)
+  return { project }
 }
 
 async function writeTeamAgent(teamDir: string, id: string, body = "role"): Promise<string> {

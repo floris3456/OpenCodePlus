@@ -56,11 +56,12 @@ describe("slug and stamp", () => {
 })
 
 describe("worktree manager", () => {
-  // The first `delegate` in a brand-new data root hands the host a worktree
-  // location: core resolves it with `FileSystem.realPath(location.directory)`,
-  // which fails with NotFound when the path does not exist as given. `create`
-  // must therefore return an absolute, canonical directory whose parents exist,
-  // not the joined string it happened to compute.
+  // `create` must return an absolute, canonical directory whose parents exist,
+  // not the joined string it happened to compute: core resolves the location it
+  // is handed with `FileSystem.realPath`. This pins the canonical-name half of
+  // the first-delegate fix; the missing-directory NotFound is reproduced
+  // end-to-end against real GC in test/teams/api.test.ts ("the first delegate
+  // registers the child run before the host opens its session").
   test("the first create in a brand-new root returns the real directory", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "teams-wt-fresh-"))
     try {
@@ -91,8 +92,8 @@ describe("worktree manager", () => {
         workspaceRoot: ws,
       })
       expect(await exists(c.dir)).toBe(true)
-      // This is the first-delegate failure in one assertion: a directory the
-      // caller cannot realpath is a directory the host cannot open a session in.
+      // A directory the caller cannot realpath is a directory the host cannot
+      // open a session in; the canonical name must be the returned one.
       expect(c.dir).toBe(await realpath(c.dir))
       expect(c.dir).toBe(join(await realpath(ws), "worktrees", "opencode", "implementer", basename(c.dir)))
       expect(await git(repo, ["rev-parse", `${c.branch}^{commit}`])).toBe(head)

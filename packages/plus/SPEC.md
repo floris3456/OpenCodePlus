@@ -1161,10 +1161,12 @@ It returns `{ dead, gc }` — the reconciled dead run ids and the pass's whole
 - `project.read(directory)` resolves **upward**: it walks parent directories until it finds a
   `.opencodeplus/project.json` or reaches the filesystem root, and the nearest config wins. A session
   opened below an enabled checkout therefore reads the same project, and `project.status` reports
-  `enabled: true` for it. A directory with no config anywhere in its ancestry stays disabled. `enable`
-  returns the resolved config unchanged when one already exists upward and otherwise writes
-  `.opencodeplus/project.json` in the directory it was given; `disable` deletes only that directory's
-  own file.
+  `enabled: true` for it. A config carrying `enabled: false` is an explicit opt-out: it stops the walk
+  and reports disabled, so a nested directory can leave an enabled ancestor's project. A directory with
+  no config anywhere in its ancestry stays disabled. `enable` returns the resolved config unchanged when
+  one already exists upward and otherwise writes `.opencodeplus/project.json` in the directory it was
+  given; `disable` writes the explicit marker there (the nearest resolved config with `enabled: false`)
+  instead of deleting a file the upward walk would immediately re-inherit.
 - `worktree.create` resolves the new directory to an absolute path, creates its parent chain before
   `git worktree add` runs, and returns the `realpath` of the created directory. A brand-new data root
   has no `worktrees/` yet: the first `delegate` must hand the host a directory that
@@ -1182,6 +1184,18 @@ It returns `{ dead, gc }` — the reconciled dead run ids and the pass's whole
   Location's own directory; `activate` and `refreshFromHost` both resolve through it, and
   `project.read` then reads the parent's project config. `byDirectory` compares canonical paths, so a
   symlinked or relative data root still matches its run.
+- `delegate` writes the starting child run to disk **before** the host creates its session. Creating the
+  session activates Plus in the new worktree, and the periodic sweep collects any worktree no run record
+  claims as an orphan; a record saved only afterwards leaves a window in which the first delegate's
+  worktree is removed before the host's `FileSystem.realPath` resolves it. The pre-registration makes
+  the orphan scan claim the directory immediately, and activation resolves the run by directory because
+  no session id exists yet; the session id is written on the same record once the host returns it.
+- Every `createPlusApi` handler (project guards, `snapshot`, `mutate`, `log`, `assembled`, and the
+  agent/skill/base/instruction/mcp/team/rule writes), `project.status`, `activate`, `refreshFromHost`,
+  `publishFresh` (including its team discovery and team policy rows) and `applySessionModel` resolve
+  their project directory through `activationDirectory`, so a child worktree's API sees and edits the
+  project its run recorded. `project.enable` and `project.disable` act on the Location's own directory,
+  never the inherited one.
 
 ## §11 Tools, log, and query
 

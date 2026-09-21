@@ -12,7 +12,7 @@ import { fingerprint, resolve, scopesOf, type CustomizationRecord, type SplitRec
 import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import { enable } from "../src/project.js"
+import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, mcpHarness, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
@@ -86,7 +86,12 @@ async function tempRoot(): Promise<{ project: string; config: string }> {
   roots.push(root)
   const config = path.join(root, "config")
   process.env.OPENCODE_CONFIG_DIR = config
-  return { project: path.join(root, "project"), config }
+  const project = path.join(root, "project")
+  // Project mode resolves upward, so an ancestor of TMPDIR can be enabled
+  // (the development workspace is). The fixture writes its own explicit
+  // disabled marker; tests that need project mode call enable(project).
+  await disable(project)
+  return { project, config }
 }
 
 interface CapturedError {

@@ -350,16 +350,13 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     workspaceRoot: root,
   })
 
-  // The child run is a session in this same process, created directly in its
-  // worktree; no session.move is needed.
-  const sessions = ctx.session
-  const directory = AbsolutePath.make(created.dir)
-  const location =
-    ctx.location.workspaceID === undefined
-      ? Location.Ref.make({ directory })
-      : Location.Ref.make({ directory, workspaceID: ctx.location.workspaceID })
-  const child = await Effect.runPromise(sessions.create({ agent: Agent.ID.make(brief.role), location }))
-
+  // The starting child run is registered before the host creates its session.
+  // Creating the session activates Plus in the new worktree, and the periodic
+  // sweep collects any worktree no run record claims as an orphan; a record
+  // saved only afterwards leaves a window in which the first delegate's
+  // worktree is removed before the host's FileSystem.realPath resolves it.
+  // Activation has no session id yet, so this record is found by directory
+  // (run.byDirectory) and names the project directory it inherits.
   const now = new Date().toISOString()
   const opened = startAttempt(
     {
@@ -383,7 +380,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
       createdAt: now,
       lastUsed: now,
-      sessionID: String(child.id),
+      sessionID: null,
       // The child worktree is outside the parent's tree and carries no copied
       // project.json; its session activates Plus through this directory.
       projectDirectory: parent.projectDirectory ?? parent.directory,
@@ -395,6 +392,28 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const admitted = attemptTransition(opened, "admitted", "admit")
   const streaming = attemptTransition(admitted, "streaming", "first_event")
   await saveRun(root, streaming)
+
+  // The child run is a session in this same process, created directly in its
+  // worktree; no session.move is needed.
+  const sessions = ctx.session
+  const directory = AbsolutePath.make(created.dir)
+  const location =
+    ctx.location.workspaceID === undefined
+      ? Location.Ref.make({ directory })
+      : Location.Ref.make({ directory, workspaceID: ctx.location.workspaceID })
+  const child = await Effect.runPromise(sessions.create({ agent: Agent.ID.make(brief.role), location })).catch(
+    async (error) => {
+      // The session never started. The pre-registered run would otherwise
+      // claim a bounds slot forever (reconcile skips records with no session
+      // id), so retire it before surfacing the host failure.
+      await saveRun(root, transition(streaming, "superseded", "supersede", { reason: "session creation failed" })).catch(
+        () => undefined,
+      )
+      throw error
+    },
+  )
+  // The session id is what the parent's tool calls resolve the child by.
+  await saveRun(root, { ...streaming, sessionID: String(child.id) })
 
   // The child's edit scope is an instructions row derived from this record,
   // so the record must be published before the child is prompted. Asking the
