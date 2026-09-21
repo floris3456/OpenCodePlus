@@ -213,3 +213,108 @@ Record these plainly, as decisions taken and why:
 ## Known issue seen in the lab, not caused by this round
 
 The first delegate attempt in the lab failed with `E_INTERNAL: NotFound: FileSystem.realPath (.../teams/worktrees/proj/orchestrator/t186ab-…)` on a first-ever worktree creation; a later delegate in the same lab succeeded and created `w-7a2e1b5f49f28c0a`. Worktree provisioning is untouched by this round. Noted so the next reader is not surprised.
+
+---
+
+## Final verification (T5)
+
+The plan's item 13 asks for `astra-reviewer` to verify items 1-12, "or you
+performed that review under the rule in 'Review' and said so". Both happened,
+and this section says exactly which is which.
+
+### What the independent reviewer established
+
+An `astra-reviewer` run reviewed the branch at `aa2defb6`. It settled
+`blocked` on one point of procedure — the orchestrator did not supply the
+plan's "Expected end state", and the review tool accepts no attachment — so it
+declined to assign the fourteen numbered verdicts. It did complete a
+substantive review and reported, in its own words:
+
+- all seven owner check receipts green at a clean HEAD, with no source changes
+  during the checks;
+- the core seam is minimal: "the gate adds one import and composes
+  authorization immediately before execution. This is appropriately small for
+  upstream merging";
+- the MCP judgement is sound: "existing MCP tools authorize at their leaf
+  before calling the server (`packages/core/src/tool/mcp.ts:59-73`). Leaving
+  them out of the new plugin gate preserves enforcement without duplicate
+  prompts";
+- an absent ambient permission service refuses plugin execution;
+- the generated client diff is "optional `message` fields consistent with
+  schema generation";
+- "no permission-decision hook or `agent.permissions` write appears under
+  `packages/plus/src/teams`";
+- the audit observer "observes without changing permission decisions. Its
+  state is created per registration and cleared on disposal";
+- on the refusal texts: "quoting the rule's resource is a reasonable
+  preservation of the refusal template's meaning. It is not byte-identical to
+  the previous per-call rendered text."
+
+It raised two findings, both fixed before this section was written:
+
+1. **error** — an ordinary human Reject without feedback never wrote the
+   promised `asked:deny` audit line, because the only refusal writer was the
+   `tool.execute.after` observer and core turns a plain decline into a defect
+   that never reaches it. Fixed: a `permission.replied` observer now owns both
+   human rejections, `execute.after` owns only the rule-denial case, and a new
+   test drives a real reject-with-no-message through the real gate and asserts
+   exactly one `asked:deny` line with a verifying chain.
+2. **warning** — this walkthrough claimed a resource-narrow deny refuses every
+   plugin call. It does not: the gate asserts the literal resource `"*"`, and a
+   rule whose resource is `restricted/*` never matches it. Decision 3 above was
+   rewritten to state that precisely.
+
+After those fixes the review channel would not accept a re-review — three
+attempts returned `Re-review needs completed findings, their previous review
+ID, and a changed commit`, because the previous review settled `blocked`
+rather than completing. Under the plan's rule ("If no review has settled … or
+the reviewer cannot start, perform the T5 brief yourself, write it as the last
+section of the walkthrough, and say so"), the orchestrator assigned the
+fourteen verdicts. They are below, and they are the orchestrator's own, not an
+independent reviewer's.
+
+### Verdicts at HEAD `6ccf84a3`
+
+| # | Verdict | Evidence |
+| --- | --- | --- |
+| 1 | pass | Live: the TUI raises "△ Permission required / Call tool team.delegate" and waits; allow runs the call; the prompt returns on the next call. `core-gate` › "asks for a plugin tool, runs it on allow, and saves the action on always" covers allow-and-save against the real Permission service. |
+| 2 | pass, on the action-narrow reading | `core-gate` › "refuses a denied plugin tool at call time while it is still in the catalog" denies action `x.*` against the real service and asserts the tool is still advertised. A resource-narrow deny does not match the asserted `"*"` and so does not refuse — stated in Decision 3, not claimed as met. |
+| 3 | pass | `core-gate` 160 pass at this HEAD, including `tool-execute.test.ts` and `tool-registry.test.ts` unchanged; "leaves a built-in tool to its own single assert" and "leaves a MCP tool to its own single assert" pin exactly one assert with unchanged resources. |
+| 4 | pass | `Permission.Rule.message` is optional in schema; `core-gate` › "refuses with the denying rule's own message when it carries one" and "carries an asking rule's message as request metadata"; `plus-rules` › "the rules a denial comes from carry the message the model reads". The round-1 texts return word for word except the quoted subject (Decision 4). |
+| 5 | pass | `packages/client/src/promise/generated/types.ts:440` carries `message?: string`; produced by `bun run generate`; `bun run check:generated` exits 0. |
+| 6 | pass | `packages/plus/src/search/{mcp,bin,register}.ts`; input schemas match the build seat's server; keys read from the environment at call time; the registered row's `text` contains only the bun binary and the script path. |
+| 7 | pass | Live: MCP panel "search Connected"; `mcp:search` and the three `tool:search_*` rows in the snapshot, grouped `mcp` under namespace `search`; `/api/agent` shows Tavily denied for implementers, reviewer and scout and Exa allowed for all; "search MCP already configured; not replacing" on the leave-alone path. |
+| 8 | pass | Live: `{"error":"TAVILY_API_KEY is not set in the host environment"}` and the Exa equivalent, both `isError: true`, from the shipped server spawned with the variables unset. |
+| 9 | pass | Live audit chain: `team_status` `allowed`; `run.created w-7a2e1b5f49f28c0a`; `team_delegate ok:true outcome asked:allow durationMs 121720`. `asked:deny` and `denied` are covered by `team-gate` against the real gate. |
+| 10 | pass | `/api/agent` resolves `team.delegate` to `ask` only for the two planner roles; `plus-rules` › "effective permission at /api/agent for a child session is never ask"; live, the child `opus-orchestrator` called `team_get_context` and `team_finish` with `outcome: allowed` and no request created. |
+| 11 | pass | `team-gate` › "partial deny: ceiling-denied team tool refuses at call time with E_PERMISSION and writes outcome: denied" — the tool is visible, the handler never runs, the model reads the rule's own ceiling message, and the audit line is written. |
+| 12 | pass | This document. |
+| 13 | orchestrator-performed | This section, under the plan's stated rule; the independent reviewer's substantive conclusions are quoted above. |
+| 14 | pass | No deferred items. |
+
+### Checks at this HEAD
+
+| check | result |
+| --- | --- |
+| `core-gate` | 160 pass, 0 fail |
+| `core-typecheck` | exit 0 |
+| `plus-rules` | 90 pass, 0 fail |
+| `plus-search` | 7 pass, 0 fail |
+| `team-gate` | 59 pass, 0 fail |
+| `plus-instructions` | 178 pass, 0 fail |
+| `plus-typecheck` | exit 0 |
+
+### Weaknesses a later round should close
+
+- The plus-side rejection test drives that file's `Permission.Interface`
+  double rather than a core-built `Permission.Service` layer, because
+  `packages/plus` deliberately does not depend on `@opencode/core`. Core's own
+  `tool-permission-gate.test.ts` pins the real service's decline semantics.
+- Under Code Mode several inner team calls can share one tool CallID, so the
+  per-call audit state can collide. Pre-existing; unchanged this round.
+- If the `execute.before` hook fails to register, a human rejection is not
+  audited at all. Both hooks register together and a failure is logged at warn.
+- A first delegate in a brand-new lab home failed with
+  `E_INTERNAL: NotFound: FileSystem.realPath` on the run's worktree directory;
+  a later delegate in the same lab succeeded. Worktree provisioning is
+  untouched by this round.
