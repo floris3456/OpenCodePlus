@@ -239,12 +239,15 @@ as one new attempt.
   `code`, `durationMs`, and `outcome`.
   - `outcome` values: `"allowed"` (call permitted without human intervention), `"asked:allow"`
     (call asked human approval and was approved in TUI), `"denied"` (call refused at call time
-    by rule with `code: "E_PERMISSION"`), and `"asked:deny"` (call asked human approval and was
-    declined with feedback in TUI with `code: "E_PERMISSION"`).
-  - Reachability: `"allowed"` and `"asked:allow"` are recorded through `runGated`. `"denied"`
-    and `"asked:deny"` are recorded through the `tool.execute.after` hook observing gate refusals
-    before `runGated`. Decline without feedback stays a defect in core (`DeclinedError`) and is
-    observable via `permission.replied`.
+    by rule with `code: "E_PERMISSION"`), and `"asked:deny"` (call asked human approval and the
+    human rejected it in the TUI, with or without feedback, with `code: "E_PERMISSION"`).
+  - Who writes which: `"allowed"` and `"asked:allow"` come from `runGated`, which only runs once
+    a call is authorized. `"asked:deny"` comes from the `permission.replied` observer on a
+    `reject` reply, covering both human rejections — a rejection without feedback leaves no other
+    trace, because core answers it with `DeclinedError`, a deliberate defect that fires no
+    `tool.execute.after` hook. `"denied"` comes from the `tool.execute.after` observer, and only
+    for refusals that are not `Permission.CorrectedError`, i.e. rule denials, for which no
+    permission request ever existed. The split writes exactly one line per refused call.
 
 The binding contract for the tool surface is `SPEC.md`.
 

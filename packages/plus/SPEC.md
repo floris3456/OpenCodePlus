@@ -1097,14 +1097,14 @@ Each `tool.call` audit entry contains:
   - `"allowed"`: Tool call was permitted by the permission rules without requiring human approval (`ok: true` on success, or `ok: false` with handler error code)
   - `"asked:allow"`: Tool call required human confirmation (`ask`), human approved the request in the TUI, and the tool executed (`ok: true`)
   - `"denied"`: Tool call was refused at call time by a `deny` rule (e.g. out-of-ceiling tool, child planner delegation, or native denial); `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
-  - `"asked:deny"`: Tool call required human confirmation (`ask`), and human declined with feedback in the TUI; `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
+  - `"asked:deny"`: Tool call required human confirmation (`ask`) and the human rejected it in the TUI, with or without feedback; `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
 
-Reachability of outcomes:
-- `"allowed"`: Reachable through `runGated` when permission rules evaluate to `allow`.
-- `"asked:allow"`: Reachable through `runGated` when permission rules evaluate to `ask`, core emits `Permission.Event.Asked` with the tool CallID as `source.id`, and the user replies `once` or `always`.
-- `"denied"`: Reachable through the `tool.execute.after` hook when permission rules evaluate to `deny` at call time and core throws `BlockedError`.
-- `"asked:deny"`: Reachable through the `tool.execute.after` hook when permission rules evaluate to `ask` and the user declines with feedback (`reply: "reject"` with message), which core throws as `CorrectedError`.
-- Note on decline without feedback: in core, a user decline without feedback stays an intentional defect (`DeclinedError`), bypassing tool failure handling so no `tool.execute.after` hook fires for it; this outcome is observable through the `permission.replied` event with `reply: "reject"`.
+Which component writes which outcome, and why exactly one line is written per gated call:
+- `"allowed"` and `"asked:allow"` are written by `runGated`, which runs only once the call is authorized. The `"asked:allow"` form is used when `permission.asked` named this tool CallID as its `source.id` and the user replied `once` or `always`.
+- `"asked:deny"` is written by the `permission.replied` observer, when a reply of `reject` arrives for a request ID it mapped to a team call at `permission.asked`. It owns **both** human rejections: with feedback (core's `CorrectedError`) and without feedback (core's `DeclinedError`, a deliberate defect that never becomes a typed `Tool.Error`, so no `tool.execute.after` hook fires for it and the reply event is the call's only trace). A request ID is mapped once and dropped on its first reply, so a repeated or cascaded reply for the same request writes nothing further.
+- `"denied"` is written by the `tool.execute.after` observer, and only for a permission refusal whose cause is not `Permission.CorrectedError` — that is, a `deny` rule refusing at call time, for which core creates no permission request and therefore publishes no `permission.replied` event.
+- The three writers are disjoint by construction: an authorized call reaches only `runGated`, a rule denial reaches only `tool.execute.after`, and a human rejection is written only from the reply. A rejection with feedback is the single refusal both observers see, and `tool.execute.after` recognises its `Permission.CorrectedError` cause and leaves that line to the reply observer.
+- Both are observers. They record outcomes and never decide them: neither writes permissions nor registers a `permission.evaluate` hook, and both read state scoped to the `registerTeamTools` registration (the in-flight call per tool CallID, the asked CallIDs, and the request ID → CallID map), never a module global.
 
 ### Run state follows the host session (`teams/lifecycle.ts`)
 
