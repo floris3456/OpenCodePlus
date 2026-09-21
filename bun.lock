@@ -634,11 +634,13 @@
       "name": "@opencode/plus",
       "version": "0.0.0",
       "dependencies": {
+        "@modelcontextprotocol/sdk": "1.29.0",
         "@opencode/plugin": "workspace:*",
         "@opencode/schema": "workspace:*",
         "@opentui/solid": "catalog:",
         "effect": "catalog:",
         "solid-js": "catalog:",
+        "zod": "catalog:",
       },
       "devDependencies": {
         "@opentui/core": "catalog:",
