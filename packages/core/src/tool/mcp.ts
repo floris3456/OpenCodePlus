@@ -106,11 +106,18 @@ export const layer = Layer.effect(
                       ...(content.length === 0 ? {} : { content }),
                     }
                   }).pipe(
-                    Effect.mapError((error) =>
-                      error instanceof ToolFailure
-                        ? error
-                        : new ToolFailure({ message: `Unable to execute ${name(tool.server, tool.name)}` }),
-                    ),
+                    Effect.mapError((error) => {
+                      if (error instanceof ToolFailure) return error
+                      // A denying rule's own message and a human's correction are written for the
+                      // model to read, so the leaf must not replace them; the generic failure is
+                      // what remains when the refusal carries neither. A plain decline is a defect
+                      // inside `Permission.assert` and never reaches this mapper.
+                      if (error._tag === "Permission.CorrectedError")
+                        return new ToolFailure({ message: error.feedback })
+                      if (error._tag === "Permission.BlockedError" && error.reason !== undefined)
+                        return new ToolFailure({ message: error.reason })
+                      return new ToolFailure({ message: `Unable to execute ${name(tool.server, tool.name)}` })
+                    }),
                   ),
               })
             }
