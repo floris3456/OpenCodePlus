@@ -13,6 +13,7 @@ import { gc, sweep } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Policy } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { ownedRoot } from "../../src/teams/worktree.js"
 
 const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
 
@@ -379,15 +380,87 @@ test("orphan worktree unclaimed by any run is removed by GC", async () => {
       })
       await saveRun(root, parent)
 
-      // Create an orphan worktree directly in git
-      const orphanDir = path.join(repo.scratch, "orphan-wt")
+      // An orphan is a worktree inside the team's own area for this repo key
+      // that no run claims; create one directly in git.
+      const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "orphan-wt")
       const orphanBranch = "team/orphan/test-1"
       await git(repo.dir, ["worktree", "add", "-b", orphanBranch, orphanDir, repo.head])
       expect(await dirExists(orphanDir)).toBe(true)
 
+      // A developer's own checkout of the same repository, outside that area.
+      const outside = path.join(repo.scratch, "dev-checkout")
+      await git(repo.dir, ["worktree", "add", "-b", "dev/own-work", outside, repo.head])
+      await fs.writeFile(path.join(outside, "uncommitted.txt"), "work in progress\n")
+
       const res = await gc(root, defaultPolicy)
       expect(res.orphansRemoved).toContain(orphanDir)
       expect(await dirExists(orphanDir)).toBe(false)
+      // The sweep never reaches outside the team's own worktree area.
+      expect(res.orphansRemoved).not.toContain(outside)
+      expect(await Bun.file(path.join(outside, "uncommitted.txt")).text()).toBe("work in progress\n")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
+
+test("a worktree GC cannot remove is not reported reaped, and is reaped once removal works", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+      })
+      // Inside the team's own worktree area, so the orphan scan sees it too.
+      const childWork = await makeChildWorktree(
+        path.join(ownedRoot(root, "opencode"), "implementer"),
+        repo.dir,
+        "locked",
+        repo.head,
+      )
+      const child = baseRun({
+        id: "w-7777777777777777",
+        role: "muse-implementer",
+        directory: childWork.dir,
+        branch: childWork.branch,
+        base: repo.head,
+        head: childWork.head,
+        state: "stopped",
+        lastUsed: "2020-01-01T00:00:00.000Z",
+        worktree: "present",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+
+      // Real git state: `git worktree remove` refuses a locked worktree.
+      await git(repo.dir, ["worktree", "lock", childWork.dir])
+
+      const swept = await sweep(dummyContext(), root)
+      expect(swept.gc.reaped).not.toContain(child.id)
+      expect(swept.gc.removeFailed).toContain(child.id)
+      expect(await dirExists(childWork.dir)).toBe(true)
+      // The record still says the worktree is there, so it keeps its known-dir
+      // protection in the orphan scan of the same pass.
+      const kept = await loadRun(root, child.id)
+      expect(kept?.state).toBe("stopped")
+      expect(kept?.worktree).toBe("present")
+      expect(swept.gc.orphansRemoved).not.toContain(childWork.dir)
+
+      await git(repo.dir, ["worktree", "unlock", childWork.dir])
+      const res = await gc(root, defaultPolicy)
+      expect(res.reaped).toContain(child.id)
+      expect(res.removeFailed).not.toContain(child.id)
+      expect(await dirExists(childWork.dir)).toBe(false)
+      const reaped = await loadRun(root, child.id)
+      expect(reaped?.state).toBe("reaped")
+      expect(reaped?.worktree).toBe("removed")
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
@@ -554,6 +627,7 @@ test("tolerance: empty root, missing runs directory, and garbage run directory",
     expect(res1.reaped).toEqual([])
     expect(res1.skippedDirty).toEqual([])
     expect(res1.orphansRemoved).toEqual([])
+    expect(res1.removeFailed).toEqual([])
 
     // Corrupted run directory
     await fs.mkdir(path.join(root, "runs", "garbage-run"), { recursive: true })

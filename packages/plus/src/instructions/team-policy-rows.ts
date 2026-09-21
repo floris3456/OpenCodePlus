@@ -85,6 +85,7 @@ const editForbidden = [".git/**", ".opencodeplus/**"] as const
 
 export function teamPolicyItems(members: readonly PolicyMember[], runs: readonly PolicyRun[] = []): Item[] {
   const byRole = new Map(members.map((member) => [member.id, member] as const))
+  const scoped = runs.filter((run) => byRole.has(run.role))
   return [
     ...members.flatMap((member) => [
       ...nativeRows(member),
@@ -92,7 +93,7 @@ export function teamPolicyItems(members: readonly PolicyMember[], runs: readonly
       ...searchRows(member),
       ...plannerRows(member),
     ]),
-    ...runs.flatMap((run) => (byRole.has(run.role) ? [runScopeRow(run)] : [])),
+    ...scoped.map((run) => runScopeRow(run, scoped.filter((peer) => peer.role === run.role))),
   ]
 }
 
@@ -188,31 +189,23 @@ function plannerRows(member: PolicyMember): Item[] {
 }
 
 // Per-run edit scope. The run record is the source: the row exists while the
-// run does and carries the run's own `scope.paths`. Deny `*` first so the
-// path allows override it, then the never-editable state last so nothing
-// inside scope.paths can reach it (core evaluates last-match-wins).
+// run does and carries the run's own `scope.paths`. A rule belongs to an AGENT
+// and not to a session, so a role's live runs cannot hold separate scopes —
+// `peers` (every live run of this role, in row order) is what the rows state
+// together: the role's first row denies `*`, each row allows its own paths,
+// and the role's last row denies the never-editable state so nothing inside
+// any scope can reach it (core evaluates last-match-wins).
 // D6: child runs override any role "ask" effect to "deny" (headless ask never returns).
-function runScopeRow(run: PolicyRun): Item {
-  const scope = run.paths.length > 0 ? ` [${run.paths.join(", ")}]` : ""
-  const guidance =
-    run.paths.length > 0
-      ? `Only scope.paths${scope} are editable. Version-control and paused-tool state is never editable, even inside scope.paths. Report anything else in needs=[{kind:"path"...}].`
-      : `Version-control and paused-tool state is never editable. Report anything else in needs=[{kind:"path"...}].`
+function runScopeRow(run: PolicyRun, peers: readonly PolicyRun[]): Item {
   const isChild = run.id.startsWith("w-")
   const kind = kindOf(run.role)
   const overrideRules: PolicyRule[] =
     isChild && kind.ok && kind.kind === "planner" ? [rule("team.delegate", "*", "deny")] : []
-  const editRules: PolicyRule[] =
-    run.paths.length > 0
-      ? [
-          rule("edit", "*", "deny"),
-          ...run.paths.map((path) => rule("edit", path, "allow")),
-          ...editForbidden.map((path) => rule("edit", path, "deny")),
-        ]
-      : [
-          rule("edit", "*", "deny"),
-          ...editForbidden.map((path) => rule("edit", path, "deny")),
-        ]
+  const editRules: PolicyRule[] = [
+    ...(peers[0]?.id === run.id ? [rule("edit", "*", "deny")] : []),
+    ...run.paths.map((path) => rule("edit", path, "allow")),
+    ...(peers[peers.length - 1]?.id === run.id ? editForbidden.map((path) => rule("edit", path, "deny")) : []),
+  ]
   return row({
     id: `perm:edit:run:${run.id}`,
     title: `Edit scope for run ${run.id}`,
@@ -222,7 +215,7 @@ function runScopeRow(run: PolicyRun): Item {
     permAction: "edit",
     patterns: ["*", ...run.paths, ...editForbidden],
     enabled: true,
-    guidance,
+    guidance: scopeGuidance(run, peers),
     runID: run.id,
     policy: {
       on: [
@@ -232,6 +225,21 @@ function runScopeRow(run: PolicyRun): Item {
       off: [],
     },
   })
+}
+
+// What the row's reader is told. With one live run that is its own
+// scope.paths; with more, the agent carries the union of every live run's
+// scope.paths, so the text says so instead of promising isolation the rules
+// cannot give.
+function scopeGuidance(run: PolicyRun, peers: readonly PolicyRun[]): string {
+  const own = run.paths.length > 0 ? `Only scope.paths [${run.paths.join(", ")}] are editable. ` : ""
+  const union = [...new Set(peers.flatMap((peer) => peer.paths))]
+  const shared =
+    peers.length > 1
+      ? `This role's live runs share one edit scope on this agent: the union [${union.join(", ")}] is allowed, so stay inside your own scope.paths. `
+      : ""
+  const forbidden = run.paths.length > 0 ? "never editable, even inside scope.paths" : "never editable"
+  return `${own}${shared}Version-control and paused-tool state is ${forbidden}. Report anything else in needs=[{kind:"path"...}].`
 }
 
 function rule(action: string, resource: string, effect: PolicyRule["effect"]): PolicyRule {
