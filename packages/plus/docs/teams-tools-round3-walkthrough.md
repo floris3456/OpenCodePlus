@@ -1,11 +1,12 @@
 # Teams tools round 3 — walkthrough
 
-- **Assembled at:** worktree HEAD `61896a627c9a495c8e84549854fba48b8cfcb087` (the
-  parent's integrated round-3 branch). Blocks pasted from committed task
-  evidence repeat the capture head their source document records; the six final
-  live captures were taken by the orchestrator against source
-  `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7`, the same tree plus three
-  documentation corrections that touch no source file.
+- **Assembled at:** the parent's integrated round-3 branch. Blocks pasted from
+  committed task evidence repeat the capture head their source document
+  records. The six final live captures were taken by the orchestrator against
+  source `0b83822074c5ce5a83bd62c18b5216d8adcdf7f7` — the last commit of the
+  round that changes a source file. Every commit after it, including this
+  document, is documentation only, so the product the captures show is the
+  product at the reviewed head.
 - **Plan:** `docs/handoffs/2026-09-22-teams-tools-round3/plan.md`, "Expected end state".
   This document covers items 1–15 and the D4 outcome. Item 16 (`docs/TOOLS.md`) is T7;
   items 17–19 are the review gate and the parent's finish.
