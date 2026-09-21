@@ -27,7 +27,7 @@
 - **Decision D4 (Keymap Precedence)**:
   - Source inspection of `packages/tui/src/routes/session/composer/index.tsx` and `Keymap` indicates that when the composer is open, it pushes mode `"composer"`.
   - `TeamMonitorTab` registers commands (`composer.team.action` with `bind: "ctrl+d"`) in mode `"composer"` with `priority: 1`.
-  - Global `app.exit` is registered with default priority in mode `"app"`.
+  - Global `app.exit` is registered mode-less with default priority (`packages/tui/src/app.tsx:1233`–`1240`); the keymap defaults a layer with no mode to `"base"` (`packages/tui/src/context/keymap.tsx:41`, `:234`).
   - **Status**: Code inspection is complete, but live interactive verification with pilotty is assigned to the orchestrator, which holds baseline captures and runs integrated interactive lab tests.
 
 ---

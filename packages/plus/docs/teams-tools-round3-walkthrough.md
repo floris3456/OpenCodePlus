@@ -23,7 +23,7 @@
 | Label | What it is |
 | --- | --- |
 | REAL LAB (pilotty) | A literal screen capture from the real product driven with `docs/team-v2/scripts/tui-lab.sh` and pilotty in an isolated lab home under `run/tmp-build/`. Never the human's server on 40374, never `~/.config/opencode`, never `run/plus`. |
-| IN-PROCESS REAL-HANDLER HARNESS | `bun test` running the real handlers through `packages/plus/test/harness.ts` and the `test/teams/*` harnesses: real files, real git worktrees, real run records, real permission evaluation. No mocks. |
+| IN-PROCESS REAL-HANDLER HARNESS | `bun test` running the real handlers through `packages/plus/test/harness.ts` and the `test/teams/*` harnesses: real files, real git worktrees, real run records, and real permission evaluation where the block relies on it (`apply.ts` / `Permission.evaluate`). It is not a blanket no-mocks claim: item 11 drives a simulated permission service and hand-run execute hooks, and says so in place. |
 | TUI COMPONENT TEST | `bun test` rendering the real TUI component against a stubbed RPC. It cannot prove a live keypress reaches the product, so it is never the only evidence for a live item. |
 | DETERMINISTIC TRANSPORT | `docs/round3-lab.ts`: a credential-free loopback OpenAI-compatible fixture that serves only the model transport. The host's provider resolution, session execution, permission evaluation and tool results stay real. Used only where a capture needs a model to answer. |
 
@@ -873,11 +873,15 @@ the rejected-stop warning toast.
 D4 asked for `ctrl+a` active/inactive and `ctrl+d` stop/resume, with `ctrl+s` only as the
 fallback if the host's global `app.exit` consumed `ctrl+d` before the tab. **The D4
 outcome recorded here: the actual `Ctrl+D` reaches the tab, so the tab keeps `ctrl+d` and
-`ctrl+s` is not used.** What is on this branch: `composer.team.action` is registered in
-mode `composer` with `priority: 1`, while the global `app.exit` registration lives in mode
-`app` (`packages/plus/docs/round3-t4-evidence.md` §2, code inspection of
-`packages/tui/src/routes/session/composer/index.tsx` and `Keymap`), and the parent's
-baseline lab capture below is the probe that `Ctrl+D` did not leave the client:
+`ctrl+s` is not used.** What is on this branch: `composer.team.action` is registered with
+`mode: "composer"`, `priority: 1` (`packages/plus/src/tui/active-team.tsx:390`); the
+global `app.exit` registration is mode-less (`packages/tui/src/app.tsx:1233`–`1240`),
+which the keymap defaults to `"base"` (`packages/tui/src/context/keymap.tsx:41`, `:234`);
+and the composer pushes mode `"composer"` while the tab is open
+(`packages/tui/src/routes/session/composer/index.tsx:93`–`97`). So while the tab is open
+the current mode is `composer`, the tab's layer matches there, and the mode-less `app.exit`
+layer — defaulted to `base` — does not. The parent's baseline lab capture below is the
+probe that `Ctrl+D` did not leave the client:
 
 ```text
 --- Terminal 130x45 | Cursor: (39, 5) ---
@@ -1189,7 +1193,14 @@ distinct audit lines".
 Both lines carry the right tool, outcome, actor, session, run and code; the sibling that
 finished first did not consume the pending call's refusal line. Audit state is per
 invocation (a FIFO queue per `(sessionID, messageID, CallID)` plus a request-id map, no
-global map). **Complete.**
+global map). What is real in this test is the production audit append path that writes the
+files (`packages/plus/src/teams/audit.ts:105`), the two distinct lines it produces, and the
+chain verification over them (`verify`, `packages/plus/src/teams/audit.ts:135`); what is
+simulated is the permission service the test builds itself
+(`packages/plus/test/teams/tools.test.ts:792`–`877`, its own action matcher at `:810`–`818`
+emitting synthetic Asked/Replied events) and the execute hooks driven by hand
+(`:731`–`783`) — not core permission evaluation, and not a real Code Mode
+execution. **Complete.**
 
 ---
 
@@ -1621,6 +1632,40 @@ documentation commits after it change no source file and no test file, and
 | `plus-typecheck` | `bun run typecheck` | `$ tsgo --noEmit -p tsconfig.test.json`, no output |
 
 Nothing in this document is pending.
+
+## Scope and secret-safety receipts
+
+Both receipts are bound to HEAD `c1aab6d58ae9bc1b4242ce356d045f311540bf9c`,
+against the round base `f0522d90f2537ebcd4a516b50122e951f4503fc6`.
+
+Scope — every changed file is under `packages/plus`; no `packages/tui`, core,
+schema, client, protocol, server or plugin file is touched:
+
+```text
+### changed files vs base: 69 total
+### outside packages/plus: 0
+### by top-level package:
+     69 packages/plus
+```
+
+Secret safety — neither search key's value occurs in any tracked file at that
+commit. Only counts are reported; no key value is printed, stored or committed
+anywhere:
+
+```text
+### credential-safe content scan, bound to HEAD c1aab6d58ae9bc1b4242ce356d045f311540bf9c
+### scope: every tracked file at HEAD (git grep -I over the commit), excluding nothing.
+### method: fixed-string match of each key file's exact contents; only counts are reported.
+### tracked text files scanned: 7377
+  exa.key (length 36 bytes): files matching = 0
+  tavily.key (length 58 bytes): files matching = 0
+
+### also: no file at HEAD assigns a long literal to EXA_API_KEY/TAVILY_API_KEY outside tests
+0
+```
+
+The 69 changed files are 21 documents, 26 source files under `src/` and 22 test
+files under `test/`.
 
 ## Corrections the final verification found
 
