@@ -5,9 +5,12 @@ import { Session } from "@opencode/schema/session"
 import { Duration, Effect, Option, Schedule, Schema, type Scope } from "effect"
 import { batchNotify, partition, put, take, type InboxItem } from "./inbox.js"
 import { io } from "./io.js"
+import { gitRaw, parsePorcelain } from "./git.js"
+import type { MergeEntry } from "./merge.js"
 import {
   attemptTransition,
   bySession,
+  canTransition,
   isAttemptTerminal,
   isTerminal,
   loadRun,
@@ -19,8 +22,9 @@ import {
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
-import { Policy } from "./schema.js"
+import { Policy, parseDuration } from "./schema.js"
 import { readJson } from "./store.js"
+import { orphans, remove } from "./worktree.js"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -296,7 +300,171 @@ function renderInbox(items: readonly InboxItem[]): string {
 // without a tool call runs from here. T6 adds gc(root, policy) to this
 // function; nothing else schedules periodic team work.
 export async function sweep(ctx: Context, root: string): Promise<string[]> {
-  return reconcile(ctx, root)
+  const dead = await reconcile(ctx, root)
+  await gc(root, policy)
+  return dead
+}
+
+export interface GcResult {
+  reaped: string[]
+  skippedDirty: string[]
+  orphansRemoved: string[]
+}
+
+export async function gc(root: string, customPolicy?: Policy): Promise<GcResult> {
+  const pol = customPolicy ?? policy
+  const reapAfterMs = parseDuration(pol.gc.reapAfter)
+  const now = Date.now()
+
+  const runEntries = await Effect.runPromise(
+    io(() => readdir(path.join(root, "runs"))).pipe(
+      Effect.map((names) => [...names]),
+      Effect.catchCause(() => Effect.succeed([] as string[])),
+    ),
+  )
+
+  const allRuns: RunRecord[] = []
+  for (const entry of runEntries) {
+    if (entry.startsWith(".")) continue
+    const record = await loadRecordSafe(root, entry)
+    if (record !== undefined) allRuns.push(record)
+  }
+
+  // 1. Identify runs referenced by open (non-terminal) merge entries
+  const openMergeRunIDs = new Set<string>()
+  for (const parent of allRuns) {
+    const mergeFiles = await Effect.runPromise(
+      io(() => readdir(path.join(root, "runs", parent.id, "merge"))).pipe(
+        Effect.map((names) => [...names]),
+        Effect.catchCause(() => Effect.succeed([] as string[])),
+      ),
+    )
+    for (const file of mergeFiles) {
+      if (!file.endsWith(".json") || file.startsWith("_") || file.startsWith(".")) continue
+      const entry = await Effect.runPromise(
+        io(() => readJson<MergeEntry>(path.join(root, "runs", parent.id, "merge", file))).pipe(
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        ),
+      )
+      if (entry !== undefined && entry.state !== "landed" && entry.state !== "conflict" && entry.state !== "red") {
+        if (entry.childRun) openMergeRunIDs.add(entry.childRun)
+        if (entry.parentRun) openMergeRunIDs.add(entry.parentRun)
+      }
+    }
+  }
+
+  // 2. Identify promotedFrom runs
+  const promotedFromSet = new Set<string>()
+  if (pol.gc.keepPromotedFrom) {
+    for (const r of allRuns) {
+      if (r.promotedFrom) promotedFromSet.add(r.promotedFrom)
+    }
+  }
+
+  // 3. Resolve repoRoot for each repoKey
+  const repoRoots = new Map<string, string>()
+  for (const r of allRuns) {
+    if (r.repoKey && !repoRoots.has(r.repoKey) && r.directory) {
+      const top = await gitRaw(r.directory, ["rev-parse", "--show-toplevel"]).catch(() => ({ code: 1, out: "" }))
+      if (top.code === 0 && top.out.length > 0) {
+        repoRoots.set(r.repoKey, top.out)
+      }
+    }
+  }
+
+  const reaped: string[] = []
+  const skippedDirty: string[] = []
+
+  // 4. Reap stale stopped / superseded runs
+  for (const record of allRuns) {
+    if (record.state !== "stopped" && record.state !== "superseded") continue
+
+    const lastUsedMs = Date.parse(record.lastUsed)
+    if (Number.isNaN(lastUsedMs) || now - lastUsedMs < reapAfterMs) continue
+
+    if (openMergeRunIDs.has(record.id)) continue
+
+    if (pol.gc.keepPromotedFrom) {
+      const isPromoted = promotedFromSet.has(record.id) || Boolean(record.promotedFrom)
+      if (isPromoted) continue
+    }
+
+    const repoRoot = repoRoots.get(record.repoKey)
+    const isSuperseded = record.state === "superseded"
+
+    if (!isSuperseded) {
+      // Stopped run: check dirty
+      let isDirty = false
+      if (record.directory) {
+        try {
+          const porcelain = await gitRaw(record.directory, ["status", "--porcelain", "-uall"])
+          if (porcelain.code === 0) {
+            const dirtyFiles = parsePorcelain(porcelain.out)
+            isDirty = dirtyFiles.length > 0
+          }
+        } catch {
+          // If git status fails (e.g. dir gone), not dirty
+        }
+      }
+
+      if (isDirty) {
+        if (record.worktree !== "dirty") {
+          record.worktree = "dirty"
+          await saveSafe(root, record)
+        }
+        skippedDirty.push(record.id)
+        continue
+      }
+    }
+
+    // Remove worktree
+    if (repoRoot && record.directory) {
+      try {
+        await remove(root, record.directory, {
+          repoRoot,
+          repoKey: record.repoKey,
+          force: isSuperseded,
+        })
+      } catch {
+        // Safe to ignore removal errors
+      }
+    }
+
+    let updated: RunRecord = { ...record, worktree: "removed" }
+    if (canTransition(updated.state, "reaped", "gc")) {
+      updated = transition(updated, "reaped", "gc")
+    } else {
+      updated.state = "reaped"
+    }
+    updated.worktree = "removed"
+    await saveSafe(root, updated)
+    reaped.push(record.id)
+  }
+
+  // 5. Remove orphans for each repoKey
+  const orphansRemoved: string[] = []
+  for (const [repoKey, repoRoot] of repoRoots.entries()) {
+    const knownDirs: string[] = []
+    for (const r of allRuns) {
+      if (r.repoKey === repoKey) {
+        const current = (await loadRecordSafe(root, r.id)) ?? r
+        if (current.worktree !== "removed") {
+          knownDirs.push(current.directory)
+        }
+      }
+    }
+    const orphanList = await orphans(repoRoot, knownDirs).catch(() => [] as string[])
+    for (const orphanPath of orphanList) {
+      try {
+        await remove(root, orphanPath, { repoRoot, repoKey, force: true })
+        orphansRemoved.push(orphanPath)
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return { reaped, skippedDirty, orphansRemoved }
 }
 
 /** Runs sweep now and then every tickMs until the plugin scope closes. */

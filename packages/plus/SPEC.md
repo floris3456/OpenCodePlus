@@ -949,6 +949,9 @@ New input and output fields:
 - `status` entries gain `acked: { attempt, at } | null`, read back from
   `runs/<run>/ack.json` (`RunAck` in `teams/schema.ts`). `status` itself never
   acknowledges, so `wait`'s `acknowledged` and `status`'s `acked` always agree.
+- `list` and `status` entries carry `worktree: "present" | "removed" | "dirty"`,
+  reporting whether the run's git worktree exists, has been removed (on landing
+  via `integrate` or GC reaping), or is stopped with uncommitted/tracked modifications.
 
 ### Run state follows the host session (`teams/lifecycle.ts`)
 
@@ -981,7 +984,15 @@ synthetic text.
 `lifecycle.sweep(ctx, root)` is the one periodic tick: `startSweep` runs it at
 `policy.sweep.tickMs` (default 2000 ms) forked on the plugin scope, so it is
 cancelled with the plugin and never runs in a unit test that does not start it.
-It carries dead-run reconciliation today and is the single place GC is added.
+It carries dead-run reconciliation and garbage collection (`gc(root, policy)`):
+- Landed child worktrees are removed immediately upon successful landing via `integrate`,
+  preserving the branch ref, run record, brief, reports, and receipts, and marking `worktree: "removed"`.
+- Stopped and superseded runs older than `gc.reapAfter` (parsed from duration strings such as `"7d"`),
+  not referenced by any open (non-terminal) merge queue entry, and not promoted from (when `keepPromotedFrom: true`),
+  are transitioned to `reaped` and their worktrees removed. GC removes `superseded` worktrees with `--force`;
+  a dirty `stopped` worktree is skipped from reaping and marked `worktree: "dirty"`.
+- Orphan worktrees under the repository worktrees root not claimed by any active run record are detected
+  and removed via `worktree.orphans`.
 
 ## §11 Tools, log, and query
 

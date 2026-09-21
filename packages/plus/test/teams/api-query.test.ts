@@ -88,6 +88,7 @@ type ListEntry = {
   head: string
   branch: string
   directory: string
+  worktree: string
   reportStatus: string | null
   lastUsed: string
   runtime: string
@@ -279,6 +280,7 @@ test("every emitted field is present and correct for a populated run", async () 
           head: live,
           branch: "team/w/populated",
           directory: repo.dir,
+          worktree: "present",
           reportStatus: "done",
           lastUsed: "2026-09-10T12:00:00.000Z",
           runtime: "running",
@@ -354,6 +356,49 @@ test("calling list does not modify any run.json", async () => {
       for (const snapshot of snapshots) {
         expect(await fs.readFile(path.join(root, "runs", snapshot.id, "run.json"), "utf8")).toBe(snapshot.bytes)
       }
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
+test("list and statusOf reflect worktree states (present, removed, dirty)", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const planner = baseRun({
+        id: "main-ffffffffffffffff",
+        role: "fable-planner",
+        kind: "main",
+        directory: repo.dir,
+        sessionID: "ses_planner_wt",
+        state: "working",
+        worktree: "present",
+      })
+      const removed = baseRun({
+        id: "w-1111111111111111",
+        directory: repo.dir,
+        state: "reaped",
+        worktree: "removed",
+      })
+      const dirty = baseRun({
+        id: "w-2222222222222222",
+        directory: repo.dir,
+        state: "stopped",
+        worktree: "dirty",
+      })
+      await saveRun(root, planner)
+      await saveRun(root, removed)
+      await saveRun(root, dirty)
+
+      const list = required(await listHandler({ all: true }, callerFor(planner))) as ListEntry[]
+      const plannerEntry = list.find((e) => e.run === planner.id)
+      const removedEntry = list.find((e) => e.run === removed.id)
+      const dirtyEntry = list.find((e) => e.run === dirty.id)
+
+      expect(plannerEntry?.worktree).toBe("present")
+      expect(removedEntry?.worktree).toBe("removed")
+      expect(dirtyEntry?.worktree).toBe("dirty")
     } finally {
       await removeRepo(repo.dir)
     }

@@ -40,8 +40,11 @@ import {
   TavilySearchInput,
   ToolError,
   WaitInput,
+  WorktreeState,
+  WorktreeStates,
   budgetExhaustion,
   delegatedRoles,
+  parseDuration,
   toolError,
   validateChecks,
   validateSummary,
@@ -64,6 +67,7 @@ roundTrip("AttemptState", AttemptState, AttemptStates)
 roundTrip("TaskState", TaskState, TaskStates)
 roundTrip("MergeState", MergeState, MergeStates)
 roundTrip("ReportStatus", ReportStatus, ReportStatuses)
+roundTrip("WorktreeState", WorktreeState, WorktreeStates)
 
 test("identity primitives accept and reject", () => {
   expect(Schema.decodeUnknownSync(RunID)("w-0123456789abcdef")).toBe("w-0123456789abcdef")
@@ -270,4 +274,42 @@ test("F1.2 status.budget overBy/exhausted math", () => {
   )
   expect(under.overBy).toEqual({ turns: 0, tokens: 0, wallMs: 0 })
   expect(under.exhausted).toBe(false)
+})
+
+describe("parseDuration", () => {
+  test("parses single unit durations", () => {
+    expect(parseDuration("7d")).toBe(7 * 24 * 60 * 60 * 1000)
+    expect(parseDuration("1day")).toBe(24 * 60 * 60 * 1000)
+    expect(parseDuration("2days")).toBe(2 * 24 * 60 * 60 * 1000)
+    expect(parseDuration("24h")).toBe(24 * 60 * 60 * 1000)
+    expect(parseDuration("1hour")).toBe(60 * 60 * 1000)
+    expect(parseDuration("2hours")).toBe(2 * 60 * 60 * 1000)
+    expect(parseDuration("30m")).toBe(30 * 60 * 1000)
+    expect(parseDuration("10min")).toBe(10 * 60 * 1000)
+    expect(parseDuration("15minutes")).toBe(15 * 60 * 1000)
+    expect(parseDuration("60s")).toBe(60 * 1000)
+    expect(parseDuration("10sec")).toBe(10 * 1000)
+    expect(parseDuration("5seconds")).toBe(5 * 1000)
+    expect(parseDuration("500ms")).toBe(500)
+    expect(parseDuration("0s")).toBe(0)
+  })
+
+  test("parses compound and decimal durations", () => {
+    expect(parseDuration("7d12h")).toBe(7 * 24 * 3600000 + 12 * 3600000)
+    expect(parseDuration("1d 2h 30m")).toBe(24 * 3600000 + 2 * 3600000 + 30 * 60000)
+    expect(parseDuration("1.5h")).toBe(90 * 60000)
+    expect(parseDuration(" 2h ")).toBe(2 * 3600000)
+  })
+
+  test("throws E_DURATION on invalid input", () => {
+    expect(() => parseDuration("")).toThrow()
+    expect(() => parseDuration("foo")).toThrow()
+    expect(() => parseDuration("7")).toThrow()
+    expect(() => parseDuration("-5d")).toThrow()
+    try {
+      parseDuration("invalid")
+    } catch (e: any) {
+      expect(e.code).toBe("E_DURATION")
+    }
+  })
 })

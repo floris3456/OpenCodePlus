@@ -3,7 +3,8 @@ import { readdir } from "node:fs/promises"
 import path from "node:path"
 import { Effect, Option } from "effect"
 import { toolError } from "./schema.js"
-import type { AttemptState, RunState } from "./schema.js"
+import type { AttemptState, RunState, WorktreeState } from "./schema.js"
+export type { WorktreeState }
 import { atomicJson, lock, readJson } from "./store.js"
 import { append } from "./audit.js"
 import { errCode, io } from "./io.js"
@@ -61,6 +62,8 @@ export interface RunRecord {
   sessionID: string | null
   configDigest: string | null
   supersededReason?: string
+  worktree?: WorktreeState
+  promotedFrom?: string
   history: HistoryEntry[]
 }
 
@@ -202,6 +205,7 @@ export function transition(run: RunRecord, to: RunState, trigger: string, ctx?: 
     lastUsed: at,
     attempts: [...run.attempts],
     children: [...run.children],
+    worktree: run.worktree ?? "present",
     history: [...run.history, { at, from: run.state, to, trigger }],
   }
   if (to === "superseded" && ctx?.reason !== undefined) {
@@ -389,10 +393,11 @@ function runPath(root: string, id: string): string {
 }
 
 export async function saveRun(root: string, run: RunRecord): Promise<void> {
+  const toSave: RunRecord = run.worktree === undefined ? { ...run, worktree: "present" } : run
   const created = await lock(root, "state", run.id, async () => {
     const target = runPath(root, run.id)
     const existed = await Bun.file(target).exists()
-    await atomicJson(target, run)
+    await atomicJson(target, toSave)
     return !existed
   })
   // The first write of a run's record enters the audit chain as run.created;
@@ -401,7 +406,13 @@ export async function saveRun(root: string, run: RunRecord): Promise<void> {
 }
 
 export async function loadRun(root: string, id: string): Promise<RunRecord | undefined> {
-  return lock(root, "state", id, () => readJson<RunRecord>(runPath(root, id)))
+  return lock(root, "state", id, async () => {
+    const record = await readJson<RunRecord>(runPath(root, id))
+    if (record !== undefined && record.worktree === undefined) {
+      record.worktree = "present"
+    }
+    return record
+  })
 }
 
 // Actor gate for the tools layer: the run bound to a session, if any. A
@@ -425,8 +436,10 @@ export async function bySession(root: string, sessionID: string): Promise<RunRec
           record.value !== null &&
           record.value !== undefined &&
           record.value.sessionID === sessionID
-        )
+        ) {
+          if (record.value.worktree === undefined) record.value.worktree = "present"
           return record.value
+        }
       }
       return undefined
     }),

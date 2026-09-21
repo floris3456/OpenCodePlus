@@ -263,6 +263,10 @@ export const ReportStatuses = ["done", "done_with_concerns", "blocked", "needs_c
 export const ReportStatus = Schema.Literals(ReportStatuses)
 export type ReportStatus = typeof ReportStatus.Type
 
+export const WorktreeStates = ["present", "removed", "dirty"] as const
+export const WorktreeState = Schema.Literals(WorktreeStates)
+export type WorktreeState = typeof WorktreeState.Type
+
 // Policy file front matter (docs/team-v2/05-runtime-and-storage.md §Policy file).
 const EffortBudget = Schema.Struct({
   turns: field(Schema.Number, () => 0),
@@ -556,6 +560,47 @@ export type ToolError = typeof ToolError.Type
 
 export function toolError(code: string, message: string, accepted?: unknown): ToolError {
   return accepted === undefined ? { code, message } : { code, message, accepted }
+}
+
+const DURATION_RE = /^\s*(?:(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)\s*)+$/i
+const DURATION_PART_RE = /(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)/gi
+
+const UNIT_MULTIPLIERS: Record<string, number> = {
+  ms: 1,
+  s: 1000,
+  sec: 1000,
+  second: 1000,
+  seconds: 1000,
+  m: 60 * 1000,
+  min: 60 * 1000,
+  minute: 60 * 1000,
+  minutes: 60 * 1000,
+  h: 60 * 60 * 1000,
+  hr: 60 * 60 * 1000,
+  hour: 60 * 60 * 1000,
+  hours: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+  day: 24 * 60 * 60 * 1000,
+  days: 24 * 60 * 60 * 1000,
+}
+
+export function parseDuration(raw: string): number {
+  const trimmed = raw.trim()
+  if (trimmed === "" || !DURATION_RE.test(trimmed)) {
+    throw toolError(
+      "E_DURATION",
+      `Invalid duration "${raw}". Expected format like "7d", "24h", "30m", "60s", or "500ms".`,
+      "7d",
+    )
+  }
+  let totalMs = 0
+  for (const match of trimmed.matchAll(DURATION_PART_RE)) {
+    const val = parseFloat(match[1])
+    const unit = match[2].toLowerCase()
+    const mult = UNIT_MULTIPLIERS[unit] ?? 0
+    totalMs += val * mult
+  }
+  return Math.round(totalMs)
 }
 
 // Tool input schemas (docs/team-v2/03-tools.md). Every tool has exactly one

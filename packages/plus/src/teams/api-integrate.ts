@@ -5,10 +5,11 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { drain, enqueue } from "./merge.js"
 import type { MergeContext } from "./merge.js"
 import { gitRaw } from "./git.js"
-import { loadRun } from "./run.js"
+import { loadRun, saveRun } from "./run.js"
 import { IntegrateInput } from "./schema.js"
 import type { Check } from "./schema.js"
 import { readJson } from "./store.js"
+import { remove } from "./worktree.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
@@ -81,8 +82,15 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
     parentWorktree: parent.directory,
     checks,
   }
-  const live = await gitRaw(child.directory, ["rev-parse", "HEAD"])
-  const childHead = live.code === 0 ? live.out : child.head
+  let childHead = child.head
+  if (child.worktree !== "removed") {
+    try {
+      const live = await gitRaw(child.directory, ["rev-parse", "HEAD"])
+      if (live.code === 0 && live.out.length > 0) childHead = live.out
+    } catch {
+      childHead = child.head
+    }
+  }
   const enqueued = await enqueue(root, {
     parentRun: parent.id,
     parentWorktree: parent.directory,
@@ -101,6 +109,16 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
     (error) => ({ ok: false as const, error: thrownError(error) }),
   )
   if (!drained.ok) return { ok: false, error: drained.error }
+  for (const item of drained.result.processed) {
+    if (item.state === "landed") {
+      const landedChild = await loadRun(root, item.childRun)
+      if (landedChild !== undefined && landedChild.directory) {
+        await remove(root, landedChild.directory, { repoRoot, repoKey: parent.repoKey })
+        landedChild.worktree = "removed"
+        await saveRun(root, landedChild)
+      }
+    }
+  }
   const ours = drained.result.processed.find((item) => item.id === entry.id)
   if (ours !== undefined && ours.state === "landed") {
     const landedHead =
