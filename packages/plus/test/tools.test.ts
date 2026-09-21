@@ -11,7 +11,7 @@ import { createPlusApi, createState, createHandlers } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
 import { enable } from "../src/project.js"
-import { projectLogPath, projectTeamsPath } from "../src/instructions/paths.js"
+import { projectLogPath, projectTeamsPath, teachingFilePath, teachingSkillId } from "../src/instructions/paths.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import {
@@ -799,6 +799,11 @@ test("every tool first description line is within 120 characters", async () => {
   }
 })
 
+// state.tooling holds one registration per thing installTooling installs: the
+// teaching instruction file, the teaching skill, the instructions tool
+// namespace, and the search MCP server only when the host configures none of
+// that name. Each is asserted by what it installs, never by how many there
+// are, so the optional search registration cannot decide the expectation.
 test("no instructions tool is registered while disabled, and disabling disposes them", async () => {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-tools-enable-"))
@@ -808,8 +813,23 @@ test("no instructions tool is registered while disabled, and disabling disposes 
   const ctx = fixtureContext(project)
   const state = createState()
   const handlers = createHandlers(ctx, state)
-  const before = await readTools(ctx)
-  expect([...before.keys()].filter((id) => id.startsWith("instructions_"))).toEqual([])
+  const toolIds = async () => [...(await readTools(ctx)).keys()].filter((id) => id.startsWith("instructions_"))
+  const skillIds = async (): Promise<string[]> => (await Effect.runPromise(ctx.skill.list())).data.map((skill) => skill.id)
+  const serverNames = async () => {
+    const names: string[] = []
+    const probe = await Effect.runPromise(
+      Effect.scoped(
+        ctx.mcp.transform((editor) => {
+          names.push(...editor.list().map(([name]) => name))
+        }),
+      ),
+    )
+    await Effect.runPromise(probe.dispose)
+    return names
+  }
+  const beforeServers = await serverNames()
+  expect(await toolIds()).toEqual([])
+  expect(await skillIds()).not.toContain(teachingSkillId)
   await Effect.runPromise(
     handlers["project.enable"](undefined, {
       error: () => {
@@ -817,9 +837,24 @@ test("no instructions tool is registered while disabled, and disabling disposes 
       },
     }),
   )
-  const afterEnable = await readTools(ctx)
-  expect(afterEnable.size).toBeGreaterThanOrEqual(8)
-  expect(state.tooling.length).toBe(3)
+  expect(await toolIds()).toHaveLength(8)
+  expect(await skillIds()).toContain(teachingSkillId)
+  // Only the install side: the harness instruction domain disposes to a no-op,
+  // so the disposal proof below rests on the skill, tool and MCP domains.
+  const instructionPaths: string[] = []
+  const instructions = await Effect.runPromise(
+    Effect.scoped(
+      ctx.instruction.transform((editor) => {
+        instructionPaths.push(...editor.list().map((file) => file.path))
+      }),
+    ),
+  )
+  await Effect.runPromise(instructions.dispose)
+  expect(instructionPaths).toContain(teachingFilePath())
+  // Configured either way: Plus registers its own here, and a host that
+  // already has one keeps it.
+  expect(await serverNames()).toContain("search")
+  const installed = [...state.tooling]
   await Effect.runPromise(
     handlers["project.enable"](undefined, {
       error: () => {
@@ -827,9 +862,8 @@ test("no instructions tool is registered while disabled, and disabling disposes 
       },
     }),
   )
-  expect(state.tooling.length).toBe(3)
-  const still = await readTools(ctx)
-  expect([...still.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
+  expect(state.tooling).toEqual(installed)
+  expect(await toolIds()).toHaveLength(8)
   await Effect.runPromise(
     handlers["project.disable"](undefined, {
       error: () => {
@@ -837,8 +871,9 @@ test("no instructions tool is registered while disabled, and disabling disposes 
       },
     }),
   )
-  const afterDisable = await readTools(ctx)
-  expect([...afterDisable.keys()].filter((id) => id.startsWith("instructions_"))).toEqual([])
+  expect(await toolIds()).toEqual([])
+  expect(await skillIds()).not.toContain(teachingSkillId)
+  expect(await serverNames()).toEqual(beforeServers)
   expect(state.tooling).toEqual([])
 })
 
