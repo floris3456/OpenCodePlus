@@ -443,6 +443,13 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
   }
 }
 
+// A state-only write (set with just `state`) resubmits every record, so this
+// serializer has to carry the same optional fields `toRecord` (index.ts) and
+// `toRpcRecords` (tui/instructions/state.ts) preserve. Two are easy to drop
+// silently: a rule's `message` — the refusal text the model reads — and the
+// shared-inventory `catalogue`, which decides whether a Defaults row resolves
+// through the Agents or the Teams catalogue. Absent keys stay absent so an
+// unset field encodes exactly as it did before it existed.
 function toSnapshotRecords(
   records: readonly CustomizationRecord[],
   splits: readonly SplitRecord[],
@@ -456,6 +463,7 @@ function toSnapshotRecords(
         level: record.level,
         agent: record.agent,
         ...(record.team !== undefined ? { team: record.team } : {}),
+        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
         item: record.item,
         section: record.section,
         ...(record.text === undefined ? {} : { text: record.text }),
@@ -473,6 +481,7 @@ function toSnapshotRecords(
         level: split.level,
         agent: split.agent,
         ...(split.team !== undefined ? { team: split.team } : {}),
+        ...(split.catalogue === undefined ? {} : { catalogue: split.catalogue }),
         item: split.item,
         boundaries: split.boundaries.map((boundary) => ({ ...boundary })),
         updated: split.updated,
@@ -484,6 +493,7 @@ function toSnapshotRecords(
         level: record.level,
         agent: record.agent,
         ...(record.team !== undefined ? { team: record.team } : {}),
+        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
         providerID: record.providerID,
         modelID: record.modelID,
         ...(record.variant === undefined ? {} : { variant: record.variant }),
@@ -497,11 +507,13 @@ function toSnapshotRecords(
         level: record.level,
         agent: record.agent,
         ...(record.team !== undefined ? { team: record.team } : {}),
+        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
         tool: record.tool,
         id: record.id,
         label: record.label,
         patterns: [...record.patterns],
         keywords: [...record.keywords],
+        ...(record.message === undefined ? {} : { message: record.message }),
         updated: record.updated,
       }),
     ),
