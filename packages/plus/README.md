@@ -274,10 +274,10 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   write (`present`, `dirty` or an omitted field) while still applying every
   other field that write supplied; `team_integrate` marks a landed child's
   directory removed, and the settle passes (`reconcile`,
-  `session.execution.started`, `onSessionIdle`) read and write the record
-  through `run.updateRun` in one `state` lock hold. This is a field-level guard
-  for `worktree` only; other fields written from a stale copy can still be
-  overwritten.
+  `session.execution.started`, `onSessionIdle`) and inbox delivery
+  (`deliverInbox`) read and write the record through `run.updateRun` in one
+  `state` lock hold. This is a field-level guard for `worktree` only; other
+  fields written from a stale copy can still be overwritten.
 - Every gated team tool invocation writes an HMAC-SHA256 authenticated `tool.call` record
   to `<teams data dir>/audit.log` (key at `audit.key`, mode `0600`).
   Records contain `seq`, `at`, `kind: "tool.call"`, `run`, `actor`, `sessionID`, `tool`, `ok`,
