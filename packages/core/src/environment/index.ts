@@ -15,6 +15,16 @@ export {
 export { execDefaults } from "./exec-defaults.js"
 export { makeLocalDriver } from "./local.js"
 export { makeMemoryDriver, type MemoryDriver } from "./memory.js"
+export {
+  clientArgs,
+  makeSshDriver,
+  openssh,
+  type SshCarrier,
+  type SshDriver,
+  type SshOptions,
+  type SshTarget,
+  SshUnreachable,
+} from "./ssh.js"
 export { type Interface, node, Service } from "./environment.js"
 
 import type { Driver } from "./driver.js"
