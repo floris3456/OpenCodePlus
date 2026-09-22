@@ -68,7 +68,7 @@ import {
 } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
-import { create, slug } from "./worktree.js"
+import { provision, slug } from "./worktree.js"
 
 export interface TeamApiError {
   readonly code: string
@@ -341,57 +341,65 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const rendered = briefModule.render(brief, { budget, ...(attached === undefined ? {} : { attached }) })
   const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")
 
-  const created = await create(root, {
-    repoRoot: repo.root,
-    repoKey: repo.key,
-    role: targetKind.kind,
-    name: slug(taskID ?? brief.requestID, childID),
-    base: baseSha,
-    workspaceRoot: root,
-  })
-
-  // The starting child run is registered before the host creates its session.
-  // Creating the session activates Plus in the new worktree, and the periodic
-  // sweep collects any worktree no run record claims as an orphan; a record
-  // saved only afterwards leaves a window in which the first delegate's
-  // worktree is removed before the host's FileSystem.realPath resolves it.
-  // Activation has no session id yet, so this record is found by directory
-  // (run.byDirectory) and names the project directory it inherits.
+  // The worktree is created and its starting child run registered in one
+  // repository-lock hold. Creating the session activates Plus in the new
+  // worktree, and the periodic sweep collects any worktree no run record
+  // claims as an orphan; a record saved after the sweep's decision leaves a
+  // window in which this worktree is removed before the host's
+  // FileSystem.realPath resolves it. `provision` closes that window: the
+  // sweep takes the same lock and re-lists records inside it. Activation has
+  // no session id yet, so this record is found by directory (run.byDirectory)
+  // and names the project directory it inherits.
   const now = new Date().toISOString()
-  const opened = startAttempt(
+  const { created, value: streaming } = await provision(
+    root,
     {
-      id: childID,
-      role: brief.role,
-      kind: "w",
-      repo: repo.key,
+      repoRoot: repo.root,
       repoKey: repo.key,
-      directory: created.dir,
-      paths: [...paths],
-      branch: created.branch,
+      role: targetKind.kind,
+      name: slug(taskID ?? brief.requestID, childID),
       base: baseSha,
-      head: created.head,
-      state: "starting",
-      attempts: [],
-      task: taskID,
-      parent: parent.id,
-      children: [],
-      briefSha,
-      bundle: parent.bundle,
-      budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
-      createdAt: now,
-      lastUsed: now,
-      sessionID: null,
-      // The child worktree is outside the parent's tree and carries no copied
-      // project.json; its session activates Plus through this directory.
-      projectDirectory: parent.projectDirectory ?? parent.directory,
-      configDigest: null,
-      history: [],
+      workspaceRoot: root,
     },
-    { trigger: "delegate" },
+    async (worktree) => {
+      const opened = startAttempt(
+        {
+          id: childID,
+          role: brief.role,
+          kind: "w",
+          repo: repo.key,
+          repoKey: repo.key,
+          directory: worktree.dir,
+          paths: [...paths],
+          branch: worktree.branch,
+          base: baseSha,
+          head: worktree.head,
+          state: "starting",
+          attempts: [],
+          task: taskID,
+          parent: parent.id,
+          children: [],
+          briefSha,
+          bundle: parent.bundle,
+          budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
+          createdAt: now,
+          lastUsed: now,
+          sessionID: null,
+          // The child worktree is outside the parent's tree and carries no
+          // copied project.json; its session activates Plus through this
+          // directory.
+          projectDirectory: parent.projectDirectory ?? parent.directory,
+          configDigest: null,
+          history: [],
+        },
+        { trigger: "delegate" },
+      )
+      const admitted = attemptTransition(opened, "admitted", "admit")
+      const registered = attemptTransition(admitted, "streaming", "first_event")
+      await saveRun(root, registered)
+      return registered
+    },
   )
-  const admitted = attemptTransition(opened, "admitted", "admit")
-  const streaming = attemptTransition(admitted, "streaming", "first_event")
-  await saveRun(root, streaming)
 
   // The child run is a session in this same process, created directly in its
   // worktree; no session.move is needed.

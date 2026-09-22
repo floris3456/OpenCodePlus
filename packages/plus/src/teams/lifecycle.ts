@@ -23,8 +23,8 @@ import {
   type RunRecord,
 } from "./run.js"
 import { Policy, parseDuration } from "./schema.js"
-import { readJson } from "./store.js"
-import { orphans, ownedRoot, remove } from "./worktree.js"
+import { lock, readJson } from "./store.js"
+import { orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -478,27 +478,42 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
     reaped.push(record.id)
   }
 
-  // 5. Remove orphans for each repoKey
+  // 5. Remove orphans for each repoKey. Provisioning (`worktree.provision`)
+  // holds the repository lock across create + run registration, so the sweep
+  // takes the same lock here and re-lists the run records inside it: a
+  // worktree can never be judged an orphan while its record is still being
+  // written, no matter when this pass read its opening snapshot. The age guard
+  // covers a worktree created outside that path — `create` finished, nothing
+  // registered it yet — which is exactly what `policy.timeouts.startMs` is a
+  // generous bound for.
   const orphansRemoved: string[] = []
   for (const [repoKey, repoRoot] of repoRoots.entries()) {
-    const knownDirs: string[] = []
-    for (const r of allRuns) {
-      if (r.repoKey === repoKey) {
-        const current = (await loadRecordSafe(root, r.id)) ?? r
-        if (current.worktree !== "removed") {
-          knownDirs.push(current.directory)
+    await lock(root, "repo", repoKey, async () => {
+      const knownDirs: string[] = []
+      const entries = await Effect.runPromise(
+        io(() => readdir(path.join(root, "runs"))).pipe(
+          Effect.map((names) => [...names]),
+          Effect.catchCause(() => Effect.succeed([] as string[])),
+        ),
+      )
+      for (const entry of entries) {
+        if (entry.startsWith(".")) continue
+        const record = await loadRecordSafe(root, entry)
+        if (record === undefined || record.repoKey !== repoKey) continue
+        if (record.worktree !== "removed") knownDirs.push(record.directory)
+      }
+      const orphanList = await orphans(repoRoot, ownedRoot(root, repoKey), knownDirs, {
+        minAgeMs: pol.timeouts.startMs,
+      }).catch(() => [] as string[])
+      for (const orphanPath of orphanList) {
+        try {
+          await removeLocked(orphanPath, { repoRoot, repoKey, force: true })
+          orphansRemoved.push(orphanPath)
+        } catch {
+          // ignore
         }
       }
-    }
-    const orphanList = await orphans(repoRoot, ownedRoot(root, repoKey), knownDirs).catch(() => [] as string[])
-    for (const orphanPath of orphanList) {
-      try {
-        await remove(root, orphanPath, { repoRoot, repoKey, force: true })
-        orphansRemoved.push(orphanPath)
-      } catch {
-        // ignore
-      }
-    }
+    })
   }
 
   return { reaped, skippedDirty, orphansRemoved, removeFailed }
