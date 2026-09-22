@@ -17,7 +17,7 @@ $$\text{delegate} \longrightarrow \text{get\_context} \longrightarrow \text{edit
   - `muse-implementer`: **10 landed cycles** (Cycles 2, 5, 9, 12, 15, 17, 20, 23, 26, 28; requirement $\ge 4$).
 - **Lifecycle Qualification**:
   - All **30 cycles** are verified complete qualifying lifecycles.
-  - Every single cycle's merge was verified against its own merge entry (`childRun`, `integrateEntry`, and `integrateHead`). Cycles 16–30 have full merge receipts retained inline in committed summaries; cycles 1–15 had their receipts verified live and joined before lab teardown (see Section 2.1 and `captures/merge-receipt-joins.json`).
+  - Every single cycle's merge was verified against its own merge entry (`childRun`, `integrateEntry`, and `integrateHead`). Cycles 16–30 have full merge receipts retained inline in committed summaries; cycles 1–15 had their receipts verified live and joined before lab teardown (see Section 2.1 and `soak-2026-09-22-fixed/captures/merge-receipt-joins.json`).
 - **Simultaneous Delegation Pairs (Two Children in Flight)**:
   - **10 cycles** ran with two children simultaneously in flight across **5 distinct pairs** (contract requirement: $\ge 6$ cycles):
     - **Pair 1 (Cycles 8 & 9)**: Dispatched simultaneously at `2026-09-22T14:07:43.743947+00:00` / `2026-09-22T14:07:43.744193+00:00` from common base `de5167a18ea42b9db84f87dec8741b0aaf250297`; Cycle 8 landed `0c6b35cc25d78ba3ea9b6ad0bfc489a58ffd6d79`, Cycle 9 landed `97f27dcca9580c1643961b1cfc4eebfb152b6089`.
@@ -115,7 +115,7 @@ This proves that `gemini-implementer`, `muse-implementer`, and `sol-orchestrator
 
 ## 2. Per-Cycle Execution Table (Numbered Cycles 1–30)
 
-All timestamps are recorded in ISO 8601 UTC directly from the committed per-cycle driver logs (`cycles/cycle-NN.json`) and summary receipts. The **Wall Time (Start→End)** column reports true elapsed cycle wall-clock time computed from each row's own `started` and `ended` timestamps. For paired cycles, the driver's active subprocess execution time (`elapsedSec` in the driver summary) is significantly lower for the second child (e.g. 3.2s for Cycle 9 vs. 23.1s wall time, 3.5s for Cycle 11 vs. 29.9s wall time, 4.2s for Cycle 13 vs. 34.1s wall time, 5.5s for Cycle 15 vs. 27.0s wall time, and 13.9s for Cycle 26 vs. 49.2s wall time) because `elapsedSec` measures only active driver subprocess execution time and excludes the queue time spent in wait while its simultaneous partner integrates. Both figures are preserved below. Outcomes are strictly classified as `landed` or `failed`. Every cycle's merge was verified against its own merge entry (see Section 2.1 for receipt retention details across cycles 1–15 vs. 16–30).
+All timestamps are recorded in ISO 8601 UTC directly from the committed per-cycle driver logs (`soak-2026-09-22-fixed/cycles/cycle-NN.json`) and summary receipts (`soak-2026-09-22-fixed/summary-1790086656.json` and `soak-2026-09-22-fixed/summary-1790087052.json`). The **Wall Time (Start→End)** column reports true elapsed cycle wall-clock time computed from each row's own `started` and `ended` timestamps. For paired cycles, the original report's paired-cycle `Elapsed` figures (`elapsedSec` in the original driver summary) came from a runner that summed driver-call durations, which is significantly lower for the second child (e.g. 3.2s for Cycle 9 vs. 23.1s wall time, 3.5s for Cycle 11 vs. 29.9s wall time, 4.2s for Cycle 13 vs. 34.1s wall time, 5.5s for Cycle 15 vs. 27.0s wall time, and 13.9s for Cycle 26 vs. 49.2s wall time) because `elapsedSec` measured only active driver subprocess execution time and excluded the queue time spent in wait while its simultaneous partner integrates. The runner now records `wallElapsedSec` (delegate start → tail end) and keeps the sum separately as `driverActiveSec`; the original raw captures are unchanged. Both figures are preserved below. Outcomes are strictly classified as `landed` or `failed`. Every cycle's merge was verified against its own merge entry (see Section 2.1 for receipt retention details across cycles 1–15 vs. 16–30).
 
 | Cycle | Kind | Role | Run ID | Child Session ID | Start Time | End Time | Wall Time (Start→End) | Outcome | Landed Commit / Notes |
 |:---:|:---|:---|:---|:---|:---|:---|:---:|:---:|:---|
@@ -152,11 +152,11 @@ All timestamps are recorded in ISO 8601 UTC directly from the committed per-cycl
 
 ### 2.1 Merge Receipt Evidence and Retention Status
 
-Verification of per-cycle merge receipts is documented in the committed join table at [`captures/merge-receipt-joins.json`](captures/merge-receipt-joins.json) (and [`captures/merge-receipt-joins.txt`](captures/merge-receipt-joins.txt)):
+Verification of per-cycle merge receipts is documented in the committed join table at [`soak-2026-09-22-fixed/captures/merge-receipt-joins.json`](soak-2026-09-22-fixed/captures/merge-receipt-joins.json) (and [`soak-2026-09-22-fixed/captures/merge-receipt-joins.txt`](soak-2026-09-22-fixed/captures/merge-receipt-joins.txt)):
 
-- **Cycles 16–30**: Have their **full merge receipts retained inline** in the committed summaries (`cycles/summary-cycle-NN.json`), each naming its own `childRun`, `state: "landed"`, and `landedHead` matching the commit returned by `team_integrate`. Exactly 15 of 30 receipts are retained in full, and every retained receipt names its own `childRun`.
-- **Cycles 1–15**: Have `childRun`, `integrateEntry`, and `integrateHead` recorded in the committed captures (`cycles/cycle-NN.json`), but the **receipt files themselves are not recoverable** because the lab was torn down after the soak run. The join was performed live at the time and independently re-measured by the build seat before teardown (`build-seat-verification.md`). The receipt files themselves do not exist on disk and were not re-verified after teardown.
-- **Reference**: See [`captures/merge-receipt-joins.json`](captures/merge-receipt-joins.json) for the full 30-cycle mapping of `cycle`, `childRun`, `integrateEntry`, `integrateHead`, and receipt retention status.
+- **Cycles 16–30**: Have their **full merge receipts retained inline** in the committed summaries (`soak-2026-09-22-fixed/summary-1790086656.json` and `soak-2026-09-22-fixed/summary-1790087052.json`, inside the `mergeReceipt` field of each row), each naming its own `childRun`, `state: "landed"`, and `landedHead` matching the commit returned by `team_integrate`. Exactly 15 of 30 receipts are retained in full, and every retained receipt names its own `childRun`.
+- **Cycles 1–15**: Have `childRun`, `integrateEntry`, and `integrateHead` recorded in the committed captures (`soak-2026-09-22-fixed/cycles/cycle-NN.json`), but the **receipt files themselves are not recoverable** because the lab was torn down after the soak run. The join was performed live at the time and independently re-measured by the build seat before teardown (`build-seat-verification.md`). The receipt files themselves do not exist on disk and were not re-verified after teardown.
+- **Reference**: See [`soak-2026-09-22-fixed/captures/merge-receipt-joins.json`](soak-2026-09-22-fixed/captures/merge-receipt-joins.json) for the full 30-cycle mapping of `cycle`, `childRun`, `integrateEntry`, `integrateHead`, and receipt retention status.
 
 ---
 
@@ -199,7 +199,7 @@ The garbage collection pass evaluated all runs against the policy and yielded th
   **0 remaining worktree directories**.
 
 ### 3.4 Post-GC Complete Run Inventory (`list all:true`)
-The complete output of `team_list({ all: true })` following the garbage collection sweep (`packages/plus/docs/soak-2026-09-22-fixed/captures/list-all-after-gc.json` and `captures/gc-list-audit.json["inventory"]`) contains all 34 registered runs across the soak execution: 3 reaped superseded original workers, 30 landed idle workers, and 1 working root orchestrator session:
+The complete output of `team_list({ all: true })` following the garbage collection sweep (`packages/plus/docs/soak-2026-09-22-fixed/captures/list-all-after-gc.json` and `soak-2026-09-22-fixed/captures/gc-list-audit.json["inventory"]`) contains all 34 registered runs across the soak execution: 3 reaped superseded original workers, 30 landed idle workers, and 1 working root orchestrator session:
 
 | # | Run ID | Role | State | Worktree | Task | Head | Session ID | Parent |
 |---:|:---|:---|:---:|:---:|:---:|:---:|:---|:---|
@@ -375,6 +375,118 @@ The preliminary captures preserved under `packages/plus/docs/soak-2026-09-22-fix
 
 In those preliminary runs:
 - The team model override row had been registered via `model.add`, but was not marked `active: true`.
-- Because `resolveActiveModel` requires `record.active === true`, it did not write the model overrides to `agent.model`. As seen in `preliminary/summary-1790085583.json`, the sessions reported model `{ "id": "gpt-5.6-luna", "providerID": "cliproxyapi" }` without the verified `"variant": "low"` tag.
+- Because `resolveActiveModel` requires `record.active === true`, it did not write the model overrides to `agent.model`. As seen in `soak-2026-09-22-fixed/preliminary/summary-1790085583.json`, the sessions reported model `{ "id": "gpt-5.6-luna", "providerID": "cliproxyapi" }` without the verified `"variant": "low"` tag.
 - Consequently, these preliminary runs do not satisfy the D6 proof requirement and do not count toward the thirty official soak cycles.
-- The final thirty-cycle soak run was executed in clean lab `resoak3`, where the model row was activated first, verified at `/api/agent` via `captures/model-proof.txt` before cycle 1, and successfully completed 30 out of 30 qualifying cycles.
+- The final thirty-cycle soak run was executed in clean lab `resoak3`, where the model row was activated first, verified at `/api/agent` via `soak-2026-09-22-fixed/captures/model-proof.txt` before cycle 1, and successfully completed 30 out of 30 qualifying cycles.
+
+---
+
+## 5. Supplementary Acceptance Lab (`resoak4`, Cycles 31–45)
+
+### 5.1 Purpose and Nature of the Supplementary Lab
+To close the reviewer's preservation gap regarding durable raw merge receipts, a second isolated lab, **`resoak4`**, was run on source **`a539b0bfba6a48f4d6696d7c33b248d19390549e`**. In the original thirty-cycle soak run (`resoak3`), raw merge receipt files were inspected and verified live prior to teardown but only retained inline for cycles 16–30. The `resoak4` lab was executed specifically to establish complete durable evidence exported per cycle as it finished, before any teardown.
+
+**Precise Classification**: This supplementary acceptance lab is **additional verification closing a real evidence-preservation gap**. It is **not** a recovery of the original cycles 1–15 receipts, and the original thirty-cycle result stands as its own historical evidence. The two runs are distinct and are not relabeled or merged.
+
+A Git diff of `packages/plus/src` between the original source commit `386b224ffa51ece53e63ce5cc02da936eaf97429` and supplementary commit `a539b0bfba6a48f4d6696d7c33b248d19390549e` confirmed identical production code (diff exit 0 with zero changes in `packages/plus/src`); intervening commits updated tests, documentation, and the external soak runner harness.
+
+### 5.2 Evidence Inventory
+All durable evidence for this supplementary run is committed under `packages/plus/docs/soak-2026-09-22-fixed/supplementary/`:
+- **Model Verification**: [`soak-2026-09-22-fixed/supplementary/captures/model-proof.txt`](soak-2026-09-22-fixed/supplementary/captures/model-proof.txt) — Live `/api/agent` query returning `{"id":"gpt-5.6-luna","providerID":"cliproxyapi","variant":"low"}` for `gemini-implementer`, `muse-implementer`, and `sol-orchestrator`, taken **before any delegation**.
+- **Durable Receipts**: [`soak-2026-09-22-fixed/supplementary/receipts/cycle-31.json`](soak-2026-09-22-fixed/supplementary/receipts/cycle-31.json) through `cycle-45.json` — **15 cycles**, each exported **as it completed** with its own `mergeReceipt`, its own `settled` entry, `integrate` output, `sourceHead`, and model.
+- **Driver Logs & Summaries**: [`soak-2026-09-22-fixed/supplementary/cycles/`](soak-2026-09-22-fixed/supplementary/cycles/) — Full driver execution logs per cycle; [`soak-2026-09-22-fixed/supplementary/summary-1790088789.json`](soak-2026-09-22-fixed/supplementary/summary-1790088789.json) and [`soak-2026-09-22-fixed/supplementary/summary-1790089042.json`](soak-2026-09-22-fixed/supplementary/summary-1790089042.json) — Intermediate and final run summaries.
+- **Offline Join Verification**: [`soak-2026-09-22-fixed/supplementary/captures/offline-join-verification.txt`](soak-2026-09-22-fixed/supplementary/captures/offline-join-verification.txt) — Automated join re-validated **offline, reading only exported files**, before lab teardown.
+- **Lab Lifecycle Captures**: [`soak-2026-09-22-fixed/supplementary/captures/list-all.json`](soak-2026-09-22-fixed/supplementary/captures/list-all.json), [`soak-2026-09-22-fixed/supplementary/captures/gc-list-audit.json`](soak-2026-09-22-fixed/supplementary/captures/gc-list-audit.json), and [`soak-2026-09-22-fixed/supplementary/captures/teardown.txt`](soak-2026-09-22-fixed/supplementary/captures/teardown.txt).
+
+### 5.3 Measured Facts and Headline Metrics
+The supplementary run established the following verified facts:
+- **15 cycles executed**, all reaching `status: "done"` and `state: "landed"`.
+- **15/15 fully joined offline** reading only committed export files without consulting a live lab or database.
+- **4 paired cycles** (**37, 38, 44, 45**) executed with two children simultaneously in flight.
+- **Combined Fully Auditable Set**: Combined with the original cycles 16–30 (which retain their full merge receipts inline in `soak-2026-09-22-fixed/summary-1790086656.json` and `soak-2026-09-22-fixed/summary-1790087052.json`), there are **30 distinct fully auditable cycles** with complete individual merge receipts, **6 paired cycles** (37, 38, 44, 45 from supplementary, plus 25, 26 from original), and **3 qualifying stop cycles** (16, 17, 18 from original).
+- **The Three Zero-Counts**:
+  - **Zero** `FileSystem.realPath` failures (**0**).
+  - **Zero** in-flight `E_BOUNDS` refusals (**0**).
+  - **Zero** stray root runs (**0**; exactly one root run `main-d8816d81b3629086` exists in the entire lab).
+- **Garbage Collection (GC)**:
+  - Evaluated 16 runs against policy (`reapAfter: "0ms"`, `keepPromotedFrom: true`).
+  - **0 reaped**, **0 orphans removed**, **0 dirty skips**, **0 remove failures**.
+  - **0 worktree directories left** (`worktreeDirsRemaining: []`).
+  - Post-GC inventory (`team_list({all:true})`): **16 runs** (1 working root orchestrator `main-d8816d81b3629086` + 15 idle completed child workers).
+- **Cryptographic Audit Chain**:
+  - Verification confirmed **`{"ok": true, "lines": 152}`** unbroken HMAC-SHA256 signature chain.
+- **Teardown Verification**:
+  - Port `55421` released: `connect_ex=111`, `listeners=[]`, `not_listening=true`.
+  - Lab directory removed: `directory_absent=true`.
+  - Residual `/proc` processes: **0 residual `/proc` references** to any resoak lab (18 owned processes cleanly stopped).
+  - Operator live server on port `40374` remained untouched (`connect_ex=0`).
+
+### 5.4 Timing Metric Correction
+In the original report, paired-cycle `Elapsed` figures reflected a runner that summed individual driver-call durations (`elapsedSec`). In the updated driver used for `resoak4`, the runner records true wall-clock time as `wallElapsedSec` (measured from initial delegate dispatch to final settled wait) and keeps the subprocess execution sum separately as `driverActiveSec`. The original raw captures remain unchanged.
+
+### 5.5 Supplementary Execution Table (Cycles 31–45)
+
+| Cycle | Kind | Role | Run ID | Start Time | End Time | Wall Time | Driver Active | Outcome | Landed Commit / Merge Receipt ID |
+|:---:|:---|:---|:---|:---|:---|:---:|:---:|:---:|:---|
+| **31** | single | `gemini-implementer` | `w-8afc29863fbd3025` | 2026-09-22T14:49:52.571168Z | 2026-09-22T14:50:13.079711Z | 20.5s | 20.5s | `landed` | Checkpointed `a929512`, integrated `a929512003439c7787dc891f1e3287b07a1d8e01` (receipt `01M34SH35R351QEPFRVKHC17VY`). Worktree removed. |
+| **32** | single | `muse-implementer` | `w-9711f106fffc9860` | 2026-09-22T14:50:14.090472Z | 2026-09-22T14:50:39.432999Z | 25.3s | 25.3s | `landed` | Checkpointed `da867ce`, integrated `da867ce9fe0a297c01ef8def4ea1fd4f5a404d23` (receipt `01M34SHWXA40BJQN6MJV0W9FCW`). Worktree removed. |
+| **33** | single | `gemini-implementer` | `w-a44c2e75531aa800` | 2026-09-22T14:50:40.436763Z | 2026-09-22T14:51:08.349676Z | 27.9s | 27.9s | `landed` | Checkpointed `435e4d5`, integrated `435e4d538767a595991bdcda52681ee6bae0c4ef` (receipt `01M34SJS563E0YHQ2W0TZD53TD`). Worktree removed. |
+| **34** | single | `gemini-implementer` | `w-0f6207b5cef1f0f3` | 2026-09-22T14:51:09.357979Z | 2026-09-22T14:51:32.942504Z | 23.6s | 23.6s | `landed` | Checkpointed `49daa58`, integrated `49daa5839926f4bc8959eeea7302ae191e956b9f` (receipt `01M34SKH5KN3KEMDZQ575PJ3EE`). Worktree removed. |
+| **35** | single | `muse-implementer` | `w-b2d35cf91e216285` | 2026-09-22T14:51:33.945489Z | 2026-09-22T14:52:05.373393Z | 31.4s | 31.4s | `landed` | Checkpointed `b708115`, integrated `b708115e6d82b38c3994db6f7a249d53a3e49bc9` (receipt `01M34SMGTZC3XECCAYG3QKZM9P`). Worktree removed. |
+| **36** | single | `gemini-implementer` | `w-e3858ef8188d464a` | 2026-09-22T14:52:06.377013Z | 2026-09-22T14:52:41.975156Z | 35.6s | 35.6s | `landed` | Checkpointed `39795fc`, integrated `39795fc509733b3f1d711c8c386ce16d538ea36f` (receipt `01M34SNMJMQB730YEPFCNMAGZ4`). Worktree removed. |
+| **37** | pair | `gemini-implementer` | `w-4bf5d7eef28f6038` | 2026-09-22T14:52:42.982524Z | 2026-09-22T14:53:07.968162Z | 25.0s | 25.0s | `landed` | **Simultaneous Pair (A)**. Base `39795fc`. Checkpointed `0a7c18c`, integrated `0a7c18c9147336607e20aae3de0c87bcf39bc677` (receipt `01M34SPDX39820FKHGKS0WYGCK`). |
+| **38** | pair | `muse-implementer` | `w-9f9dd29e58158281` | 2026-09-22T14:52:42.983034Z | 2026-09-22T14:53:08.236816Z | 25.3s | 1.7s | `landed` | **Simultaneous Pair (B)**. Base `39795fc`. Driver active: 1.7s (waited behind Cycle 37). Checkpointed `1e1a550`, integrated `0a68d9b326c0803dcbb15959be724ecc7ce2ce9f` (receipt `01M34SPE7C4J2JDYWBA3P29H7B`). |
+| **39** | single | `gemini-implementer` | `w-0dfe29528eb15d14` | 2026-09-22T14:54:32.769689Z | 2026-09-22T14:54:54.708733Z | 21.9s | 21.9s | `landed` | Checkpointed `daf6dd9`, integrated `daf6dd9a31437fe42a386b6ce3945a5633e45131` (receipt `01M34SSP1DAMDFSDZ1K13Q329P`). Worktree removed. |
+| **40** | single | `muse-implementer` | `w-b619b0181c8f95f7` | 2026-09-22T14:54:55.732332Z | 2026-09-22T14:55:23.203282Z | 27.5s | 27.5s | `landed` | Checkpointed `1a9a44c`, integrated `1a9a44c12c6bc30cc11d3691768b23eb7af4aa86` (receipt `01M34STJ0BS6XDNSG8DPCC4WCT`). Worktree present at inventory, removed post-teardown. |
+| **41** | single | `gemini-implementer` | `w-b268fb2e138b912a` | 2026-09-22T14:55:24.221313Z | 2026-09-22T14:55:46.464842Z | 22.2s | 22.2s | `landed` | Checkpointed `60dcb1c`, integrated `60dcb1c321a450eb2cd2b9cc6efa29967e08e173` (receipt `01M34SV8R73GT73RVT42590Z36`). Worktree removed. |
+| **42** | single | `gemini-implementer` | `w-799521cb59e24a98` | 2026-09-22T14:55:47.499319Z | 2026-09-22T14:56:17.478855Z | 30.0s | 30.0s | `landed` | Checkpointed `e0d1692`, integrated `e0d169212ad87321fc26ce8ef805a09d7ceca2e8` (receipt `01M34SW6SM3XGP09KCYT53B9KK`). Worktree removed. |
+| **43** | single | `muse-implementer` | `w-a6db49d81689660a` | 2026-09-22T14:56:18.494812Z | 2026-09-22T14:56:46.755597Z | 28.3s | 28.3s | `landed` | Checkpointed `13c68c9`, integrated `13c68c927d6325f1bea6b5a8ea71fdf791ab591b` (receipt `01M34SX3M1Q5NAGGV59NC9AB8N`). Worktree removed. |
+| **44** | pair | `gemini-implementer` | `w-a36034bb0095edc7` | 2026-09-22T14:56:47.821954Z | 2026-09-22T14:57:20.865038Z | 33.0s | 33.1s | `landed` | **Simultaneous Pair (A)**. Base `13c68c9`. Checkpointed `6c721d8`, integrated `6c721d88506f02986c8fdaebddca7be47ac67473` (receipt `01M34SY4Y7EXWPZ9VGV533BX52`). |
+| **45** | pair | `muse-implementer` | `w-fb4355a62e68d6b5` | 2026-09-22T14:56:47.822214Z | 2026-09-22T14:57:21.667476Z | 33.8s | 5.4s | `landed` | **Simultaneous Pair (B)**. Base `13c68c9`. Driver active: 5.4s (waited behind Cycle 44). Checkpointed `0c0b7b3`, integrated `aadc3d821c12574de14fcab2a5c419026038b8e5` (receipt `01M34SY5ABWX4S1ARW8A43GPJR`). |
+
+---
+
+## 6. Class-A Lock and In-Lock Re-List Negative Controls (T6 Proof)
+
+The two class-A regression tests in `packages/plus/test/teams/gc.test.ts` (`"provision's repo lock blocks gc's orphan sweep while a worktree registers a run"` and `"gc's in-lock re-list finds a run registered after its opening snapshot"`) are now independently protected against silent regression.
+
+To verify that the tests are genuinely sensitive to each component of the fix and not masked by the age guard (`startMs`), controls were run on a **separate isolated worktree** (`worktrees/soak-lock-proof/opencode`) based on checkpoint `8896b5600`; those mutation commits are **evidence only and were never integrated**:
+
+- **Baseline at `8896b5600`**: Both tests pass cleanly (**2 pass / 0 fail**, 25 `expect()` calls across `gc.test.ts`):
+  ```
+  (pass) provision's repo lock blocks gc's orphan sweep while a worktree registers a run [322.58ms]
+  (pass) gc's in-lock re-list finds a run registered after its opening snapshot [55.74ms]
+  2 pass, 16 filtered out, 0 fail, 25 expect() calls
+  ```
+
+- **Control A (`cea1437eb`)**: Neutralises only `provision`'s spanning lock by releasing the repo lock prior to the registration callback in `worktree.ts`:
+  - **Result**: **0 pass / 1 fail** at `gc.test.ts:643`, `dirExists` false:
+    ```
+    643 |       expect(await dirExists(dir)).toBe(true)
+    error: expect(received).toBe(expected)
+    Expected: true
+    Received: false
+    at gc.test.ts:643:36
+    (fail) provision's repo lock blocks gc's orphan sweep while a worktree registers a run [63.62ms]
+    0 pass, 17 filtered out, 1 fail, 4 expect() calls
+    ```
+  - **Finding**: With the spanning lock removed, GC actually removed the registering worktree, i.e. the class-A symptom itself (`dirExists` was `false`). Restored in `5e86a3e43`, diff against `8896b5600` empty.
+
+- **Control B (`2849c59d7`)**: Neutralises only the in-lock re-list by replacing the in-lock re-read with the opening snapshot `allRuns`:
+  - **Result**: **0 pass / 2 fail** at `gc.test.ts:661` and `:775`, both aged registering worktrees in `orphansRemoved`:
+    ```
+    661 |       expect(res.orphansRemoved).not.toContain(dir)
+    error: expect(received).not.toContain(expected)
+    Expected to not contain: ".../proviscccc-20260922-1650"
+    (fail) provision's repo lock blocks gc's orphan sweep while a worktree registers a run [318.04ms]
+
+    775 |       expect(res.orphansRemoved).not.toContain(dir)
+    error: expect(received).not.toContain(expected)
+    Expected to not contain: ".../provisdddd-20260922-1650"
+    (fail) gc's in-lock re-list finds a run registered after its opening snapshot [90.72ms]
+    0 pass, 16 filtered out, 2 fail, 17 expect() calls
+    ```
+  - **Finding**: With the in-lock re-list disabled, both aged registering worktrees were mistakenly treated as orphans and included in `orphansRemoved`. Restored in `9b7b48832`, diff empty, back to **2 pass / 0 fail**.
+
+### Conclusion
+Each half of the fix, removed on its own, turns the tests red — so the lock and the in-lock re-list are now protected against silent regression rather than being masked by the age guard.
