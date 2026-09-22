@@ -30,25 +30,16 @@ export interface UpstreamInventoryReport {
   behind: number
   commitCounts: CommitCounts
   forkFiles: string[]
-  forkChangedFiles: string[]
   groupedByPackage: Record<string, string[]>
-  byPackage: Record<string, string[]>
   coreTouch: string[]
-  coreTouchFiles: string[]
   upstreamFiles: string[]
 }
 
 export interface UpstreamInventoryOptions {
-  baseRef?: string
-  base?: string
-  compareRef?: string
-  compare?: string
-  comparisonRef?: string
-  targetRef?: string
+  baseRef: string
+  compareRef: string
   repoDir?: string
-  repositoryDirectory?: string
   outputPath?: string
-  output?: string
 }
 
 interface GitCommandResult {
@@ -100,7 +91,7 @@ async function resolveCommit(cwd: string, ref: string, role: string): Promise<st
   return result.stdout
 }
 
-export function getPackageForFile(filePath: string, repoDir?: string): string {
+export function getPackageForFile(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/")
   const segments = normalized.split("/")
 
@@ -116,16 +107,6 @@ export function getPackageForFile(filePath: string, repoDir?: string): string {
     return `${segments[0]}/${segments[1]}`
   }
 
-  if (repoDir && segments.length > 1) {
-    for (let i = segments.length - 1; i >= 1; i--) {
-      const candidateDir = segments.slice(0, i).join("/")
-      const packageJsonPath = join(repoDir, candidateDir, "package.json")
-      if (Bun.file(packageJsonPath).size > 0) {
-        return candidateDir
-      }
-    }
-  }
-
   if (segments[0] === "script" || segments[0] === "docs" || segments[0] === "infra" || segments[0] === "patches") {
     return "root"
   }
@@ -133,10 +114,10 @@ export function getPackageForFile(filePath: string, repoDir?: string): string {
   return segments[0]
 }
 
-export function groupFilesByPackage(files: string[], repoDir?: string): Record<string, string[]> {
+export function groupFilesByPackage(files: string[]): Record<string, string[]> {
   const grouped: Record<string, string[]> = {}
   for (const file of files) {
-    const pkg = getPackageForFile(file, repoDir)
+    const pkg = getPackageForFile(file)
     if (!grouped[pkg]) {
       grouped[pkg] = []
     }
@@ -159,26 +140,11 @@ function parseNullTerminatedPaths(stdout: string): string[] {
     .sort()
 }
 
-export async function upstreamInventory(
-  baseOrOptions: string | UpstreamInventoryOptions,
-  compareRefArg?: string,
-  repoDirArg?: string,
-  outputPathArg?: string,
-): Promise<UpstreamInventoryReport> {
-  const options: UpstreamInventoryOptions =
-    typeof baseOrOptions === "string"
-      ? {
-          baseRef: baseOrOptions,
-          compareRef: compareRefArg,
-          repoDir: repoDirArg,
-          outputPath: outputPathArg,
-        }
-      : baseOrOptions
-
-  const baseRef = options.baseRef ?? options.base
-  const compareRef = options.compareRef ?? options.compare ?? options.comparisonRef ?? options.targetRef
-  const repoDir = options.repoDir ?? options.repositoryDirectory ?? process.cwd()
-  const outputPath = options.outputPath ?? options.output
+export async function upstreamInventory(options: UpstreamInventoryOptions): Promise<UpstreamInventoryReport> {
+  const baseRef = options.baseRef
+  const compareRef = options.compareRef
+  const repoDir = options.repoDir ?? process.cwd()
+  const outputPath = options.outputPath
 
   if (!baseRef) {
     throw new MissingRefError(baseRef ?? "", "Base reference is required")
@@ -219,7 +185,7 @@ export async function upstreamInventory(
   const upstreamSet = new Set(upstreamFiles)
   const coreTouch = forkFiles.filter((file) => upstreamSet.has(file)).sort()
 
-  const groupedByPackage = groupFilesByPackage(forkFiles, repoDir)
+  const groupedByPackage = groupFilesByPackage(forkFiles)
 
   const report: UpstreamInventoryReport = {
     baseRef,
@@ -229,11 +195,8 @@ export async function upstreamInventory(
     behind,
     commitCounts: { ahead, behind },
     forkFiles,
-    forkChangedFiles: forkFiles,
     groupedByPackage,
-    byPackage: groupedByPackage,
     coreTouch,
-    coreTouchFiles: coreTouch,
     upstreamFiles,
   }
 
@@ -269,16 +232,12 @@ function parseCliArgs(args: string[]): {
       result.baseRef = arg.slice(7)
       continue
     }
-    if (arg === "--compare" || arg === "--comparison" || arg === "-c") {
+    if (arg === "--compare" || arg === "-c") {
       result.compareRef = args[++i]
       continue
     }
     if (arg.startsWith("--compare=")) {
       result.compareRef = arg.slice(10)
-      continue
-    }
-    if (arg.startsWith("--comparison=")) {
-      result.compareRef = arg.slice(13)
       continue
     }
     if (arg === "--repo" || arg === "-r") {
