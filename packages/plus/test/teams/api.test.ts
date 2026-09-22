@@ -1312,6 +1312,54 @@ test("delegate refuses a fifth working child with E_BOUNDS", async () => {
   })
 })
 
+test("B — four live children plus one superseded-on-create → a fifth delegate succeeds", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_bounds_d3",
+      })
+      await saveRun(root, parent)
+
+      // 3 live working children for parent
+      const parentLiveIds = ["w-aaaaaaaaaaaaaaaa", "w-bbbbbbbbbbbbbbbb", "w-cccccccccccccccc"]
+      for (const id of parentLiveIds) await saveRun(root, workingChild(id, repo))
+
+      // 1 live working child for another parent (total 4 live children in workspace)
+      const otherChild = { ...workingChild("w-dddddddddddddddd", repo), parent: "main-other0000000000" }
+      await saveRun(root, otherChild)
+
+      // 1 child whose session creation failed (superseded-on-create, sessionID is null)
+      const failedChild = baseRun({
+        id: "w-eeeeeeeeeeeeeeee",
+        role: "muse-implementer",
+        directory: repo.dir,
+        paths: ["docs/*"],
+        base: repo.head,
+        head: repo.head,
+        state: "starting",
+        attempts: [],
+        parent: parent.id,
+        sessionID: null,
+      })
+      await saveRun(root, failedChild)
+
+      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const result = await api.delegate(delegateInput({ requestID: "fifth-delegate-1" }), callerFor(parent))
+      const value = required(result) as { run: string }
+      expect(typeof value.run).toBe("string")
+      expect(value.run.startsWith("w-")).toBe(true)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
 test("delegate switches the child to the role pin before prompting", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
