@@ -980,8 +980,12 @@ implements the tool. The tool layer validates the input once, against the
 registered schema; handlers receive the decoded value and never re-decode.
 `E_INPUT` is therefore unreachable from a tool call. Tool input schemas accept
 explicit `null` values for optional fields (`task: null`, `scope.forbidden: null`,
-`findings: null`, etc.) as equivalent to omission, while `null` on required fields
-strictly produces a schema validation error.
+`findings: null`, etc.) as equivalent to omission at every depth of the input:
+a `null` is dropped wherever `undefined` already decodes, including array
+elements (`checks: [{ id, argv, cwd: null }]`) and fields behind optional or
+default wrappers (`context: { interfaces: null }`,
+`followup({ budget: { turns: null } })`), while `null` on required fields
+strictly produces a schema validation error at any depth.
 
 ### Team rules are instructions rows (`instructions/team-policy-rows.ts`)
 

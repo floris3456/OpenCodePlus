@@ -1,31 +1,132 @@
-import { Effect, Option, Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 /**
- * Strips explicit null for optional fields in an object input against a schema.
- * Required fields with null remain null so they produce schema validation errors.
+ * Removes explicit null for optional fields in an input, at every depth:
+ * struct fields, array elements, and fields behind optional/default wrappers
+ * all follow the same rule. Required fields keep their null so decoding still
+ * fails with a schema error.
  */
-export function stripNullForOptional(schema: any, input: unknown): unknown {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) return input
-  const fields = schema.fields
-  if (!fields) return input
+export function stripNullForOptional(schema: Schema.Constraint, input: unknown): unknown {
+  return stripNulls(input, schema)
+}
+
+function stripNulls(input: unknown, schema: Schema.Constraint): unknown {
+  if (input === null || typeof input !== "object") return input
+  if (Array.isArray(input)) {
+    return input.map((item, index) => {
+      const element = elementAt(schema, index)
+      return element === undefined ? item : stripNulls(item, element)
+    })
+  }
+  const struct = structOf(schema)
+  if (struct === undefined) return input
   const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    const fieldSchema = fields[key]
-    if (fieldSchema === undefined) {
+  for (const [key, value] of Object.entries(input)) {
+    const field = struct.fields[key]
+    if (field === undefined) {
       out[key] = value
       continue
     }
-    const isOptional = Option.isSome(Schema.decodeUnknownOption(fieldSchema as any)(undefined))
-    if (value === null && isOptional) {
-      continue
-    }
-    if (value !== null && typeof value === "object" && fieldSchema && "fields" in fieldSchema) {
-      out[key] = stripNullForOptional(fieldSchema, value)
-    } else {
-      out[key] = value
-    }
+    if (value === null && acceptsAbsent(field)) continue
+    out[key] = stripNulls(value, field)
   }
   return out
+}
+
+// A field takes null as absent when undefined already decodes there. That is
+// exactly what Schema.optional does: its schema is a union with Undefined, and
+// the local `field` default composes from Schema.optional.
+function acceptsAbsent(schema: Schema.Constraint): boolean {
+  if (isUnionSchema(schema)) {
+    return schema.members.some((member) => member === Schema.Undefined || acceptsAbsent(member))
+  }
+  if (isComposedSchema(schema)) return acceptsAbsent(schema.from)
+  if (isOptionalSchema(schema)) return acceptsAbsent(schema.schema)
+  return false
+}
+
+interface StructSchema {
+  readonly fields: Record<string, Schema.Constraint>
+}
+
+interface ArraySchema {
+  readonly value: Schema.Constraint
+}
+
+interface TupleSchema {
+  readonly elements: ReadonlyArray<Schema.Constraint>
+}
+
+interface UnionSchema {
+  readonly members: ReadonlyArray<Schema.Constraint>
+}
+
+interface ComposedSchema {
+  readonly from: Schema.Constraint
+}
+
+interface OptionalSchema {
+  readonly schema: Schema.Constraint
+}
+
+function isStructSchema(schema: Schema.Constraint): schema is Schema.Constraint & StructSchema {
+  return "fields" in schema
+}
+
+function isArraySchema(schema: Schema.Constraint): schema is Schema.Constraint & ArraySchema {
+  return "value" in schema
+}
+
+function isTupleSchema(schema: Schema.Constraint): schema is Schema.Constraint & TupleSchema {
+  return "elements" in schema
+}
+
+function isUnionSchema(schema: Schema.Constraint): schema is Schema.Constraint & UnionSchema {
+  return "members" in schema
+}
+
+function isComposedSchema(schema: Schema.Constraint): schema is Schema.Constraint & ComposedSchema {
+  return "from" in schema
+}
+
+function isOptionalSchema(schema: Schema.Constraint): schema is Schema.Constraint & OptionalSchema {
+  return "schema" in schema
+}
+
+// The schema that describes an object value's shape, reached through optional
+// and composition wrappers (a default wrapper composes from Schema.optional).
+function structOf(schema: Schema.Constraint): (Schema.Constraint & StructSchema) | undefined {
+  if (isStructSchema(schema)) return schema
+  if (isComposedSchema(schema)) {
+    const found = structOf(schema.from)
+    if (found !== undefined) return found
+  }
+  if (isOptionalSchema(schema)) {
+    const found = structOf(schema.schema)
+    if (found !== undefined) return found
+  }
+  if (isUnionSchema(schema)) {
+    for (const member of schema.members) {
+      const found = structOf(member)
+      if (found !== undefined) return found
+    }
+  }
+  return undefined
+}
+
+// The schema of one array element, reached through the same wrappers.
+function elementAt(schema: Schema.Constraint, index: number): Schema.Constraint | undefined {
+  if (isArraySchema(schema)) return schema.value
+  if (isTupleSchema(schema)) return schema.elements[index] ?? schema.elements.at(-1)
+  if (isComposedSchema(schema)) return elementAt(schema.from, index)
+  if (isOptionalSchema(schema)) return elementAt(schema.schema, index)
+  if (isUnionSchema(schema)) {
+    for (const member of schema.members) {
+      const found = elementAt(member, index)
+      if (found !== undefined) return found
+    }
+  }
+  return undefined
 }
 
 /**

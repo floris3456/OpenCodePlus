@@ -1628,6 +1628,10 @@ test("C — every field path of every registered team tool treats null as omissi
   }
 
   for (const [id, path] of regressionPaths) expect(covered.has(`${id}:${pathLabel(path)}`)).toBe(true)
+  console.log(
+    `[T2c] null tolerance coverage: ${totalFieldPaths} field paths across the ${[...tools.keys()].filter((id) => id.startsWith("team_")).length} registered team tools ` +
+      `(${totalOptionalFieldsTested} optional fields accept null as omission, ${totalRequiredFieldsTested} required fields still refuse null)`,
+  )
   expect(totalFieldPaths).toBeGreaterThan(60)
   expect(totalOptionalFieldsTested).toBeGreaterThan(15)
   expect(totalRequiredFieldsTested).toBeGreaterThan(10)
