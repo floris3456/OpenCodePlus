@@ -10,11 +10,11 @@ import { createState } from "../../src/index.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
-import { gc, sweep } from "../../src/teams/lifecycle.js"
+import { gc, sweep, type GcResult } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, transition, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Policy } from "../../src/teams/schema.js"
 import { atomicJson, lock } from "../../src/teams/store.js"
-import { create, mergeArea, ownedRoot, slug } from "../../src/teams/worktree.js"
+import { create, mergeArea, ownedRoot, provision, slug } from "../../src/teams/worktree.js"
 
 const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
 
@@ -180,6 +180,31 @@ async function dirExists(p: string): Promise<boolean> {
 async function agePastStartMs(dir: string): Promise<void> {
   const abandoned = new Date(Date.now() - defaultPolicy.timeouts.startMs - 60_000)
   await fs.utimes(dir, abandoned, abandoned)
+}
+
+// A stale superseded run whose directory is already gone. `gc` reaps it in step
+// 4, before its orphan sweep; watching its state reach "reaped" is the
+// deterministic handshake that gc's opening record read is complete and the
+// sweep is next, with no sleep-and-hope.
+function goneRun(parent: RunRecord, scratch: string): RunRecord {
+  return baseRun({
+    id: "w-cafebabecafebabe",
+    directory: path.join(scratch, "gone-marker"),
+    branch: "team/implementer/gone-marker",
+    base: parent.base,
+    head: parent.head,
+    state: "superseded",
+    lastUsed: "2020-01-01T00:00:00.000Z",
+    worktree: "present",
+  })
+}
+
+async function waitForState(root: string, id: string, state: RunRecord["state"]): Promise<boolean> {
+  for (let i = 0; i < 3000; i++) {
+    if ((await loadRun(root, id))?.state === state) return true
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  return false
 }
 
 test("landed child worktree is removed on landing; branch ref and records remain", async () => {
@@ -516,6 +541,247 @@ test("gc never removes a worktree whose run record is being written", async () =
       releaseLock?.()
       await holdingLock?.catch(() => undefined)
       await writing?.catch(() => undefined)
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+// Soak class A, protected for real: `provision` — the exact call
+// `delegateHandler` makes — holds the repository lock from worktree creation
+// through run registration, and gc's orphan sweep takes that same lock. A
+// worktree whose record is still being written therefore cannot be judged an
+// orphan, however stale the sweep's opening snapshot is. The candidate is aged
+// past `policy.timeouts.startMs`, so the age guard cannot be what saves it, and
+// `gc` is awaited directly — never through `startSweeps`, whose catch lets a
+// failed sweep pass for success. This is the part the old direct-`create`
+// reproduction never exercised.
+test("provision's repo lock blocks gc's orphan sweep while a worktree registers a run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    const childID = "w-cccc0000cccc0001"
+    let createdDir: string | undefined
+    let entered = false
+    let releaseRegister: (() => void) | undefined
+    let provisioning: Promise<unknown> | undefined
+    let swept: Promise<GcResult> | undefined
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_provision_lock_parent",
+      })
+      const marker = goneRun(parent, repo.scratch)
+      await saveRun(root, parent)
+      await saveRun(root, marker)
+
+      // A genuine orphan: the pass must still remove it, which shows the orphan
+      // sweep ran to completion instead of a suppressed error passing for
+      // success.
+      const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "provision-lock-orphan")
+      await git(repo.dir, ["worktree", "add", "-b", "team/orphan/provision-lock", orphanDir, repo.head])
+      await agePastStartMs(orphanDir)
+
+      // Hold provisioning open in the soak's race window: the worktree exists
+      // and the repo lock is held, but the run record is not written yet.
+      const gate = new Promise<void>((resolve) => {
+        releaseRegister = resolve
+      })
+      provisioning = provision(
+        root,
+        {
+          repoRoot: repo.dir,
+          repoKey: parent.repoKey,
+          role: "implementer",
+          name: slug("provisionlock", childID),
+          base: repo.head,
+          workspaceRoot: root,
+        },
+        async (created) => {
+          createdDir = created.dir
+          entered = true
+          await gate
+          await saveRun(
+            root,
+            baseRun({
+              id: childID,
+              role: "muse-implementer",
+              directory: created.dir,
+              branch: created.branch,
+              base: repo.head,
+              head: created.head,
+              state: "starting",
+              attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+              parent: parent.id,
+              sessionID: null,
+              projectDirectory: repo.dir,
+            }),
+          )
+          return created
+        },
+      )
+      for (let i = 0; i < 3000 && !entered; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(entered).toBe(true)
+      const dir = createdDir
+      if (dir === undefined) throw new Error("provision did not enter its register callback")
+      // The soak's exact window: the worktree exists, its record does not.
+      expect(await loadRun(root, childID)).toBeUndefined()
+      // Take the age guard out of the equation.
+      await agePastStartMs(dir)
+
+      const sweptRun = gc(root, defaultPolicy)
+      swept = sweptRun
+      // The marker is reaped in gc's step 4, so its opening record read is done
+      // and the orphan sweep is next. That sweep needs the repo lock provision
+      // holds, so gc cannot have removed anything yet.
+      expect(await waitForState(root, marker.id, "reaped")).toBe(true)
+      expect(await dirExists(dir)).toBe(true)
+      // The mutual exclusion itself: a second holder cannot take that lock
+      // while registration is open. If provisioning stops spanning
+      // registration with the lock, this is where it shows.
+      const blocked = await lock(root, "repo", parent.repoKey, async () => undefined, { timeoutMs: 200 }).then(
+        () => undefined,
+        (error: unknown) => error as { code?: string },
+      )
+      expect(blocked?.code).toBe("E_LOCKED")
+
+      releaseRegister?.()
+      await provisioning
+      const res = await sweptRun
+      expect(res.reaped).toContain(marker.id)
+      // The genuine orphan was removed: the pass ran and completed.
+      expect(res.orphansRemoved).toContain(orphanDir)
+      expect(await dirExists(orphanDir)).toBe(false)
+      // The registering worktree was not, and the host can still resolve it.
+      expect(res.orphansRemoved).not.toContain(dir)
+      expect(await fs.realpath(dir)).toBe(dir)
+      expect(await dirExists(dir)).toBe(true)
+      const stored = await loadRun(root, childID)
+      expect(stored?.directory).toBe(dir)
+      expect(stored?.worktree).toBe("present")
+    } finally {
+      releaseRegister?.()
+      await provisioning?.catch(() => undefined)
+      await swept?.catch(() => undefined)
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+// The other half of the fix, pinned on its own: gc's orphan sweep re-lists the
+// run records under the repo lock, so a record that did not exist when it read
+// its opening `allRuns` snapshot is still found and its worktree kept. The
+// staleness is proven, not assumed — the marker handshake shows gc's opening
+// read is complete while the new record is provably absent, so a sweep that
+// trusted only the opening snapshot would force-remove this aged worktree.
+test("gc's in-lock re-list finds a run registered after its opening snapshot", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    const childID = "w-dddd0000dddd0002"
+    let createdDir: string | undefined
+    let entered = false
+    let releaseRegister: (() => void) | undefined
+    let provisioning: Promise<unknown> | undefined
+    let swept: Promise<GcResult> | undefined
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_snapshot_parent",
+      })
+      const marker = goneRun(parent, repo.scratch)
+      await saveRun(root, parent)
+      await saveRun(root, marker)
+
+      // A genuine orphan: the pass must still remove it, which shows the sweep
+      // really ran rather than a suppressed error passing for success.
+      const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "provision-snapshot-orphan")
+      await git(repo.dir, ["worktree", "add", "-b", "team/orphan/provision-snapshot", orphanDir, repo.head])
+      await agePastStartMs(orphanDir)
+
+      // The run registration stays open until after gc's opening read, so the
+      // record provably cannot be in the snapshot gc starts from.
+      const gate = new Promise<void>((resolve) => {
+        releaseRegister = resolve
+      })
+      provisioning = provision(
+        root,
+        {
+          repoRoot: repo.dir,
+          repoKey: parent.repoKey,
+          role: "implementer",
+          name: slug("provisionsnapshot", childID),
+          base: repo.head,
+          workspaceRoot: root,
+        },
+        async (created) => {
+          createdDir = created.dir
+          entered = true
+          await gate
+          await saveRun(
+            root,
+            baseRun({
+              id: childID,
+              role: "muse-implementer",
+              directory: created.dir,
+              branch: created.branch,
+              base: repo.head,
+              head: created.head,
+              state: "starting",
+              attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+              parent: parent.id,
+              sessionID: null,
+              projectDirectory: repo.dir,
+            }),
+          )
+          return created
+        },
+      )
+      for (let i = 0; i < 3000 && !entered; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(entered).toBe(true)
+      const dir = createdDir
+      if (dir === undefined) throw new Error("provision did not enter its register callback")
+      // Take the age guard out of the equation.
+      await agePastStartMs(dir)
+
+      const sweptRun = gc(root, defaultPolicy)
+      swept = sweptRun
+      expect(await waitForState(root, marker.id, "reaped")).toBe(true)
+      // gc read its records before the marker reap, and the new record still
+      // does not exist: it is provably absent from gc's opening snapshot.
+      expect(await loadRun(root, childID)).toBeUndefined()
+      expect(await dirExists(dir)).toBe(true)
+
+      releaseRegister?.()
+      await provisioning
+      const res = await sweptRun
+      expect(res.reaped).toContain(marker.id)
+      // The genuine orphan was removed: the pass ran and completed.
+      expect(res.orphansRemoved).toContain(orphanDir)
+      expect(await dirExists(orphanDir)).toBe(false)
+      // Kept only because the sweep re-listed under the lock and found the
+      // record written after its opening snapshot.
+      expect(res.orphansRemoved).not.toContain(dir)
+      expect(await fs.realpath(dir)).toBe(dir)
+      expect(await dirExists(dir)).toBe(true)
+      const stored = await loadRun(root, childID)
+      expect(stored?.directory).toBe(dir)
+      expect(stored?.worktree).toBe("present")
+    } finally {
+      releaseRegister?.()
+      await provisioning?.catch(() => undefined)
+      await swept?.catch(() => undefined)
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
   })
