@@ -1,0 +1,254 @@
+[
+  {
+    "cycle": 31,
+    "kind": "single",
+    "ok": true,
+    "child": "w-8afc29863fbd3025",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:49:52.571168+00:00",
+    "ended": "2026-09-22T14:50:13.079711+00:00",
+    "driverActiveSec": 20.5,
+    "wallElapsedSec": 20.5,
+    "mergeReceipt": {
+      "id": "01M34SH35R351QEPFRVKHC17VY",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-8afc29863fbd3025",
+      "childBranch": "team/implementer/t18afc-20260922-1649",
+      "childHead": "a929512003439c7787dc891f1e3287b07a1d8e01",
+      "expectedParentHead": "597f8c5d00b1d0c09b14e092970218694319b42a",
+      "state": "landed",
+      "at": "2026-09-22T14:50:13.048Z",
+      "updatedAt": "2026-09-22T14:50:13.069Z",
+      "landedHead": "a929512003439c7787dc891f1e3287b07a1d8e01"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 32,
+    "kind": "single",
+    "ok": true,
+    "child": "w-9711f106fffc9860",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:50:14.090472+00:00",
+    "ended": "2026-09-22T14:50:39.432999+00:00",
+    "driverActiveSec": 25.3,
+    "wallElapsedSec": 25.3,
+    "mergeReceipt": {
+      "id": "01M34SHWXA40BJQN6MJV0W9FCW",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-9711f106fffc9860",
+      "childBranch": "team/implementer/t29711-20260922-1650",
+      "childHead": "da867ce9fe0a297c01ef8def4ea1fd4f5a404d23",
+      "expectedParentHead": "a929512003439c7787dc891f1e3287b07a1d8e01",
+      "state": "landed",
+      "at": "2026-09-22T14:50:39.402Z",
+      "updatedAt": "2026-09-22T14:50:39.420Z",
+      "landedHead": "da867ce9fe0a297c01ef8def4ea1fd4f5a404d23"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 33,
+    "kind": "single",
+    "ok": true,
+    "child": "w-a44c2e75531aa800",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:50:40.436763+00:00",
+    "ended": "2026-09-22T14:51:08.349676+00:00",
+    "driverActiveSec": 27.9,
+    "wallElapsedSec": 27.9,
+    "mergeReceipt": {
+      "id": "01M34SJS563E0YHQ2W0TZD53TD",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-a44c2e75531aa800",
+      "childBranch": "team/implementer/t3a44c-20260922-1650",
+      "childHead": "435e4d538767a595991bdcda52681ee6bae0c4ef",
+      "expectedParentHead": "da867ce9fe0a297c01ef8def4ea1fd4f5a404d23",
+      "state": "landed",
+      "at": "2026-09-22T14:51:08.326Z",
+      "updatedAt": "2026-09-22T14:51:08.341Z",
+      "landedHead": "435e4d538767a595991bdcda52681ee6bae0c4ef"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 34,
+    "kind": "single",
+    "ok": true,
+    "child": "w-0f6207b5cef1f0f3",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:51:09.357979+00:00",
+    "ended": "2026-09-22T14:51:32.942504+00:00",
+    "driverActiveSec": 23.6,
+    "wallElapsedSec": 23.6,
+    "mergeReceipt": {
+      "id": "01M34SKH5KN3KEMDZQ575PJ3EE",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-0f6207b5cef1f0f3",
+      "childBranch": "team/implementer/t40f62-20260922-1651",
+      "childHead": "49daa5839926f4bc8959eeea7302ae191e956b9f",
+      "expectedParentHead": "435e4d538767a595991bdcda52681ee6bae0c4ef",
+      "state": "landed",
+      "at": "2026-09-22T14:51:32.915Z",
+      "updatedAt": "2026-09-22T14:51:32.930Z",
+      "landedHead": "49daa5839926f4bc8959eeea7302ae191e956b9f"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 35,
+    "kind": "single",
+    "ok": true,
+    "child": "w-b2d35cf91e216285",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:51:33.945489+00:00",
+    "ended": "2026-09-22T14:52:05.373393+00:00",
+    "driverActiveSec": 31.4,
+    "wallElapsedSec": 31.4,
+    "mergeReceipt": {
+      "id": "01M34SMGTZC3XECCAYG3QKZM9P",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-b2d35cf91e216285",
+      "childBranch": "team/implementer/t5b2d3-20260922-1651",
+      "childHead": "b708115e6d82b38c3994db6f7a249d53a3e49bc9",
+      "expectedParentHead": "49daa5839926f4bc8959eeea7302ae191e956b9f",
+      "state": "landed",
+      "at": "2026-09-22T14:52:05.343Z",
+      "updatedAt": "2026-09-22T14:52:05.363Z",
+      "landedHead": "b708115e6d82b38c3994db6f7a249d53a3e49bc9"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 36,
+    "kind": "single",
+    "ok": true,
+    "child": "w-e3858ef8188d464a",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:52:06.377013+00:00",
+    "ended": "2026-09-22T14:52:41.975156+00:00",
+    "driverActiveSec": 35.6,
+    "wallElapsedSec": 35.6,
+    "mergeReceipt": {
+      "id": "01M34SNMJMQB730YEPFCNMAGZ4",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-e3858ef8188d464a",
+      "childBranch": "team/implementer/t6e385-20260922-1652",
+      "childHead": "39795fc509733b3f1d711c8c386ce16d538ea36f",
+      "expectedParentHead": "b708115e6d82b38c3994db6f7a249d53a3e49bc9",
+      "state": "landed",
+      "at": "2026-09-22T14:52:41.940Z",
+      "updatedAt": "2026-09-22T14:52:41.963Z",
+      "landedHead": "39795fc509733b3f1d711c8c386ce16d538ea36f"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 37,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-4bf5d7eef28f6038",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:52:42.982524+00:00",
+    "ended": "2026-09-22T14:53:07.968162+00:00",
+    "driverActiveSec": 25.0,
+    "wallElapsedSec": 25.0,
+    "mergeReceipt": {
+      "id": "01M34SPDX39820FKHGKS0WYGCK",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-4bf5d7eef28f6038",
+      "childBranch": "team/implementer/t84bf5-20260922-1652",
+      "childHead": "0a7c18c9147336607e20aae3de0c87bcf39bc677",
+      "expectedParentHead": "39795fc509733b3f1d711c8c386ce16d538ea36f",
+      "state": "landed",
+      "at": "2026-09-22T14:53:07.875Z",
+      "updatedAt": "2026-09-22T14:53:07.917Z",
+      "landedHead": "0a7c18c9147336607e20aae3de0c87bcf39bc677"
+    },
+    "dispatchedAt": "2026-09-22T14:52:42.982524+00:00",
+    "session": "ses_f36652878ffey6pT1M5QWiwxlP",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 38,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-9f9dd29e58158281",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:52:42.983034+00:00",
+    "ended": "2026-09-22T14:53:08.236816+00:00",
+    "driverActiveSec": 1.7,
+    "wallElapsedSec": 25.3,
+    "mergeReceipt": {
+      "id": "01M34SPE7C4J2JDYWBA3P29H7B",
+      "parentRun": "main-d8816d81b3629086",
+      "childRun": "w-9f9dd29e58158281",
+      "childBranch": "team/implementer/t79f9d-20260922-1652",
+      "childHead": "1e1a55039b65bc2686580ceb3092a8e88d6abb99",
+      "expectedParentHead": "0a7c18c9147336607e20aae3de0c87bcf39bc677",
+      "state": "landed",
+      "at": "2026-09-22T14:53:08.203Z",
+      "updatedAt": "2026-09-22T14:53:08.223Z",
+      "landedHead": "0a68d9b326c0803dcbb15959be724ecc7ce2ce9f"
+    },
+    "dispatchedAt": "2026-09-22T14:52:42.983034+00:00",
+    "session": "ses_f36652898ffed0TN7Ik1r2PnMK",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  }
+]

@@ -1,0 +1,35 @@
+{
+  "cycle": 35,
+  "kind": "single",
+  "childRun": "w-b2d35cf91e216285",
+  "sourceHead": "a539b0bfba6a48f4d6696d7c33b248d19390549e",
+  "settled": {
+    "run": "w-b2d35cf91e216285",
+    "attemptState": "succeeded",
+    "report": {
+      "status": "done",
+      "summary": "Created notes/35.md with exactly `cycle 35` and a trailing newline, passed scratch-ok, and committed as docs(soak): cycle 35.",
+      "path": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/runs/w-b2d35cf91e216285/report-1.json"
+    }
+  },
+  "integrate": {
+    "entry": "01M34SMGTZC3XECCAYG3QKZM9P",
+    "state": "landed",
+    "head": "b708115e6d82b38c3994db6f7a249d53a3e49bc9"
+  },
+  "mergeReceipt": {
+    "id": "01M34SMGTZC3XECCAYG3QKZM9P",
+    "parentRun": "main-d8816d81b3629086",
+    "childRun": "w-b2d35cf91e216285",
+    "childBranch": "team/implementer/t5b2d3-20260922-1651",
+    "childHead": "b708115e6d82b38c3994db6f7a249d53a3e49bc9",
+    "expectedParentHead": "49daa5839926f4bc8959eeea7302ae191e956b9f",
+    "state": "landed",
+    "at": "2026-09-22T14:52:05.343Z",
+    "updatedAt": "2026-09-22T14:52:05.363Z",
+    "landedHead": "b708115e6d82b38c3994db6f7a249d53a3e49bc9"
+  },
+  "started": "2026-09-22T14:51:33.945489+00:00",
+  "ended": "2026-09-22T14:52:05.373393+00:00",
+  "verified": true
+}

@@ -147,8 +147,25 @@ def summarize(n, kind, j, run_id=None, extra=None):
     sess = (j.get("child") or {}).get("session") or (extra or {}).get("session")
     if sess: row["model"] = session_model(sess)
     row["verified"] = bool(status == "done" and landed)
-    print("cycle %02d [%s] child=%s report=%s landed=%s verified=%s %ss %s" %
-          (n, kind, child, status, landed, row["verified"], row.get("elapsedSec"), " ".join(flags)), flush=True)
+    # Durable per-cycle export written NOW, not at the end: the merge receipt
+    # itself, this child's own settled entry, the source head and the model.
+    settled_entry = None
+    integrate_out = None
+    for r in j.get("results", []):
+        if r.get("tool") == "wait":
+            for s2 in (r.get("output") or {}).get("settled") or []:
+                if s2.get("run") == child: settled_entry = s2
+        if r.get("tool") == "integrate" and r.get("ok"): integrate_out = r.get("output")
+    os.makedirs(RECEIPTS, exist_ok=True)
+    with open(os.path.join(RECEIPTS, "cycle-%02d.json" % n), "w") as f:
+        json.dump({"cycle": n, "kind": kind, "childRun": child, "sourceHead": SOURCE_HEAD,
+                   "model": row.get("model"), "settled": settled_entry,
+                   "integrate": integrate_out, "mergeReceipt": merge_receipt,
+                   "started": j.get("started"), "ended": j.get("ended"),
+                   "wallElapsedSec": wall, "driverActiveSec": j.get("driverActiveSec"),
+                   "verified": row["verified"]}, f, indent=2)
+    print("cycle %02d [%s] child=%s report=%s landed=%s verified=%s wall=%ss %s" %
+          (n, kind, child, status, landed, row["verified"], wall, " ".join(flags)), flush=True)
     return row
 
 def single(n, role, extra=None):

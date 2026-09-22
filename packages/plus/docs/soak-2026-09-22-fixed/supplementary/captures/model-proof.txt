@@ -1,0 +1,31 @@
+SUPPLEMENTARY ACCEPTANCE LAB resoak4 - D6 model proof taken BEFORE any delegation
+source commit under test: a539b0bfba6a48f4d6696d7c33b248d19390549e
+lab port: 55421   (human server 40374 never touched, no controller state used)
+
+$ curl -s -u opencode:<redacted> -H 'x-opencode-directory: <lab>/proj' http://127.0.0.1:55421/api/agent
+[
+  {
+    "id": "gemini-implementer",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  },
+  {
+    "id": "muse-implementer",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  },
+  {
+    "id": "sol-orchestrator",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  }
+]
