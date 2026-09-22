@@ -1,7 +1,7 @@
 {
   "bun": {
     "version": "1.4.2",
-    "executableSha256": null,
+    "executableSha256": "616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1",
     "source": null,
     "measuredBy": "build-seat"
   },
