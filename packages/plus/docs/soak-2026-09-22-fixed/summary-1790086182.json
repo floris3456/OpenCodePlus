@@ -1,0 +1,288 @@
+[
+  {
+    "cycle": 1,
+    "kind": "single",
+    "ok": true,
+    "child": "w-d5b82fa4f0437b91",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:04:22.798071+00:00",
+    "ended": "2026-09-22T14:04:52.950876+00:00",
+    "elapsedSec": 30.2,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 2,
+    "kind": "single",
+    "ok": true,
+    "child": "w-5a5501f069f38fe4",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:04:53.963149+00:00",
+    "ended": "2026-09-22T14:05:15.996209+00:00",
+    "elapsedSec": 22.0,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 3,
+    "kind": "single",
+    "ok": true,
+    "child": "w-e8d072876c9bfd74",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:05:17.001655+00:00",
+    "ended": "2026-09-22T14:05:37.386155+00:00",
+    "elapsedSec": 20.4,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 4,
+    "kind": "single",
+    "ok": true,
+    "child": "w-1593f765ca571683",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:05:38.390567+00:00",
+    "ended": "2026-09-22T14:05:59.347099+00:00",
+    "elapsedSec": 21.0,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 5,
+    "kind": "single",
+    "ok": true,
+    "child": "w-14602ea497a06f63",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:06:00.350308+00:00",
+    "ended": "2026-09-22T14:06:39.005575+00:00",
+    "elapsedSec": 38.7,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 6,
+    "kind": "single",
+    "ok": true,
+    "child": "w-04948d4e473f6463",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:06:40.010274+00:00",
+    "ended": "2026-09-22T14:07:15.305941+00:00",
+    "elapsedSec": 35.3,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 7,
+    "kind": "single",
+    "ok": true,
+    "child": "w-c0661a228bb085ca",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:07:16.311101+00:00",
+    "ended": "2026-09-22T14:07:42.729494+00:00",
+    "elapsedSec": 26.4,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 8,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-e6663df711e0dba2",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:07:43.743947+00:00",
+    "ended": "2026-09-22T14:07:46.495907+00:00",
+    "elapsedSec": 22.6,
+    "dispatchedAt": "2026-09-22T14:07:43.743947+00:00",
+    "session": "ses_f368e584fffe32CUNGJuRONYqj",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 9,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-e58ffdafb2ca5dc3",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:07:43.744193+00:00",
+    "ended": "2026-09-22T14:07:46.617284+00:00",
+    "elapsedSec": 3.2,
+    "dispatchedAt": "2026-09-22T14:07:43.744193+00:00",
+    "session": "ses_f368e583cffeEjs3Y4iCmjfzsY",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 10,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-42b734d60a440d04",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:08:07.844074+00:00",
+    "ended": "2026-09-22T14:08:10.939794+00:00",
+    "elapsedSec": 29.5,
+    "dispatchedAt": "2026-09-22T14:08:07.844074+00:00",
+    "session": "ses_f368dfa3fffeJ43Nz9agTuStGL",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 11,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-fc729634e472648d",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:08:07.844268+00:00",
+    "ended": "2026-09-22T14:08:11.068079+00:00",
+    "elapsedSec": 3.5,
+    "dispatchedAt": "2026-09-22T14:08:07.844268+00:00",
+    "session": "ses_f368dfa0affesr5kW2dUNrjq7z",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 12,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-515f6926e6c68882",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:08:38.794941+00:00",
+    "ended": "2026-09-22T14:08:42.614903+00:00",
+    "elapsedSec": 33.8,
+    "dispatchedAt": "2026-09-22T14:08:38.794941+00:00",
+    "session": "ses_f368d816dffeXo7KhTOL1GTJMU",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 13,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-6d47340fd69a8d1d",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:08:38.798372+00:00",
+    "ended": "2026-09-22T14:08:42.705745+00:00",
+    "elapsedSec": 4.2,
+    "dispatchedAt": "2026-09-22T14:08:38.798372+00:00",
+    "session": "ses_f368d8151ffe2ZfVLS9ZoLDal8",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 14,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-3364991e721825ad",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:09:14.001228+00:00",
+    "ended": "2026-09-22T14:09:18.416261+00:00",
+    "elapsedSec": 25.8,
+    "dispatchedAt": "2026-09-22T14:09:14.001228+00:00",
+    "session": "ses_f368cf7a6ffeP25xj2o7pMAjF9",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  },
+  {
+    "cycle": 15,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-6b72eca1b4321449",
+    "report": "done",
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T14:09:14.001480+00:00",
+    "ended": "2026-09-22T14:09:18.665446+00:00",
+    "elapsedSec": 5.5,
+    "dispatchedAt": "2026-09-22T14:09:14.001480+00:00",
+    "session": "ses_f368cf6cdffeR1ODPeEQUjSDG3",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": false
+  }
+]

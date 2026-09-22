@@ -1,0 +1,265 @@
+[
+  {
+    "cycle": 2,
+    "kind": "single",
+    "ok": true,
+    "child": "w-5edac8abd4d72397",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:53:50.440207+00:00",
+    "ended": "2026-09-22T13:54:22.480834+00:00",
+    "elapsedSec": 32.0,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 3,
+    "kind": "single",
+    "ok": true,
+    "child": "w-6f4b8b9e32540e53",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:54:23.493978+00:00",
+    "ended": "2026-09-22T13:54:54.905327+00:00",
+    "elapsedSec": 31.4,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 4,
+    "kind": "single",
+    "ok": true,
+    "child": "w-ec647af7b8ed21d6",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:54:55.910528+00:00",
+    "ended": "2026-09-22T13:55:26.786704+00:00",
+    "elapsedSec": 30.9,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 5,
+    "kind": "single",
+    "ok": true,
+    "child": "w-abf6512621cbcc39",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:55:27.790339+00:00",
+    "ended": "2026-09-22T13:55:53.450804+00:00",
+    "elapsedSec": 25.7,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 6,
+    "kind": "single",
+    "ok": true,
+    "child": "w-0b20a548295ffe1d",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:55:54.454670+00:00",
+    "ended": "2026-09-22T13:56:23.351638+00:00",
+    "elapsedSec": 28.9,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 7,
+    "kind": "single",
+    "ok": true,
+    "child": "w-b2cf55567e1f5f1a",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:56:24.358287+00:00",
+    "ended": "2026-09-22T13:57:03.310910+00:00",
+    "elapsedSec": 39.0,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 8,
+    "kind": "single",
+    "ok": true,
+    "child": "w-dbd99e75c37006ad",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:57:04.319389+00:00",
+    "ended": "2026-09-22T13:57:27.021505+00:00",
+    "elapsedSec": 22.7,
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 9,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-59f397fb75d3d669",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:57:28.028111+00:00",
+    "ended": "2026-09-22T13:57:31.253912+00:00",
+    "elapsedSec": 3.2,
+    "dispatchedAt": "2026-09-22T13:57:28.028111+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 10,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-d76511855c152211",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:57:28.028367+00:00",
+    "ended": "2026-09-22T13:57:31.251783+00:00",
+    "elapsedSec": 3.2,
+    "dispatchedAt": "2026-09-22T13:57:28.028367+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 11,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-b342085711a62dfa",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:57:57.450468+00:00",
+    "ended": "2026-09-22T13:58:00.903841+00:00",
+    "elapsedSec": 3.5,
+    "dispatchedAt": "2026-09-22T13:57:57.450468+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 12,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-c322fe2690ed1197",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:57:57.450661+00:00",
+    "ended": "2026-09-22T13:58:00.901897+00:00",
+    "elapsedSec": 3.5,
+    "dispatchedAt": "2026-09-22T13:57:57.450661+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 13,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-b620cb6545d68228",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:58:24.499847+00:00",
+    "ended": "2026-09-22T13:58:28.448760+00:00",
+    "elapsedSec": 3.9,
+    "dispatchedAt": "2026-09-22T13:58:24.499847+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 14,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-d31a59ba8448656e",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:58:24.500135+00:00",
+    "ended": "2026-09-22T13:58:28.635539+00:00",
+    "elapsedSec": 4.1,
+    "dispatchedAt": "2026-09-22T13:58:24.500135+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 15,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-d13dd893a1c2efec",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:59:01.365289+00:00",
+    "ended": "2026-09-22T13:59:07.660976+00:00",
+    "elapsedSec": 6.3,
+    "dispatchedAt": "2026-09-22T13:59:01.365289+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  },
+  {
+    "cycle": 16,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-49084424ba9db04d",
+    "report": null,
+    "landed": false,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T13:59:01.365549+00:00",
+    "ended": "2026-09-22T13:59:06.451733+00:00",
+    "elapsedSec": 5.1,
+    "dispatchedAt": "2026-09-22T13:59:01.365549+00:00",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    }
+  }
+]

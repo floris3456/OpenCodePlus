@@ -1,0 +1,35 @@
+D6 MODEL PROOF - lab resoak3, BEFORE cycle 1
+source commit under test: 386b224ffa51ece53e63ce5cc02da936eaf97429
+lab port: 58905   (human server 40374 never touched)
+
+$ curl -s -u opencode:<redacted> -H 'x-opencode-directory: <lab>/proj' http://127.0.0.1:58905/api/agent
+[
+  {
+    "id": "gemini-implementer",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  },
+  {
+    "id": "muse-implementer",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  },
+  {
+    "id": "sol-orchestrator",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  }
+]
+
+Effective selection proves variant 'low' is LOADED (applyModels writes agent.model
+only for an ACTIVE row; model.add alone leaves active unset and resolveActiveModel
+requires record.active === true).

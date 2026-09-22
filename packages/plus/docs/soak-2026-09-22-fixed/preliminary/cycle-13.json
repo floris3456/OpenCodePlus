@@ -1,0 +1,72 @@
+{
+  "delegate": {
+    "ok": true,
+    "tool": "delegate",
+    "via": "team.delegate",
+    "lab": {
+      "baseUrl": "http://127.0.0.1:48113",
+      "labHome": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak2",
+      "teamsRoot": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak2/data/opencode/opencodeplus/teams"
+    },
+    "parent": {
+      "run": "main-81b84b8a58f595cf",
+      "session": "ses_f369caa09ffe3Qwp8da40C88iw",
+      "role": "sol-orchestrator",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak2/proj",
+      "state": "working"
+    },
+    "child": {
+      "run": "w-b620cb6545d68228",
+      "session": "ses_f3696e0f9ffeGzuc7nk4k7UCoO",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak2/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t13b620-20260922-1558",
+      "role": "muse-implementer",
+      "state": "starting",
+      "branch": "team/implementer/t13b620-20260922-1558",
+      "parent": "main-81b84b8a58f595cf"
+    },
+    "output": {
+      "run": "w-b620cb6545d68228",
+      "session": "ses_f3696e0f9ffeGzuc7nk4k7UCoO",
+      "task": "T13",
+      "state": "starting",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak2/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t13b620-20260922-1558",
+      "branch": "team/implementer/t13b620-20260922-1558",
+      "base": "1385ddd8f396fe79497dd4ebad4e55f216ecd830",
+      "briefPath": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak2/data/opencode/opencodeplus/teams/runs/w-b620cb6545d68228/brief.md",
+      "budget": {
+        "turns": 25,
+        "tokens": 400000,
+        "wallMs": 1200000
+      }
+    },
+    "hostCalls": [
+      {
+        "method": "GET",
+        "path": "/api/session/ses_f369caa09ffe3Qwp8da40C88iw",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session/ses_f3696e0f9ffeGzuc7nk4k7UCoO/prompt",
+        "status": 200
+      }
+    ],
+    "tag": "cycle-13-delegate",
+    "started": "2026-09-22T13:58:24.499847+00:00",
+    "ended": "2026-09-22T13:58:28.448760+00:00",
+    "elapsedSec": 3.9
+  },
+  "tail": {
+    "ok": false,
+    "error": "E_BUSY: Child is working; wait first.",
+    "tag": "pair-13-14-tail",
+    "started": "2026-09-22T13:58:28.635641+00:00",
+    "ended": "2026-09-22T13:59:00.333753+00:00",
+    "elapsedSec": 31.7
+  }
+}

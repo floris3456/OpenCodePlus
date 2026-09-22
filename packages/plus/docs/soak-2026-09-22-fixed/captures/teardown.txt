@@ -1,0 +1,53 @@
+TEARDOWN of owned lab resoak3 (port 58905). Human server 40374 untouched.
+
+$ tui-lab.sh down resoak3
+owned lab processes derived from /proc (cwd inside this lab):
+  stopping owned pid 1019821
+  stopping owned pid 1033871
+  stopping owned pid 1042101
+  stopping owned pid 1057622
+  stopping owned pid 1068927
+  stopping owned pid 1092743
+  stopping owned pid 1102889
+  stopping owned pid 1116711
+  stopping owned pid 1128854
+  stopping owned pid 1145859
+  stopping owned pid 1156487
+  stopping owned pid 1167062
+  stopping owned pid 1179038
+  stopping owned pid 1179060
+  stopping owned pid 1192899
+  stopping owned pid 1203438
+  stopping owned pid 1221213
+  stopping owned pid 1235717
+  stopping owned pid 897324
+  stopping owned pid 897372
+  stopping owned pid 898179
+  stopping owned pid 919183
+  stopping owned pid 927723
+  stopping owned pid 934099
+  stopping owned pid 939695
+  stopping owned pid 946107
+  stopping owned pid 956480
+  stopping owned pid 966153
+  stopping owned pid 974228
+  stopping owned pid 974253
+  stopping owned pid 980991
+  stopping owned pid 981018
+  stopping owned pid 989375
+  stopping owned pid 989400
+  stopping owned pid 999405
+  stopping owned pid 999434
+
+$ port check
+connect_ex=111
+not_listening=true
+
+$ remaining listeners on the lab port
+listeners=[]
+
+$ directory check
+directory_absent=true
+
+confirm the human's server is untouched and still its own process:
+port 40374 connect_ex=0 (0 = still listening, never modified by this round)

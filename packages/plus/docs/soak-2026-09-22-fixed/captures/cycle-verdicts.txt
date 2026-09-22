@@ -1,0 +1,37 @@
+cycle 01 single           child=w-d5b82fa4f0437b91   report=done  landed=True verified=True
+cycle 02 single           child=w-5a5501f069f38fe4   report=done  landed=True verified=True
+cycle 03 single           child=w-e8d072876c9bfd74   report=done  landed=True verified=True
+cycle 04 single           child=w-1593f765ca571683   report=done  landed=True verified=True
+cycle 05 single           child=w-14602ea497a06f63   report=done  landed=True verified=True
+cycle 06 single           child=w-04948d4e473f6463   report=done  landed=True verified=True
+cycle 07 single           child=w-c0661a228bb085ca   report=done  landed=True verified=True
+cycle 08 pair             child=w-e6663df711e0dba2   report=done  landed=True verified=True
+cycle 09 pair             child=w-e58ffdafb2ca5dc3   report=done  landed=True verified=True
+cycle 10 pair             child=w-42b734d60a440d04   report=done  landed=True verified=True
+cycle 11 pair             child=w-fc729634e472648d   report=done  landed=True verified=True
+cycle 12 pair             child=w-515f6926e6c68882   report=done  landed=True verified=True
+cycle 13 pair             child=w-6d47340fd69a8d1d   report=done  landed=True verified=True
+cycle 14 pair             child=w-3364991e721825ad   report=done  landed=True verified=True
+cycle 15 pair             child=w-6b72eca1b4321449   report=done  landed=True verified=True
+cycle 16 stop+redelegate  child=w-5abab5c878be0beb   report=done  landed=True verified=True
+cycle 17 stop+redelegate  child=w-16c6540b11870c48   report=done  landed=True verified=True
+cycle 18 stop+redelegate  child=w-0b0f945ebc054165   report=done  landed=True verified=True
+cycle 19 single           child=w-4cc635936a3717bf   report=done  landed=True verified=True
+cycle 20 single           child=w-31b4feef9ab5856a   report=done  landed=True verified=True
+cycle 21 single           child=w-e8ad0c5394fc96f7   report=done  landed=True verified=True
+cycle 22 single           child=w-e7874d4321a87c99   report=done  landed=True verified=True
+cycle 23 single           child=w-6cbd7efbfd9bc57e   report=done  landed=True verified=True
+cycle 24 single           child=w-c92b6216b44235f1   report=done  landed=True verified=True
+cycle 25 pair             child=w-76e54791b93ea9c0   report=done  landed=True verified=True
+cycle 26 pair             child=w-493068237cbfa9d5   report=done  landed=True verified=True
+cycle 27 single           child=w-77353d5246b74541   report=done  landed=True verified=True
+cycle 28 single           child=w-9bad028caf4239f6   report=done  landed=True verified=True
+cycle 29 single           child=w-c939a878fe1b2f11   report=done  landed=True verified=True
+cycle 30 single           child=w-c09b198a1c93eb30   report=done  landed=True verified=True
+
+TOTAL cycles captured       : 30
+VERIFIED done + landed      : 30
+two-in-flight (pair) cycles : 10   (requirement >= 6)
+stop+redelegate cycles      : 3   (requirement >= 3; qualifying pre-stop: 3)
+realPath failures           : 0
+E_BOUNDS in-flight refusals : 0

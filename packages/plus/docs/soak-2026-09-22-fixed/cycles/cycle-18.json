@@ -1,0 +1,243 @@
+{
+  "original": {
+    "ok": true,
+    "tool": "delegate",
+    "via": "team.delegate",
+    "lab": {
+      "baseUrl": "http://127.0.0.1:58905",
+      "labHome": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3",
+      "teamsRoot": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams"
+    },
+    "parent": {
+      "run": "main-96ce24e091cf9632",
+      "session": "ses_f36916b87ffeVZB3cJswbR3zdj",
+      "role": "sol-orchestrator",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/proj",
+      "state": "working"
+    },
+    "child": {
+      "run": "w-791880027f79cb26",
+      "session": "ses_f368925bfffe2NWv4WVrfsJX48",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t207918-20260922-1613",
+      "role": "gemini-implementer",
+      "state": "starting",
+      "branch": "team/implementer/t207918-20260922-1613",
+      "parent": "main-96ce24e091cf9632"
+    },
+    "output": {
+      "run": "w-791880027f79cb26",
+      "session": "ses_f368925bfffe2NWv4WVrfsJX48",
+      "task": "T20",
+      "state": "starting",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t207918-20260922-1613",
+      "branch": "team/implementer/t207918-20260922-1613",
+      "base": "54a11858985255fc5333e74ffce1ecc6e8e58332",
+      "briefPath": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/runs/w-791880027f79cb26/brief.md",
+      "budget": {
+        "turns": 25,
+        "tokens": 400000,
+        "wallMs": 1200000
+      }
+    },
+    "hostCalls": [
+      {
+        "method": "GET",
+        "path": "/api/session/ses_f36916b87ffeVZB3cJswbR3zdj",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session/ses_f368925bfffe2NWv4WVrfsJX48/prompt",
+        "status": 200
+      }
+    ],
+    "tag": "cycle-18-original",
+    "started": "2026-09-22T14:13:24.114258+00:00",
+    "ended": "2026-09-22T14:13:29.456969+00:00",
+    "elapsedSec": 5.3
+  },
+  "preStop": {
+    "state": "working",
+    "head": "371d0935b95aafe77a95ba91692ad2224c9373a1",
+    "base": "54a11858985255fc5333e74ffce1ecc6e8e58332",
+    "qualifying": true
+  },
+  "stop": {
+    "ok": true,
+    "lab": {
+      "baseUrl": "http://127.0.0.1:58905",
+      "labHome": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3",
+      "teamsRoot": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams"
+    },
+    "parent": {
+      "run": "main-96ce24e091cf9632",
+      "session": "ses_f36916b87ffeVZB3cJswbR3zdj",
+      "role": "sol-orchestrator",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/proj",
+      "state": "working"
+    },
+    "child": {
+      "run": "w-791880027f79cb26",
+      "session": "ses_f368925bfffe2NWv4WVrfsJX48",
+      "role": "gemini-implementer",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t207918-20260922-1613",
+      "state": "working",
+      "branch": "team/implementer/t207918-20260922-1613",
+      "parent": "main-96ce24e091cf9632"
+    },
+    "results": [
+      {
+        "step": 1,
+        "ok": true,
+        "tool": "stop",
+        "via": "team.stop",
+        "output": {
+          "run": "w-791880027f79cb26",
+          "state": "stopping"
+        }
+      },
+      {
+        "step": 2,
+        "ok": true,
+        "tool": "supersede",
+        "via": "team.supersede",
+        "output": {
+          "run": "w-791880027f79cb26",
+          "state": "superseded",
+          "hadUncommitted": false,
+          "head": "371d0935b95aafe77a95ba91692ad2224c9373a1"
+        }
+      }
+    ],
+    "hostCalls": [
+      {
+        "method": "GET",
+        "path": "/api/session/ses_f36916b87ffeVZB3cJswbR3zdj",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session/ses_f368925bfffe2NWv4WVrfsJX48/interrupt",
+        "status": 200
+      }
+    ],
+    "tag": "cycle-18-stop",
+    "started": "2026-09-22T14:14:20.551031+00:00",
+    "ended": "2026-09-22T14:14:50.805168+00:00",
+    "elapsedSec": 30.3
+  },
+  "replacement": {
+    "ok": true,
+    "lab": {
+      "baseUrl": "http://127.0.0.1:58905",
+      "labHome": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3",
+      "teamsRoot": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams"
+    },
+    "parent": {
+      "run": "main-96ce24e091cf9632",
+      "session": "ses_f36916b87ffeVZB3cJswbR3zdj",
+      "role": "sol-orchestrator",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/proj",
+      "state": "working"
+    },
+    "child": {
+      "run": "w-0b0f945ebc054165",
+      "session": "ses_f3687d014ffeXOzTdHwzkHW3we",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t210b0f-20260922-1614",
+      "role": "gemini-implementer",
+      "state": "starting",
+      "branch": "team/implementer/t210b0f-20260922-1614",
+      "parent": "main-96ce24e091cf9632"
+    },
+    "results": [
+      {
+        "step": 1,
+        "ok": true,
+        "tool": "delegate",
+        "via": "team.delegate",
+        "output": {
+          "run": "w-0b0f945ebc054165",
+          "session": "ses_f3687d014ffeXOzTdHwzkHW3we",
+          "task": "T21",
+          "state": "starting",
+          "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t210b0f-20260922-1614",
+          "branch": "team/implementer/t210b0f-20260922-1614",
+          "base": "54a11858985255fc5333e74ffce1ecc6e8e58332",
+          "briefPath": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/runs/w-0b0f945ebc054165/brief.md",
+          "budget": {
+            "turns": 25,
+            "tokens": 400000,
+            "wallMs": 1200000
+          }
+        }
+      },
+      {
+        "step": 2,
+        "ok": true,
+        "tool": "wait",
+        "via": "team.wait",
+        "output": {
+          "settled": [
+            {
+              "run": "w-0b0f945ebc054165",
+              "attemptState": "succeeded",
+              "report": {
+                "status": "done",
+                "summary": "Added notes/18.md with exactly `cycle 18` and a trailing newline, scratch-ok passed, and checkpointed as docs(soak): cycle 18.",
+                "path": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak3/data/opencode/opencodeplus/teams/runs/w-0b0f945ebc054165/report-1.json"
+              }
+            }
+          ],
+          "acknowledged": [
+            "w-0b0f945ebc054165"
+          ],
+          "timedOut": false,
+          "stillOpen": [],
+          "overBudget": []
+        }
+      },
+      {
+        "step": 3,
+        "ok": true,
+        "tool": "integrate",
+        "via": "team.integrate",
+        "output": {
+          "entry": "01M34QHCPNRGYMD363A9C8VV9P",
+          "state": "landed",
+          "head": "484854efb75e96948152b5c91eb41dcf682085a8"
+        }
+      }
+    ],
+    "hostCalls": [
+      {
+        "method": "GET",
+        "path": "/api/session/ses_f36916b87ffeVZB3cJswbR3zdj",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session/ses_f3687d014ffeXOzTdHwzkHW3we/prompt",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/session/ses_f3687d014ffeXOzTdHwzkHW3we/wait",
+        "status": 204
+      }
+    ],
+    "tag": "cycle-18-replacement",
+    "started": "2026-09-22T14:14:50.805213+00:00",
+    "ended": "2026-09-22T14:15:26.606797+00:00",
+    "elapsedSec": 35.8
+  }
+}
