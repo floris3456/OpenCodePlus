@@ -9,6 +9,7 @@ import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Integration } from "@opencode/core/integration"
 import { KV } from "@opencode/core/kv"
 import { Location } from "@opencode/core/location"
+import { Mcp } from "@opencode/core/mcp/index"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { AbsolutePath } from "@opencode/core/schema"
@@ -16,6 +17,7 @@ import { Shell } from "@opencode/core/shell"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Workspace } from "@opencode/core/workspace"
 import { WorkspaceDriver } from "@opencode/core/workspace/driver"
+import { Worktree } from "@opencode/core/worktree"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { Cause, Effect, Exit, Layer } from "effect"
@@ -23,6 +25,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { emptyCredentialNode, emptyWellknownNode } from "./fixture/config-nodes"
 import { tempGlobalLayer } from "./fixture/global"
 import { location } from "./fixture/location"
+import { emptyMcpLayer } from "./fixture/mcp"
 import { it, testEffect } from "./lib/effect"
 import { PluginTestLayer } from "./plugin/fixture"
 
@@ -255,6 +258,15 @@ describe("Shell placement", () => {
 
 const pluginIt = testEffect(PluginTestLayer)
 
+// The real plugin loader, placed. `Plugin.Service.activate` is the only path a production plugin's
+// storage ever comes from, so per-workspace namespacing has to be proved through it.
+const placedPluginIt = testEffect(
+  AppNodeBuilder.build(LayerNode.group([Plugin.node, KV.node]), [
+    ...placedReplacements(placedRef, reachable(Environment.makeMemoryDriver())),
+    Mcp.node.replace(emptyMcpLayer),
+  ]),
+)
+
 describe("placed plugin host", () => {
   const placedHost = Effect.fnUntraced(function* () {
     const plugins = yield* Plugin.Service
@@ -305,6 +317,42 @@ describe("placed plugin host", () => {
       yield* placed.remove("token")
       expect(yield* placed.get("token")).toBeUndefined()
       expect(yield* host.get("token")).toBe("host")
+    }),
+  )
+
+  placedPluginIt.live("namespaces a loaded plugin's storage by workspace", () =>
+    Effect.gen(function* () {
+      const kv = yield* KV.Service
+      const plugins = yield* Plugin.Service
+      yield* plugins.activate([
+        { id: "probe", revision: "1", effect: (context) => context.storage.set("token", "placed") },
+      ])
+      yield* plugins.awaitActivation
+
+      expect((yield* PluginHost.storage(kv, "probe", workspaceID).scan({ prefix: "" })).entries).toEqual([
+        { key: "token", value: "placed" },
+      ])
+      expect(yield* PluginHost.storage(kv, "probe").get("token")).toBeUndefined()
+    }),
+  )
+
+  pluginIt.live("routes a plugin call to the placement it names, not the ambient one", () =>
+    Effect.gen(function* () {
+      const plugins = yield* Plugin.Service
+      const host = yield* PluginHost.make(plugins)
+      const hostDirectory = host.location.directory
+
+      // This host carries no workspace, so a request naming one must refuse rather than
+      // quietly answer from the host's own worktrees. Both spellings of the placement route
+      // the same way: the wire shape, and the `Location.Ref` every response hands back.
+      const named = Location.Ref.make({ directory: hostDirectory, workspaceID })
+      expect(yield* host.worktree.list({ location: named }).pipe(Effect.flip)).toBeInstanceOf(
+        Worktree.UnsupportedLocationError,
+      )
+      expect(
+        yield* host.worktree.list({ location: { directory: hostDirectory, workspace: workspaceID } }).pipe(Effect.flip),
+      ).toBeInstanceOf(Worktree.UnsupportedLocationError)
+      expect(yield* host.worktree.list({ location: { directory: hostDirectory } })).toEqual([])
     }),
   )
 })

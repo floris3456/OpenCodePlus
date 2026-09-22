@@ -319,6 +319,16 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 Effect.catchTag("Session.SkillNotFoundError", (error) =>
                   Effect.fail(new InvalidRequestError({ message: `Skill not found: ${error.skill}`, field: "skills" })),
                 ),
+                // A controller-authorized transition holds the admission fence, so the session is
+                // mid-transition rather than gone or malformed. The prompt stays rejected.
+                Effect.catchTag("Session.AdmissionFencedError", (error) =>
+                  Effect.fail(
+                    new ConflictError({
+                      message: `Session admission is fenced: ${error.reason}`,
+                      resource: ctx.params.sessionID,
+                    }),
+                  ),
+                ),
               ),
           }
         }),

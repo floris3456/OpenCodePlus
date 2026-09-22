@@ -69,7 +69,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const bus = yield* Bus.Service
   const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
   const integration = yield* Integration.Service
-  const kv = yield* KV.Service
+  const pluginStorage = yield* storageFactory
   const mcp = yield* Mcp.Service
   const location = yield* Location.Service
   const reference = yield* Reference.Service
@@ -92,14 +92,23 @@ export const make = Effect.fn("PluginHost.make")(function* (
       workspaceID: location.workspaceID,
       project: location.project,
     })
-  const locationRef = (input?: { readonly location?: { readonly directory?: string; readonly workspace?: string } }) =>
-    input?.location === undefined
-      ? undefined
-      : Location.Ref.make({
-          directory: AbsolutePath.make(input.location.directory ?? location.directory),
-          workspaceID:
-            input.location.workspace === undefined ? location.workspaceID : Workspace.ID.make(input.location.workspace),
-        })
+  // Two spellings of the same placement reach here: the wire shape from the generated API inputs,
+  // and `Location.Ref`/`Location.Info`, which is what `context.location` and every response hand
+  // back. Reading only `workspace` let a returned placement route to the ambient workspace instead.
+  const locationRef = (input?: {
+    readonly location?: {
+      readonly directory?: string
+      readonly workspace?: string
+      readonly workspaceID?: Workspace.ID
+    }
+  }) => {
+    if (input?.location === undefined) return undefined
+    const workspace = input.location.workspaceID ?? input.location.workspace
+    return Location.Ref.make({
+      directory: AbsolutePath.make(input.location.directory ?? location.directory),
+      workspaceID: workspace === undefined ? location.workspaceID : Workspace.ID.make(workspace),
+    })
+  }
   const isCurrentLocation = (ref: Location.Ref) =>
     ref.directory === location.directory && ref.workspaceID === location.workspaceID
   const response = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -490,7 +499,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
           })
         }),
     },
-    storage: storage(kv, pluginID, location.workspaceID),
+    storage: pluginStorage(pluginID),
     shell: {
       hook: (name, callback) => hooks.register("shell", name, callback),
     },
@@ -623,6 +632,16 @@ export const requirements = LayerNode.group([
   PersistentPty.node,
   LocationServiceMap.node,
 ])
+
+/**
+ * Per-plugin storage for this location. The workspace namespace is bound here, so a loader that
+ * knows only a plugin ID cannot hand a placed plugin the host's KV namespace by omitting it.
+ */
+export const storageFactory = Effect.gen(function* () {
+  const kv = yield* KV.Service
+  const location = yield* Location.Service
+  return (pluginID: string) => storage(kv, pluginID, location.workspaceID)
+})
 
 export function storage(kv: KV.Interface, pluginID: string, workspaceID?: Workspace.ID): Plugin.Context["storage"] {
   const wsPrefix = workspaceID ? `ws:${workspaceID}:` : ""
