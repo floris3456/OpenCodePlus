@@ -1,0 +1,18 @@
+PER-RUN CROSS-CHECK: record.worktree vs actual directory existence
+Taken after terminal events settled, on the final integrated source.
+
+  main-c3ecef8bdc4ed16a  kind=main state=working   worktree=present  dirExists=True  OK
+  w-0293b888c5a69bf0     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-30ea97e64efdf5e0     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-3f1b3bb8a34585a2     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-50b8e675435a16d2     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-55693baa06d57ed3     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-7fc685a9ca6af2d9     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-981ec10d303d1833     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-c69e351cbd84b310     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-cf9a2ec035ca8feb     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-f04543295a7241aa     kind=w    state=idle      worktree=removed  dirExists=False OK
+
+total runs: 11   mismatches: 0
+
+VERDICT: no run record disagrees with the filesystem

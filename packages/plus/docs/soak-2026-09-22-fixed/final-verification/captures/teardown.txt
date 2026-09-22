@@ -1,0 +1,9 @@
+TEARDOWN of owned final-verification lab resoak5 (port 46615).
+$ tui-lab.sh down resoak5
+stopped 13 owned processes (derived from /proc cwd)
+connect_ex=111
+not_listening=true
+listeners=[]
+directory_absent=true
+residual /proc references to any resoak lab: 0
+human server 40374 connect_ex=0 (0 = still listening, never modified)

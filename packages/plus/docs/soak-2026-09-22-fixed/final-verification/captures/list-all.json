@@ -1,0 +1,189 @@
+{
+  "ok": true,
+  "tool": "list",
+  "via": "team.list",
+  "lab": {
+    "baseUrl": "http://127.0.0.1:46615",
+    "labHome": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5",
+    "teamsRoot": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams"
+  },
+  "parent": {
+    "run": "main-c3ecef8bdc4ed16a",
+    "session": "ses_f36453946ffeep8gUtAsG84MGb",
+    "role": "sol-orchestrator",
+    "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/proj",
+    "state": "working"
+  },
+  "child": {
+    "run": "w-55693baa06d57ed3",
+    "session": "ses_f36420b56ffel1QiQEBdXVlsky",
+    "role": "gemini-implementer",
+    "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t105569-20260922-1731",
+    "state": "idle",
+    "branch": "team/implementer/t105569-20260922-1731",
+    "parent": "main-c3ecef8bdc4ed16a"
+  },
+  "output": [
+    {
+      "run": "w-55693baa06d57ed3",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T10",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "2dc1b6dc13e75452d933ee830f6597db1e8786e7",
+      "branch": "team/implementer/t105569-20260922-1731",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t105569-20260922-1731",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:31:43.119Z",
+      "runtime": "running"
+    },
+    {
+      "run": "main-c3ecef8bdc4ed16a",
+      "role": "sol-orchestrator",
+      "state": "working",
+      "task": null,
+      "parent": null,
+      "head": "2dc1b6dc13e75452d933ee830f6597db1e8786e7",
+      "branch": "master",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/proj",
+      "worktree": "present",
+      "reportStatus": null,
+      "lastUsed": "2026-09-22T15:31:04.473Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-0293b888c5a69bf0",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T9",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "8d69dcfe2fd56dc09689755e9d1f6d20c502020c",
+      "branch": "team/implementer/t90293-20260922-1730",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t90293-20260922-1730",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:31:00.842Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-c69e351cbd84b310",
+      "role": "muse-implementer",
+      "state": "idle",
+      "task": "T8",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "867f978b192436c361919324db389a96ad42675f",
+      "branch": "team/implementer/t8c69e-20260922-1730",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t8c69e-20260922-1730",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:30:32.029Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-3f1b3bb8a34585a2",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T7",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "e1ba1b89d1fab40ded15533d59a6162577d95b1f",
+      "branch": "team/implementer/t73f1b-20260922-1729",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t73f1b-20260922-1729",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:30:07.608Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-f04543295a7241aa",
+      "role": "muse-implementer",
+      "state": "idle",
+      "task": "T6",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "37d628d1603f357c01d5677598759b5d231e151c",
+      "branch": "team/implementer/t6f045-20260922-1729",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t6f045-20260922-1729",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:29:40.060Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-50b8e675435a16d2",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T5",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "ed67b25868174db4902a31eace536a5da5ad4c7a",
+      "branch": "team/implementer/t550b8-20260922-1729",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t550b8-20260922-1729",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:29:39.786Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-7fc685a9ca6af2d9",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T4",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "d5167bf9f11508715e34301bcfd4272093ae0bba",
+      "branch": "team/implementer/t47fc6-20260922-1728",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t47fc6-20260922-1728",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:29:17.686Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-cf9a2ec035ca8feb",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T3",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "a65c8e6a298358954c62f9e4381e0b5f378f1549",
+      "branch": "team/implementer/t3cf9a-20260922-1728",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t3cf9a-20260922-1728",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:28:55.184Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-30ea97e64efdf5e0",
+      "role": "muse-implementer",
+      "state": "idle",
+      "task": "T2",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "d387e41ed91a6850d0b85f44a3021a112d466c5a",
+      "branch": "team/implementer/t230ea-20260922-1728",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t230ea-20260922-1728",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:28:31.359Z",
+      "runtime": "running"
+    },
+    {
+      "run": "w-981ec10d303d1833",
+      "role": "gemini-implementer",
+      "state": "idle",
+      "task": "T1",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "c6d2f4ea4ce99a510ead67ed9f9762c3d4515372",
+      "branch": "team/implementer/t1981e-20260922-1727",
+      "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak5/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t1981e-20260922-1727",
+      "worktree": "removed",
+      "reportStatus": "done",
+      "lastUsed": "2026-09-22T15:28:00.042Z",
+      "runtime": "running"
+    }
+  ],
+  "hostCalls": [
+    {
+      "method": "GET",
+      "path": "/api/session/ses_f36453946ffeep8gUtAsG84MGb",
+      "status": 200
+    }
+  ]
+}

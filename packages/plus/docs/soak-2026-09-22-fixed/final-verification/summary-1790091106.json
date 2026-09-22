@@ -1,0 +1,316 @@
+[
+  {
+    "cycle": 51,
+    "kind": "single",
+    "ok": true,
+    "child": "w-981ec10d303d1833",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:27:36.384382+00:00",
+    "ended": "2026-09-22T15:28:03.668971+00:00",
+    "driverActiveSec": 27.3,
+    "wallElapsedSec": 27.3,
+    "mergeReceipt": {
+      "id": "01M34VPCHVJ52Y9VPSBP1F9Y7C",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-981ec10d303d1833",
+      "childBranch": "team/implementer/t1981e-20260922-1727",
+      "childHead": "c6d2f4ea4ce99a510ead67ed9f9762c3d4515372",
+      "expectedParentHead": "630efd116385a827e72e01107229ba2aa6524895",
+      "state": "landed",
+      "at": "2026-09-22T15:28:03.643Z",
+      "updatedAt": "2026-09-22T15:28:03.659Z",
+      "landedHead": "c6d2f4ea4ce99a510ead67ed9f9762c3d4515372"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 52,
+    "kind": "single",
+    "ok": true,
+    "child": "w-30ea97e64efdf5e0",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:28:04.680273+00:00",
+    "ended": "2026-09-22T15:28:33.708905+00:00",
+    "driverActiveSec": 29.0,
+    "wallElapsedSec": 29.0,
+    "mergeReceipt": {
+      "id": "01M34VQ9WKVT5K8DPFKCP5QNVT",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-30ea97e64efdf5e0",
+      "childBranch": "team/implementer/t230ea-20260922-1728",
+      "childHead": "d387e41ed91a6850d0b85f44a3021a112d466c5a",
+      "expectedParentHead": "c6d2f4ea4ce99a510ead67ed9f9762c3d4515372",
+      "state": "landed",
+      "at": "2026-09-22T15:28:33.683Z",
+      "updatedAt": "2026-09-22T15:28:33.700Z",
+      "landedHead": "d387e41ed91a6850d0b85f44a3021a112d466c5a"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 53,
+    "kind": "single",
+    "ok": true,
+    "child": "w-cf9a2ec035ca8feb",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:28:34.712023+00:00",
+    "ended": "2026-09-22T15:28:57.034082+00:00",
+    "driverActiveSec": 22.3,
+    "wallElapsedSec": 22.3,
+    "mergeReceipt": {
+      "id": "01M34VR0NEKP3D3N05PT68MFCS",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-cf9a2ec035ca8feb",
+      "childBranch": "team/implementer/t3cf9a-20260922-1728",
+      "childHead": "a65c8e6a298358954c62f9e4381e0b5f378f1549",
+      "expectedParentHead": "d387e41ed91a6850d0b85f44a3021a112d466c5a",
+      "state": "landed",
+      "at": "2026-09-22T15:28:57.006Z",
+      "updatedAt": "2026-09-22T15:28:57.024Z",
+      "landedHead": "a65c8e6a298358954c62f9e4381e0b5f378f1549"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 54,
+    "kind": "single",
+    "ok": true,
+    "child": "w-7fc685a9ca6af2d9",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:28:58.037937+00:00",
+    "ended": "2026-09-22T15:29:20.673650+00:00",
+    "driverActiveSec": 22.6,
+    "wallElapsedSec": 22.6,
+    "mergeReceipt": {
+      "id": "01M34VRQR2ZXBYZ35MMXV5AHH7",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-7fc685a9ca6af2d9",
+      "childBranch": "team/implementer/t47fc6-20260922-1728",
+      "childHead": "d5167bf9f11508715e34301bcfd4272093ae0bba",
+      "expectedParentHead": "a65c8e6a298358954c62f9e4381e0b5f378f1549",
+      "state": "landed",
+      "at": "2026-09-22T15:29:20.642Z",
+      "updatedAt": "2026-09-22T15:29:20.662Z",
+      "landedHead": "d5167bf9f11508715e34301bcfd4272093ae0bba"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 55,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-50b8e675435a16d2",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:29:21.679102+00:00",
+    "ended": "2026-09-22T15:29:41.978986+00:00",
+    "driverActiveSec": 19.7,
+    "wallElapsedSec": 20.3,
+    "mergeReceipt": {
+      "id": "01M34VSCG59M131MYJM6BWPTMP",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-50b8e675435a16d2",
+      "childBranch": "team/implementer/t550b8-20260922-1729",
+      "childHead": "ed67b25868174db4902a31eace536a5da5ad4c7a",
+      "expectedParentHead": "d5167bf9f11508715e34301bcfd4272093ae0bba",
+      "state": "landed",
+      "at": "2026-09-22T15:29:41.893Z",
+      "updatedAt": "2026-09-22T15:29:41.937Z",
+      "landedHead": "ed67b25868174db4902a31eace536a5da5ad4c7a"
+    },
+    "dispatchedAt": "2026-09-22T15:29:21.679102+00:00",
+    "session": "ses_f36439c0fffecvU8ZnVgjtyENu",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 56,
+    "kind": "pair",
+    "ok": true,
+    "child": "w-f04543295a7241aa",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:29:21.679447+00:00",
+    "ended": "2026-09-22T15:29:42.271379+00:00",
+    "driverActiveSec": 2.0,
+    "wallElapsedSec": 20.6,
+    "mergeReceipt": {
+      "id": "01M34VSCTSQBXMVW7831P43NY5",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-f04543295a7241aa",
+      "childBranch": "team/implementer/t6f045-20260922-1729",
+      "childHead": "37d628d1603f357c01d5677598759b5d231e151c",
+      "expectedParentHead": "ed67b25868174db4902a31eace536a5da5ad4c7a",
+      "state": "landed",
+      "at": "2026-09-22T15:29:42.233Z",
+      "updatedAt": "2026-09-22T15:29:42.259Z",
+      "landedHead": "10f407cfe881637bad06d8e69fff8ac70eace835"
+    },
+    "dispatchedAt": "2026-09-22T15:29:21.679447+00:00",
+    "session": "ses_f36439bebffezlkwNPYSKYztA2",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 57,
+    "kind": "single",
+    "ok": true,
+    "child": "w-3f1b3bb8a34585a2",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:29:43.285318+00:00",
+    "ended": "2026-09-22T15:30:11.264287+00:00",
+    "driverActiveSec": 28.0,
+    "wallElapsedSec": 28.0,
+    "mergeReceipt": {
+      "id": "01M34VT94824X710QAYTB635W0",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-3f1b3bb8a34585a2",
+      "childBranch": "team/implementer/t73f1b-20260922-1729",
+      "childHead": "e1ba1b89d1fab40ded15533d59a6162577d95b1f",
+      "expectedParentHead": "10f407cfe881637bad06d8e69fff8ac70eace835",
+      "state": "landed",
+      "at": "2026-09-22T15:30:11.208Z",
+      "updatedAt": "2026-09-22T15:30:11.228Z",
+      "landedHead": "e1ba1b89d1fab40ded15533d59a6162577d95b1f"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 58,
+    "kind": "single",
+    "ok": true,
+    "child": "w-c69e351cbd84b310",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:30:12.274062+00:00",
+    "ended": "2026-09-22T15:30:34.398379+00:00",
+    "driverActiveSec": 22.1,
+    "wallElapsedSec": 22.1,
+    "mergeReceipt": {
+      "id": "01M34VTZQ53ETYGD3N11PHA6GE",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-c69e351cbd84b310",
+      "childBranch": "team/implementer/t8c69e-20260922-1730",
+      "childHead": "867f978b192436c361919324db389a96ad42675f",
+      "expectedParentHead": "e1ba1b89d1fab40ded15533d59a6162577d95b1f",
+      "state": "landed",
+      "at": "2026-09-22T15:30:34.341Z",
+      "updatedAt": "2026-09-22T15:30:34.357Z",
+      "landedHead": "867f978b192436c361919324db389a96ad42675f"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 59,
+    "kind": "single",
+    "ok": true,
+    "child": "w-0293b888c5a69bf0",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:30:35.402227+00:00",
+    "ended": "2026-09-22T15:31:03.198383+00:00",
+    "driverActiveSec": 27.8,
+    "wallElapsedSec": 27.8,
+    "mergeReceipt": {
+      "id": "01M34VVVW3MWMXHNYMKMMHQ1S2",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-0293b888c5a69bf0",
+      "childBranch": "team/implementer/t90293-20260922-1730",
+      "childHead": "8d69dcfe2fd56dc09689755e9d1f6d20c502020c",
+      "expectedParentHead": "867f978b192436c361919324db389a96ad42675f",
+      "state": "landed",
+      "at": "2026-09-22T15:31:03.171Z",
+      "updatedAt": "2026-09-22T15:31:03.188Z",
+      "landedHead": "8d69dcfe2fd56dc09689755e9d1f6d20c502020c"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  },
+  {
+    "cycle": 60,
+    "kind": "single",
+    "ok": true,
+    "child": "w-55693baa06d57ed3",
+    "report": "done",
+    "landed": true,
+    "realpath": false,
+    "bounds": false,
+    "started": "2026-09-22T15:31:04.222655+00:00",
+    "ended": "2026-09-22T15:31:45.785658+00:00",
+    "driverActiveSec": 41.6,
+    "wallElapsedSec": 41.6,
+    "mergeReceipt": {
+      "id": "01M34VX59Y3Z2VV2Y6H7N7G1VV",
+      "parentRun": "main-c3ecef8bdc4ed16a",
+      "childRun": "w-55693baa06d57ed3",
+      "childBranch": "team/implementer/t105569-20260922-1731",
+      "childHead": "2dc1b6dc13e75452d933ee830f6597db1e8786e7",
+      "expectedParentHead": "8d69dcfe2fd56dc09689755e9d1f6d20c502020c",
+      "state": "landed",
+      "at": "2026-09-22T15:31:45.598Z",
+      "updatedAt": "2026-09-22T15:31:45.645Z",
+      "landedHead": "2dc1b6dc13e75452d933ee830f6597db1e8786e7"
+    },
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi"
+    },
+    "verified": true
+  }
+]

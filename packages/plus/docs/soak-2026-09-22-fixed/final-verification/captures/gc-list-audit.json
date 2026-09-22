@@ -1,0 +1,155 @@
+{
+  "gcPolicy": {
+    "reapAfter": "0ms",
+    "keepPromotedFrom": true
+  },
+  "before": {
+    "total": 11,
+    "byState": {
+      "working": 1,
+      "idle": 10
+    }
+  },
+  "sweep": {
+    "reaped": [],
+    "skippedDirty": [],
+    "orphansRemoved": [],
+    "removeFailed": []
+  },
+  "after": {
+    "total": 11,
+    "byState": {
+      "working": 1,
+      "idle": 10
+    }
+  },
+  "rootRuns": [
+    {
+      "id": "main-c3ecef8bdc4ed16a",
+      "role": "sol-orchestrator",
+      "kind": "main",
+      "state": "working",
+      "worktree": "present",
+      "parent": null,
+      "head": "630efd116385a827e72e01107229ba2aa6524895",
+      "sessionID": "ses_f36453946ffeep8gUtAsG84MGb"
+    }
+  ],
+  "worktreeDirsRemaining": [],
+  "audit": {
+    "ok": true,
+    "lines": 103
+  },
+  "inventory": [
+    {
+      "id": "main-c3ecef8bdc4ed16a",
+      "role": "sol-orchestrator",
+      "kind": "main",
+      "state": "working",
+      "worktree": "present",
+      "parent": null,
+      "head": "630efd116385a827e72e01107229ba2aa6524895",
+      "sessionID": "ses_f36453946ffeep8gUtAsG84MGb"
+    },
+    {
+      "id": "w-0293b888c5a69bf0",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "8d69dcfe2fd56dc09689755e9d1f6d20c502020c",
+      "sessionID": "ses_f36427c10ffeytfCOTTOL1jfCD"
+    },
+    {
+      "id": "w-30ea97e64efdf5e0",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "d387e41ed91a6850d0b85f44a3021a112d466c5a",
+      "sessionID": "ses_f3644c890ffe43TpvwK9AqSowL"
+    },
+    {
+      "id": "w-3f1b3bb8a34585a2",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "e1ba1b89d1fab40ded15533d59a6162577d95b1f",
+      "sessionID": "ses_f364347a0ffeZ57woQ1mlNuM2u"
+    },
+    {
+      "id": "w-50b8e675435a16d2",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "ed67b25868174db4902a31eace536a5da5ad4c7a",
+      "sessionID": "ses_f36439c0fffecvU8ZnVgjtyENu"
+    },
+    {
+      "id": "w-55693baa06d57ed3",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "2dc1b6dc13e75452d933ee830f6597db1e8786e7",
+      "sessionID": "ses_f36420b56ffel1QiQEBdXVlsky"
+    },
+    {
+      "id": "w-7fc685a9ca6af2d9",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "d5167bf9f11508715e34301bcfd4272093ae0bba",
+      "sessionID": "ses_f3643f867ffeJEH9aJMZkKQBoG"
+    },
+    {
+      "id": "w-981ec10d303d1833",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "c6d2f4ea4ce99a510ead67ed9f9762c3d4515372",
+      "sessionID": "ses_f36453757ffezcT2PMzskAsOHZ"
+    },
+    {
+      "id": "w-c69e351cbd84b310",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "867f978b192436c361919324db389a96ad42675f",
+      "sessionID": "ses_f3642d645ffeSxViN1Iq3ujSpp"
+    },
+    {
+      "id": "w-cf9a2ec035ca8feb",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "a65c8e6a298358954c62f9e4381e0b5f378f1549",
+      "sessionID": "ses_f3644535bffe6XRP6b6E7pl4jQ"
+    },
+    {
+      "id": "w-f04543295a7241aa",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-c3ecef8bdc4ed16a",
+      "head": "37d628d1603f357c01d5677598759b5d231e151c",
+      "sessionID": "ses_f36439bebffezlkwNPYSKYztA2"
+    }
+  ]
+}

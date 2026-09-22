@@ -1,0 +1,31 @@
+FINAL-SOURCE LIVE VERIFICATION - lab resoak5, model proof BEFORE any delegation
+source commit under test: d17b8560688dbe7584a9a75c9c7f573e8d7f56fa
+lab port: 46615   (human server 40374 never touched)
+
+$ curl -s -u opencode:<redacted> -H 'x-opencode-directory: <lab>/proj' http://127.0.0.1:46615/api/agent
+[
+  {
+    "id": "gemini-implementer",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  },
+  {
+    "id": "muse-implementer",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  },
+  {
+    "id": "sol-orchestrator",
+    "model": {
+      "id": "gpt-5.6-luna",
+      "providerID": "cliproxyapi",
+      "variant": "low"
+    }
+  }
+]
