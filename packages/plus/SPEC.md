@@ -1152,6 +1152,8 @@ New input and output fields:
   `acknowledged: RunID[]` — exactly the owned children whose settled attempt
   this call wrote `runs/<run>/ack.json` for. `ack:false` reads the same
   outcomes and acknowledges nothing, so `acknowledged` is `[]`.
+- `wait` releases its internal race and pause timers as soon as it returns so
+  a caller process is never held open past its result.
 - `status` entries gain `acked: { attempt, at } | null`, read back from
   `runs/<run>/ack.json` (`RunAck` in `teams/schema.ts`). `status` itself never
   acknowledges, so `wait`'s `acknowledged` and `status`'s `acked` always agree.
