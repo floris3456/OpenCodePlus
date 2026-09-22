@@ -3,6 +3,11 @@ import { Script } from "@opencode/script"
 import { resolveBuildConfig } from "../script/build"
 import { resolvePlusBuildConfig } from "../script/build-plus"
 import { getBuildInfo } from "../src/commands/handlers/build-info"
+import { Commands } from "../src/commands/commands"
+import { Runtime } from "../src/framework/runtime"
+import { type Spec } from "../src/framework/spec"
+import { upstreamHandlers } from "../src/index"
+import { plusHandlers } from "../src/plus"
 
 describe("plus build configuration", () => {
   test("uses binary name opencodeplus and channel plus", () => {
@@ -108,4 +113,39 @@ describe("plus build configuration", () => {
       "version",
     ])
   })
+
+  test("every command node in Commands has a handler in upstream index.ts", () => {
+    expect(typeof upstreamHandlers.$).toBe("function")
+    expect(findMissingHandlers(Commands, upstreamHandlers)).toEqual([])
+    expect(() => Runtime.handlers(Commands, upstreamHandlers)).not.toThrow()
+  })
+
+  test("every command node in Commands has a handler in plus.ts", () => {
+    expect(typeof plusHandlers.$).toBe("function")
+    expect(findMissingHandlers(Commands, plusHandlers)).toEqual([])
+    expect(() => Runtime.handlers(Commands, plusHandlers)).not.toThrow()
+  })
 })
+
+function findMissingHandlers(node: Spec.Any, map: unknown, path = ""): string[] {
+  if (!map) return [path || node.name]
+  if (typeof map === "function") return []
+  if (typeof map !== "object") return [path || node.name]
+  const record = map as Record<string, unknown>
+  const missing: string[] = []
+  if (Object.keys(node.commands).length === 0) {
+    if (typeof record.$ !== "function") {
+      missing.push(path || node.name)
+    }
+    return missing
+  }
+  for (const [name, child] of Object.entries(node.commands)) {
+    const childPath = path ? `${path}.${name}` : name
+    if (!(name in record) || record[name] === undefined) {
+      missing.push(childPath)
+      continue
+    }
+    missing.push(...findMissingHandlers(child, record[name], childPath))
+  }
+  return missing
+}

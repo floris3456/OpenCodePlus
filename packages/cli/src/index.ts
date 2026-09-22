@@ -20,7 +20,7 @@ if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
   process.exit(await Effect.runPromise(askpass.pipe(Effect.provide(NodeServices.layer))))
 }
 
-const Handlers = Runtime.handlers(Commands, {
+export const handlers = {
   $: () => import("./commands/handlers/default"),
   upgrade: () => import("./commands/handlers/upgrade"),
   uninstall: () => import("./commands/handlers/uninstall"),
@@ -71,63 +71,70 @@ const Handlers = Runtime.handlers(Commands, {
     unset: () => import("./commands/handlers/service/unset"),
   },
   serve: () => import("./commands/handlers/serve"),
-})
+  "build-info": () => import("./commands/handlers/build-info"),
+  "search-mcp": () => import("./commands/handlers/search-mcp"),
+}
 
-Effect.gen(function* () {
-  yield* Heap.listen
-  yield* CpuProfile.listen
-  const runFork = Effect.runForkWith(yield* Effect.context<never>())
-  const uncaughtException = (cause: Error, origin: "uncaughtException" | "unhandledRejection") => {
-    runFork(Effect.logError("uncaught exception", { cause, origin }))
-  }
-  const unhandledRejection = (cause: unknown) => {
-    runFork(Effect.logError("unhandled rejection", { cause }))
-  }
-  process.on("uncaughtException", uncaughtException)
-  process.on("unhandledRejection", unhandledRejection)
-  yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      process.off("uncaughtException", uncaughtException)
-      process.off("unhandledRejection", unhandledRejection)
-    }),
-  )
-  yield* Effect.logInfo("cli starting", {
-    version: OPENCODE_VERSION,
-    channel: OPENCODE_CHANNEL,
-    local: OPENCODE_LOCAL,
-    args: process.argv.slice(2),
-  })
-  return yield* Runtime.run(Commands, Handlers, { version: OPENCODE_VERSION })
-}).pipe(
-  Effect.catchCause((cause) =>
-    Effect.logError("cli process failed", {
-      cause,
-      args: process.argv.slice(2),
-    }).pipe(Effect.andThen(Effect.failCause(cause))),
-  ),
-  Effect.annotateLogs({ role: "cli" }),
-  Effect.provide(Config.layer),
-  Effect.provide(Updater.layer),
-  Effect.provide(
-    LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node]), {
-      replacements: [
-        Global.node.replace(
-          Global.layerWith(process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {}),
-        ),
-      ],
-    }),
-  ),
-  Effect.provide(
-    Observability.layer({
-      endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-      headers: process.env.OTEL_EXPORTER_OTLP_HEADERS,
-      client: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
+export const upstreamHandlers = handlers
+export const Handlers = Runtime.handlers(Commands, handlers)
+
+if (import.meta.main || typeof Bun === "undefined" || process.argv[1]?.includes("vite")) {
+  Effect.gen(function* () {
+    yield* Heap.listen
+    yield* CpuProfile.listen
+    const runFork = Effect.runForkWith(yield* Effect.context<never>())
+    const uncaughtException = (cause: Error, origin: "uncaughtException" | "unhandledRejection") => {
+      runFork(Effect.logError("uncaught exception", { cause, origin }))
+    }
+    const unhandledRejection = (cause: unknown) => {
+      runFork(Effect.logError("unhandled rejection", { cause }))
+    }
+    process.on("uncaughtException", uncaughtException)
+    process.on("unhandledRejection", unhandledRejection)
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        process.off("uncaughtException", uncaughtException)
+        process.off("unhandledRejection", unhandledRejection)
+      }),
+    )
+    yield* Effect.logInfo("cli starting", {
       version: OPENCODE_VERSION,
       channel: OPENCODE_CHANNEL,
-    }),
-  ),
-  Effect.provide(NodeServices.layer),
-  Effect.scoped,
-  Effect.tap(() => Effect.sync(() => process.exit(process.exitCode ?? 0))),
-  NodeRuntime.runMain,
-)
+      local: OPENCODE_LOCAL,
+      args: process.argv.slice(2),
+    })
+    return yield* Runtime.run(Commands, Handlers, { version: OPENCODE_VERSION })
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logError("cli process failed", {
+        cause,
+        args: process.argv.slice(2),
+      }).pipe(Effect.andThen(Effect.failCause(cause))),
+    ),
+    Effect.annotateLogs({ role: "cli" }),
+    Effect.provide(Config.layer),
+    Effect.provide(Updater.layer),
+    Effect.provide(
+      LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node]), {
+        replacements: [
+          Global.node.replace(
+            Global.layerWith(process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {}),
+          ),
+        ],
+      }),
+    ),
+    Effect.provide(
+      Observability.layer({
+        endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+        headers: process.env.OTEL_EXPORTER_OTLP_HEADERS,
+        client: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
+        version: OPENCODE_VERSION,
+        channel: OPENCODE_CHANNEL,
+      }),
+    ),
+    Effect.provide(NodeServices.layer),
+    Effect.scoped,
+    Effect.tap(() => Effect.sync(() => process.exit(process.exitCode ?? 0))),
+    NodeRuntime.runMain,
+  )
+}
