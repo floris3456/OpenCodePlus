@@ -2,6 +2,7 @@ export * as SessionRunCoordinator from "./run-coordinator.js"
 
 import { Deferred, Effect, Exit, Fiber, FiberSet, Scope } from "effect"
 import type { Promotable } from "./inbox.js"
+import { AdmissionFence } from "./admission.js"
 
 /** Serializes execution for each key while allowing different keys to run concurrently. */
 export interface Coordinator<Key, E, Reason = never> {
@@ -71,11 +72,14 @@ export const make = <Key, E, Reason = never>(options: {
     const executions = new Map<Key, Execution<E, Reason>>()
     const fork = yield* FiberSet.makeRuntime<never, void, never>()
 
+    const unregisterSource = AdmissionFence.registerActiveSource(() => Array.from(executions.keys()).map(String))
+    yield* Effect.addFinalizer(() => Effect.sync(unregisterSource))
+
     const loop = (key: Key, execution: Execution<E, Reason>, force: boolean): Effect.Effect<void, E> =>
       Effect.suspend(() => options.drain(key, force, execution.scope)).pipe(
         Effect.andThen(
           Effect.suspend(() => {
-            if (execution.stopping || execution.pendingWake === undefined) return Effect.void
+            if (execution.stopping || execution.pendingWake === undefined || AdmissionFence.isEngaged()) return Effect.void
             execution.scope = execution.pendingWake
             execution.pendingWake = undefined
             // Trampoline so drains that complete synchronously cannot grow the stack.
@@ -114,7 +118,7 @@ export const make = <Key, E, Reason = never>(options: {
     // A doorbell that survives the execution loop (rung after the loop decided to end, or
     // during failure or interruption cleanup) starts a fresh execution for the remaining work.
     const settle = (key: Key, execution: Execution<E, Reason>, exit: Exit.Exit<void, E>) => {
-      if (execution.pendingWake) start(key, false, execution.pendingWake)
+      if (execution.pendingWake && !AdmissionFence.isEngaged()) start(key, false, execution.pendingWake)
       else executions.delete(key)
       Deferred.doneUnsafe(execution.done, exit)
     }
@@ -130,11 +134,13 @@ export const make = <Key, E, Reason = never>(options: {
             return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(run(key)))
           return Deferred.await(execution.done)
         }
+        if (AdmissionFence.isEngaged()) return Effect.void
         return Deferred.await(start(key, true, "input").done)
       })
 
     const wake = (key: Key, scope: Promotable = "input") =>
       Effect.sync(() => {
+        if (AdmissionFence.isEngaged()) return
         const execution = executions.get(key)
         if (execution !== undefined) {
           // Coalesced wakes keep the widest scope: "input" subsumes "steer".
