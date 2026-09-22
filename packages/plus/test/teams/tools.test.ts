@@ -9,7 +9,7 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Cause, Deferred, Effect, Fiber, Option, PubSub, Schema, Stream } from "effect"
+import { Cause, Deferred, Effect, Fiber, Option, PubSub, Schema, SchemaAST, Stream } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -1358,32 +1358,180 @@ test("two Code Mode calls that share one CallID write two distinct audit lines",
   })
 })
 
-test("C — every optional field of every registered team tool accepts null as equivalent to omission", async () => {
+// Item C: null-as-omission must hold at every depth of every registered tool
+// schema. Paths are derived from the schema ASTs — struct fields, array
+// elements, and fields behind optional/default wrappers all appear — so a new
+// field is covered automatically and a silently empty enumeration cannot pass.
+// Each path is exercised through the registered schema twice: once with the
+// field set to null and once with the key omitted. Omission is the oracle:
+// where omission decodes, null must decode to the same value; where omission is
+// invalid (a required field), null must fail with a SchemaError.
+type FieldPath = ReadonlyArray<string | number>
+
+const MISSING = Symbol("plus-test-missing-value")
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function structAt(ast: SchemaAST.AST): SchemaAST.Objects | undefined {
+  if (SchemaAST.isObjects(ast)) return ast
+  if (SchemaAST.isUnion(ast)) {
+    for (const member of ast.types) {
+      const found = structAt(member)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  if (SchemaAST.isSuspend(ast)) return structAt(ast.thunk())
+  return undefined
+}
+
+function arrayAt(ast: SchemaAST.AST): SchemaAST.Arrays | undefined {
+  if (SchemaAST.isArrays(ast)) return ast
+  if (SchemaAST.isUnion(ast)) {
+    for (const member of ast.types) {
+      const found = arrayAt(member)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  if (SchemaAST.isSuspend(ast)) return arrayAt(ast.thunk())
+  return undefined
+}
+
+function elementAt(array: SchemaAST.Arrays, index: number): SchemaAST.AST | undefined {
+  return array.elements[index] ?? array.rest[0]
+}
+
+// A value satisfying a node's required fields, used only to materialize
+// containers the base fixture does not already carry.
+function materialize(ast: SchemaAST.AST): unknown {
+  if (SchemaAST.isUnion(ast)) {
+    for (const member of ast.types) {
+      const value = materialize(member)
+      if (value !== MISSING) return value
+    }
+    return MISSING
+  }
+  if (SchemaAST.isSuspend(ast)) return materialize(ast.thunk())
+  if (SchemaAST.isObjects(ast)) {
+    const out: Record<string, unknown> = {}
+    for (const ps of ast.propertySignatures) {
+      if (SchemaAST.isOptional(ps.type)) continue
+      const value = materialize(ps.type)
+      if (value === MISSING) return MISSING
+      out[String(ps.name)] = value
+    }
+    return out
+  }
+  if (SchemaAST.isArrays(ast)) {
+    const out: unknown[] = []
+    for (const element of ast.elements) {
+      const value = materialize(element)
+      if (value === MISSING) return MISSING
+      out.push(value)
+    }
+    return out
+  }
+  switch (ast._tag) {
+    case "String":
+      return "materialized sample value for tests"
+    case "Number":
+      return 1
+    case "Boolean":
+      return true
+    case "Literal":
+      return ast.literal
+    case "Null":
+      return null
+    case "Undefined":
+      return undefined
+    default:
+      return MISSING
+  }
+}
+
+function collectFieldPaths(ast: SchemaAST.AST, prefix: FieldPath, out: FieldPath[]): void {
+  if (SchemaAST.isUnion(ast)) {
+    for (const member of ast.types) collectFieldPaths(member, prefix, out)
+    return
+  }
+  if (SchemaAST.isSuspend(ast)) {
+    collectFieldPaths(ast.thunk(), prefix, out)
+    return
+  }
+  if (SchemaAST.isObjects(ast)) {
+    for (const ps of ast.propertySignatures) {
+      const path = [...prefix, String(ps.name)]
+      out.push(path)
+      collectFieldPaths(ps.type, path, out)
+    }
+    return
+  }
+  if (SchemaAST.isArrays(ast)) {
+    if (ast.elements.length > 0) {
+      ast.elements.forEach((element, index) => collectFieldPaths(element, [...prefix, index], out))
+      return
+    }
+    if (ast.rest[0] !== undefined) collectFieldPaths(ast.rest[0], [...prefix, 0], out)
+  }
+}
+
+// Returns `value` with `path` materialized and its leaf either set to null
+// ("null") or removed ("omit"). Both modes materialize the same containers, so
+// the two results differ only in the leaf key.
+function mutatePath(ast: SchemaAST.AST, value: unknown, path: FieldPath, mode: "null" | "omit"): unknown {
+  const head = path[0]
+  if (head === undefined) return mode === "omit" ? MISSING : null
+  const rest = path.slice(1)
+  if (typeof head === "number") {
+    const array = arrayAt(ast)
+    if (array === undefined) return value
+    const out: unknown[] = Array.isArray(value) ? [...value] : []
+    for (let index = out.length; index < head; index++) {
+      const filler = elementAt(array, index)
+      const materialized = filler === undefined ? MISSING : materialize(filler)
+      out[index] = materialized === MISSING ? undefined : materialized
+    }
+    const element = elementAt(array, head)
+    if (element === undefined) return out
+    const current = out[head] !== undefined ? out[head] : materialize(element)
+    if (current === MISSING) return out
+    const next = mutatePath(element, current, rest, mode)
+    if (next === MISSING) out.splice(head, 1)
+    else out[head] = next
+    return out
+  }
+  const struct = structAt(ast)
+  if (struct === undefined) return value
+  const field = struct.propertySignatures.find((ps) => ps.name === head)
+  if (field === undefined) return value
+  const materialized = materialize(struct)
+  const record = isRecord(value) ? { ...value } : isRecord(materialized) ? { ...materialized } : {}
+  const current = record[head] !== undefined ? record[head] : materialize(field.type)
+  if (current === MISSING) return record
+  const next = mutatePath(field.type, current, rest, mode)
+  if (next === MISSING) delete record[head]
+  else record[head] = next
+  return record
+}
+
+function pathLabel(path: FieldPath): string {
+  return path
+    .map((part) => (typeof part === "number" ? `[${part}]` : `.${part}`))
+    .join("")
+    .replace(/^\./, "")
+}
+
+function registeredSchema(tools: Map<string, Tool.Info & { readonly id: string }>, id: string) {
+  const input = need(tools, id).input
+  if (!Schema.isSchema(input)) throw new Error(`${id} input is not a schema`)
+  return input
+}
+
+test("C — every field path of every registered team tool treats null as omission, required null still fails", async () => {
   const tools = await registeredTools()
-
-  function findOptionalPaths(fields: Record<string, any>, prefix: string[] = []): string[][] {
-    const result: string[][] = []
-    for (const [key, field] of Object.entries(fields)) {
-      const current = [...prefix, key]
-      const isOptional = Option.isSome(Schema.decodeUnknownOption(field)(undefined))
-      if (isOptional) {
-        result.push(current)
-      }
-      if (field && typeof field === "object" && "fields" in field) {
-        result.push(...findOptionalPaths(field.fields, current))
-      }
-    }
-    return result
-  }
-
-  function setIn(obj: Record<string, unknown>, path: string[], value: unknown): Record<string, unknown> {
-    if (path.length === 1) {
-      return { ...obj, [path[0]!]: value }
-    }
-    const [head, ...tail] = path
-    const child = (obj[head!] && typeof obj[head!] === "object" ? obj[head!] : {}) as Record<string, unknown>
-    return { ...obj, [head!]: setIn(child, tail, value) }
-  }
 
   const baseInputs: Record<string, Record<string, unknown>> = {
     team_delegate: {
@@ -1435,34 +1583,112 @@ test("C — every optional field of every registered team tool accepts null as e
     },
   }
 
+  const regressionPaths: Array<[string, FieldPath]> = [
+    ["team_set_checks", ["checks", 0, "cwd"]],
+    ["team_delegate", ["context", "interfaces", 0, "symbol"]],
+    ["team_followup", ["budget", "turns"]],
+  ]
+
+  const covered = new Set<string>()
+  let totalFieldPaths = 0
   let totalOptionalFieldsTested = 0
+  let totalRequiredFieldsTested = 0
 
   for (const [id, tool] of tools) {
     if (!id.startsWith("team_")) continue
-    const schema = tool.input as any
-
+    const schema = registeredSchema(tools, id)
     const base = baseInputs[id] ?? {}
-    const omittedDecoded = Schema.decodeUnknownSync(schema)(base)
+    const root = structAt(schema.ast)
+    const paths: FieldPath[] = []
+    collectFieldPaths(schema.ast, [], paths)
+    if (root === undefined || root.propertySignatures.length > 0) expect(paths.length).toBeGreaterThan(0)
 
-    const optionalPaths = findOptionalPaths(schema.fields)
-    for (const path of optionalPaths) {
-      totalOptionalFieldsTested++
-      const inputWithNull = setIn(base, path, null)
-      const decodedWithNull = Schema.decodeUnknownSync(schema)(inputWithNull)
-      expect(decodedWithNull).toEqual(omittedDecoded)
-    }
-
-    // Required fields with null must fail
-    for (const [key, field] of Object.entries(schema.fields)) {
-      const isOptional = Option.isSome(Schema.decodeUnknownOption(field as any)(undefined))
-      if (!isOptional) {
-        const inputWithNull = { ...base, [key]: null }
-        expect(Option.isNone(Schema.decodeUnknownOption(schema)(inputWithNull))).toBe(true)
+    for (const path of paths) {
+      totalFieldPaths++
+      const withNull = mutatePath(schema.ast, base, path, "null")
+      const omitted = mutatePath(schema.ast, base, path, "omit")
+      const omittedResult = Schema.decodeUnknownOption(schema)(omitted)
+      const nullResult = Schema.decodeUnknownOption(schema)(withNull)
+      if (Option.isSome(omittedResult)) {
+        totalOptionalFieldsTested++
+        covered.add(`${id}:${pathLabel(path)}`)
+        let decodedNull: unknown
+        try {
+          decodedNull = Schema.decodeUnknownSync(schema)(withNull)
+        } catch (error) {
+          throw new Error(`${id}: null at ${pathLabel(path)} was rejected — ${(error as Error).message}`)
+        }
+        expect(decodedNull).toEqual(omittedResult.value)
+      } else {
+        totalRequiredFieldsTested++
+        expect(Option.isNone(nullResult)).toBe(true)
+        expect(() => Schema.decodeUnknownSync(schema)(withNull)).toThrow(Schema.SchemaError)
       }
     }
   }
 
+  for (const [id, path] of regressionPaths) expect(covered.has(`${id}:${pathLabel(path)}`)).toBe(true)
+  expect(totalFieldPaths).toBeGreaterThan(60)
   expect(totalOptionalFieldsTested).toBeGreaterThan(15)
+  expect(totalRequiredFieldsTested).toBeGreaterThan(10)
+})
+
+test("C1 — null in an array element field decodes as omission (set_checks checks[0].cwd)", async () => {
+  const schema = registeredSchema(await registeredTools(), "team_set_checks")
+  const omitted = Schema.decodeUnknownSync(schema)({ checks: [{ id: "x", argv: ["bun", "test", "test/x.test.ts"] }] })
+  const withNull = { checks: [{ id: "x", argv: ["bun", "test", "test/x.test.ts"], cwd: null }] }
+  expect(Schema.decodeUnknownSync(schema)(withNull)).toEqual(omitted)
+})
+
+test("C2 — null inside a default-wrapped array element decodes as omission (brief context.interfaces[0].symbol)", async () => {
+  const schema = registeredSchema(await registeredTools(), "team_delegate")
+  const brief = {
+    requestID: "T1-a",
+    role: "muse-implementer",
+    objective: "Make the agent filter apply in the list tool output.",
+    deliverable: { kind: "commit" },
+    scope: { paths: ["packages/plus/src/x.ts"] },
+  }
+  const omitted = Schema.decodeUnknownSync(schema)({
+    ...brief,
+    context: { interfaces: [{ path: "note.md", note: "test" }] },
+  })
+  expect(
+    Schema.decodeUnknownSync(schema)({
+      ...brief,
+      context: { interfaces: [{ path: "note.md", note: "test", symbol: null }] },
+    }),
+  ).toEqual(omitted)
+})
+
+test("C3 — null inside an optional struct field decodes as omission (followup budget.turns)", async () => {
+  const schema = registeredSchema(await registeredTools(), "team_followup")
+  const base = { run: "w-0123456789abcdef", requestID: "probe-budget", prompt: "test" }
+  const omitted = Schema.decodeUnknownSync(schema)({ ...base, budget: {} })
+  expect(Schema.decodeUnknownSync(schema)({ ...base, budget: { turns: null } })).toEqual(omitted)
+})
+
+test("C4 — null on required fields still fails with a schema error at every depth", async () => {
+  const tools = await registeredTools()
+  const brief = {
+    requestID: "T1-a",
+    role: "muse-implementer",
+    objective: "Make the agent filter apply in the list tool output.",
+    deliverable: { kind: "commit" },
+    scope: { paths: ["packages/plus/src/x.ts"] },
+  }
+  const cases: Array<[string, unknown]> = [
+    ["team_delegate", { ...brief, objective: null }],
+    ["team_delegate", { ...brief, checks: [{ id: null, argv: ["bun", "test", "test/x.test.ts"] }] }],
+    ["team_delegate", { ...brief, context: { interfaces: [{ path: null, note: "test" }] } }],
+    ["team_followup", { run: null, requestID: "probe-budget", prompt: "test" }],
+    ["team_finish", { status: null, summary: "Finished all changes cleanly" }],
+  ]
+  for (const [id, input] of cases) {
+    const schema = registeredSchema(tools, id)
+    expect(Option.isNone(Schema.decodeUnknownOption(schema)(input))).toBe(true)
+    expect(() => Schema.decodeUnknownSync(schema)(input)).toThrow(Schema.SchemaError)
+  }
 })
 
 test("D — a home session with a non-repo location gets E_NOT_ACTOR and creates no root run record", async () => {
