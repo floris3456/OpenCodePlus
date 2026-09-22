@@ -1,0 +1,31 @@
+{
+  "contractVersion": 1,
+  "product": "opencodeplus",
+  "channel": "plus",
+  "targets": [
+    "linux-arm64",
+    "linux-x64",
+    "darwin-arm64",
+    "darwin-x64"
+  ],
+  "qualifiedTargets": [
+    "linux-arm64",
+    "linux-x64",
+    "darwin-arm64",
+    "darwin-x64"
+  ],
+  "unqualifiedTargets": [
+    "win32-x64",
+    "win32-arm64"
+  ],
+  "unqualifiedReason": "Windows is explicitly not qualified for OpenCode Plus releases.",
+  "archiveMembers": [
+    "bin/opencodeplus",
+    "metadata.json",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "manifestFile": "release.json",
+  "sumsFile": "SHA256SUMS",
+  "installerFile": "install.sh"
+}

@@ -1,0 +1,15 @@
+{
+  "scheme": "beta-revision",
+  "version": null,
+  "upstreamBeta": null,
+  "plusRevision": null,
+  "provenance": {
+    "state": "unmeasured",
+    "measuredBy": "build-seat",
+    "note": "Upstream beta association has not been measured yet; values remain null until measured."
+  },
+  "fallbackScheme": {
+    "scheme": "commit-labelled",
+    "note": "Commit-labelled alternative scheme for builds when upstream beta association is unmeasured."
+  }
+}

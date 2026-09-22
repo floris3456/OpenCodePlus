@@ -1,0 +1,154 @@
+{
+  "policyVersion": 1,
+  "checks": [
+    {
+      "id": "plus-typecheck",
+      "argv": [
+        "bun",
+        "run",
+        "typecheck"
+      ],
+      "cwd": "packages/plus"
+    },
+    {
+      "id": "soak-regressions",
+      "argv": [
+        "bun",
+        "test",
+        "test/teams/worktree.test.ts",
+        "test/teams/api.test.ts",
+        "test/teams/gc.test.ts",
+        "test/teams/lifecycle-events.test.ts",
+        "test/teams/schema.test.ts",
+        "test/teams/tools.test.ts",
+        "test/teams/brief-report.test.ts",
+        "test/teams/api-query.test.ts",
+        "test/teams/api-lifecycle.test.ts",
+        "test/teams/audit.test.ts",
+        "test/teams/roles.test.ts"
+      ],
+      "cwd": "packages/plus"
+    },
+    {
+      "id": "release-unit",
+      "argv": [
+        "bun",
+        "test",
+        "test/release/identity.test.ts",
+        "test/release/metadata.test.ts",
+        "test/release/reproducibility.test.ts",
+        "test/release/installer.test.ts",
+        "test/release/acceptance.test.ts",
+        "test/release/preactivation.test.ts",
+        "test/release/workflows.test.ts",
+        "test/search/register.test.ts",
+        "test/search/mcp.test.ts"
+      ],
+      "cwd": "packages/plus"
+    },
+    {
+      "id": "release-bindings",
+      "argv": [
+        "bun",
+        "test",
+        "test/release/model-pins.test.ts",
+        "test/release/check-binding.test.ts",
+        "test/release/placement.test.ts",
+        "test/release/requests.test.ts",
+        "test/teams/checks.test.ts"
+      ],
+      "cwd": "packages/plus"
+    },
+    {
+      "id": "service-clients",
+      "argv": [
+        "bun",
+        "test",
+        "test/service.test.ts",
+        "test/promise-service.test.ts",
+        "test/service-contender.test.ts"
+      ],
+      "cwd": "packages/client"
+    },
+    {
+      "id": "cli-release",
+      "argv": [
+        "bun",
+        "test",
+        "test/plus-build.test.ts",
+        "test/managed-plus.test.ts",
+        "test/updater-install.test.ts",
+        "test/updater-poll.test.ts",
+        "test/service.test.ts",
+        "test/service-readiness.test.ts"
+      ],
+      "cwd": "packages/cli"
+    },
+    {
+      "id": "core-contracts",
+      "argv": [
+        "bun",
+        "run",
+        "test",
+        "test/tool-permission-gate.test.ts",
+        "test/permission.test.ts",
+        "test/mcp.test.ts",
+        "test/environment-ssh.test.ts",
+        "test/managed-execution.test.ts",
+        "test/release-admission.test.ts",
+        "test/environment.test.ts",
+        "test/session-environment.test.ts",
+        "test/workspace.test.ts"
+      ],
+      "cwd": "packages/core"
+    },
+    {
+      "id": "product-roots",
+      "argv": [
+        "bun",
+        "test",
+        "test/product.test.ts",
+        "test/global.test.ts",
+        "test/global-roots.test.ts"
+      ],
+      "cwd": "packages/util"
+    },
+    {
+      "id": "release-server",
+      "argv": [
+        "bun",
+        "test",
+        "test/release.test.ts"
+      ],
+      "cwd": "packages/server"
+    },
+    {
+      "id": "affected-typechecks",
+      "argv": [
+        "bun",
+        "run",
+        "release:typecheck"
+      ],
+      "cwd": "packages/plus"
+    },
+    {
+      "id": "generated-client",
+      "argv": [
+        "bun",
+        "run",
+        "check:generated"
+      ],
+      "cwd": "packages/client"
+    },
+    {
+      "id": "tui-regressions",
+      "argv": [
+        "bun",
+        "test",
+        "test/active-team.test.tsx",
+        "test/route.test.tsx"
+      ],
+      "cwd": "packages/plus"
+    }
+  ]
+}
