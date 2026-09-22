@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 LAB = os.environ["RESOAK_LAB"]
 PLUS = "/home/bliss/OpenCodePlus/worktrees/team-development-models/main-dfab24151c77df69/opencode/packages/plus"
 EVID = os.path.join(PLUS, "docs/soak-2026-09-22-fixed")
-CYCLES = os.path.join(EVID, "cycles")
+OUT = os.environ.get("RESOAK_OUT", EVID)
+CYCLES = os.path.join(OUT, "cycles")
+RECEIPTS = os.path.join(OUT, "receipts")
+SOURCE_HEAD = os.environ.get("RESOAK_SOURCE_HEAD", "")
 TEAMS = os.path.join(LAB, "data/opencode/opencodeplus/teams")
 DRIVER = "docs/soak-2026-09-22-fixed/driver.ts"
 PARENT_SESSION = os.environ["RESOAK_PARENT_SESSION"]
@@ -44,7 +47,7 @@ def drive(commands, tag, timeout=900):
         try: j = json.loads(out[i:]); break
         except Exception: i = out.find("{", i + 1)
     if j is None: j = {"ok": False, "error": out[-2000:]}
-    j["tag"] = tag; j["started"] = started; j["ended"] = now(); j["elapsedSec"] = round(time.time()-t0, 1)
+    j["tag"] = tag; j["started"] = started; j["ended"] = now(); j["driverActiveSec"] = round(time.time()-t0, 1)
     return j
 
 def merge_record(entry):
@@ -129,10 +132,16 @@ def summarize(n, kind, j, run_id=None, extra=None):
             landed = True
             merge_receipt = rec
             break
+    def _t(v):
+        from datetime import datetime
+        try: return datetime.fromisoformat(v).timestamp()
+        except Exception: return None
+    a, b = _t(j.get("started")), _t(j.get("ended"))
+    wall = round(b - a, 1) if (a is not None and b is not None) else None
     flags = [x for x, c in (("REALPATH", realpath), ("E_BOUNDS", bounds)) if c]
     row = {"cycle": n, "kind": kind, "ok": bool(j.get("ok")), "child": child, "report": status,
            "landed": landed, "realpath": realpath, "bounds": bounds,
-           "started": j.get("started"), "ended": j.get("ended"), "elapsedSec": j.get("elapsedSec")}
+           "started": j.get("started"), "ended": j.get("ended"), "driverActiveSec": j.get("driverActiveSec"), "wallElapsedSec": wall}
     if merge_receipt: row["mergeReceipt"] = merge_receipt
     if extra: row.update(extra)
     sess = (j.get("child") or {}).get("session") or (extra or {}).get("session")
@@ -173,7 +182,11 @@ def pair(a, b, role_a, role_b):
         combo = dict(res[n])
         combo["results"] = (res[n].get("results") or []) + (tail.get("results") or [])
         combo["ok"] = bool(res[n].get("ok")) and bool(tail.get("ok"))
-        combo["elapsedSec"] = round((res[n].get("elapsedSec") or 0) + (tail.get("elapsedSec") or 0), 1)
+        # wall time spans this child's dispatch to its own integration finishing;
+        # the driver-call sum is kept separately and never called wall time.
+        combo["started"] = res[n].get("started")
+        combo["ended"] = tail.get("ended")
+        combo["driverActiveSec"] = round((res[n].get("driverActiveSec") or 0) + (tail.get("driverActiveSec") or 0), 1)
         out.append(summarize(n, "pair", combo, run_id=run,
                              extra={"dispatchedAt": res[n].get("started"), "session": info.get("session")}))
     return out
