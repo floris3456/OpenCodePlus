@@ -6,9 +6,11 @@ import {
   computeRecipeDigest,
   type RecipeInputs,
 } from "../../script/release.js"
+import { CANONICALIZER, deriveRecordHash } from "../../script/release/canonicalize.js"
+import { verifyRebuildEquivalence } from "../../script/release/verify.js"
 
 describe("release reproducibility and normalisation", () => {
-  test("two packaging runs over identical inputs produce byte-identical archives", () => {
+  test("archive determinism is raw byte equality: two packaging runs produce byte-identical archives", () => {
     const binaryContent = Buffer.from("#!/bin/sh\necho reproducible\n")
     const options = {
       target: "linux-x64" as const,
@@ -116,5 +118,108 @@ describe("release reproducibility and normalisation", () => {
         expect(entry.mode & 0o777).toBe(0o644)
       }
     }
+  })
+})
+
+// `bun build --compile` is measurably NOT byte-reproducible for this product
+// graph: the bundler draws a random unique key per build and stamps it, plus a
+// hash derived from it, into every chunk token. The binary half of the
+// reproducibility gate is therefore equivalence under the named canonicalizer
+// in script/release/canonicalize.ts. That is strictly weaker than the raw byte
+// equality the archive half achieves, and these tests state that plainly.
+describe("compiled binary reproducibility is rebuild equivalence, weaker than raw byte equality", () => {
+  const KEY_A = "a1b2c3d4e5f60718"
+  const KEY_B = "b0b0b0b0b0b0b0b0"
+
+  function buildCompiledBinary(key: string): Buffer {
+    const binary = Buffer.alloc(320)
+    for (let index = 0; index < binary.length; index += 1) binary[index] = (index * 31 + 7) & 0xff
+    ;[64, 192].forEach((offset, position) => {
+      const token = `${key}C${String(position).padStart(8, "0")}`
+      binary.writeUInt32LE(0x80000019, offset)
+      binary.writeUInt32LE(deriveRecordHash(token), offset + 4)
+      binary.write(token, offset + 8, 25, "latin1")
+      binary.fill(0, offset + 33, offset + 36)
+    })
+    return binary
+  }
+
+  function sha256(buffer: Uint8Array): string {
+    return new Bun.CryptoHasher("sha256").update(buffer).digest("hex")
+  }
+
+  test("equivalent rebuilds are not raw-equal, and the report says so", () => {
+    const left = buildCompiledBinary(KEY_A)
+    const right = buildCompiledBinary(KEY_B)
+
+    const report = verifyRebuildEquivalence({
+      bunVersion: CANONICALIZER.bunVersion,
+      left,
+      right,
+    })
+
+    expect(report.kind).toBe("rebuild-equivalence")
+    expect(report.weakerThanRawReproducibility).toBe(true)
+    expect(report.canonicalizerId).toBe(CANONICALIZER.id)
+    expect(report.canonicalizerBunVersion).toBe("1.4.2")
+
+    expect(report.equivalent).toBe(true)
+    // The weakening, stated explicitly: equivalence does not imply raw equality.
+    expect(report.rawIdentical).toBe(false)
+    expect(report.leftRawSha256).not.toBe(report.rightRawSha256)
+    expect(report.rawDifferingBytes).toBeGreaterThan(0)
+    expect(report.recordsRewritten).toBe(2)
+
+    // Both raw identities are retained; the canonical one is a third digest
+    // that exists only for this comparison.
+    expect(report.leftRawSha256).toBe(sha256(left))
+    expect(report.rightRawSha256).toBe(sha256(right))
+    expect(report.canonicalSha256).not.toBe(report.leftRawSha256)
+    expect(report.canonicalSha256).not.toBe(report.rightRawSha256)
+  })
+
+  test("the equivalence gate still rejects any byte it cannot derive", () => {
+    const left = buildCompiledBinary(KEY_A)
+    const right = buildCompiledBinary(KEY_B)
+    right[300] = right[300] ^ 0xff
+
+    const report = verifyRebuildEquivalence({
+      bunVersion: CANONICALIZER.bunVersion,
+      left,
+      right,
+    })
+
+    expect(report.equivalent).toBe(false)
+    expect(report.rejection?.code).toBe("residual-difference")
+    expect(report.rejection?.offset).toBe(300)
+    expect(report.canonicalSha256).toBeNull()
+  })
+
+  test("the canonical digest never replaces the raw binary identity in the manifest", () => {
+    const binaryContent = buildCompiledBinary(KEY_A)
+    const report = verifyRebuildEquivalence({
+      bunVersion: CANONICALIZER.bunVersion,
+      left: binaryContent,
+      right: buildCompiledBinary(KEY_B),
+    })
+
+    const packaged = packageTarget({
+      target: "linux-arm64",
+      binaryContent,
+      version: "1.0.0",
+      sourceSha: "0123456789abcdef0123456789abcdef01234567",
+      recipeDigest: "a".repeat(64),
+      toolchainDigest: "b".repeat(64),
+      sourceDateEpoch: 1700000000,
+    })
+
+    expect(packaged.artifact.binarySha256).toBe(sha256(binaryContent))
+    expect(packaged.artifact.binarySha256).not.toBe(report.canonicalSha256)
+    expect(packaged.innerMetadata.binarySha256).toBe(sha256(binaryContent))
+
+    const binaryEntry = parseArchive(packaged.archiveBuffer).find(
+      (entry) => entry.name === "bin/opencodeplus",
+    )
+    expect(binaryEntry?.content.equals(binaryContent)).toBe(true)
   })
 })
