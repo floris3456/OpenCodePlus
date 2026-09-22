@@ -16,7 +16,7 @@ import { Plugin } from "../plugin/service.js"
 import { PluginHooks } from "../plugin/hooks.js"
 import { Skill } from "../skill.js"
 import { AttachmentError, SkillNotFoundError } from "./error.js"
-import { AdmissionFence } from "./admission.js"
+import { SessionAdmission } from "./admission.js"
 
 export type Input = {
   text: string
@@ -32,7 +32,7 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
   messageID: SessionMessage.ID
   input: Input
 }) {
-  yield* AdmissionFence.check
+  yield* SessionAdmission.check
   const fs = yield* FSUtil.Service
   const instances = yield* Instance.Service
 

@@ -1,9 +1,8 @@
 import { describe, expect } from "bun:test"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { AdmissionFence, AdmissionFencedError } from "@opencode/core/session/admission"
+import { Cause, DateTime, Deferred, Effect, Exit, Layer } from "effect"
+import { SessionAdmission, AdmissionFencedError } from "@opencode/core/session/admission"
 import { SessionPrompt } from "@opencode/core/session/prompt"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
-import { SessionInbox } from "@opencode/schema/session-inbox"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Session } from "@opencode/schema/session"
 import { Project } from "@opencode/schema/project"
@@ -14,48 +13,79 @@ import { testEffect } from "./lib/effect"
 
 const it = testEffect(Layer.empty)
 
-describe("AdmissionFence", () => {
-  it.effect("engages and disengages process-level admission fence", () =>
+const controller = { token: "permit_controller_1", reason: "release promotion permit_controller_1" }
+
+const session = (id: string) =>
+  Session.Info.make({
+    id: Session.ID.make(id),
+    projectID: Project.ID.global,
+    cost: Money.USD.zero,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
+    location: Location.Ref.make({ directory: AbsolutePath.make("/tmp") }),
+  })
+
+describe("SessionAdmission", () => {
+  it.effect("engages for one controller token and reconciles a bounded retry", () =>
     Effect.gen(function* () {
-      AdmissionFence.reset()
-      expect(AdmissionFence.isEngaged()).toBe(false)
-      const initialStatus = AdmissionFence.drainStatus()
-      expect(initialStatus.fenced).toBe(false)
-      expect(initialStatus.activeCount).toBe(0)
-      expect(initialStatus.quiescent).toBe(false)
+      SessionAdmission.reset()
+      expect(SessionAdmission.isEngaged()).toBe(false)
+      expect(SessionAdmission.status()).toMatchObject({ fenced: false, hold: undefined, quiescent: false })
 
-      AdmissionFence.engage()
-      expect(AdmissionFence.isEngaged()).toBe(true)
-      const fencedStatus = AdmissionFence.drainStatus()
-      expect(fencedStatus.fenced).toBe(true)
-      expect(fencedStatus.quiescent).toBe(true)
+      const engaged = SessionAdmission.engage(controller)
+      expect(engaged).toEqual({ ok: true, hold: controller, reconciled: false })
+      expect(SessionAdmission.isEngaged()).toBe(true)
 
-      AdmissionFence.disengage()
-      expect(AdmissionFence.isEngaged()).toBe(false)
-      const restoredStatus = AdmissionFence.drainStatus()
-      expect(restoredStatus.fenced).toBe(false)
-      expect(restoredStatus.quiescent).toBe(false)
+      const retried = SessionAdmission.engage(controller)
+      expect(retried).toEqual({ ok: true, hold: controller, reconciled: true })
+      expect(SessionAdmission.current()).toEqual(controller)
+
+      expect(SessionAdmission.release(controller.token)).toEqual({ ok: true, released: true })
+      expect(SessionAdmission.isEngaged()).toBe(false)
+      expect(SessionAdmission.release(controller.token)).toEqual({ ok: true, released: false })
     }),
   )
 
-  it.effect("refuses new prompt preparations while fence is engaged", () =>
+  it.effect("fails closed: a non-holder and an empty token never open the fence", () =>
     Effect.gen(function* () {
-      AdmissionFence.reset()
-      AdmissionFence.engage()
+      SessionAdmission.reset()
+      SessionAdmission.engage(controller)
 
-      const dummySession = Session.Info.make({
-        id: Session.ID.make("ses_test_fenced_1"),
-        projectID: Project.ID.global,
-        cost: Money.USD.zero,
-        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-        time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
-        location: Location.Ref.make({ directory: AbsolutePath.make("/tmp") }),
-      })
-      const messageID = SessionMessage.ID.make("msg_test_fenced_1")
+      const stranger = SessionAdmission.release("permit_other_9")
+      expect(stranger.ok).toBe(false)
+      if (!stranger.ok) expect(stranger.reason).toBe("not_holder")
+      expect(SessionAdmission.isEngaged()).toBe(true)
+
+      const blank = SessionAdmission.release("")
+      expect(blank.ok).toBe(false)
+      if (!blank.ok) expect(blank.reason).toBe("invalid_token")
+      expect(SessionAdmission.isEngaged()).toBe(true)
+
+      const second = SessionAdmission.engage({ token: "permit_other_9", reason: "second transition" })
+      expect(second.ok).toBe(false)
+      if (!second.ok) expect(second.reason).toBe("held_by_other")
+      expect(SessionAdmission.current()).toEqual(controller)
+
+      const untokened = SessionAdmission.engage({ token: "", reason: "no authority" })
+      expect(untokened.ok).toBe(false)
+      if (!untokened.ok) expect(untokened.reason).toBe("invalid_token")
+
+      expect(SessionAdmission.release(controller.token)).toEqual({ ok: true, released: true })
+    }),
+  )
+
+  it.effect("refuses durable prompt admission while the fence is engaged", () =>
+    Effect.gen(function* () {
+      SessionAdmission.reset()
+
+      const admitted = yield* SessionAdmission.check.pipe(Effect.exit)
+      expect(Exit.isSuccess(admitted)).toBe(true)
+
+      SessionAdmission.engage(controller)
 
       const exit = yield* SessionPrompt.prepare({
-        session: dummySession,
-        messageID,
+        session: session("ses_test_fenced_1"),
+        messageID: SessionMessage.ID.make("msg_test_fenced_1"),
         input: { text: "Hello while fenced" },
       }).pipe(Effect.exit)
 
@@ -63,43 +93,43 @@ describe("AdmissionFence", () => {
       if (Exit.isFailure(exit)) {
         const failure = Cause.squash(exit.cause)
         expect(failure).toBeInstanceOf(AdmissionFencedError)
+        expect(failure).toMatchObject({ token: controller.token, reason: controller.reason })
       }
 
-      AdmissionFence.disengage()
+      SessionAdmission.release(controller.token)
     }),
   )
 
-  it.effect("prevents automatic resume from admitting while fence is engaged", () =>
+  it.effect("does not admit a wake or an explicit resume while the fence is engaged", () =>
     Effect.gen(function* () {
-      AdmissionFence.reset()
-      AdmissionFence.engage()
+      SessionAdmission.reset()
+      SessionAdmission.engage(controller)
 
-      let drainCount = 0
+      let drains = 0
       const coordinator = yield* SessionRunCoordinator.make<string, never>({
-        drain: () => Effect.sync(() => drainCount++),
+        drain: () => Effect.sync(() => drains++),
       })
 
-      yield* coordinator.wake("session_auto_1")
+      yield* coordinator.wake("ses_auto_1")
       yield* Effect.yieldNow
-      expect(drainCount).toBe(0)
-      expect(yield* coordinator.isActive("session_auto_1")).toBe(false)
+      expect(drains).toBe(0)
+      expect(yield* coordinator.isActive("ses_auto_1")).toBe(false)
 
-      yield* coordinator.run("session_auto_2")
+      yield* coordinator.run("ses_auto_2")
       yield* Effect.yieldNow
-      expect(drainCount).toBe(0)
-      expect(yield* coordinator.isActive("session_auto_2")).toBe(false)
+      expect(drains).toBe(0)
+      expect(yield* coordinator.isActive("ses_auto_2")).toBe(false)
 
-      AdmissionFence.disengage()
+      SessionAdmission.release(controller.token)
     }),
   )
 
-  it.effect("reports drain status truthfully through active execution to quiescence", () =>
+  it.effect("reports the in-flight execution through to quiescence", () =>
     Effect.gen(function* () {
-      AdmissionFence.reset()
+      SessionAdmission.reset()
 
       const gate = yield* Deferred.make<void>()
       const started = yield* Deferred.make<void>()
-
       const coordinator = yield* SessionRunCoordinator.make<string, never>({
         drain: () =>
           Effect.gen(function* () {
@@ -108,98 +138,69 @@ describe("AdmissionFence", () => {
           }),
       })
 
-      // Start an execution while not fenced
-      yield* coordinator.wake("session_drain_1")
+      yield* coordinator.wake("ses_drain_1")
       yield* Deferred.await(started)
 
-      // Active drain is running
-      const runningStatus = AdmissionFence.drainStatus()
-      expect(runningStatus.fenced).toBe(false)
-      expect(runningStatus.activeCount).toBe(1)
-      expect(runningStatus.activeSessions).toContain("session_drain_1")
-      expect(runningStatus.quiescent).toBe(false)
+      const running = SessionAdmission.status()
+      expect(running.fenced).toBe(false)
+      expect(running.activeSessions).toContain("ses_drain_1")
+      expect(running.quiescent).toBe(false)
 
-      // Controller engages the fence
-      AdmissionFence.engage()
-      const fencedRunningStatus = AdmissionFence.drainStatus()
-      expect(fencedRunningStatus.fenced).toBe(true)
-      expect(fencedRunningStatus.activeCount).toBe(1)
-      expect(fencedRunningStatus.quiescent).toBe(false)
+      SessionAdmission.engage(controller)
+      const fenced = SessionAdmission.status()
+      expect(fenced.fenced).toBe(true)
+      expect(fenced.activeSessions).toEqual(["ses_drain_1"])
+      expect(fenced.quiescent).toBe(false)
 
-      // A wakeup on another session while fenced must not admit
-      yield* coordinator.wake("session_drain_2")
-      expect(fencedRunningStatus.activeSessions).not.toContain("session_drain_2")
+      // A wake for another session while fenced never becomes an execution.
+      yield* coordinator.wake("ses_drain_2")
+      yield* Effect.yieldNow
+      expect(SessionAdmission.status().activeSessions).toEqual(["ses_drain_1"])
 
-      // In-flight execution is released and allowed to finish
       yield* Deferred.succeed(gate, undefined)
-      yield* coordinator.awaitIdle("session_drain_1")
+      yield* coordinator.awaitIdle("ses_drain_1")
 
-      // Quiescent point reached
-      const quiescentStatus = AdmissionFence.drainStatus()
-      expect(quiescentStatus.fenced).toBe(true)
-      expect(quiescentStatus.activeCount).toBe(0)
-      expect(quiescentStatus.quiescent).toBe(true)
-      expect(quiescentStatus.drained).toBe(true)
+      const quiescent = SessionAdmission.status()
+      expect(quiescent.fenced).toBe(true)
+      expect(quiescent.activeSessions).toEqual([])
+      expect(quiescent.quiescent).toBe(true)
 
-      AdmissionFence.disengage()
+      SessionAdmission.release(controller.token)
     }),
   )
 
-  it.effect("restores normal admission when fence is disengaged", () =>
+  it.effect("restores admission only after the holder releases", () =>
     Effect.gen(function* () {
-      AdmissionFence.reset()
-      AdmissionFence.engage()
+      SessionAdmission.reset()
+      SessionAdmission.engage(controller)
 
-      let drainCount = 0
+      let drains = 0
       const drained = yield* Deferred.make<void>()
       const coordinator = yield* SessionRunCoordinator.make<string, never>({
         drain: () =>
           Effect.gen(function* () {
-            drainCount++
+            drains++
             yield* Deferred.succeed(drained, undefined)
           }),
       })
 
-      // Wakes are blocked while fenced
-      yield* coordinator.wake("session_disengage_1")
+      yield* coordinator.wake("ses_release_1")
       yield* Effect.yieldNow
-      expect(drainCount).toBe(0)
+      expect(drains).toBe(0)
 
-      // Disengage the fence
-      AdmissionFence.disengage()
+      // A stranger's release leaves the fence closed, so admission stays refused.
+      SessionAdmission.release("permit_other_9")
+      yield* coordinator.wake("ses_release_1")
+      yield* Effect.yieldNow
+      expect(drains).toBe(0)
 
-      // Wakes are admitted normally
-      yield* coordinator.wake("session_disengage_1")
+      SessionAdmission.release(controller.token)
+      yield* coordinator.wake("ses_release_1")
       yield* Deferred.await(drained)
-      expect(drainCount).toBe(1)
-    }),
-  )
+      expect(drains).toBe(1)
 
-  it.effect("preserves durable inbox reconcile idempotency even when fence is engaged", () =>
-    Effect.gen(function* () {
-      AdmissionFence.reset()
-      AdmissionFence.engage()
-
-      // Reconcile and existing inbox items operate independently of the admission fence
-      const itemID = SessionMessage.ID.make("msg_idempotent_1")
-      const sessionID = Session.ID.make("ses_idempotent_1")
-      const existingUserItem = SessionInbox.User.make({
-        id: itemID,
-        sessionID,
-        type: "user",
-        payload: SessionInbox.UserPayload.make({
-          text: "Original admitted prompt",
-        }),
-        timeCreated: DateTime.makeUnsafe(1000),
-        delivery: "steer",
-      })
-
-      // The fence does not mutate or alter already-admitted items
-      expect(existingUserItem.id).toBe(itemID)
-      expect(existingUserItem.sessionID).toBe(sessionID)
-      expect(AdmissionFence.isEngaged()).toBe(true)
-
-      AdmissionFence.disengage()
+      const prepared = yield* SessionAdmission.check.pipe(Effect.exit)
+      expect(Exit.isSuccess(prepared)).toBe(true)
     }),
   )
 })
