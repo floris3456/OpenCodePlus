@@ -17,8 +17,9 @@ import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
+import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
-import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale } from "./checks.js"
+import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { reconcile } from "./lifecycle.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
@@ -39,6 +40,7 @@ import {
   startAttempt,
   toFinishing,
   transition,
+  type AttemptRecord,
   type RunRecord,
 } from "./run.js"
 import {
@@ -51,6 +53,7 @@ import {
   Head,
   IntegrateInput,
   ListInput,
+  ModelIdentity,
   Policy,
   Report,
   RunAck,
@@ -441,8 +444,98 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const wanted = state.activeModels.get(brief.role)
   if (wanted !== undefined) {
-    await Effect.runPromise(sessions.switchModel({ sessionID: child.id, model: toDelegateModelRef(wanted) }).pipe(Effect.ignore))
+    try {
+      await Effect.runPromise(sessions.switchModel({ sessionID: child.id, model: toDelegateModelRef(wanted) }))
+    } catch (err) {
+      await saveRun(root, transition(streaming, "superseded", "supersede", { reason: "model switch failed" })).catch(
+        () => undefined,
+      )
+      throw toolError(
+        "E_MODEL",
+        `Required model switch to ${wanted.providerID}/${wanted.modelID} failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
   }
+
+  let sessionInfo: unknown
+  if (typeof sessions.get === "function") {
+    try {
+      sessionInfo = await Effect.runPromise(sessions.get({ sessionID: child.id }))
+    } catch {
+      sessionInfo = undefined
+    }
+  }
+  const currentModel =
+    sessionInfo && typeof sessionInfo === "object" && "model" in sessionInfo
+      ? (sessionInfo as { model?: { providerID?: unknown; id?: unknown; variant?: unknown } }).model
+      : undefined
+
+  if (wanted !== undefined && currentModel !== undefined && currentModel !== null) {
+    const curProvider = String(currentModel.providerID ?? "")
+    const curModelId = String(currentModel.id ?? "")
+    const curVariant =
+      currentModel.variant !== undefined && currentModel.variant !== null ? String(currentModel.variant) : undefined
+    const mismatch =
+      curProvider !== wanted.providerID ||
+      curModelId !== wanted.modelID ||
+      (wanted.variant !== undefined && curVariant !== wanted.variant)
+    if (mismatch) {
+      await saveRun(root, transition(streaming, "superseded", "supersede", { reason: "host resolved different model" })).catch(
+        () => undefined,
+      )
+      throw toolError(
+        "E_MODEL",
+        `Required model ${wanted.providerID}/${wanted.modelID} could not be satisfied; host resolved ${curProvider}/${curModelId}.`,
+      )
+    }
+  }
+
+  const requestedModel: ModelIdentity | null = wanted
+    ? {
+        providerID: wanted.providerID,
+        modelID: wanted.modelID,
+        ...(wanted.variant !== undefined ? { variant: wanted.variant } : {}),
+      }
+    : null
+
+  const loadedModel: ModelIdentity | null = currentModel
+    ? {
+        providerID: String(currentModel.providerID ?? ""),
+        modelID: String(currentModel.id ?? ""),
+        ...(currentModel.variant !== undefined && currentModel.variant !== null ? { variant: String(currentModel.variant) } : {}),
+      }
+    : requestedModel
+
+  const resolvedModel: ModelIdentity | null = loadedModel
+  const instructionsHash = Release.digest(rendered)
+  const configDigest = Release.digest({
+    role: brief.role,
+    scope: brief.scope,
+    checks: brief.checks,
+    budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
+  })
+
+  const childRecord = (await loadRun(root, childID)) ?? streaming
+  const lastAttempt = childRecord.attempts[childRecord.attempts.length - 1]
+  const updatedAttempt: AttemptRecord = {
+    ...lastAttempt,
+    requestedModel,
+    loadedModel,
+    resolvedModel,
+    instructionsHash,
+    configDigest,
+  }
+  const updatedChild: RunRecord = {
+    ...childRecord,
+    sessionID: String(child.id),
+    requestedModel,
+    loadedModel,
+    resolvedModel,
+    instructionsHash,
+    configDigest,
+    attempts: [...childRecord.attempts.slice(0, -1), updatedAttempt],
+  }
+  await saveRun(root, updatedChild)
 
   await Effect.runPromise(sessions.prompt({ sessionID: child.id, text: rendered }))
 
@@ -456,6 +549,11 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     base: baseSha,
     briefPath: path.join(runDir, "brief.md"),
     budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
+    requestedModel,
+    loadedModel,
+    resolvedModel,
+    instructionsHash,
+    configDigest,
   }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
@@ -476,6 +574,7 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
   const worktree = stored.directory
   const assigned = await readChecks(root, stored.id)
   const head = await git(worktree, ["rev-parse", "HEAD"])
+  const tree = await git(worktree, ["rev-parse", "HEAD^{tree}"])
   const porcelain = await git(worktree, ["status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
 
@@ -491,7 +590,8 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
     const firstLines = new Map<string, string>()
     for (const checkDef of assigned) {
       const receipt = byId.get(checkDef.id)
-      if (receipt !== undefined && receipt.passed) continue
+      const verified = receipt !== undefined ? verifyReceipt(receipt, checkDef, { head, tree }) : null
+      if (receipt !== undefined && receipt.passed && verified?.ok) continue
       red.push(checkDef.id)
       firstLines.set(checkDef.id, await firstLogLine(receipt?.outputPath))
     }

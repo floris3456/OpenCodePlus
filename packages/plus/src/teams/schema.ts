@@ -174,6 +174,13 @@ export type RunID = typeof RunID.Type
 export const TaskID = Schema.String.check(Schema.isPattern(/^T[0-9]+(\.rework\.[0-9]+)?$/))
 export type TaskID = typeof TaskID.Type
 
+export const ModelIdentity = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optional(Schema.String),
+})
+export type ModelIdentity = typeof ModelIdentity.Type
+
 // Roles that may be delegated to (copied from scripts/team/roles.ts
 // delegatedRoles; team2 does not import from scripts/team/).
 export const delegatedRoles = [

@@ -2,9 +2,9 @@ import { randomBytes } from "node:crypto"
 import { readdir, realpath } from "node:fs/promises"
 import path from "node:path"
 import { Effect, Option } from "effect"
-import { toolError } from "./schema.js"
+import { toolError, type ModelIdentity } from "./schema.js"
 import type { AttemptState, RunState, WorktreeState } from "./schema.js"
-export type { WorktreeState }
+export type { ModelIdentity, WorktreeState }
 import { atomicJson, lock, readJson } from "./store.js"
 import { append } from "./audit.js"
 import { errCode, io } from "./io.js"
@@ -23,6 +23,11 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  requestedModel?: ModelIdentity | null
+  loadedModel?: ModelIdentity | null
+  resolvedModel?: ModelIdentity | null
+  instructionsHash?: string | null
+  configDigest?: string | null
 }
 
 export interface HistoryEntry {
@@ -71,6 +76,10 @@ export interface RunRecord {
   worktree?: WorktreeState
   promotedFrom?: string
   history: HistoryEntry[]
+  requestedModel?: ModelIdentity | null
+  loadedModel?: ModelIdentity | null
+  resolvedModel?: ModelIdentity | null
+  instructionsHash?: string | null
 }
 
 export interface TransitionCtx {
@@ -304,6 +313,11 @@ export function canAttemptTransition(from: AttemptState, to: AttemptState, trigg
 export interface StartAttemptOpts {
   trigger: string
   prompt?: string
+  requestedModel?: ModelIdentity | null
+  loadedModel?: ModelIdentity | null
+  resolvedModel?: ModelIdentity | null
+  instructionsHash?: string | null
+  configDigest?: string | null
 }
 
 export type AttemptCtx = { trigger?: string; [k: string]: unknown } | string
@@ -336,6 +350,11 @@ export function startAttempt(run: RunRecord, opts: StartAttemptOpts): RunRecord 
     startedAt: at,
     trigger: opts.trigger,
     ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
+    requestedModel: opts.requestedModel !== undefined ? opts.requestedModel : (run.requestedModel ?? null),
+    loadedModel: opts.loadedModel !== undefined ? opts.loadedModel : (run.loadedModel ?? run.resolvedModel ?? null),
+    resolvedModel: opts.resolvedModel !== undefined ? opts.resolvedModel : (run.resolvedModel ?? run.loadedModel ?? null),
+    instructionsHash: opts.instructionsHash !== undefined ? opts.instructionsHash : (run.instructionsHash ?? null),
+    configDigest: opts.configDigest !== undefined ? opts.configDigest : (run.configDigest ?? null),
   }
   return { ...run, attempts: [...run.attempts, attempt], lastUsed: at }
 }
