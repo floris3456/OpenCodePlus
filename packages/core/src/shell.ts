@@ -249,18 +249,25 @@ const layer = () =>
         input: CreateInput,
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
+        if (environment.placement?.error) {
+          return yield* new AppProcess.AppProcessError({
+            command: input.command,
+            cause: environment.placement.error,
+          })
+        }
         const sessionID = input.metadata?.sessionID
         const sessionEnvironment =
-          location.workspaceID === undefined && Schema.is(SessionSchema.ID)(sessionID)
+          Schema.is(SessionSchema.ID)(sessionID)
             ? yield* environments.get(sessionID)
             : undefined
+        const baseEnv = location.workspaceID !== undefined ? (sessionEnvironment ?? {}) : (sessionEnvironment ?? process.env)
         const invocation: ShellCreateBefore = {
           command: input.command,
           cwd: input.cwd ?? location.directory,
           timeout: input.timeout,
           shell: input.shell ?? (yield* shell.resolve({ priority: "config" })),
           env: {
-            ...(sessionEnvironment ?? process.env),
+            ...baseEnv,
             TERM: "xterm-256color",
             OPENCODE_TERMINAL: "1",
           },

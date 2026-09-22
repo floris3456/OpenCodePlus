@@ -6,13 +6,15 @@ import { EventManifest } from "@opencode/schema/event-manifest"
 import type { Event } from "@opencode/schema/event"
 import { ServerConfig } from "@opencode/schema/mcp"
 import { App } from "../app.js"
-import { Effect, Schema, Stream } from "effect"
+import { Effect, Option, Schema, Stream } from "effect"
 import { Agent } from "../agent.js"
 import { AISDK } from "../aisdk.js"
 import { Catalog } from "../catalog.js"
 import { Command } from "../command.js"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
+import { Environment } from "../environment/index.js"
+import { ForbiddenError } from "@opencode/protocol/errors"
 import { Integration } from "../integration.js"
 import { KV } from "../kv.js"
 import { Location } from "../location.js"
@@ -56,6 +58,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const catalog = yield* Catalog.Service
   const commands = yield* Command.Service
   const bus = yield* Bus.Service
+  const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
   const integration = yield* Integration.Service
   const kv = yield* KV.Service
   const mcp = yield* Mcp.Service
@@ -97,7 +100,9 @@ export const make = Effect.fn("PluginHost.make")(function* (
     ref: Location.Ref | undefined,
     run: (service: Worktree.Interface) => Effect.Effect<A, E>,
   ) => {
-    if (ref?.workspaceID) return Effect.fail(new Worktree.UnsupportedLocationError({ directory: ref.directory }))
+    if (location.workspaceID !== undefined || ref?.workspaceID) {
+      return Effect.fail(new Worktree.UnsupportedLocationError({ directory: ref?.directory ?? location.directory }))
+    }
     if (!ref || isCurrentLocation(ref)) return run(worktrees)
     return Effect.gen(function* () {
       // Defer this import: Plugin's construction depends on this host. Same-location setup calls never wait on themselves.
@@ -271,13 +276,17 @@ export const make = Effect.fn("PluginHost.make")(function* (
       list: () => response(integration.list()),
       get: (input) => response(integration.get(Integration.ID.make(input.integrationID))),
       connect: {
-        key: (input) =>
-          integration.connection.key({
+        key: (input) => {
+          if (location.workspaceID !== undefined) {
+            return Effect.fail(new ForbiddenError({ message: "Placed operations cannot modify host credential store" }))
+          }
+          return integration.connection.key({
             integrationID: Integration.ID.make(input.integrationID),
             key: input.key,
             answer: input.answer,
             label: input.label,
-          }),
+          })
+        },
       },
       oauth: {
         connect: (input) =>
@@ -333,10 +342,14 @@ export const make = Effect.fn("PluginHost.make")(function* (
       reload: integration.reload,
       connection: {
         active: (id) => integration.connection.active(Integration.ID.make(id)),
-        resolve: (connection) =>
-          integration.connection.resolve(
+        resolve: (connection) => {
+          if (location.workspaceID !== undefined) {
+            return Effect.fail(new ForbiddenError({ message: "Placed operations cannot access host credential store" }))
+          }
+          return integration.connection.resolve(
             connection.type === "credential" ? { ...connection, id: Credential.ID.make(connection.id) } : connection,
-          ),
+          )
+        },
       },
       transform: (callback) =>
         integration.transform((editor) => {
@@ -464,7 +477,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
           })
         }),
     },
-    storage: storage(kv, pluginID),
+    storage: storage(kv, pluginID, location.workspaceID),
     shell: {
       hook: (name, callback) => hooks.register("shell", name, callback),
     },
@@ -532,8 +545,11 @@ export const make = Effect.fn("PluginHost.make")(function* (
     },
     session: {
       hook: (name, callback, options) => hooks.register("session", name, callback, options),
-      create: (input) =>
-        sessions.create({
+      create: (input) => {
+        if (location.workspaceID !== undefined && input?.location?.workspace === undefined) {
+          return Effect.fail(new ForbiddenError({ message: "Placed operations cannot create unplaced host sessions" }))
+        }
+        return sessions.create({
           id: input?.id,
           title: input?.title,
           agent: input?.agent,
@@ -542,7 +558,8 @@ export const make = Effect.fn("PluginHost.make")(function* (
           permissions: input?.permissions,
           location:
             input?.location ?? Location.Ref.make({ directory: location.directory, workspaceID: location.workspaceID }),
-        }),
+        })
+      },
       get: (input) => sessions.get(input.sessionID),
       switchAgent: sessions.switchAgent,
       switchModel: sessions.switchModel,
@@ -590,8 +607,9 @@ export const requirements = LayerNode.group([
   LocationServiceMap.node,
 ])
 
-export function storage(kv: KV.Interface, pluginID: string): Plugin.Context["storage"] {
-  const namespace = `plugin:${pluginID
+export function storage(kv: KV.Interface, pluginID: string, workspaceID?: Workspace.ID): Plugin.Context["storage"] {
+  const wsPrefix = workspaceID ? `ws:${workspaceID}:` : ""
+  const namespace = `${wsPrefix}plugin:${pluginID
     .split("")
     .map((value) => value.charCodeAt(0).toString(16).padStart(4, "0"))
     .join("")}:`

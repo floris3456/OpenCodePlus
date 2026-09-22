@@ -23,6 +23,12 @@ export class ProviderNotFound extends Schema.TaggedError<ProviderNotFound>()("Wo
   provider: Schema.String,
 }) {}
 
+export class UnplaceableError extends Schema.TaggedError<UnplaceableError>()("WorkspaceDriver.UnplaceableError", {
+  message: Schema.String,
+  workspaceID: Schema.optional(Workspace.ID),
+  cause: Schema.optional(Schema.Defect()),
+}) {}
+
 export interface Interface {
   /**
    * Get-or-create the provider resource backing this logical workspace.

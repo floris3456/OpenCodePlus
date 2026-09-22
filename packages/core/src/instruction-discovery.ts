@@ -1,11 +1,13 @@
 export * as InstructionDiscovery from "./instruction-discovery.js"
 
-import { Context, Effect, Layer, Schema, Types } from "effect"
+import { Context, Effect, Layer, Option, Schema, Types } from "effect"
 import { createHash } from "crypto"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { createPatch } from "diff"
 import { Bus } from "./bus.js"
+import { Environment } from "./environment/index.js"
 import { Instructions } from "./instructions/index.js"
+import { Location } from "./location.js"
 import { AbsolutePath } from "./schema.js"
 import { State } from "./state.js"
 
@@ -83,6 +85,8 @@ export const layer = (options?: Options) =>
     Service,
     Effect.gen(function* () {
       const bus = yield* Bus.Service
+      const location = yield* Effect.serviceOption(Location.Service).pipe(Effect.map(Option.getOrUndefined))
+      const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
       const state = State.create<Data, Editor>({
         name: "instruction-discovery",
         initial: () => ({ files: new Map(), removed: new Set(), available: true }),
@@ -160,6 +164,7 @@ export const layer = (options?: Options) =>
       })
 
       const list = Effect.fn("InstructionDiscovery.list")(function* () {
+        if (environment?.placement?.error) return yield* Effect.die(environment.placement.error)
         const current = state.get()
         if (!current.available) return Instructions.unavailable
         return Array.from(current.files.values())
@@ -167,11 +172,12 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         project: options?.project !== false,
-        global: options?.global !== false,
+        global: location?.workspaceID !== undefined ? false : options?.global !== false,
         transform: state.transform,
         reload: state.reload,
         list,
         load: Effect.fn("InstructionDiscovery.load")(function* () {
+          if (environment?.placement?.error) return yield* Effect.die(environment.placement.error)
           const current = state.get()
           if (!current.available)
             return [
