@@ -69,10 +69,8 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       const { start } = yield* Effect.promise(() => import("@opencode/server/process"))
       const environmentPassword = yield* Env.password
       // Keep the lease credential out of the environment inherited by tools.
-      if (options.mode === "stdio") {
-        delete process.env.OPENCODE_PASSWORD
-        delete process.env.OPENCODE_SERVER_PASSWORD
-      }
+      delete process.env.OPENCODE_PASSWORD
+      delete process.env.OPENCODE_SERVER_PASSWORD
       const password =
         options.mode === "service"
           ? config.password || randomBytes(32).toString("base64url")

@@ -109,7 +109,11 @@ const run = Effect.fnUntraced(function* (events: ReadonlyArray<SessionEvent.Agen
     Effect.provideService(Global.Service, Global.Service.of({ ...Global.make(), home })),
     Effect.provideService(
       Environment.Service,
-      Environment.Service.of({ files: Environment.makeFiles(driver), spawner: driver.spawner }),
+      Environment.Service.of({
+        files: Environment.makeFiles(driver),
+        spawner: driver.spawner,
+        placement: { kind: "host" },
+      }),
     ),
   )
   if (!contextHook) return yield* Effect.die("plan plugin did not register a context hook")

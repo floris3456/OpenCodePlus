@@ -249,18 +249,27 @@ const layer = () =>
         input: CreateInput,
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
+        if (environment.placement.kind === "unplaceable") {
+          return yield* new AppProcess.AppProcessError({
+            command: input.command,
+            cause: environment.placement.error,
+          })
+        }
         const sessionID = input.metadata?.sessionID
-        const sessionEnvironment =
-          location.workspaceID === undefined && Schema.is(SessionSchema.ID)(sessionID)
-            ? yield* environments.get(sessionID)
-            : undefined
+        const sessionEnvironment = Schema.is(SessionSchema.ID)(sessionID)
+          ? yield* environments.get(sessionID)
+          : undefined
+        // Only a host-bound Environment spawns on this machine, so only it may inherit this process's
+        // environment. A placed command starts from nothing but what the Session explicitly carries.
+        const baseEnv =
+          environment.placement.kind === "host" ? (sessionEnvironment ?? process.env) : (sessionEnvironment ?? {})
         const invocation: ShellCreateBefore = {
           command: input.command,
           cwd: input.cwd ?? location.directory,
           timeout: input.timeout,
           shell: input.shell ?? (yield* shell.resolve({ priority: "config" })),
           env: {
-            ...(sessionEnvironment ?? process.env),
+            ...baseEnv,
             TERM: "xterm-256color",
             OPENCODE_TERMINAL: "1",
           },

@@ -26,6 +26,7 @@ import { ConfigNormalize } from "./config/normalize.js"
 import { ConfigDiscovery } from "./config/discovery.js"
 import { ConfigWatch } from "./config/watch.js"
 import { WellKnown } from "./wellknown.js"
+import { Environment } from "./environment/index.js"
 
 export function latest<K extends keyof Info>(entries: readonly Entry[], key: K): Info[K] | undefined {
   return entries.findLast((entry): entry is Document => entry.type === "document" && entry.info[key] !== undefined)
@@ -90,6 +91,7 @@ export const layer = (options?: Options) =>
       const bus = yield* Bus.Service
       const credentials = yield* Credential.Service
       const wellknown = yield* WellKnown.Service
+      const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
       const reloadLock = Semaphore.makeUnsafe(1)
       const decodeOptions = { errors: "all", onExcessProperty: "ignore", propertyOrder: "original" } as const
       const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
@@ -125,10 +127,56 @@ export const layer = (options?: Options) =>
         })
       })
 
+      const substituteConfigText = Effect.fnUntraced(function* (filepath: string, rawText: string) {
+        if (location.workspaceID === undefined) {
+          return yield* ConfigVariable.substitute({ type: "path", path: filepath, text: rawText })
+        }
+        let resolvedText = rawText
+        if (environment && rawText.includes("{file:")) {
+          const configDir = path.dirname(filepath)
+          let out = ""
+          let cursor = 0
+          for (const match of rawText.matchAll(/\{file:[^}]+\}/g)) {
+            const token = match[0]
+            const index = match.index
+            out += rawText.slice(cursor, index)
+            const filePath = token.slice("{file:".length, -1)
+            const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(configDir, filePath)
+            const fileBytes = yield* environment.files.read(resolvedPath).pipe(
+              Effect.map((result) => new TextDecoder().decode(result.bytes)),
+              Effect.catch(() => Effect.succeed("")),
+            )
+            out += JSON.stringify(fileBytes.trim()).slice(1, -1)
+            cursor = index + token.length
+          }
+          resolvedText = out + rawText.slice(cursor)
+        }
+        return yield* ConfigVariable.substitute({
+          type: "path",
+          path: filepath,
+          text: resolvedText,
+          env: new Proxy({}, { get: () => "" }),
+        })
+      })
+
       const loadFile = Effect.fnUntraced(function* (filepath: string) {
-        const text = yield* fs.readFileStringSafe(filepath)
+        const placed = location.workspaceID !== undefined
+        // Placed config comes from the workspace or nowhere. A missing Environment is broken
+        // wiring and an unbound one has no config at all (`entries` dies on it); in neither case
+        // may the host copy stand in, or workspace-managed execution inherits the host's secrets.
+        if (placed && !environment)
+          return yield* Effect.die(new Error(`Config has no Environment bound to ${location.workspaceID}`))
+        if (environment?.placement.kind === "unplaceable") return
+        const text =
+          placed && environment
+            ? yield* environment.files.read(filepath).pipe(
+                Effect.map((result) => new TextDecoder().decode(result.bytes)),
+                Effect.catchTag("Environment.NotFound", () => Effect.succeed(undefined)),
+                Effect.catchTag("Environment.Failed", () => Effect.succeed(undefined)),
+              )
+            : yield* fs.readFileStringSafe(filepath)
         if (text === undefined) return
-        const substituted = yield* ConfigVariable.substitute({ type: "path", path: filepath, text })
+        const substituted = yield* substituteConfigText(filepath, text)
         const info = yield* parseInfo(substituted, filepath)
         if (!info) return
         return new Document({ type: "document", path: AbsolutePath.make(filepath), info })
@@ -319,6 +367,7 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         entries: Effect.fnUntraced(function* () {
+          if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
           return configs
         }),
         changes: () => Stream.fromPubSub(updates),
