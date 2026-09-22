@@ -1,4 +1,5 @@
 import { Global } from "@opencode/util/global"
+import { Product } from "@opencode/util/product"
 import { OPENCODE_CHANNEL, OPENCODE_VERSION } from "../version"
 import { Hash } from "@opencode/util/hash"
 import { Service } from "@opencode/client/effect/service"
@@ -26,20 +27,24 @@ type Key = (typeof keys)[number]
 const decodeInfo = Schema.decodeUnknownEffect(Schema.fromJsonString(Info))
 const decodeRegistration = Schema.decodeUnknownEffect(Schema.fromJsonString(Service.Info))
 
-export function filename(channel = OPENCODE_CHANNEL) {
-  if (channel === "latest" || channel === "dev" || channel === "beta" || channel === "next") return "service.json"
-  return `service-${channel.replace(/[^a-zA-Z0-9._-]/g, "-")}.json`
+export function filename(channel?: string) {
+  const selected = channel ?? (Product.namespace === "opencodeplus" ? Product.channel : OPENCODE_CHANNEL)
+  if (selected === "latest" || selected === "dev" || selected === "beta" || selected === "next" || selected === "plus") return "service.json"
+  return `service-${selected.replace(/[^a-zA-Z0-9._-]/g, "-")}.json`
 }
 
-export function defaultPort(channel = OPENCODE_CHANNEL) {
-  if (channel === "latest" || channel === "dev" || channel === "beta" || channel === "next") return 0xc0de
-  if (channel === "local") return 0xc0df
-  return 10_000 + (Number.parseInt(Hash.fast(channel).slice(0, 8), 16) % 50_000)
+export function defaultPort(channel?: string) {
+  const selected = channel ?? (Product.namespace === "opencodeplus" ? Product.channel : OPENCODE_CHANNEL)
+  if (selected === "latest" || selected === "dev" || selected === "beta" || selected === "next" || selected === "plus") return 0xc0de
+  if (selected === "local") return 0xc0df
+  return 10_000 + (Number.parseInt(Hash.fast(selected).slice(0, 8), 16) % 50_000)
 }
 
-export function legacyFilename(channel = OPENCODE_CHANNEL) {
-  if (channel === "latest" || channel === "local") return
-  return `service-${Hash.fast(channel)}.json`
+export function legacyFilename(channel?: string) {
+  if (Product.namespace === "opencodeplus") return undefined
+  const selected = channel ?? OPENCODE_CHANNEL
+  if (selected === "latest" || selected === "local") return
+  return `service-${Hash.fast(selected)}.json`
 }
 
 export function versionBelongsToChannel(
@@ -94,7 +99,9 @@ const paths = Effect.gen(function* () {
     legacyConfigFile: legacy ? path.join(global.config, legacy) : undefined,
     legacyRegistrationFiles: [
       ...(legacy ? [path.join(global.state, legacy)] : []),
-      ...(name !== "service.json" && OPENCODE_CHANNEL !== "local" ? [path.join(global.state, "service.json")] : []),
+      ...(name !== "service.json" && OPENCODE_CHANNEL !== "local" && Product.namespace !== "opencodeplus"
+        ? [path.join(global.state, "service.json")]
+        : []),
     ],
     configFile: path.join(global.config, name),
   }
@@ -113,6 +120,7 @@ export const options = Effect.fnUntraced(function* (input: { readonly checkVersi
       "serve",
       "--service",
     ],
+    replace: Product.namespace === "opencodeplus" ? false : undefined,
   }
 })
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { Service, type EnsureReason } from "../src/promise/service"
+import { Service, type EnsureReason, ServiceRefusalError } from "../src/promise/service"
 import { serviceFixture } from "./fixture/service-fixture"
 import { accelerate } from "./fixture/service-timing"
 
@@ -157,4 +157,73 @@ test("signals the registered service process", async () => {
 
   expect(await Bun.file(registration + ".signal").text()).toBe("SIGTERM")
   expect(await Bun.file(registration).exists()).toBe(false)
+})
+
+test("refuses replacement on version mismatch with native promises", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("incompatible")
+  await fixture.waitForFile()
+
+  const starts: EnsureReason[] = []
+  const failure = await ensure({
+    file: registration,
+    version: (version) => version.startsWith("2."),
+    command: fixture.command("delayed-compatible", "10"),
+    replace: false,
+    onStart: (reason) => starts.push(reason),
+  }).catch((error: unknown) => error)
+
+  expect(failure).toBeInstanceOf(ServiceRefusalError)
+  if (failure instanceof ServiceRefusalError) {
+    expect(failure.reason).toBe("version-mismatch")
+  }
+  expect(starts).toEqual([])
+  expect(existing.exitCode).toBe(null)
+})
+
+test("refuses replacement on timeout with native promises", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("hanging")
+  await fixture.waitForFile()
+
+  const failure = await ensure({
+    file: registration,
+    version: "test",
+    command: fixture.command("delayed", "10"),
+    replace: false,
+  }).catch((error: unknown) => error)
+
+  expect(failure).toBeInstanceOf(ServiceRefusalError)
+  if (failure instanceof ServiceRefusalError) {
+    expect(failure.reason).toBe("timeout")
+  }
+  expect(existing.exitCode).toBe(null)
+})
+
+test("refuses replacement under OPENCODE_PRODUCT=opencodeplus with native promises", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("incompatible")
+  await fixture.waitForFile()
+
+  const oldEnv = process.env.OPENCODE_PRODUCT
+  try {
+    process.env.OPENCODE_PRODUCT = "opencodeplus"
+    const failure = await ensure({
+      file: registration,
+      version: (version) => version.startsWith("2."),
+      command: fixture.command("delayed-compatible", "10"),
+    }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(ServiceRefusalError)
+    if (failure instanceof ServiceRefusalError) {
+      expect(failure.reason).toBe("version-mismatch")
+    }
+    expect(existing.exitCode).toBe(null)
+  } finally {
+    if (oldEnv === undefined) delete process.env.OPENCODE_PRODUCT
+    else process.env.OPENCODE_PRODUCT = oldEnv
+  }
 })

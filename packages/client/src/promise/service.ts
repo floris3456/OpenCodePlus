@@ -1,7 +1,14 @@
 import { readFile, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { DiscoverOptions, Endpoint, Info, EnsureOptions, StopOptions } from "../service.js"
+import {
+  type DiscoverOptions,
+  type Endpoint,
+  type Info,
+  type EnsureOptions,
+  type StopOptions,
+  ServiceRefusalError,
+} from "../service.js"
 import {
   contenderFailure,
   contenderFinished,
@@ -32,6 +39,7 @@ export async function discover(options: DiscoverOptions = {}) {
 /** Ensure a healthy, compatible local service is running. */
 export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
   const timing = ensureTiming(options)
+  const allowReplacement = options.replace ?? !isPlusProduct()
   const deadline = Date.now() + timing.promiseTimeout
   const contenders = new Set<ServiceContender>()
   let timeouts: { readonly info: Info; readonly count: number } | undefined
@@ -65,6 +73,13 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
       if (Date.now() >= deadline) throw new Error("Timed out waiting for the background service to start")
       const registration = await registered(options.file, true, timing.requestTimeout)
       if (registration.timedOut && registration.info !== undefined) {
+        if (!allowReplacement) {
+          throw new ServiceRefusalError(
+            "timeout",
+            "Background service is unresponsive; replacement refused",
+            registration.info,
+          )
+        }
         timeouts = {
           info: registration.info,
           count: timeouts !== undefined && same(timeouts.info, registration.info) ? timeouts.count + 1 : 1,
@@ -79,6 +94,16 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
         }
       } else timeouts = undefined
 
+      if (registration.unexpectedPeer && registration.info !== undefined && !stopped(registration.info.pid)) {
+        if (!allowReplacement) {
+          throw new ServiceRefusalError(
+            "unexpected-peer",
+            "Unexpected service peer encountered; replacement refused",
+            registration.info,
+          )
+        }
+      }
+
       if (registration.service !== undefined) {
         spawnDelay = timing.spawnDelay
         pendingFailure = undefined
@@ -90,6 +115,13 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
         }
         if (compatible && service.state === "failed") throw new Error("Background service failed to start")
         if (!compatible) {
+          if (!allowReplacement) {
+            throw new ServiceRefusalError(
+              "version-mismatch",
+              `Service version mismatch: running ${service.version ?? "unknown"}, replacement refused`,
+              registration.info,
+            )
+          }
           announce("version-mismatch", service.version)
           if (!service.legacy && service.state !== "ready")
             console.warn("Background service is not ready; replacement cannot preserve persistent terminals")
@@ -147,7 +179,13 @@ export async function stop(options: StopOptions = {}) {
 }
 
 function fallback() {
-  return join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), "opencode", "service.json")
+  const app = isPlusProduct() ? "opencodeplus" : "opencode"
+  return join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), app, "service.json")
+}
+
+function isPlusProduct() {
+  const product = process.env["OPENCODE_PRODUCT"]
+  return product === "opencodeplus" || product === "plus"
 }
 
 /** Create HTTP authentication headers for a service endpoint. */
@@ -197,12 +235,12 @@ async function probeResult(info: Info, allowLegacy = false, timeout = defaultEns
       (value) => ({ value }),
       (cause: unknown) => ({ cause }),
     )
-  if ("cause" in result) return { service: undefined, timedOut: signal.aborted }
+  if ("cause" in result) return { service: undefined, timedOut: signal.aborted, unexpectedPeer: false }
   const response = result.value.response
   const body = result.value.body
   if (body !== undefined && "version" in body && "pid" in body) {
-    if (body.pid !== info.pid) return { service: undefined, timedOut: false }
-    if (info.version !== undefined && body.version !== info.version) return { service: undefined, timedOut: false }
+    if (body.pid !== info.pid) return { service: undefined, timedOut: false, unexpectedPeer: true }
+    if (info.version !== undefined && body.version !== info.version) return { service: undefined, timedOut: false, unexpectedPeer: true }
     return {
       service: {
         info,
@@ -212,18 +250,20 @@ async function probeResult(info: Info, allowLegacy = false, timeout = defaultEns
         legacy: false,
       } satisfies LocalService,
       timedOut: false,
+      unexpectedPeer: false,
     }
   }
-  if (!allowLegacy || body?.healthy !== true) return { service: undefined, timedOut: false }
+  if (!allowLegacy || body?.healthy !== true) return { service: undefined, timedOut: false, unexpectedPeer: true }
   return {
     service: { info, endpoint, state: "ready", legacy: true } satisfies LocalService,
     timedOut: false,
+    unexpectedPeer: false,
   }
 }
 
 async function registered(file?: string, allowLegacy = false, timeout?: number) {
   const info = await read(file)
-  if (info === undefined) return { info: undefined, service: undefined, timedOut: false }
+  if (info === undefined) return { info: undefined, service: undefined, timedOut: false, unexpectedPeer: false }
   return { info, ...(await probeResult(info, allowLegacy, timeout)) }
 }
 
@@ -274,4 +314,4 @@ function delay(milliseconds: number) {
 }
 
 /** Promise-based local service lifecycle operations. */
-export const Service = { discover, ensure, stop, headers }
+export const Service = { discover, ensure, stop, headers, ServiceRefusalError }
