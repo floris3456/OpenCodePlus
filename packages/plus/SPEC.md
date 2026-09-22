@@ -1133,6 +1133,7 @@ Error codes carrying `accepted` today:
 - `E_TOO_LONG`: brief length guidance (`"pass briefFile"`)
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
 - `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`) or session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`)
+- `objective`: schema validation refusal when `objective` is shorter than 20 characters (`"Expected a value with a length of at least 20"`)
 - `E_BUSY`: `followup` with `delivery:"now"` against a working child refuses with
   `{"delivery":"queue"}`; the queued form is then delivered by the child's own
   idle handoff. `stop` on a working child requests stop after its turn (setting
