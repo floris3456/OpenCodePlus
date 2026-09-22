@@ -5,7 +5,7 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { drain, enqueue } from "./merge.js"
 import type { MergeContext } from "./merge.js"
 import { gitRaw } from "./git.js"
-import { loadRun, saveRun } from "./run.js"
+import { loadRun, updateRun } from "./run.js"
 import { IntegrateInput } from "./schema.js"
 import type { Check } from "./schema.js"
 import { readJson } from "./store.js"
@@ -110,14 +110,17 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
   )
   if (!drained.ok) return { ok: false, error: drained.error }
   for (const item of drained.result.processed) {
-    if (item.state === "landed") {
-      const landedChild = await loadRun(root, item.childRun)
-      if (landedChild !== undefined && landedChild.directory) {
-        await remove(root, landedChild.directory, { repoRoot, repoKey: parent.repoKey })
-        landedChild.worktree = "removed"
-        await saveRun(root, landedChild)
-      }
-    }
+    if (item.state !== "landed") continue
+    const landedChild = await loadRun(root, item.childRun)
+    if (landedChild === undefined || !landedChild.directory) continue
+    await remove(root, landedChild.directory, { repoRoot, repoKey: parent.repoKey })
+    // The removal owns the worktree field. Mark it on the fresh record in one
+    // state-lock hold, so this pass never writes back any field it read before
+    // the merge and no concurrent settle can resurrect the directory it just
+    // removed.
+    await updateRun(root, item.childRun, (fresh) =>
+      fresh.worktree === "removed" ? fresh : { ...fresh, worktree: "removed" },
+    )
   }
   const ours = drained.result.processed.find((item) => item.id === entry.id)
   if (ours !== undefined && ours.state === "landed") {

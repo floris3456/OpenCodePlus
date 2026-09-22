@@ -269,6 +269,12 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   swept once it is older than that bound.
 - `team_list` and `team_status` indicate worktree state (`present`, `removed`, or `dirty`)
   for each run; `team_status` reports it beside its live `dirty` read.
+- A run's `worktree` state belongs to whoever removes the directory:
+  `team_integrate` marks `removed` after the directory is really gone, and the
+  settle passes (`reconcile`, `session.execution.started`, `onSessionIdle`) apply
+  their transitions to the record as it is at write time, in one `state` lock
+  hold (`run.updateRun`). A save of a copy read before a removal can therefore
+  not put `present` or `dirty` back.
 - Every gated team tool invocation writes an HMAC-SHA256 authenticated `tool.call` record
   to `<teams data dir>/audit.log` (key at `audit.key`, mode `0600`).
   Records contain `seq`, `at`, `kind: "tool.call"`, `run`, `actor`, `sessionID`, `tool`, `ok`,

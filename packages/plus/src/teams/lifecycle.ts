@@ -19,6 +19,7 @@ import {
   startAttempt,
   toFinishing,
   transition,
+  updateRun,
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
@@ -126,19 +127,27 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
   const sessionID = record.sessionID
   const alive = await sessionAlive(ctx, sessionID)
   if (alive) return undefined
-  const trigger = deadTrigger(record.state)
-  if (trigger === undefined) return undefined
-  const previous = record.state
-  const dead = await moveToDead(record, trigger)
-  if (dead === undefined) return undefined
-  const last = dead.attempts[dead.attempts.length - 1]
+  if (deadTrigger(record.state) === undefined) return undefined
+  // The transition runs against the record as it is at write time, in one
+  // state-lock hold: this pass must not write the worktree state it read back
+  // over a removal that landed in between.
+  const applied = { changed: false, previous: record.state }
+  const saved = await updateRun(root, entry, async (current) => {
+    if (isTerminal(current.state)) return current
+    const trigger = deadTrigger(current.state)
+    if (trigger === undefined) return current
+    const dead = await moveToDead(current, trigger)
+    if (dead === undefined) return current
+    applied.changed = true
+    applied.previous = current.state
+    return await failOpenAttempt(dead)
+  })
+  if (saved === undefined || !applied.changed) return undefined
+  const last = saved.attempts[saved.attempts.length - 1]
   const attemptN = last?.n ?? 0
-  const withAttempt = await failOpenAttempt(dead)
-  const saved = await saveSafe(root, withAttempt)
-  if (!saved) return undefined
-  if (withAttempt.parent !== null && withAttempt.parent !== undefined)
-    await notifySafe(root, withAttempt.parent, withAttempt.id, settledText(withAttempt, previous, attemptN))
-  return withAttempt.id
+  if (saved.parent !== null && saved.parent !== undefined)
+    await notifySafe(root, saved.parent, saved.id, settledText(saved, applied.previous, attemptN))
+  return saved.id
 }
 
 export type SessionOutcome = "idle" | "failed" | "interrupted"
@@ -186,14 +195,16 @@ export async function onSessionEvent(
   if (run === undefined) return undefined
 
   if (event.type === "session.execution.started") {
-    const resuming = run.state === "stopped" || run.state === "dead"
-    if (run.state === "idle" || run.state === "starting" || resuming) {
-      const trigger = run.state === "idle" ? "prompt" : "resume"
-      const working = transition(resuming ? consumeStopIntent(run) : run, "working", trigger)
-      await saveRun(root, working)
-      return working
-    }
-    return undefined
+    const applied = { changed: false }
+    const working = await updateRun(root, run.id, (record) => {
+      const resuming = record.state === "stopped" || record.state === "dead"
+      if (record.state !== "idle" && record.state !== "starting" && !resuming) return record
+      const trigger = record.state === "idle" ? "prompt" : "resume"
+      applied.changed = true
+      return transition(resuming ? consumeStopIntent(record) : record, "working", trigger)
+    })
+    if (working === undefined || !applied.changed) return undefined
+    return working
   }
 
   const outcome = OUTCOMES[event.type]
@@ -211,25 +222,30 @@ export async function onSessionIdle(
   run: RunRecord,
   outcome: SessionOutcome = "idle",
 ): Promise<RunRecord> {
-  const current = (await loadRun(root, run.id)) ?? run
-  if (isTerminal(current.state)) return current
-  const idle = toIdle(await settleAttempt(root, current, outcome))
-  const attempt = idle.attempts[idle.attempts.length - 1]
-  const announce =
-    idle.parent !== null &&
-    idle.parent !== undefined &&
-    attempt !== undefined &&
-    isAttemptTerminal(attempt.state) &&
-    attempt.notified !== true
-  const marked = announce ? markNotified(idle) : idle
-  if (marked !== current) await saveRun(root, marked)
-  if (announce && attempt !== undefined) await notifyParent(ctx, root, marked, attempt)
-  if (marked.stopRequested) {
-    const stopping = transition(marked, "stopping", "shutdown")
-    const stopped = transition(stopping, "stopped", "exited")
-    await saveRun(root, stopped)
-    return stopped
-  }
+  // The settle, the notify bookkeeping and a pending stop transition in one
+  // state-lock hold: this pass must not save a record it read before a
+  // concurrent removal, and it must not open a second read-modify-write window
+  // between settling and stopping.
+  const settled: { attempt?: AttemptRecord; stopped: boolean } = { stopped: false }
+  const marked = await updateRun(root, run.id, async (current) => {
+    if (isTerminal(current.state)) return current
+    const idle = toIdle(await settleAttempt(root, current, outcome))
+    const attempt = idle.attempts[idle.attempts.length - 1]
+    const announce =
+      idle.parent !== null &&
+      idle.parent !== undefined &&
+      attempt !== undefined &&
+      isAttemptTerminal(attempt.state) &&
+      attempt.notified !== true
+    const next = announce ? markNotified(idle) : idle
+    if (announce && attempt !== undefined) settled.attempt = attempt
+    if (!next.stopRequested) return next
+    settled.stopped = true
+    return transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
+  })
+  if (marked === undefined) return (await loadRun(root, run.id)) ?? run
+  if (settled.attempt !== undefined) await notifyParent(ctx, root, marked, settled.attempt)
+  if (settled.stopped) return marked
   return deliverInbox(ctx, root, marked)
 }
 

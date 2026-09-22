@@ -1285,6 +1285,29 @@ no run record claims. The two now share the repository lock
 callers outside `delegate` retain the same mutual exclusion without registering a
 run record.
 
+### A run's worktree state is owned by whoever removes the directory (`teams/run.ts`, `teams/lifecycle.ts`, `teams/api-integrate.ts`)
+
+`run.json`'s `worktree` field follows the directory it names: `present` while it
+exists, `dirty` when GC found uncommitted changes in a stopped run's copy, and
+`removed` once the directory is gone. The pass that removes the directory owns
+the field, and `removed` is terminal for it: a later save of a copy read before
+the removal cannot put `present` or `dirty` back.
+
+- `integrate` marks a landed child `removed` only after `worktree.remove`
+  succeeds, and applies the mark through `run.updateRun`, so only that field
+  changes on the record as it is at write time.
+- The passes that settle a run without a tool call — `reconcile`'s dead-run
+  pass, `session.execution.started`, and `onSessionIdle` (including the stop
+  transition when `stopRequested` is set) — also load, modify and write through
+  `run.updateRun`, in one `state` lock hold. Their writes are therefore based on
+  the record as it is after a concurrent removal instead of on the copy they
+  read first, so a settle that began before a landing can no longer resurrect
+  the worktree that landing removed. Either interleaving ends with `removed`.
+- `updateRun(root, id, update)` reads `runs/<id>/run.json`, calls `update` with
+  the current record, and writes what it returns under the same `state` lock
+  `loadRun`/`saveRun` use; returning the record unchanged skips the write. It
+  never creates a record, so the `run.created` audit entry stays `saveRun`'s.
+
 ### Project mode resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
 
 - `project.read(directory)` resolves **upward**: it walks parent directories until it finds a
