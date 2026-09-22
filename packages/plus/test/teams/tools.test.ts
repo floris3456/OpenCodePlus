@@ -1358,3 +1358,147 @@ test("two Code Mode calls that share one CallID write two distinct audit lines",
   })
 })
 
+test("C — every optional field of every registered team tool accepts null as equivalent to omission", async () => {
+  const tools = await registeredTools()
+
+  function findOptionalPaths(fields: Record<string, any>, prefix: string[] = []): string[][] {
+    const result: string[][] = []
+    for (const [key, field] of Object.entries(fields)) {
+      const current = [...prefix, key]
+      const isOptional = Option.isSome(Schema.decodeUnknownOption(field)(undefined))
+      if (isOptional) {
+        result.push(current)
+      }
+      if (field && typeof field === "object" && "fields" in field) {
+        result.push(...findOptionalPaths(field.fields, current))
+      }
+    }
+    return result
+  }
+
+  function setIn(obj: Record<string, unknown>, path: string[], value: unknown): Record<string, unknown> {
+    if (path.length === 1) {
+      return { ...obj, [path[0]!]: value }
+    }
+    const [head, ...tail] = path
+    const child = (obj[head!] && typeof obj[head!] === "object" ? obj[head!] : {}) as Record<string, unknown>
+    return { ...obj, [head!]: setIn(child, tail, value) }
+  }
+
+  const baseInputs: Record<string, Record<string, unknown>> = {
+    team_delegate: {
+      requestID: "req-1",
+      role: "gemini-implementer",
+      objective: "Implement null-tolerant tool inputs cleanly",
+      deliverable: { kind: "commit" },
+      scope: { paths: ["a.ts"] },
+    },
+    team_finish: {
+      status: "done",
+      summary: "Finished all changes cleanly",
+    },
+    team_followup: {
+      run: "w-0123456789abcdef",
+      requestID: "req-followup-1",
+      prompt: "Followup prompt text",
+    },
+    team_integrate: {
+      run: "w-0123456789abcdef",
+      expectedParentHead: "0123456789abcdef0123456789abcdef01234567",
+    },
+    team_checkpoint: {
+      message: "fix: clean checkpoint",
+      expectedHead: "0123456789abcdef0123456789abcdef01234567",
+      files: ["a.ts"],
+    },
+    team_set_checks: {
+      checks: [{ id: "c1", argv: ["bun", "test", "test.ts"] }],
+    },
+    team_supersede: {
+      run: "w-0123456789abcdef",
+      reason: "Superseding this run for testing purposes",
+    },
+    team_stop: {
+      run: "w-0123456789abcdef",
+    },
+    team_status: {},
+    team_wait: {
+      runs: ["w-0123456789abcdef"],
+    },
+    team_diff: {
+      run: "w-0123456789abcdef",
+    },
+    team_list: {},
+    team_get_context: {},
+    team_check: {
+      id: "check-1",
+    },
+  }
+
+  let totalOptionalFieldsTested = 0
+
+  for (const [id, tool] of tools) {
+    if (!id.startsWith("team_")) continue
+    const schema = tool.input as any
+
+    const base = baseInputs[id] ?? {}
+    const omittedDecoded = Schema.decodeUnknownSync(schema)(base)
+
+    const optionalPaths = findOptionalPaths(schema.fields)
+    for (const path of optionalPaths) {
+      totalOptionalFieldsTested++
+      const inputWithNull = setIn(base, path, null)
+      const decodedWithNull = Schema.decodeUnknownSync(schema)(inputWithNull)
+      expect(decodedWithNull).toEqual(omittedDecoded)
+    }
+
+    // Required fields with null must fail
+    for (const [key, field] of Object.entries(schema.fields)) {
+      const isOptional = Option.isSome(Schema.decodeUnknownOption(field as any)(undefined))
+      if (!isOptional) {
+        const inputWithNull = { ...base, [key]: null }
+        expect(Option.isNone(Schema.decodeUnknownOption(schema)(inputWithNull))).toBe(true)
+      }
+    }
+  }
+
+  expect(totalOptionalFieldsTested).toBeGreaterThan(15)
+})
+
+test("D — a home session with a non-repo location gets E_NOT_ACTOR and creates no root run record", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const nonRepoDir = await fs.mkdtemp("/tmp/plus-team-no-repo-")
+    try {
+      const harness = toolHarness()
+      const directory = AbsolutePath.make(nonRepoDir)
+      const location = new Location.Info({
+        directory,
+        project: { id: Project.ID.global, directory, canonical: directory },
+      })
+      const pluginCtx = context({ tool: harness.domain, location })
+      const api = createTeamApi(pluginCtx, createState())
+      await registerTeamTools(pluginCtx, api)
+      const tool = need(harness.tools, "team_get_context")
+      const toolCtx = toolContext("ses_home_session_no_repo", "sol-orchestrator")
+
+      const error = await Effect.runPromise(
+        tool.execute({}, toolCtx).pipe(
+          Effect.map(() => undefined),
+          Effect.catchTag("Tool.Error", (e) => Effect.succeed(e)),
+        ),
+      )
+
+      expect(error).toBeDefined()
+      expect(error?.message).toBe(
+        "E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.",
+      )
+
+      const runsDir = path.join(root, "runs")
+      const entries = await fs.readdir(runsDir).catch(() => [])
+      expect(entries).toEqual([])
+    } finally {
+      await fs.rm(nonRepoDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+})
+

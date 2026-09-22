@@ -1,4 +1,56 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
+
+/**
+ * Strips explicit null for optional fields in an object input against a schema.
+ * Required fields with null remain null so they produce schema validation errors.
+ */
+export function stripNullForOptional(schema: any, input: unknown): unknown {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return input
+  const fields = schema.fields
+  if (!fields) return input
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    const fieldSchema = fields[key]
+    if (fieldSchema === undefined) {
+      out[key] = value
+      continue
+    }
+    const isOptional = Option.isSome(Schema.decodeUnknownOption(fieldSchema as any)(undefined))
+    if (value === null && isOptional) {
+      continue
+    }
+    if (value !== null && typeof value === "object" && fieldSchema && "fields" in fieldSchema) {
+      out[key] = stripNullForOptional(fieldSchema, value)
+    } else {
+      out[key] = value
+    }
+  }
+  return out
+}
+
+/**
+ * Shared schema helper for tool boundaries: decodes explicit null as absent/omitted
+ * for any optional fields while preserving strict schema failure for required fields.
+ */
+export function nullTolerant<S extends Schema.Constraint>(schema: S): S {
+  const origAst = schema.ast as any
+  const wrappedAst = Object.create(origAst, {
+    getParser: {
+      value: function (compile: any, compileConstructorDefault: any) {
+        const innerParser = origAst.getParser(compile, compileConstructorDefault)
+        return (input: unknown, options: any) => {
+          const cleaned = stripNullForOptional(schema, input)
+          return innerParser(cleaned, options)
+        }
+      },
+    },
+  })
+  const s = Schema.make(wrappedAst) as any
+  if ("fields" in schema) {
+    s.fields = (schema as any).fields
+  }
+  return s
+}
 
 // Optional struct field with a decoding default, the Effect Schema form of
 // zod's `.default()`: absent or undefined input decodes to the default, so

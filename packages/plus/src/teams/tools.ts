@@ -27,6 +27,7 @@ import {
   StopInput,
   SupersedeInput,
   WaitInput,
+  nullTolerant,
 } from "./schema.js"
 
 const namespace = "team"
@@ -340,7 +341,13 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Team runs: delegate work, report outcomes, and read run state." })
-    editor.add({
+    const add = (tool: Tool.Info) => {
+      editor.add({
+        ...tool,
+        input: nullTolerant(tool.input as any),
+      })
+    }
+    add({
       name: "delegate",
       description: DelegateDescription,
       input: Brief,
@@ -349,7 +356,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("delegate", input, context, ctx, state, (args, caller) => api.delegate(args, caller)),
     })
-    editor.add({
+    add({
       name: "finish",
       description: FinishDescription,
       input: Report,
@@ -358,7 +365,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("finish", input, context, ctx, state, (args, caller) => api.finish(args, caller)),
     })
-    editor.add({
+    add({
       name: "followup",
       description: FollowupDescription,
       input: FollowupInput,
@@ -367,7 +374,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("followup", input, context, ctx, state, (args, caller) => api.followup(args, caller)),
     })
-    editor.add({
+    add({
       name: "integrate",
       description: IntegrateDescription,
       input: IntegrateInput,
@@ -376,7 +383,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("integrate", input, context, ctx, state, (args, caller) => api.integrate(args, caller)),
     })
-    editor.add({
+    add({
       name: "checkpoint",
       description: CheckpointDescription,
       input: CheckpointInput,
@@ -385,7 +392,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("checkpoint", input, context, ctx, state, (args, caller) => api.checkpoint(args, caller)),
     })
-    editor.add({
+    add({
       name: "set_checks",
       description: SetChecksDescription,
       input: SetChecksInput,
@@ -394,7 +401,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("set_checks", input, context, ctx, state, (args, caller) => api.set_checks(args, caller)),
     })
-    editor.add({
+    add({
       name: "supersede",
       description: SupersedeDescription,
       input: SupersedeInput,
@@ -403,7 +410,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("supersede", input, context, ctx, state, (args, caller) => api.supersede(args, caller)),
     })
-    editor.add({
+    add({
       name: "stop",
       description: StopDescription,
       input: StopInput,
@@ -412,7 +419,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("stop", input, context, ctx, state, (args, caller) => api.stop(args, caller)),
     })
-    editor.add({
+    add({
       name: "status",
       description: StatusDescription,
       input: StatusInput,
@@ -421,7 +428,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("status", input, context, ctx, state, (args, caller) => api.status(args, caller)),
     })
-    editor.add({
+    add({
       name: "wait",
       description: WaitDescription,
       input: WaitInput,
@@ -430,7 +437,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("wait", input, context, ctx, state, (args, caller) => api.wait(args, caller)),
     })
-    editor.add({
+    add({
       name: "diff",
       description: DiffDescription,
       input: DiffInput,
@@ -439,7 +446,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("diff", input, context, ctx, state, (args, caller) => api.diff(args, caller)),
     })
-    editor.add({
+    add({
       name: "list",
       description: ListDescription,
       input: ListInput,
@@ -448,7 +455,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("list", input, context, ctx, state, (args, caller) => api.list(args, caller)),
     })
-    editor.add({
+    add({
       name: "get_context",
       description: GetContextDescription,
       input: GetContextInput,
@@ -457,7 +464,7 @@ export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Reg
       origin,
       execute: (input, context) => runGated("get_context", input, context, ctx, state, (args, caller) => api.get_context(args, caller)),
     })
-    editor.add({
+    add({
       name: "check",
       description: CheckDescription,
       input: CheckInput,
@@ -555,11 +562,21 @@ function runGatedInner<A>(
       // tool becomes the main run, then continues through the normal gate.
       // All other no-run calls keep the byte-exact E_NOT_ACTOR message.
       if (kind.ok && (kind.kind === "planner" || kind.kind === "orchestrator")) {
-        const directory = String(pluginCtx.location.directory)
+        const directory = pluginCtx.location?.directory ? String(pluginCtx.location.directory) : ""
+        if (!directory)
+          return yield* Effect.fail(
+            new Tool.Error({
+              message:
+                "E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.",
+            }),
+          )
         const top = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "--show-toplevel"]))
         if (top.code !== 0)
           return yield* Effect.fail(
-            new Tool.Error({ message: `E_INTERNAL: Cannot resolve repository from ${directory}: ${top.err || top.out || "unknown error"}` }),
+            new Tool.Error({
+              message:
+                "E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.",
+            }),
           )
         const headOut = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "HEAD"]))
         if (headOut.code !== 0)

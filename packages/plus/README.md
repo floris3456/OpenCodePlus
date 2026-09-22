@@ -194,7 +194,9 @@ read-only `git diff` of your own run or one of your children, truncated to
 
 A planner or orchestrator opening a fresh chat and calling any team tool
 creates a root `main` run bound to that session automatically. There is no
-`prepare`.
+`prepare`. A session with no location / no repository directory calling any team tool gets
+`E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.`
+and writes no run record. Root-run bootstrap executes only when `git rev-parse --show-toplevel` succeeds.
 
 A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.execution.succeeded`,
@@ -238,6 +240,8 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   forked on the plugin scope so it stops with the plugin.
 - Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
   run record, reports and receipts intact while marking `worktree: "removed"`.
+- Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission; `null` on required fields strictly produces a schema validation error.
+- In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds.
 - Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
   Superseded worktrees are removed with `--force`; dirty stopped worktrees are skipped and

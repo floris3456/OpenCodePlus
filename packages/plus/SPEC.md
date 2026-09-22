@@ -970,13 +970,18 @@ A planner or orchestrator opening a fresh chat and calling any team tool
 creates the `main` root run bound to that session automatically and then
 answers normally. There is no `prepare`. All other no-run calls keep the exact
 `E_NOT_ACTOR` message, as does a session whose run role differs from the
-calling agent.
+calling agent. A session with no location / no repository directory that calls
+any team tool gets `E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.`
+and no run record is written; root-run bootstrap executes only when `git rev-parse --show-toplevel` succeeds.
 
 Every team tool has exactly one input schema; all of them live in
 `teams/schema.ts` and are imported by `teams/tools.ts` and by the handler that
 implements the tool. The tool layer validates the input once, against the
 registered schema; handlers receive the decoded value and never re-decode.
-`E_INPUT` is therefore unreachable from a tool call.
+`E_INPUT` is therefore unreachable from a tool call. Tool input schemas accept
+explicit `null` values for optional fields (`task: null`, `scope.forbidden: null`,
+`findings: null`, etc.) as equivalent to omission, while `null` on required fields
+strictly produces a schema validation error.
 
 ### Team rules are instructions rows (`instructions/team-policy-rows.ts`)
 
@@ -1121,10 +1126,13 @@ Error codes carrying `accepted` today:
 - `E_BASE`: valid base ref (`"ocp-main"`)
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
-- `E_BOUNDS`: bounds action guidance (`"call wait first"` or `"raise bounds.members in policy"`)
+- `E_BOUNDS`: bounds action guidance (`"call wait first"` or `"raise bounds.members in policy"`). In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
 - `E_REQUEST_ID`: reuse guidance (`"pick a new requestID"`)
+- `E_STALE_PARENT`: current parent HEAD commit string (`"<sha>"`)
+- `E_TASK_BLOCKED`: empty array (`[]`) when task not found
 - `E_TOO_LONG`: brief length guidance (`"pass briefFile"`)
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
+- `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`) or session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`)
 - `E_BUSY`: `followup` with `delivery:"now"` against a working child refuses with
   `{"delivery":"queue"}`; the queued form is then delivered by the child's own
   idle handoff. `stop` on a working child requests stop after its turn (setting
