@@ -1,0 +1,47 @@
+name: ocp-upstream-inventory
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      base-ref:
+        description: "Base / upstream reference"
+        required: false
+        default: "origin/v2"
+      compare-ref:
+        description: "Comparison / fork reference"
+        required: false
+        default: "HEAD"
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: upstream inventory
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup OpenCode Plus
+        uses: ./.github/actions/setup-ocp
+        with:
+          bun-version: "1.4.2"
+
+      - name: Run upstream divergence inventory
+        run: |
+          bun run packages/plus/script/upstream-inventory.ts \
+            --base="${{ inputs.base-ref || 'origin/v2' }}" \
+            --compare="${{ inputs.compare-ref || 'HEAD' }}" \
+            --output=upstream-inventory-report.json
+
+      - name: Upload upstream inventory report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: upstream-inventory-report
+          path: upstream-inventory-report.json
+          if-no-files-found: error

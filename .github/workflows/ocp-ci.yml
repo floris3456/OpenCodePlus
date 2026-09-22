@@ -1,0 +1,88 @@
+name: ocp-ci
+
+on:
+  push:
+    branches:
+      - v2
+  pull_request:
+    branches:
+      - v2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-checks:
+    name: focused checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup OpenCode Plus
+        uses: ./.github/actions/setup-ocp
+        with:
+          bun-version: "1.4.2"
+
+      - name: plus-typecheck
+        id: plus-typecheck
+        working-directory: packages/plus
+        run: bun run typecheck
+
+      - name: soak-regressions
+        id: soak-regressions
+        working-directory: packages/plus
+        run: bun test test/teams/worktree.test.ts test/teams/api.test.ts test/teams/gc.test.ts test/teams/lifecycle-events.test.ts test/teams/schema.test.ts test/teams/tools.test.ts test/teams/brief-report.test.ts test/teams/api-query.test.ts test/teams/api-lifecycle.test.ts test/teams/audit.test.ts test/teams/roles.test.ts
+
+      - name: release-unit
+        id: release-unit
+        working-directory: packages/plus
+        run: bun test test/release/identity.test.ts test/release/metadata.test.ts test/release/reproducibility.test.ts test/release/installer.test.ts test/release/acceptance.test.ts test/release/preactivation.test.ts test/release/workflows.test.ts test/search/register.test.ts test/search/mcp.test.ts
+
+      - name: release-bindings
+        id: release-bindings
+        working-directory: packages/plus
+        run: bun test test/release/model-pins.test.ts test/release/check-binding.test.ts test/release/placement.test.ts test/release/requests.test.ts test/teams/checks.test.ts
+
+      - name: service-clients
+        id: service-clients
+        working-directory: packages/client
+        run: bun test test/service.test.ts test/promise-service.test.ts test/service-contender.test.ts
+
+      - name: cli-release
+        id: cli-release
+        working-directory: packages/cli
+        run: bun test test/plus-build.test.ts test/managed-plus.test.ts test/updater-install.test.ts test/updater-poll.test.ts test/service.test.ts test/service-readiness.test.ts
+
+      - name: core-contracts
+        id: core-contracts
+        working-directory: packages/core
+        run: bun run test test/tool-permission-gate.test.ts test/permission.test.ts test/mcp.test.ts test/environment-ssh.test.ts test/managed-execution.test.ts test/release-admission.test.ts test/environment.test.ts test/session-environment.test.ts test/workspace.test.ts
+
+      - name: product-roots
+        id: product-roots
+        working-directory: packages/util
+        run: bun test test/product.test.ts test/global.test.ts test/global-roots.test.ts
+
+      - name: release-server
+        id: release-server
+        working-directory: packages/server
+        run: bun test test/release.test.ts
+
+      - name: affected-typechecks
+        id: affected-typechecks
+        working-directory: packages/plus
+        run: bun run release:typecheck
+
+      - name: generated-client
+        id: generated-client
+        working-directory: packages/client
+        run: bun run check:generated
+
+      - name: tui-regressions
+        id: tui-regressions
+        working-directory: packages/plus
+        run: bun test test/active-team.test.tsx test/route.test.tsx
