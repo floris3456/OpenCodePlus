@@ -313,7 +313,7 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
 // The idle handoff: everything pending becomes ONE new attempt's prompt.
 // Items already delivered as an earlier attempt's prompt are consumed without
 // being prompted again, so an immediately delivered followup is not repeated.
-async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
+export async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
   const sessionID = run.sessionID
   if (run.state !== "idle" || sessionID === null || sessionID === undefined) return run
   // startAttempt's precondition, checked before take so a run that cannot
@@ -325,17 +325,36 @@ async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise
   const fresh = items.filter((item) => !delivered.has(item.id))
   const text = renderInbox(fresh)
   if (text === "") return run
-  const started = startAttempt(run, { trigger: "followup", prompt: text })
-  const admitted = attemptTransition(started, "admitted", "admit")
-  const working = recordInboxDelivery(
-    transition(admitted, "working", "prompt"),
-    fresh.map((item) => item.id),
-  )
-  await saveRun(root, working)
+  const working = await updateRun(root, run.id, (current) => {
+    if (isTerminal(current.state)) return current
+    const started = startAttempt(current, { trigger: "followup", prompt: text })
+    const admitted = attemptTransition(started, "admitted", "admit")
+    return recordInboxDelivery(
+      transition(admitted, "working", "prompt"),
+      fresh.map((item) => item.id),
+    )
+  })
+  if (working === undefined || isTerminal(working.state)) return working ?? run
   await Effect.runPromise(
     ctx.session
       .prompt({ sessionID: Session.ID.make(sessionID), text })
-      .pipe(Effect.onError(() => Effect.ignore(io(() => saveRun(root, run))))),
+      .pipe(
+        Effect.onError(() =>
+          Effect.ignore(
+            io(() =>
+              updateRun(root, run.id, (current) => {
+                if (isTerminal(current.state)) return current
+                return {
+                  ...current,
+                  state: run.state,
+                  attempts: run.attempts,
+                  history: run.history,
+                }
+              }),
+            ),
+          ),
+        ),
+      ),
   )
   return working
 }

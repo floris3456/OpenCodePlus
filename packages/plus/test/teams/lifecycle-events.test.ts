@@ -9,8 +9,8 @@ import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek, put } from "../../src/teams/inbox.js"
-import { SessionRunEvents, onSessionEvent, onSessionIdle } from "../../src/teams/lifecycle.js"
-import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { SessionRunEvents, deliverInbox, onSessionEvent, onSessionIdle } from "../../src/teams/lifecycle.js"
+import { loadRun, saveRun, updateRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
 
 // Real run records in a real temp state root, driven by the same synthetic
@@ -679,3 +679,70 @@ test("a stop intent on a working run still stops it when its turn succeeds", asy
     expect(sessions.prompted).toHaveLength(0)
   })
 })
+
+test("deliverInbox cannot resurrect a worktree another writer removed before save", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = baseRun({
+      id: "w-6666666666666666",
+      role: "muse-implementer",
+      state: "idle",
+      sessionID: "ses_child_resurrect_001",
+      worktree: "present",
+      attempts: [{ n: 1, state: "succeeded", startedAt: new Date().toISOString(), trigger: "delegate" }],
+    })
+    await saveRun(root, child)
+    await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "New instructions." })
+
+    const handed = await loadRun(root, child.id)
+    expect(handed?.worktree).toBe("present")
+
+    // The removal lands between the record deliverInbox was handed and its save
+    await updateRun(root, child.id, (current) => ({ ...current, worktree: "removed" }))
+    expect((await loadRun(root, child.id))?.worktree).toBe("removed")
+
+    const sessions = recordSession()
+    await deliverInbox(context({ session: sessions.domain }), root, handed!)
+
+    const stored = await loadRun(root, child.id)
+    expect(stored?.worktree).toBe("removed")
+    expect(stored?.state).toBe("working")
+    expect(stored?.attempts).toHaveLength(2)
+    expect(stored?.attempts[1]?.state).toBe("admitted")
+  })
+})
+
+test("deliverInbox prompt error path cannot resurrect a worktree removed while in flight", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = baseRun({
+      id: "w-7777777777777777",
+      role: "muse-implementer",
+      state: "idle",
+      sessionID: "ses_child_resurrect_002",
+      worktree: "present",
+      attempts: [{ n: 1, state: "succeeded", startedAt: new Date().toISOString(), trigger: "delegate" }],
+    })
+    await saveRun(root, child)
+    await put(root, child.id, { kind: "followup", from: "main-0123456789abcdef", text: "Failing instructions." })
+
+    const handed = await loadRun(root, child.id)
+    expect(handed?.worktree).toBe("present")
+
+    // The prompt fails, and while prompt is in flight, a removal lands
+    const failingSession = {
+      prompt: () =>
+        Effect.promise(async () => {
+          await updateRun(root, child.id, (current) => ({ ...current, worktree: "removed" }))
+          throw new Error("simulated prompt failure")
+        }),
+      wait: () => Effect.succeed(undefined),
+    } as unknown as SessionDomain
+
+    await deliverInbox(context({ session: failingSession }), root, handed!).catch(() => undefined)
+
+    const stored = await loadRun(root, child.id)
+    expect(stored?.worktree).toBe("removed")
+    expect(stored?.state).toBe("idle")
+    expect(stored?.attempts).toHaveLength(1)
+  })
+})
+
