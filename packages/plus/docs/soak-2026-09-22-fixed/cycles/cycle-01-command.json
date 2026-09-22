@@ -1,0 +1,11 @@
+{"commands":[
+ {"tool":"delegate","as":"parent","input":{
+   "requestID":"resoak-c01-a","role":"gemini-implementer",
+   "objective":"Write exactly `cycle 01` and a trailing newline to notes/01.md, run the scratch-ok check, checkpoint `docs(soak): cycle 01`, then call team_finish with status done.",
+   "deliverable":{"kind":"commit"},
+   "scope":{"paths":["notes/*"]},
+   "checks":[{"id":"scratch-ok","argv":["bun","test","./scratch/ok.test.ts"]}],
+   "effort":"small"}},
+ {"tool":"wait","as":"parent","input":{"timeoutMs":600000}},
+ {"tool":"integrate","as":"parent","input":{}}
+]}
