@@ -1318,14 +1318,16 @@ the field, and `removed` is terminal for it.
   rollback path apply their updates to the current on-disk record through `run.updateRun`.
   A child whose worktree is removed while inbox delivery is in flight or whose prompt fails
   cannot have a stale `present` written back over `removed`.
-- Adjacent windows outside `updateRun` cannot resurrect a removed worktree:
-  - GC's `saveSafe` writes (dirty marking, reap) still build on the pass-opening snapshot,
-    but they only ever write `dirty` or `removed` — they can never write `present`, so they
-    cannot resurrect a removal.
-  - `loadRun` → `saveRun` handlers in `api.ts`, `api-lifecycle.ts`, and `api-followup.ts`
-    are not on the path of a landed child's removal (they manage initial run delegation,
-    caller finish/checkpointing, stop/supersede requests, or parent-directed followups to
-    active children; none operate concurrently on a landed child undergoing removal).
+- `saveRun` latches a stored `removed`: when the record on disk already reads
+  `worktree: "removed"`, any later full-record write keeps `removed`, whatever the
+  caller supplied (`"present"`, `"dirty"`, or an omitted field), while every other
+  field of that write is applied unchanged. Because that guard sits in `saveRun`,
+  it covers **every** full-record writer — GC's snapshot writes and the
+  `loadRun` → `saveRun` handlers in `api.ts`, `api-lifecycle.ts` and
+  `api-followup.ts` included — without needing any claim about which of them can
+  run concurrently with a removal. This is a **field-level guarantee for
+  `worktree` only**, not a general lost-update fix; other fields written from a
+  stale copy can still be overwritten.
 
 ### Project mode resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
 
