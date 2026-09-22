@@ -38,4 +38,18 @@ export { Question } from "./question.js"
 export { Workspace } from "./workspace.js"
 export { Prompt, PromptMention, FileSource, FileAttachment, AgentAttachment } from "./prompt.js"
 export { PromptInput } from "./prompt-input.js"
+export {
+  Release,
+  ReleaseTarget,
+  ReleaseIdentity,
+  ArtifactIdentity,
+  ReleaseManifest,
+  ReleaseBuildRequest,
+  ReleasePromotionRequest,
+  ReleaseRequest,
+  ReleaseRequestStatus,
+  ReleaseHostIdentity,
+  ReleaseCheckReceipt,
+  ReleaseAcceptanceReceipt,
+} from "./release.js"
 export * from "./schema.js"

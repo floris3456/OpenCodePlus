@@ -1,0 +1,27 @@
+{
+  "bun": {
+    "version": "1.4.2",
+    "executableSha256": null,
+    "source": null,
+    "measuredBy": "build-seat"
+  },
+  "builderImage": {
+    "ref": null,
+    "digest": null,
+    "measuredBy": "build-seat"
+  },
+  "fixedBuildPath": "/build/opencodeplus",
+  "locale": "C.UTF-8",
+  "timezone": "UTC",
+  "sourceDateEpochFrom": "source-commit-timestamp",
+  "archiveNormalization": {
+    "order": "sorted",
+    "uid": 0,
+    "gid": 0,
+    "modes": {
+      "bin/opencodeplus": "0755",
+      "default": "0644"
+    },
+    "mtime": "SOURCE_DATE_EPOCH"
+  }
+}
