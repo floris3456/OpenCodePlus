@@ -234,7 +234,9 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   working parent gets it through its own idle handoff.
 - `team_wait` acknowledges the outcomes of owned children unless `ack:false`,
   and names them in `acknowledged`. `team_status` reports the same receipt as
-  `acked: { attempt, at }` and never acknowledges anything itself.
+  `acked: { attempt, at }` and never acknowledges anything itself. `team_wait`
+  releases its internal race timers as soon as it returns so a caller process is
+  never held open past its result.
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
   2000 ms) carries dead-run reconciliation and worktree garbage collection (`gc`),
   forked on the plugin scope so it stops with the plugin.

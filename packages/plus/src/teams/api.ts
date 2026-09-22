@@ -668,13 +668,37 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller): P
       )
     }
     if (racers.length === 0) {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(150, remaining)))
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await new Promise((resolve) => {
+          timer = setTimeout(resolve, Math.min(150, remaining))
+        })
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
     } else {
-      await Promise.race([...racers, new Promise((resolve) => setTimeout(resolve, remaining))])
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          ...racers,
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, remaining)
+          }),
+        ])
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
     }
     const settled = await settledIds(root, args.runs, until)
     if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until, ack))
-    await new Promise((resolve) => setTimeout(resolve, Math.min(150, Math.max(deadline - Date.now(), 0))))
+    let pauseTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await new Promise((resolve) => {
+        pauseTimer = setTimeout(resolve, Math.min(150, Math.max(deadline - Date.now(), 0)))
+      })
+    } finally {
+      if (pauseTimer !== undefined) clearTimeout(pauseTimer)
+    }
   }
   const settled = await settledIds(root, args.runs, until)
   if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until, ack))
