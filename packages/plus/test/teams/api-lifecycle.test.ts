@@ -637,3 +637,143 @@ test("stopRun on ready run sets stopRequested and returns accurate state ready",
     expect(stored?.stopRequested).toBe(true)
   })
 })
+
+test("waitHandler race timer does not hold process open when run settles during wait", async () => {
+  const parentTmp = process.env.TMPDIR ?? os.tmpdir()
+  const tmp = await fs.mkdtemp(path.join(parentTmp, "plus-team-wait-timer-"))
+  try {
+    const root = path.join(tmp, "opencode", "opencodeplus", "teams")
+    const plusDir = path.resolve(import.meta.dir, "../..")
+    const script = `
+import { context } from "./test/harness.js"
+import { createState } from "./src/index.js"
+import { createTeamApi } from "./src/teams/api.js"
+import { saveRun } from "./src/teams/run.js"
+import { Effect } from "effect"
+import { Session } from "@opencode/schema/session"
+
+const root = process.env.XDG_DATA_HOME + "/opencode/opencodeplus/teams"
+const now = new Date().toISOString()
+const parentID = "main-0123456789abcdef"
+const childID = "w-wait-timer-0001"
+
+const parent = {
+  id: parentID,
+  role: "opus-orchestrator",
+  kind: "main",
+  repo: "opencode",
+  repoKey: "opencode",
+  directory: "/tmp",
+  paths: [],
+  branch: "main",
+  base: "0123456789abcdef0123456789abcdef01234567",
+  head: "0123456789abcdef0123456789abcdef01234567",
+  state: "working",
+  attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+  task: null,
+  parent: null,
+  children: [childID],
+  briefSha: "abc",
+  bundle: "team-wait-timer-test",
+  budget: {},
+  createdAt: now,
+  lastUsed: now,
+  sessionID: "ses_parent_001",
+  configDigest: null,
+  history: [],
+}
+
+const child = {
+  id: childID,
+  role: "muse-implementer",
+  kind: "w",
+  repo: "opencode",
+  repoKey: "opencode",
+  directory: "/tmp",
+  paths: [],
+  branch: "team/implementer/test",
+  base: "0123456789abcdef0123456789abcdef01234567",
+  head: "0123456789abcdef0123456789abcdef01234567",
+  state: "working",
+  attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+  task: null,
+  parent: parentID,
+  children: [],
+  briefSha: "abc",
+  bundle: "team-wait-timer-test",
+  budget: {},
+  createdAt: now,
+  lastUsed: now,
+  sessionID: "ses_child_001",
+  configDigest: null,
+  history: [],
+}
+
+await saveRun(root, parent)
+await saveRun(root, child)
+
+const domain = {
+  create: () => Effect.succeed({ id: Session.ID.make("ses_new") }),
+  prompt: () => Effect.succeed(undefined),
+  wait: () =>
+    Effect.promise(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(async () => {
+            const stored = await import("./src/teams/run.js").then((m) => m.loadRun(root, childID))
+            if (stored) {
+              stored.state = "idle"
+              stored.attempts = [
+                {
+                  n: 1,
+                  state: "succeeded",
+                  startedAt: now,
+                  endedAt: new Date().toISOString(),
+                  trigger: "delegate",
+                },
+              ]
+              await saveRun(root, stored)
+            }
+            resolve(undefined)
+          }, 100)
+        }),
+    ),
+  interrupt: () => Effect.succeed({ interrupted: true }),
+}
+
+const api = createTeamApi(context({ session: domain }), createState())
+const caller = { sessionID: "ses_parent_001", agent: "opus-orchestrator", run: parent }
+
+const result = await api.wait({ runs: [childID], timeoutMs: 10000 }, caller)
+process.stdout.write(JSON.stringify(result))
+`
+    const start = performance.now()
+    const proc = Bun.spawn([process.execPath, "-e", script], {
+      cwd: plusDir,
+      env: {
+        ...process.env,
+        XDG_DATA_HOME: tmp,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    const elapsedMs = performance.now() - start
+
+    expect(exitCode).toBe(0)
+    expect(stderr).toBe("")
+    const parsed = JSON.parse(stdout)
+    expect(parsed.ok).toBe(true)
+    expect(parsed.value.settled).toHaveLength(1)
+    expect(parsed.value.settled[0].run).toBe("w-wait-timer-0001")
+    expect(parsed.value.timedOut).toBe(false)
+    expect(elapsedMs).toBeLessThan(5000)
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true })
+  }
+}, 20000)
+
