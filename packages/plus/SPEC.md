@@ -1122,7 +1122,7 @@ Error codes carrying `accepted` today:
 - `E_ROLE`: allowed target role object (`{"role":"opus-orchestrator"}`)
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
 - `E_SUMMARY`: summary length guidance (`"a summary of ≤15 lines"`)
-- `E_TIMEOUT_MIN`: minimum timeout object (`{"timeoutMs":10000}`)
+- `E_TIMEOUT_MIN`: `"timeoutMs <timeoutMs> is below the 10000ms floor."`; minimum timeout object (`{"timeoutMs":10000}`)
 - `E_SPARK`: spark delegation example (`{"reason":"...","paths":["src/a.ts"],"checks":1}`)
 - `E_REASON`: orchestrator reason example (`{"reason":"3 independent packages, each needs its own workers"}`)
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
@@ -1131,9 +1131,9 @@ Error codes carrying `accepted` today:
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
 - `E_BOUNDS`: bounds action guidance (`"call wait first"` or `"raise bounds.members in policy"`). In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
-- `E_REQUEST_ID`: reuse guidance (`"pick a new requestID"`)
-- `E_STALE_PARENT`: current parent HEAD commit string (`"<sha>"`)
-- `E_TASK_BLOCKED`: empty array (`[]`) when task not found
+- `E_REQUEST_ID`: `"requestID \"<requestID>\" was used with different arguments; reuse only to retry the identical call, else pick a new requestID."`; reuse guidance (`"pick a new requestID"`)
+- `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
+- `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
 - `E_TOO_LONG`: brief length guidance (`"pass briefFile"`)
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
 - `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`) or session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`)

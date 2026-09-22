@@ -17,7 +17,7 @@ $$\text{delegate} \longrightarrow \text{get\_context} \longrightarrow \text{edit
   - `muse-implementer`: **10 landed cycles** (Cycles 2, 5, 9, 12, 15, 17, 20, 23, 26, 28; requirement $\ge 4$).
 - **Lifecycle Qualification**:
   - All **30 cycles** are verified complete qualifying lifecycles.
-  - Every single cycle was independently verified against **its own merge receipt** (`childRun` matches the child run ID, `state: "landed"`, and `landedHead` equals the commit head returned by `integrate`), rather than against an aggregate.
+  - Every single cycle's merge was verified against its own merge entry (`childRun`, `integrateEntry`, and `integrateHead`). Cycles 16–30 have full merge receipts retained inline in committed summaries; cycles 1–15 had their receipts verified live and joined before lab teardown (see Section 2.1 and `captures/merge-receipt-joins.json`).
 - **Simultaneous Delegation Pairs (Two Children in Flight)**:
   - **10 cycles** ran with two children simultaneously in flight across **5 distinct pairs** (contract requirement: $\ge 6$ cycles):
     - **Pair 1 (Cycles 8 & 9)**: Dispatched simultaneously at `2026-09-22T14:07:43.743947+00:00` / `2026-09-22T14:07:43.744193+00:00` from common base `de5167a18ea42b9db84f87dec8741b0aaf250297`; Cycle 8 landed `0c6b35cc25d78ba3ea9b6ad0bfc489a58ffd6d79`, Cycle 9 landed `97f27dcca9580c1643961b1cfc4eebfb152b6089`.
@@ -115,7 +115,7 @@ This proves that `gemini-implementer`, `muse-implementer`, and `sol-orchestrator
 
 ## 2. Per-Cycle Execution Table (Numbered Cycles 1–30)
 
-All timestamps are recorded in ISO 8601 UTC directly from the committed per-cycle driver logs (`cycles/cycle-NN.json`) and summary receipts. The **Wall Time (Start→End)** column reports true elapsed cycle wall-clock time computed from each row's own `started` and `ended` timestamps. For paired cycles, the driver's active subprocess execution time (`elapsedSec` in the driver summary) is significantly lower for the second child (e.g. 3.2s for Cycle 9 vs. 23.1s wall time, 3.5s for Cycle 11 vs. 29.9s wall time, 4.2s for Cycle 13 vs. 34.1s wall time, 5.5s for Cycle 15 vs. 27.0s wall time, and 13.9s for Cycle 26 vs. 49.2s wall time) because `elapsedSec` measures only active driver subprocess execution time and excludes the queue time spent in wait while its simultaneous partner integrates. Both figures are preserved below. Outcomes are strictly classified as `landed` or `failed`. Every cycle's merge was verified against its own merge receipt in `$T/data/opencode/opencodeplus/teams/runs/main-96ce24e091cf9632/merge/<entry>.json`.
+All timestamps are recorded in ISO 8601 UTC directly from the committed per-cycle driver logs (`cycles/cycle-NN.json`) and summary receipts. The **Wall Time (Start→End)** column reports true elapsed cycle wall-clock time computed from each row's own `started` and `ended` timestamps. For paired cycles, the driver's active subprocess execution time (`elapsedSec` in the driver summary) is significantly lower for the second child (e.g. 3.2s for Cycle 9 vs. 23.1s wall time, 3.5s for Cycle 11 vs. 29.9s wall time, 4.2s for Cycle 13 vs. 34.1s wall time, 5.5s for Cycle 15 vs. 27.0s wall time, and 13.9s for Cycle 26 vs. 49.2s wall time) because `elapsedSec` measures only active driver subprocess execution time and excludes the queue time spent in wait while its simultaneous partner integrates. Both figures are preserved below. Outcomes are strictly classified as `landed` or `failed`. Every cycle's merge was verified against its own merge entry (see Section 2.1 for receipt retention details across cycles 1–15 vs. 16–30).
 
 | Cycle | Kind | Role | Run ID | Child Session ID | Start Time | End Time | Wall Time (Start→End) | Outcome | Landed Commit / Notes |
 |:---:|:---|:---|:---|:---|:---|:---|:---:|:---:|:---|
@@ -149,6 +149,14 @@ All timestamps are recorded in ISO 8601 UTC directly from the committed per-cycl
 | **28** | single | `muse-implementer` | `w-9bad028caf4239f6` | `ses_f3681a78effe4Abvu9B4uI9eUy` | 2026-09-22T14:21:35.313590Z | 2026-09-22T14:22:39.107830Z | 63.8s | `landed` | Checkpointed `f7a8cff`, integrated `f7a8cff451a28f4fe73dc3f6ce19a9fc5dd05890` (entry `01M34QYKCA0PP2Z4Y437BSBPPE`). Worktree removed. |
 | **29** | single | `gemini-implementer` | `w-c939a878fe1b2f11` | `ses_f3680aa0fffeXVTnuOP0alLEb0` | 2026-09-22T14:22:40.195203Z | 2026-09-22T14:23:33.154692Z | 53.0s | `landed` | Checkpointed `cffdf38`, integrated `cffdf38cbaa22d4f176f244be73cbc02028dc7e7` (entry `01M34R08FJEMQ4H1QBMPZY2VHZ`). Worktree removed. |
 | **30** | single | `gemini-implementer` | `w-c09b198a1c93eb30` | `ses_f367fd75bffexcQiABRq7y0vRE` | 2026-09-22T14:23:34.234330Z | 2026-09-22T14:24:11.323052Z | 37.1s | `landed` | Checkpointed `aa8350a`, integrated `aa8350a62762b251cfbcdfdab48090a4db41b27c` (entry `01M34R1D4E58S2405C3YHXX1AC`). Worktree removed. Final repository HEAD: `aa8350a62762b251cfbcdfdab48090a4db41b27c`. |
+
+### 2.1 Merge Receipt Evidence and Retention Status
+
+Verification of per-cycle merge receipts is documented in the committed join table at [`captures/merge-receipt-joins.json`](captures/merge-receipt-joins.json) (and [`captures/merge-receipt-joins.txt`](captures/merge-receipt-joins.txt)):
+
+- **Cycles 16–30**: Have their **full merge receipts retained inline** in the committed summaries (`cycles/summary-cycle-NN.json`), each naming its own `childRun`, `state: "landed"`, and `landedHead` matching the commit returned by `team_integrate`. Exactly 15 of 30 receipts are retained in full, and every retained receipt names its own `childRun`.
+- **Cycles 1–15**: Have `childRun`, `integrateEntry`, and `integrateHead` recorded in the committed captures (`cycles/cycle-NN.json`), but the **receipt files themselves are not recoverable** because the lab was torn down after the soak run. The join was performed live at the time and independently re-measured by the build seat before teardown (`build-seat-verification.md`). The receipt files themselves do not exist on disk and were not re-verified after teardown.
+- **Reference**: See [`captures/merge-receipt-joins.json`](captures/merge-receipt-joins.json) for the full 30-cycle mapping of `cycle`, `childRun`, `integrateEntry`, `integrateHead`, and receipt retention status.
 
 ---
 
@@ -284,7 +292,27 @@ In the previous soak round (`soak-2026-09-22.md`), four defect classes caused 6 
 
 ---
 
-### 4.2 In-Round Discovered and Fixed Defect: `waitHandler` Race Timer Leak
+### 4.2 Defects 12–19 Disposition
+
+In the original soak report (`soak-2026-09-22.md`), eight entries (Defects 12–19) were recorded under "Operator / Guard Errors & Input-Validation Anomalies". The table below details the disposition of all eight entries in this round:
+
+| Defect # | Original Soak Entry & Classification | Disposition in This Round | Refusal Code / Class | Exact Refusal Message Template / Current Behavior | Source Location | Notes & Message Comparison |
+|:---:|:---|:---|:---:|:---|:---|:---|
+| **12** | Stray root run from omitted-location home session (`main-b354a168be3b2e16`) *(Operator setup artifact)* | **Reclassified, fixed this round** | Class D (`E_NOT_ACTOR`) | `"This session has no repository directory; open the chat in a git repository to use team tools."` | `src/teams/tools.ts` (`runGatedInner`) | Reclassified from setup artifact to product defect; non-repo sessions receive exact refusal and **no run record is written**. |
+| **13** | Stale parent HEAD in `team_integrate` (`expectedParentHead` mismatch) *(Operator freshness error)* | **Valid refusal, unchanged** | `E_STALE_PARENT` | `"Your HEAD is ${parentHead}; pass it as expectedParentHead (never the child's commit)."` | `src/teams/merge.ts` (lines 194, 343) | Valid platform guard; exact message template matches original soak record (`Your HEAD is 2dc951...`). |
+| **14** | Sub-floor timeout in `team_wait` (`timeoutMs: 0` below 10000ms floor) *(Operator parameter error)* | **Valid refusal, unchanged** | `E_TIMEOUT_MIN` | `"timeoutMs ${String(args.timeoutMs)} is below the 10000ms floor."` | `src/teams/api.ts` (`waitHandler`, line 642) | Valid platform guard; exact message template matches original soak record (`timeoutMs 0 is below the 10000ms floor.`). |
+| **15** | Non-existent task ID in `team_delegate` (`task: "T27"`) *(Operator input error)* | **Valid refusal, unchanged** | `E_TASK_BLOCKED` | `"Task ${taskID} not found."` | `src/teams/api.ts` (`delegateHandler`, line 258) | Valid platform guard; exact message template matches original soak record (`Task T27 not found.`). |
+| **16** | Request ID reused with altered arguments in `team_delegate` *(Idempotency violation)* | **Valid refusal, unchanged** | `E_REQUEST_ID` | `"requestID \"${brief.requestID}\" was used with different arguments; reuse only to retry the identical call, else pick a new requestID."` | `src/teams/api.ts` (`delegateHandler`, line 294) | Valid platform guard; exact message template matches original soak record (`requestID "stopfix-c28-original" was used...`). |
+| **17** | Schema validation error on explicit `task: null` in `team_delegate` *(Input validation anomaly)* | **Reclassified, fixed this round** | Class C | Decoded as omission at the registered tool boundary via `nullTolerant(tool.input)`; accepts `null` as `undefined`. | `src/teams/tools.ts` (`nullTolerant`) | Reclassified from operator error to product defect; optional `task` field now accepts explicit `null` without error. |
+| **18** | Schema validation error on sub-20 character `objective` in `team_delegate` *(Input validation anomaly)* | **Valid refusal, unchanged** | Schema validation | `"Expected a value with a length of at least 20"` | `src/teams/schema.ts` (line 292, `Schema.isMinLength(20)`) | Valid schema constraint; exact refusal message matches original soak record (`- objective: Expected a value with a length of at least 20`). |
+| **19** | Schema validation error on explicit `findings: null` in `team_finish` *(Input validation anomaly)* | **Reclassified, fixed this round** | Class C | Decoded as omission at the registered tool boundary via `nullTolerant(tool.input)`; accepts `null` as `undefined`. | `src/teams/tools.ts` (`nullTolerant`) | Reclassified from operator error to product defect; optional `findings` field now accepts explicit `null` without error. |
+
+**Message Comparison Finding**:
+All five unchanged platform guards and schema validations (Defects 13, 14, 15, 16, and 18) produce the exact refusal messages recorded during the original soak without any drift. The remaining three entries (Defects 12, 17, and 19) were reclassified as defects and resolved in this round: Defect 12 under Class D (home session `E_NOT_ACTOR` refusal without creating a run record) and Defects 17 and 19 under Class C (decoding explicit `null` on optional tool input fields as omission at the registered tool boundary).
+
+---
+
+### 4.3 In-Round Discovered and Fixed Defect: `waitHandler` Race Timer Leak
 
 - **Observation**: During preliminary soak testing, soak cycles took approximately 10 minutes each, even though the model completed its work, checks passed, and the child finished in ~25–35 seconds.
 - **Root Cause**:
@@ -313,7 +341,7 @@ In the previous soak round (`soak-2026-09-22.md`), four defect classes caused 6 
 
 ---
 
-### 4.3 Preserved Non-Defect: Cycle 19 Driver CLI Pre-Decode `null` Refusal
+### 4.4 Preserved Non-Defect: Cycle 19 Driver CLI Pre-Decode `null` Refusal
 
 - **Observation**:
   During the initial dispatch of Cycle 19, the driver invocation failed immediately with:
@@ -341,7 +369,7 @@ In the previous soak round (`soak-2026-09-22.md`), four defect classes caused 6 
 
 ---
 
-### 4.4 Note on Preliminary Pre-Activation Labs
+### 4.5 Note on Preliminary Pre-Activation Labs
 
 The preliminary captures preserved under `packages/plus/docs/soak-2026-09-22-fixed/preliminary/` (from labs `resoak` and `resoak2`, e.g. `summary-1790085215.json` and `summary-1790085583.json`) record cycles that were executed prior to active model resolution.
 
