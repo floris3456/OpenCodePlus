@@ -240,7 +240,7 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   forked on the plugin scope so it stops with the plugin.
 - Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
   run record, reports and receipts intact while marking `worktree: "removed"`.
-- Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission; `null` on required fields strictly produces a schema validation error.
+- Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission at every depth: array elements (`checks: [{ id, argv, cwd: null }]`) and fields behind optional/default wrappers (`context: { interfaces: null }`, `followup({ budget: { turns: null } })`) included; `null` on required fields strictly produces a schema validation error.
 - In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds.
 - Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
