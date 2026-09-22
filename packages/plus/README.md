@@ -252,6 +252,15 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   worktree root for that repository** (`<teams data dir>/worktrees/<repoKey>`, where
   `team_delegate` creates them). Any other worktree of the same repository — your own
   checkout of it — is never a candidate and is never removed.
+- Provisioning a child and the orphan scan are mutually exclusive on the repository lock.
+  `team_delegate` runs `worktree.provision`, which holds that lock across `worktree.create`
+  **and** the write of the starting run record, and `gc`'s orphan step takes the same lock
+  while it re-lists run records and removes candidates — so no sweep decision can be made
+  from a stale record snapshot, and no worktree can be swept between its creation and its
+  registration. As a second bound, `worktree.orphans(..., { minAgeMs })` treats any candidate
+  younger than `policy.timeouts.startMs` (default 60000 ms) as owned: a directory that may be
+  mid-provision is left for a later pass instead of force-removed, and an abandoned one is
+  swept once it is older than that bound.
 - `team_list` and `team_status` indicate worktree state (`present`, `removed`, or `dirty`)
   for each run; `team_status` reports it beside its live `dirty` read.
 - Every gated team tool invocation writes an HMAC-SHA256 authenticated `tool.call` record
