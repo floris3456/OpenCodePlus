@@ -246,7 +246,7 @@ def main():
         elif k == "pair": results.extend(pair(step["a"], step["b"], step["role_a"], step["role_b"]))
         elif k == "stop": results.append(stopcycle(step["n"], step["role"]))
         time.sleep(1)
-    path = os.path.join(EVID, "summary-%d.json" % int(time.time()))
+    path = os.path.join(OUT, "summary-%d.json" % int(time.time()))
     with open(path, "w") as f: json.dump(results, f, indent=2)
     print("DONE " + json.dumps({"cycles": len(results),
         "realpath": sum(1 for r in results if r["realpath"]),

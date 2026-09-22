@@ -1,0 +1,109 @@
+{
+  "ok": true,
+  "lab": {
+    "baseUrl": "http://127.0.0.1:55421",
+    "labHome": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4",
+    "teamsRoot": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams"
+  },
+  "parent": {
+    "run": "main-d8816d81b3629086",
+    "session": "ses_f3667fbe7ffecwoxjtv3sKyl0q",
+    "role": "sol-orchestrator",
+    "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/proj",
+    "state": "working"
+  },
+  "child": {
+    "run": "w-799521cb59e24a98",
+    "session": "ses_f366257c8ffenq15kJRuwjDRSS",
+    "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t127995-20260922-1655",
+    "role": "gemini-implementer",
+    "state": "starting",
+    "branch": "team/implementer/t127995-20260922-1655",
+    "parent": "main-d8816d81b3629086"
+  },
+  "results": [
+    {
+      "step": 1,
+      "ok": true,
+      "tool": "delegate",
+      "via": "team.delegate",
+      "output": {
+        "run": "w-799521cb59e24a98",
+        "session": "ses_f366257c8ffenq15kJRuwjDRSS",
+        "task": "T12",
+        "state": "starting",
+        "directory": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/worktrees/proj/implementer/t127995-20260922-1655",
+        "branch": "team/implementer/t127995-20260922-1655",
+        "base": "60dcb1c321a450eb2cd2b9cc6efa29967e08e173",
+        "briefPath": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/runs/w-799521cb59e24a98/brief.md",
+        "budget": {
+          "turns": 25,
+          "tokens": 400000,
+          "wallMs": 1200000
+        }
+      }
+    },
+    {
+      "step": 2,
+      "ok": true,
+      "tool": "wait",
+      "via": "team.wait",
+      "output": {
+        "settled": [
+          {
+            "run": "w-799521cb59e24a98",
+            "attemptState": "succeeded",
+            "report": {
+              "status": "done",
+              "summary": "Created notes/42.md with exactly `cycle 42` and a trailing newline, passed scratch-ok, and checkpointed commit e0d1692 (docs(soak): cycle 42).",
+              "path": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/runs/w-799521cb59e24a98/report-1.json"
+            }
+          }
+        ],
+        "acknowledged": [
+          "w-799521cb59e24a98"
+        ],
+        "timedOut": false,
+        "stillOpen": [],
+        "overBudget": []
+      }
+    },
+    {
+      "step": 3,
+      "ok": true,
+      "tool": "integrate",
+      "via": "team.integrate",
+      "output": {
+        "entry": "01M34SW6SM3XGP09KCYT53B9KK",
+        "state": "landed",
+        "head": "e0d169212ad87321fc26ce8ef805a09d7ceca2e8"
+      }
+    }
+  ],
+  "hostCalls": [
+    {
+      "method": "GET",
+      "path": "/api/session/ses_f3667fbe7ffecwoxjtv3sKyl0q",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/session",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/session/ses_f366257c8ffenq15kJRuwjDRSS/prompt",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/session/ses_f366257c8ffenq15kJRuwjDRSS/wait",
+      "status": 204
+    }
+  ],
+  "tag": "cycle-42",
+  "started": "2026-09-22T14:55:47.499319+00:00",
+  "ended": "2026-09-22T14:56:17.478855+00:00",
+  "driverActiveSec": 30.0
+}

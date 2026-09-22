@@ -1,0 +1,41 @@
+{
+  "cycle": 42,
+  "kind": "single",
+  "childRun": "w-799521cb59e24a98",
+  "sourceHead": "a539b0bfba6a48f4d6696d7c33b248d19390549e",
+  "model": {
+    "id": "gpt-5.6-luna",
+    "providerID": "cliproxyapi"
+  },
+  "settled": {
+    "run": "w-799521cb59e24a98",
+    "attemptState": "succeeded",
+    "report": {
+      "status": "done",
+      "summary": "Created notes/42.md with exactly `cycle 42` and a trailing newline, passed scratch-ok, and checkpointed commit e0d1692 (docs(soak): cycle 42).",
+      "path": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/runs/w-799521cb59e24a98/report-1.json"
+    }
+  },
+  "integrate": {
+    "entry": "01M34SW6SM3XGP09KCYT53B9KK",
+    "state": "landed",
+    "head": "e0d169212ad87321fc26ce8ef805a09d7ceca2e8"
+  },
+  "mergeReceipt": {
+    "id": "01M34SW6SM3XGP09KCYT53B9KK",
+    "parentRun": "main-d8816d81b3629086",
+    "childRun": "w-799521cb59e24a98",
+    "childBranch": "team/implementer/t127995-20260922-1655",
+    "childHead": "e0d169212ad87321fc26ce8ef805a09d7ceca2e8",
+    "expectedParentHead": "60dcb1c321a450eb2cd2b9cc6efa29967e08e173",
+    "state": "landed",
+    "at": "2026-09-22T14:56:17.204Z",
+    "updatedAt": "2026-09-22T14:56:17.248Z",
+    "landedHead": "e0d169212ad87321fc26ce8ef805a09d7ceca2e8"
+  },
+  "started": "2026-09-22T14:55:47.499319+00:00",
+  "ended": "2026-09-22T14:56:17.478855+00:00",
+  "wallElapsedSec": 30.0,
+  "driverActiveSec": 30.0,
+  "verified": true
+}

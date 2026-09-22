@@ -1,0 +1,41 @@
+{
+  "cycle": 41,
+  "kind": "single",
+  "childRun": "w-b268fb2e138b912a",
+  "sourceHead": "a539b0bfba6a48f4d6696d7c33b248d19390549e",
+  "model": {
+    "id": "gpt-5.6-luna",
+    "providerID": "cliproxyapi"
+  },
+  "settled": {
+    "run": "w-b268fb2e138b912a",
+    "attemptState": "succeeded",
+    "report": {
+      "status": "done",
+      "summary": "Created notes/41.md with exactly `cycle 41` and a trailing newline. scratch-ok passed, and commit 60dcb1c321a450eb2cd2b9cc6efa29967e08e173 was created as docs(soak): cycle 41.",
+      "path": "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-resoak4/data/opencode/opencodeplus/teams/runs/w-b268fb2e138b912a/report-1.json"
+    }
+  },
+  "integrate": {
+    "entry": "01M34SV8R73GT73RVT42590Z36",
+    "state": "landed",
+    "head": "60dcb1c321a450eb2cd2b9cc6efa29967e08e173"
+  },
+  "mergeReceipt": {
+    "id": "01M34SV8R73GT73RVT42590Z36",
+    "parentRun": "main-d8816d81b3629086",
+    "childRun": "w-b268fb2e138b912a",
+    "childBranch": "team/implementer/t11b268-20260922-1655",
+    "childHead": "60dcb1c321a450eb2cd2b9cc6efa29967e08e173",
+    "expectedParentHead": "1a9a44c12c6bc30cc11d3691768b23eb7af4aa86",
+    "state": "landed",
+    "at": "2026-09-22T14:55:46.439Z",
+    "updatedAt": "2026-09-22T14:55:46.455Z",
+    "landedHead": "60dcb1c321a450eb2cd2b9cc6efa29967e08e173"
+  },
+  "started": "2026-09-22T14:55:24.221313+00:00",
+  "ended": "2026-09-22T14:55:46.464842+00:00",
+  "wallElapsedSec": 22.2,
+  "driverActiveSec": 22.2,
+  "verified": true
+}

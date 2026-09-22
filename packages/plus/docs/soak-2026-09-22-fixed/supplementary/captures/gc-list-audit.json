@@ -1,0 +1,205 @@
+{
+  "gcPolicy": {
+    "reapAfter": "0ms",
+    "keepPromotedFrom": true
+  },
+  "before": {
+    "total": 16,
+    "byState": {
+      "working": 1,
+      "idle": 15
+    }
+  },
+  "sweep": {
+    "reaped": [],
+    "skippedDirty": [],
+    "orphansRemoved": [],
+    "removeFailed": []
+  },
+  "after": {
+    "total": 16,
+    "byState": {
+      "working": 1,
+      "idle": 15
+    }
+  },
+  "rootRuns": [
+    {
+      "id": "main-d8816d81b3629086",
+      "role": "sol-orchestrator",
+      "kind": "main",
+      "state": "working",
+      "worktree": "present",
+      "parent": null,
+      "head": "597f8c5d00b1d0c09b14e092970218694319b42a",
+      "sessionID": "ses_f3667fbe7ffecwoxjtv3sKyl0q"
+    }
+  ],
+  "worktreeDirsRemaining": [],
+  "audit": {
+    "ok": true,
+    "lines": 152
+  },
+  "inventory": [
+    {
+      "id": "main-d8816d81b3629086",
+      "role": "sol-orchestrator",
+      "kind": "main",
+      "state": "working",
+      "worktree": "present",
+      "parent": null,
+      "head": "597f8c5d00b1d0c09b14e092970218694319b42a",
+      "sessionID": "ses_f3667fbe7ffecwoxjtv3sKyl0q"
+    },
+    {
+      "id": "w-0dfe29528eb15d14",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "daf6dd9a31437fe42a386b6ce3945a5633e45131",
+      "sessionID": "ses_f36637b6dffeNRikcZ6TAabiqV"
+    },
+    {
+      "id": "w-0f6207b5cef1f0f3",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "49daa5839926f4bc8959eeea7302ae191e956b9f",
+      "sessionID": "ses_f36669653ffeCZtR2xe6io6Eop"
+    },
+    {
+      "id": "w-4bf5d7eef28f6038",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "0a7c18c9147336607e20aae3de0c87bcf39bc677",
+      "sessionID": "ses_f36652878ffey6pT1M5QWiwxlP"
+    },
+    {
+      "id": "w-799521cb59e24a98",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "e0d169212ad87321fc26ce8ef805a09d7ceca2e8",
+      "sessionID": "ses_f366257c8ffenq15kJRuwjDRSS"
+    },
+    {
+      "id": "w-8afc29863fbd3025",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "a929512003439c7787dc891f1e3287b07a1d8e01",
+      "sessionID": "ses_f3667c271ffe4sL5v8M1G2zrq3"
+    },
+    {
+      "id": "w-9711f106fffc9860",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "da867ce9fe0a297c01ef8def4ea1fd4f5a404d23",
+      "sessionID": "ses_f36676e5bffeZzsjGhk9id5Cz8"
+    },
+    {
+      "id": "w-9f9dd29e58158281",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "1e1a55039b65bc2686580ceb3092a8e88d6abb99",
+      "sessionID": "ses_f36652898ffed0TN7Ik1r2PnMK"
+    },
+    {
+      "id": "w-a36034bb0095edc7",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "6c721d88506f02986c8fdaebddca7be47ac67473",
+      "sessionID": "ses_f36616aa0ffejcUO6NQz5asBj4"
+    },
+    {
+      "id": "w-a44c2e75531aa800",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "435e4d538767a595991bdcda52681ee6bae0c4ef",
+      "sessionID": "ses_f3667075cffeRxH6B0Gfy48hmc"
+    },
+    {
+      "id": "w-a6db49d81689660a",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "13c68c927d6325f1bea6b5a8ea71fdf791ab591b",
+      "sessionID": "ses_f3661de5fffeVAQBvuFQ3ngyJn"
+    },
+    {
+      "id": "w-b268fb2e138b912a",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "60dcb1c321a450eb2cd2b9cc6efa29967e08e173",
+      "sessionID": "ses_f3662b2d8ffezMxDo0OT27l2LI"
+    },
+    {
+      "id": "w-b2d35cf91e216285",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "b708115e6d82b38c3994db6f7a249d53a3e49bc9",
+      "sessionID": "ses_f3666364dffe24cpzey5AbknH1"
+    },
+    {
+      "id": "w-b619b0181c8f95f7",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "present",
+      "parent": "main-d8816d81b3629086",
+      "head": "1a9a44c12c6bc30cc11d3691768b23eb7af4aa86",
+      "sessionID": "ses_f36632188ffe9Whfb01SuRvpjT"
+    },
+    {
+      "id": "w-e3858ef8188d464a",
+      "role": "gemini-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "39795fc509733b3f1d711c8c386ce16d538ea36f",
+      "sessionID": "ses_f3665b799ffetTHhmAK4wfi28Y"
+    },
+    {
+      "id": "w-fb4355a62e68d6b5",
+      "role": "muse-implementer",
+      "kind": "w",
+      "state": "idle",
+      "worktree": "removed",
+      "parent": "main-d8816d81b3629086",
+      "head": "0c0b7b38abc884e23483151615123ae8ece8339d",
+      "sessionID": "ses_f36616c0dffe0E3dtXPlHf8oFE"
+    }
+  ]
+}

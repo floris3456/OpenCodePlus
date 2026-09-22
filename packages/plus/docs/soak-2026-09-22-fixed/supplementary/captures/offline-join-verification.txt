@@ -1,0 +1,45 @@
+OFFLINE JOIN VERIFICATION - reads only files under packages/plus/docs/soak-2026-09-22-fixed/
+No lab, no network, no teams root consulted.
+
+--- Supplementary lab resoak4, cycles 31-45 (durable supplementary/receipts/) ---
+  cycle 31 single w-8afc29863fbd3025     OK 
+  cycle 32 single w-9711f106fffc9860     OK 
+  cycle 33 single w-a44c2e75531aa800     OK 
+  cycle 34 single w-0f6207b5cef1f0f3     OK 
+  cycle 35 single w-b2d35cf91e216285     OK 
+  cycle 36 single w-e3858ef8188d464a     OK 
+  cycle 37 pair   w-4bf5d7eef28f6038     OK 
+  cycle 38 pair   w-9f9dd29e58158281     OK 
+  cycle 39 single w-0dfe29528eb15d14     OK 
+  cycle 40 single w-b619b0181c8f95f7     OK 
+  cycle 41 single w-b268fb2e138b912a     OK 
+  cycle 42 single w-799521cb59e24a98     OK 
+  cycle 43 single w-a6db49d81689660a     OK 
+  cycle 44 pair   w-a36034bb0095edc7     OK 
+  cycle 45 pair   w-fb4355a62e68d6b5     OK 
+  -> 15/15 fully joined offline
+
+--- Original lab resoak3, cycles 16-30 (receipts retained inline in the original summaries) ---
+  cycle 16 w-5abab5c878be0beb     OK
+  cycle 17 w-16c6540b11870c48     OK
+  cycle 18 w-0b0f945ebc054165     OK
+  cycle 19 w-4cc635936a3717bf     OK
+  cycle 20 w-31b4feef9ab5856a     OK
+  cycle 21 w-e8ad0c5394fc96f7     OK
+  cycle 22 w-e7874d4321a87c99     OK
+  cycle 23 w-6cbd7efbfd9bc57e     OK
+  cycle 24 w-c92b6216b44235f1     OK
+  cycle 25 w-76e54791b93ea9c0     OK
+  cycle 26 w-493068237cbfa9d5     OK
+  cycle 27 w-77353d5246b74541     OK
+  cycle 28 w-9bad028caf4239f6     OK
+  cycle 29 w-c939a878fe1b2f11     OK
+  cycle 30 w-c09b198a1c93eb30     OK
+  -> 15/15 fully joined offline
+
+COMBINED FULLY AUDITABLE (each backed by its own retained merge receipt)
+  supplementary 31-45 : 15
+  original      16-30 : 15
+  TOTAL distinct      : 30   (requirement >= 30)
+  paired cycles       : 4 supplementary [37, 38, 44, 45] + 2 original (25,26) = 6   (requirement >= 6)
+  qualifying stops    : 3 original (16,17,18)                      (requirement >= 3)

@@ -1,0 +1,11 @@
+TEARDOWN of owned supplementary lab resoak4 (port 55421). Human server 40374 untouched.
+$ tui-lab.sh down resoak4
+owned lab processes derived from /proc (cwd inside this lab):
+  stopped 18 owned processes
+connect_ex=111
+not_listening=true
+listeners=[]
+directory_absent=true
+residual /proc references to any resoak lab:
+  0
+human server 40374 connect_ex=0 (0 = still listening, never modified)
