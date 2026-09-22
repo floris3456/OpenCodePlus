@@ -1,0 +1,302 @@
+[
+  {
+    "cycle": 1,
+    "childRun": "w-d5b82fa4f0437b91",
+    "integrateEntry": "01M34PY2STCC12NN27X61MXH8R",
+    "integrateHead": "a25b18a1a9c0e39adb8356f61def5da712067e50",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 2,
+    "childRun": "w-5a5501f069f38fe4",
+    "integrateEntry": "01M34PYS9VG5M2AGED6SYJM7XY",
+    "integrateHead": "e1ae028e1e648edeecb8bd4aa37b77df453360c0",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 3,
+    "childRun": "w-e8d072876c9bfd74",
+    "integrateEntry": "01M34PZE6CJ0K7ANSFYTWXXSBF",
+    "integrateHead": "25db599505fffb0ffc1ac94daf648afccf4e6605",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 4,
+    "childRun": "w-1593f765ca571683",
+    "integrateEntry": "01M34Q03MMJXQRVK95MH3VWF52",
+    "integrateHead": "77f429f93b7c64d8421668871db767db9e02ec21",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 5,
+    "childRun": "w-14602ea497a06f63",
+    "integrateEntry": "01M34Q1AB2RF9SB6P7JEKJ6TJA",
+    "integrateHead": "58c79e7b629186f33c444476875e072ba621c181",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 6,
+    "childRun": "w-04948d4e473f6463",
+    "integrateEntry": "01M34Q2DT64D59P80TFXJWWHMT",
+    "integrateHead": "0cf180a77a39fb42f00c0451ff895e178fa2ddd1",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 7,
+    "childRun": "w-c0661a228bb085ca",
+    "integrateEntry": "01M34Q38E4TF1FB50WCA45HCKV",
+    "integrateHead": "de5167a18ea42b9db84f87dec8741b0aaf250297",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 8,
+    "childRun": "w-e6663df711e0dba2",
+    "integrateEntry": "01M34Q3ZS0C08ANZAC1ETYCPZD",
+    "integrateHead": "0c6b35cc25d78ba3ea9b6ad0bfc489a58ffd6d79",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 9,
+    "childRun": "w-e58ffdafb2ca5dc3",
+    "integrateEntry": "01M34Q40368CEN61QK8TD0FDP6",
+    "integrateHead": "97f27dcca9580c1643961b1cfc4eebfb152b6089",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 10,
+    "childRun": "w-42b734d60a440d04",
+    "integrateEntry": "01M34Q4XZ1ESRGH6ZSGK0MZ3JC",
+    "integrateHead": "d9026a5ad72d8fd942b2dbe8ead5af4577f8134c",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 11,
+    "childRun": "w-fc729634e472648d",
+    "integrateEntry": "01M34Q4YBJ7R1KZ2TDGTSFB967",
+    "integrateHead": "95323857bf964ba0ba7925ac49a4bb053733e270",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 12,
+    "childRun": "w-515f6926e6c68882",
+    "integrateEntry": "01M34Q605XRPX2JT7TMVC12NK0",
+    "integrateHead": "d1a251d5880db6b124844916a407812bf9ec43fb",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 13,
+    "childRun": "w-6d47340fd69a8d1d",
+    "integrateEntry": "01M34Q60PHY62HTANX7S7FTXW9",
+    "integrateHead": "25b3b90633d42960aa0da3743f75bdf78587377c",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 14,
+    "childRun": "w-3364991e721825ad",
+    "integrateEntry": "01M34Q6V0DPBQX1039R533N08H",
+    "integrateHead": "01e11413735d02934866753d93328c56bc676a70",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 15,
+    "childRun": "w-6b72eca1b4321449",
+    "integrateEntry": "01M34Q6VGZR4AMZ180J4715ER4",
+    "integrateHead": "d7ac963a5e65979ea481dcf4c9207e61070836e8",
+    "receiptRetained": false,
+    "receiptChildRun": null,
+    "receiptState": null,
+    "receiptLandedHead": null
+  },
+  {
+    "cycle": 16,
+    "childRun": "w-5abab5c878be0beb",
+    "integrateEntry": "01M34QAKT6S68C40R036DGZTP8",
+    "integrateHead": "d75582dac46c58584f4b0f9a4f7bceb48b2353dd",
+    "receiptRetained": true,
+    "receiptChildRun": "w-5abab5c878be0beb",
+    "receiptState": "landed",
+    "receiptLandedHead": "d75582dac46c58584f4b0f9a4f7bceb48b2353dd"
+  },
+  {
+    "cycle": 17,
+    "childRun": "w-16c6540b11870c48",
+    "integrateEntry": "01M34QDMZZ98SH6845DD03DZT1",
+    "integrateHead": "54a11858985255fc5333e74ffce1ecc6e8e58332",
+    "receiptRetained": true,
+    "receiptChildRun": "w-16c6540b11870c48",
+    "receiptState": "landed",
+    "receiptLandedHead": "54a11858985255fc5333e74ffce1ecc6e8e58332"
+  },
+  {
+    "cycle": 18,
+    "childRun": "w-0b0f945ebc054165",
+    "integrateEntry": "01M34QHCPNRGYMD363A9C8VV9P",
+    "integrateHead": "484854efb75e96948152b5c91eb41dcf682085a8",
+    "receiptRetained": true,
+    "receiptChildRun": "w-0b0f945ebc054165",
+    "receiptState": "landed",
+    "receiptLandedHead": "484854efb75e96948152b5c91eb41dcf682085a8"
+  },
+  {
+    "cycle": 19,
+    "childRun": "w-4cc635936a3717bf",
+    "integrateEntry": "01M34QQDVHZPS796RMTBF02KF6",
+    "integrateHead": "d9a3e11da01caf628041a40f81fb99de8a8a9efc",
+    "receiptRetained": true,
+    "receiptChildRun": "w-4cc635936a3717bf",
+    "receiptState": "landed",
+    "receiptLandedHead": "d9a3e11da01caf628041a40f81fb99de8a8a9efc"
+  },
+  {
+    "cycle": 20,
+    "childRun": "w-31b4feef9ab5856a",
+    "integrateEntry": "01M34QJZTBMGM4HN3WKWG3BPVA",
+    "integrateHead": "b034b862e8a7e36d0260114e8904baecbe787fc8",
+    "receiptRetained": true,
+    "receiptChildRun": "w-31b4feef9ab5856a",
+    "receiptState": "landed",
+    "receiptLandedHead": "b034b862e8a7e36d0260114e8904baecbe787fc8"
+  },
+  {
+    "cycle": 21,
+    "childRun": "w-e8ad0c5394fc96f7",
+    "integrateEntry": "01M34QMAFXMNKFEZKZ39RBX7YS",
+    "integrateHead": "685ad6c7f5f1c89d8fe76aa7a25228cc5c6996af",
+    "receiptRetained": true,
+    "receiptChildRun": "w-e8ad0c5394fc96f7",
+    "receiptState": "landed",
+    "receiptLandedHead": "685ad6c7f5f1c89d8fe76aa7a25228cc5c6996af"
+  },
+  {
+    "cycle": 22,
+    "childRun": "w-e7874d4321a87c99",
+    "integrateEntry": "01M34QNBQA2M8M9MS29RYKRQ6Q",
+    "integrateHead": "824ccf36fdf8f8d3a9fb0e7ef4e8b71efa5348dc",
+    "receiptRetained": true,
+    "receiptChildRun": "w-e7874d4321a87c99",
+    "receiptState": "landed",
+    "receiptLandedHead": "824ccf36fdf8f8d3a9fb0e7ef4e8b71efa5348dc"
+  },
+  {
+    "cycle": 23,
+    "childRun": "w-6cbd7efbfd9bc57e",
+    "integrateEntry": "01M34QRM7ZGAT6AK8KJ5NXB2MY",
+    "integrateHead": "563a2b337e2ecf6f752dfd0051fba67665d1aa1a",
+    "receiptRetained": true,
+    "receiptChildRun": "w-6cbd7efbfd9bc57e",
+    "receiptState": "landed",
+    "receiptLandedHead": "563a2b337e2ecf6f752dfd0051fba67665d1aa1a"
+  },
+  {
+    "cycle": 24,
+    "childRun": "w-c92b6216b44235f1",
+    "integrateEntry": "01M34QSXK11QFX36H97BAW4N91",
+    "integrateHead": "e22faa829865d7cb9e57cc9f4d46a2fea2e3f88f",
+    "receiptRetained": true,
+    "receiptChildRun": "w-c92b6216b44235f1",
+    "receiptState": "landed",
+    "receiptLandedHead": "e22faa829865d7cb9e57cc9f4d46a2fea2e3f88f"
+  },
+  {
+    "cycle": 25,
+    "childRun": "w-76e54791b93ea9c0",
+    "integrateEntry": "01M34QV8HYQAVM7H2MAYERAZ5C",
+    "integrateHead": "03738a7e341868b869fc39746313dad955c920f4",
+    "receiptRetained": true,
+    "receiptChildRun": "w-76e54791b93ea9c0",
+    "receiptState": "landed",
+    "receiptLandedHead": "03738a7e341868b869fc39746313dad955c920f4"
+  },
+  {
+    "cycle": 26,
+    "childRun": "w-493068237cbfa9d5",
+    "integrateEntry": "01M34QVF3MN2R91ADSZNGZQ1GZ",
+    "integrateHead": "536b5bace1eab5848aabc42b28ce5a3fcdafb21f",
+    "receiptRetained": true,
+    "receiptChildRun": "w-493068237cbfa9d5",
+    "receiptState": "landed",
+    "receiptLandedHead": "536b5bace1eab5848aabc42b28ce5a3fcdafb21f"
+  },
+  {
+    "cycle": 27,
+    "childRun": "w-77353d5246b74541",
+    "integrateEntry": "01M34QWMNHJWYKY8PRG7C4KZHG",
+    "integrateHead": "46918ac9ebb861b01668ac4b10d115f0a8b24e99",
+    "receiptRetained": true,
+    "receiptChildRun": "w-77353d5246b74541",
+    "receiptState": "landed",
+    "receiptLandedHead": "46918ac9ebb861b01668ac4b10d115f0a8b24e99"
+  },
+  {
+    "cycle": 28,
+    "childRun": "w-9bad028caf4239f6",
+    "integrateEntry": "01M34QYKCA0PP2Z4Y437BSBPPE",
+    "integrateHead": "f7a8cff451a28f4fe73dc3f6ce19a9fc5dd05890",
+    "receiptRetained": true,
+    "receiptChildRun": "w-9bad028caf4239f6",
+    "receiptState": "landed",
+    "receiptLandedHead": "f7a8cff451a28f4fe73dc3f6ce19a9fc5dd05890"
+  },
+  {
+    "cycle": 29,
+    "childRun": "w-c939a878fe1b2f11",
+    "integrateEntry": "01M34R08FJEMQ4H1QBMPZY2VHZ",
+    "integrateHead": "cffdf38cbaa22d4f176f244be73cbc02028dc7e7",
+    "receiptRetained": true,
+    "receiptChildRun": "w-c939a878fe1b2f11",
+    "receiptState": "landed",
+    "receiptLandedHead": "cffdf38cbaa22d4f176f244be73cbc02028dc7e7"
+  },
+  {
+    "cycle": 30,
+    "childRun": "w-c09b198a1c93eb30",
+    "integrateEntry": "01M34R1D4E58S2405C3YHXX1AC",
+    "integrateHead": "aa8350a62762b251cfbcdfdab48090a4db41b27c",
+    "receiptRetained": true,
+    "receiptChildRun": "w-c09b198a1c93eb30",
+    "receiptState": "landed",
+    "receiptLandedHead": "aa8350a62762b251cfbcdfdab48090a4db41b27c"
+  }
+]

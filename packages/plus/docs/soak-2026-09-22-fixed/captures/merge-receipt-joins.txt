@@ -1,0 +1,40 @@
+Per-cycle merge-receipt join table
+childRun/entry/head come from the committed cycle captures; receipt* columns are the
+full merge receipts the runner retained inline. Cycles 1-15 ran before the runner
+retained receipts inline, and the lab was torn down afterwards, so their receipt FILES
+are not recoverable; the join was performed live at the time and independently
+re-measured by the build seat before teardown (build-seat-verification.md).
+
+cycle  childRun               integrateEntry               receipt   
+1      w-d5b82fa4f0437b91     01M34PY2STCC12NN27X61MXH8R   not retained
+2      w-5a5501f069f38fe4     01M34PYS9VG5M2AGED6SYJM7XY   not retained
+3      w-e8d072876c9bfd74     01M34PZE6CJ0K7ANSFYTWXXSBF   not retained
+4      w-1593f765ca571683     01M34Q03MMJXQRVK95MH3VWF52   not retained
+5      w-14602ea497a06f63     01M34Q1AB2RF9SB6P7JEKJ6TJA   not retained
+6      w-04948d4e473f6463     01M34Q2DT64D59P80TFXJWWHMT   not retained
+7      w-c0661a228bb085ca     01M34Q38E4TF1FB50WCA45HCKV   not retained
+8      w-e6663df711e0dba2     01M34Q3ZS0C08ANZAC1ETYCPZD   not retained
+9      w-e58ffdafb2ca5dc3     01M34Q40368CEN61QK8TD0FDP6   not retained
+10     w-42b734d60a440d04     01M34Q4XZ1ESRGH6ZSGK0MZ3JC   not retained
+11     w-fc729634e472648d     01M34Q4YBJ7R1KZ2TDGTSFB967   not retained
+12     w-515f6926e6c68882     01M34Q605XRPX2JT7TMVC12NK0   not retained
+13     w-6d47340fd69a8d1d     01M34Q60PHY62HTANX7S7FTXW9   not retained
+14     w-3364991e721825ad     01M34Q6V0DPBQX1039R533N08H   not retained
+15     w-6b72eca1b4321449     01M34Q6VGZR4AMZ180J4715ER4   not retained
+16     w-5abab5c878be0beb     01M34QAKT6S68C40R036DGZTP8   retained, childRun matches
+17     w-16c6540b11870c48     01M34QDMZZ98SH6845DD03DZT1   retained, childRun matches
+18     w-0b0f945ebc054165     01M34QHCPNRGYMD363A9C8VV9P   retained, childRun matches
+19     w-4cc635936a3717bf     01M34QQDVHZPS796RMTBF02KF6   retained, childRun matches
+20     w-31b4feef9ab5856a     01M34QJZTBMGM4HN3WKWG3BPVA   retained, childRun matches
+21     w-e8ad0c5394fc96f7     01M34QMAFXMNKFEZKZ39RBX7YS   retained, childRun matches
+22     w-e7874d4321a87c99     01M34QNBQA2M8M9MS29RYKRQ6Q   retained, childRun matches
+23     w-6cbd7efbfd9bc57e     01M34QRM7ZGAT6AK8KJ5NXB2MY   retained, childRun matches
+24     w-c92b6216b44235f1     01M34QSXK11QFX36H97BAW4N91   retained, childRun matches
+25     w-76e54791b93ea9c0     01M34QV8HYQAVM7H2MAYERAZ5C   retained, childRun matches
+26     w-493068237cbfa9d5     01M34QVF3MN2R91ADSZNGZQ1GZ   retained, childRun matches
+27     w-77353d5246b74541     01M34QWMNHJWYKY8PRG7C4KZHG   retained, childRun matches
+28     w-9bad028caf4239f6     01M34QYKCA0PP2Z4Y437BSBPPE   retained, childRun matches
+29     w-c939a878fe1b2f11     01M34R08FJEMQ4H1QBMPZY2VHZ   retained, childRun matches
+30     w-c09b198a1c93eb30     01M34R1D4E58S2405C3YHXX1AC   retained, childRun matches
+
+retained receipts: 15 of 30; all retained receipts name their own childRun: True
