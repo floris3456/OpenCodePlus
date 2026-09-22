@@ -13,6 +13,7 @@ import {
   DEFAULT_FILE_MODE,
 } from "./archive.js"
 import { parseSha256Sums, type InnerReleaseMetadata } from "./manifest.js"
+import { compareRebuild, CANONICALIZER, type Rejection } from "./canonicalize.js"
 
 export class VerificationError extends Error {
   constructor(message: string) {
@@ -29,10 +30,89 @@ export interface VerificationReport {
   readonly sumsVerified: boolean
 }
 
+/**
+ * Result of comparing two independently rebuilt binaries. This is deliberately
+ * NOT an "identical binaries" claim: it reports equivalence under a named,
+ * version-pinned structural canonicalizer, which is strictly weaker than raw
+ * binary reproducibility. Both raw identities are retained alongside the
+ * canonical one, and the canonical digest must never be published, listed in a
+ * download manifest, or used for install or runtime integrity.
+ */
+export interface RebuildEquivalenceReport {
+  readonly kind: "rebuild-equivalence"
+  readonly weakerThanRawReproducibility: true
+  readonly canonicalizerId: string
+  readonly canonicalizerBunVersion: string
+  readonly equivalent: boolean
+  readonly rawIdentical: boolean
+  readonly rejection: Rejection | null
+  readonly leftRawSha256: string
+  readonly rightRawSha256: string
+  readonly canonicalSha256: string | null
+  readonly recordsParsed: number | null
+  readonly recordsRewritten: number | null
+  readonly rawDifferingBytes: number | null
+  readonly bundlerKeys: { readonly left: string; readonly right: string } | null
+}
+
+/**
+ * Rebuild-equivalence gate for two independently rebuilt outputs.
+ *
+ * Callers must keep this away from publication, download, install and runtime
+ * integrity: those paths verify exact raw equality against the recorded
+ * qualified artifact, which `verifyReleaseDirectory` below still does.
+ */
+export function verifyRebuildEquivalence(options: {
+  readonly bunVersion: string
+  readonly left: Uint8Array
+  readonly right: Uint8Array
+}): RebuildEquivalenceReport {
+  const comparison = compareRebuild(options)
+  const identities = {
+    kind: "rebuild-equivalence",
+    weakerThanRawReproducibility: true,
+    canonicalizerId: CANONICALIZER.id,
+    canonicalizerBunVersion: CANONICALIZER.bunVersion,
+    leftRawSha256: computeBufferSha256(options.left),
+    rightRawSha256: computeBufferSha256(options.right),
+  } as const
+
+  if (!comparison.equivalent) {
+    return {
+      ...identities,
+      equivalent: false,
+      rawIdentical: identities.leftRawSha256 === identities.rightRawSha256,
+      rejection: comparison.rejection,
+      canonicalSha256: null,
+      recordsParsed: null,
+      recordsRewritten: null,
+      rawDifferingBytes: null,
+      bundlerKeys: null,
+    }
+  }
+
+  return {
+    ...identities,
+    equivalent: true,
+    rawIdentical: comparison.rawIdentical,
+    rejection: null,
+    canonicalSha256: computeBufferSha256(comparison.canonical),
+    recordsParsed: comparison.recordsParsed,
+    recordsRewritten: comparison.recordsRewritten,
+    rawDifferingBytes: comparison.rawDifferingBytes,
+    bundlerKeys: comparison.bundlerKeys,
+  }
+}
+
 function computeBufferSha256(buffer: Uint8Array | Buffer): string {
   return new Bun.CryptoHasher("sha256").update(buffer).digest("hex")
 }
 
+/**
+ * Publication, download and install integrity path. Every digest here is exact
+ * raw equality against the recorded artifact; the rebuild-equivalence
+ * canonicalizer above is deliberately not reachable from this function.
+ */
 export async function verifyReleaseDirectory(assetDir: string): Promise<VerificationReport> {
   const manifestPath = join(assetDir, "release.json")
   const manifestFile = Bun.file(manifestPath)
