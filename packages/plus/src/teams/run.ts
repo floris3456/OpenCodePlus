@@ -434,6 +434,30 @@ export async function loadRun(root: string, id: string): Promise<RunRecord | und
   })
 }
 
+// Load, modify and write one run record inside a single `state` lock. A plain
+// load → mutate → saveRun sequence releases the lock between its read and its
+// write, so a field another writer owns can be lost: the removal of a worktree
+// is the live case — integrate removes the directory and marks `worktree`
+// "removed" while a settle pass still holds the "present" it read. The callback
+// here sees the record as it is at write time and returns the record to save,
+// or undefined to leave the record unchanged. Returns the fresh record, or
+// undefined when the run has no record.
+export async function updateRun(
+  root: string,
+  id: string,
+  update: (record: RunRecord) => RunRecord | undefined | Promise<RunRecord | undefined>,
+): Promise<RunRecord | undefined> {
+  return lock(root, "state", id, async () => {
+    const stored = await readJson<RunRecord>(runPath(root, id))
+    if (stored === undefined) return undefined
+    const record: RunRecord = stored.worktree === undefined ? { ...stored, worktree: "present" } : stored
+    const next = await update(record)
+    if (next === undefined || next === record) return record
+    await atomicJson(runPath(root, id), next)
+    return next
+  })
+}
+
 // Actor gate for the tools layer: the run bound to a session, if any. A
 // linear scan over small run.json files is cheap at team scale; unreadable
 // entries and a missing runs directory simply miss instead of throwing.
