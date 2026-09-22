@@ -5,7 +5,6 @@ import { join } from "node:path"
 import {
   upstreamInventory,
   MissingRefError,
-  InventoryError,
   getPackageForFile,
   groupFilesByPackage,
 } from "../../script/upstream-inventory.js"
