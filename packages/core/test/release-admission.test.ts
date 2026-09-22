@@ -4,7 +4,10 @@ import { SessionAdmission, AdmissionFencedError } from "@opencode/core/session/a
 import { SessionPrompt } from "@opencode/core/session/prompt"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
 import { Database } from "@opencode/core/database/database"
+import { Instance } from "@opencode/core/instance/service"
 import { ReleaseRequestStore } from "@opencode/core/release/index"
+import { FSUtil } from "@opencode/util/fs-util"
+import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Session } from "@opencode/schema/session"
@@ -22,6 +25,17 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(Layer.empty)
 
 const controller = { token: "permit_controller_1", reason: "release promotion permit_controller_1" }
+
+// `SessionPrompt.prepare` reads the fence before it touches a file or selects any
+// Session capability, so a fenced prompt reaches neither of these. The filesystem
+// is the real one; the selector dies instead of standing in for a Location, so a
+// prompt that got past the fence fails this test rather than quietly passing it.
+const promptServices = Layer.mergeAll(
+  LayerNode.compile(FSUtil.node),
+  Layer.succeed(Instance.Service, {
+    provide: () => () => Effect.die("SessionPrompt.prepare selected Session capabilities while fenced"),
+  }),
+)
 
 const session = (id: string) =>
   Session.Info.make({
@@ -95,7 +109,7 @@ describe("SessionAdmission", () => {
         session: session("ses_test_fenced_1"),
         messageID: SessionMessage.ID.make("msg_test_fenced_1"),
         input: { text: "Hello while fenced" },
-      }).pipe(Effect.exit)
+      }).pipe(Effect.provide(promptServices), Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
