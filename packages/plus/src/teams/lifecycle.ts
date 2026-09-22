@@ -325,17 +325,36 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
   const fresh = items.filter((item) => !delivered.has(item.id))
   const text = renderInbox(fresh)
   if (text === "") return run
-  const started = startAttempt(run, { trigger: "followup", prompt: text })
-  const admitted = attemptTransition(started, "admitted", "admit")
-  const working = recordInboxDelivery(
-    transition(admitted, "working", "prompt"),
-    fresh.map((item) => item.id),
-  )
-  await saveRun(root, working)
+  const working = await updateRun(root, run.id, (current) => {
+    if (isTerminal(current.state)) return current
+    const started = startAttempt(current, { trigger: "followup", prompt: text })
+    const admitted = attemptTransition(started, "admitted", "admit")
+    return recordInboxDelivery(
+      transition(admitted, "working", "prompt"),
+      fresh.map((item) => item.id),
+    )
+  })
+  if (working === undefined || isTerminal(working.state)) return working ?? run
   await Effect.runPromise(
     ctx.session
       .prompt({ sessionID: Session.ID.make(sessionID), text })
-      .pipe(Effect.onError(() => Effect.ignore(io(() => saveRun(root, run))))),
+      .pipe(
+        Effect.onError(() =>
+          Effect.ignore(
+            io(() =>
+              updateRun(root, run.id, (current) => {
+                if (isTerminal(current.state)) return current
+                return {
+                  ...current,
+                  state: run.state,
+                  attempts: run.attempts,
+                  history: run.history,
+                }
+              }),
+            ),
+          ),
+        ),
+      ),
   )
   return working
 }

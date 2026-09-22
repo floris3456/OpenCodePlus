@@ -705,6 +705,9 @@ test("deliverInbox cannot resurrect a worktree another writer removed before sav
 
     const stored = await loadRun(root, child.id)
     expect(stored?.worktree).toBe("removed")
+    expect(stored?.state).toBe("working")
+    expect(stored?.attempts).toHaveLength(2)
+    expect(stored?.attempts[1]?.state).toBe("admitted")
   })
 })
 
@@ -738,6 +741,8 @@ test("deliverInbox prompt error path cannot resurrect a worktree removed while i
 
     const stored = await loadRun(root, child.id)
     expect(stored?.worktree).toBe("removed")
+    expect(stored?.state).toBe("idle")
+    expect(stored?.attempts).toHaveLength(1)
   })
 })
 

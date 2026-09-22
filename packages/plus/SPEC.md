@@ -1307,6 +1307,19 @@ the removal cannot put `present` or `dirty` back.
   the current record, and writes what it returns under the same `state` lock
   `loadRun`/`saveRun` use; returning the record unchanged skips the write. It
   never creates a record, so the `run.created` audit entry stays `saveRun`'s.
+- `deliverInbox` in `teams/lifecycle.ts` is included: both its working-delivery write
+  (transitioning the run to `working` with the newly admitted attempt) and its prompt error
+  rollback path apply their updates to the current on-disk record through `run.updateRun`.
+  A child whose worktree is removed while inbox delivery is in flight or whose prompt fails
+  cannot have a stale `present` written back over `removed`.
+- Adjacent windows outside `updateRun` cannot resurrect a removed worktree:
+  - GC's `saveSafe` writes (dirty marking, reap) still build on the pass-opening snapshot,
+    but they only ever write `dirty` or `removed` — they can never write `present`, so they
+    cannot resurrect a removal.
+  - `loadRun` → `saveRun` handlers in `api.ts`, `api-lifecycle.ts`, and `api-followup.ts`
+    are not on the path of a landed child's removal (they manage initial run delegation,
+    caller finish/checkpointing, stop/supersede requests, or parent-directed followups to
+    active children; none operate concurrently on a landed child undergoing removal).
 
 ### Project mode resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
 
