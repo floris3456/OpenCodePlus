@@ -1242,6 +1242,34 @@ It returns `{ dead, gc }` — the reconciled dead run ids and the pass's whole
   and is never removed. The temporary merge area (`<owned>/merge`) is also excluded: a live merge worktree
   is owned by the merge in flight, not by a run record.
 
+### Provisioning and the orphan sweep are mutually exclusive (`teams/worktree.ts`, `teams/lifecycle.ts`, `teams/api.ts`)
+
+A `delegate` provision has two steps — `worktree.create` and the child run record
+that claims the new directory — while the periodic sweep force-removes worktrees
+no run record claims. The two now share the repository lock
+(`lock(root, "repo", repoKey, …)`):
+
+- `delegate` runs `worktree.provision(root, opts, register)`, which holds the
+  repository lock across `create` **and** the `register` callback that writes the
+  starting `run.json`. No sweep decision can observe the new worktree between
+  those steps, and no other `create` or `remove` for that repository interleaves.
+- `gc`'s orphan step takes the same repository lock and **re-lists the run
+  records inside it** instead of trusting the snapshot it read at the start of
+  the pass. A pass whose earlier steps took seconds — merge scans, dirty checks,
+  reaping — can no longer judge a worktree created meanwhile unclaimed. The
+  removal itself runs under that lock via `worktree.removeLocked`; `worktree.remove`
+  keeps its own lock for every other caller.
+- `worktree.orphans(repoRoot, owned, knownDirs, { minAgeMs })` treats any
+  candidate **younger than `policy.timeouts.startMs`** (default 60000 ms) as
+  owned. A directory that may still be mid-provision — created outside the lock
+  path, or whose record write has not started — is protected for that window
+  instead of force-removed; a genuinely abandoned worktree is swept by a later
+  pass once it is older than the bound.
+
+`worktree.create` and `worktree.remove` keep their own repository-lock holds, so
+callers outside `delegate` retain the same mutual exclusion without registering a
+run record.
+
 ### Project mode resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
 
 - `project.read(directory)` resolves **upward**: it walks parent directories until it finds a

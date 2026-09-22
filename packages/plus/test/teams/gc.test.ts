@@ -6,14 +6,15 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
+import { createState } from "../../src/index.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
-import type { TeamCaller } from "../../src/teams/api.js"
+import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { gc, sweep } from "../../src/teams/lifecycle.js"
-import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
-import { Policy } from "../../src/teams/schema.js"
-import { atomicJson } from "../../src/teams/store.js"
-import { mergeArea, ownedRoot } from "../../src/teams/worktree.js"
+import { loadRun, saveRun, transition, type RunRecord } from "../../src/teams/run.js"
+import { Brief, Policy } from "../../src/teams/schema.js"
+import { atomicJson, lock } from "../../src/teams/store.js"
+import { create, mergeArea, ownedRoot, slug } from "../../src/teams/worktree.js"
 
 const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
 
@@ -112,11 +113,73 @@ function dummyContext() {
   return context({ session: domain })
 }
 
+// The host seams `delegate` drives: session creation and prompting are
+// recorded, nothing is spawned.
+function recordingSessions() {
+  const created: string[] = []
+  const prompted: string[] = []
+  const domain = {
+    create: () => {
+      const id = Session.ID.make(`ses_gc_child_${created.length + 1}`)
+      created.push(String(id))
+      return Effect.succeed({ id })
+    },
+    prompt: (input: { sessionID: unknown }) => {
+      prompted.push(String(input.sessionID))
+      return Effect.succeed(undefined as never)
+    },
+    switchModel: () => Effect.succeed(undefined as never),
+    wait: () => Effect.succeed(undefined),
+  } as unknown as SessionDomain
+  return { domain, created, prompted }
+}
+
+function delegateBrief(requestID: string): Brief {
+  return Schema.decodeUnknownSync(Brief)({
+    requestID,
+    role: "muse-implementer",
+    objective: "Add the provisioning note that the sweep must never race a new worktree.",
+    deliverable: { kind: "commit" },
+    scope: { paths: ["packages/plus/src/*"] },
+    checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/unit.test.ts"] }],
+  })
+}
+
+// The periodic tick's body (`sweep`), run back to back with no idle gap, so
+// provisioning happens under continuous sweep pressure.
+function startSweeps(root: string): { stop: () => Promise<void> } {
+  const state = { done: false }
+  const running = (async () => {
+    while (!state.done) {
+      await sweep(dummyContext(), root).catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+  })()
+  return {
+    stop: async () => {
+      state.done = true
+      await running
+    },
+  }
+}
+
+function provisioned(result: { ok: boolean; value?: unknown; error?: unknown }): { run: string; directory: string } {
+  if (!result.ok) throw new Error(`delegate failed: ${JSON.stringify(result.error)}`)
+  return result.value as { run: string; directory: string }
+}
+
 async function dirExists(p: string): Promise<boolean> {
   return fs
     .stat(p)
     .then(() => true)
     .catch(() => false)
+}
+
+// Age a worktree past policy.timeouts.startMs so the orphan sweep may reap it:
+// a younger directory may be mid-provision and is left alone.
+async function agePastStartMs(dir: string): Promise<void> {
+  const abandoned = new Date(Date.now() - defaultPolicy.timeouts.startMs - 60_000)
+  await fs.utimes(dir, abandoned, abandoned)
 }
 
 test("landed child worktree is removed on landing; branch ref and records remain", async () => {
@@ -364,6 +427,100 @@ test("stale superseded run with dirty worktree is reaped with --force", async ()
   })
 })
 
+// The soak's class-A failure: `team_delegate` returned the worktree directory
+// and the host's `FileSystem.realPath` then failed ENOENT because the periodic
+// sweep had force-removed it as an orphan. The sweep judged orphans from the
+// run records it read before its slow steps, so a worktree created after that
+// read was unclaimed even while `delegate` was still registering its run. This
+// test holds the new run's state lock, so its `saveRun` cannot land while gc
+// runs: gc reads its records without the run, exactly the interleaving the
+// soak hit. `delegateHandler`'s order is `worktree.create` then `saveRun`.
+test("gc never removes a worktree whose run record is being written", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    const childID = "w-1234567890abcdef"
+    let releaseLock: (() => void) | undefined
+    let holdingLock: Promise<void> | undefined
+    let writing: Promise<void> | undefined
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_parent_provisioning",
+      })
+      await saveRun(root, parent)
+
+      // What delegateHandler does first: create the worktree...
+      const created = await create(root, {
+        repoRoot: repo.dir,
+        repoKey: parent.repoKey,
+        role: "implementer",
+        name: slug("prov", childID),
+        base: repo.head,
+        workspaceRoot: root,
+      })
+
+      // ...and only then register the run. Holding the record's state lock is
+      // the deterministic form of that window: the record cannot reach disk.
+      let holding = false
+      const held = new Promise<void>((resolve) => {
+        releaseLock = resolve
+      })
+      holdingLock = lock(root, "state", childID, async () => {
+        holding = true
+        await held
+      })
+      for (let i = 0; i < 1000 && !holding; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(holding).toBe(true)
+
+      writing = saveRun(
+        root,
+        baseRun({
+          id: childID,
+          role: "muse-implementer",
+          directory: created.dir,
+          branch: created.branch,
+          base: repo.head,
+          head: created.head,
+          state: "starting",
+          attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+          parent: parent.id,
+          sessionID: null,
+          projectDirectory: repo.dir,
+        }),
+      )
+
+      const res = await gc(root, defaultPolicy)
+
+      // The host resolves exactly this directory when it creates the child
+      // session. Before the fix this threw the soak's verbatim failure,
+      // `NotFound: FileSystem.realPath (<worktree dir>)`, because gc had
+      // force-removed the fresh worktree as an orphan.
+      expect(await fs.realpath(created.dir)).toBe(created.dir)
+      expect(await dirExists(created.dir)).toBe(true)
+      expect(res.orphansRemoved).not.toContain(created.dir)
+
+      releaseLock?.()
+      await holdingLock
+      await writing
+      const stored = await loadRun(root, childID)
+      expect(stored?.directory).toBe(created.dir)
+      expect(stored?.worktree).toBe("present")
+    } finally {
+      releaseLock?.()
+      await holdingLock?.catch(() => undefined)
+      await writing?.catch(() => undefined)
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
 test("orphan worktree unclaimed by any run is removed by GC", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
@@ -385,6 +542,7 @@ test("orphan worktree unclaimed by any run is removed by GC", async () => {
       const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "orphan-wt")
       const orphanBranch = "team/orphan/test-1"
       await git(repo.dir, ["worktree", "add", "-b", orphanBranch, orphanDir, repo.head])
+      await agePastStartMs(orphanDir)
       expect(await dirExists(orphanDir)).toBe(true)
 
       // A developer's own checkout of the same repository, outside that area.
@@ -403,6 +561,136 @@ test("orphan worktree unclaimed by any run is removed by GC", async () => {
     }
   })
 })
+
+// A worktree mid-provision has no run record yet, so the sweep cannot tell it
+// from an abandoned one by records alone. Age is the tie-breaker: younger than
+// policy.timeouts.startMs means it may still be provisioning.
+test("an orphan younger than timeouts.startMs is kept, and swept once older", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+      })
+      await saveRun(root, parent)
+
+      const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "young-orphan")
+      await git(repo.dir, ["worktree", "add", "-b", "team/orphan/young", orphanDir, repo.head])
+
+      // Fresh: it could be a create whose record is still being written.
+      const fresh = await gc(root, defaultPolicy)
+      expect(fresh.orphansRemoved).toEqual([])
+      expect(await dirExists(orphanDir)).toBe(true)
+
+      // Past the start bound: unmistakably abandoned, so the next pass reaps it.
+      await agePastStartMs(orphanDir)
+      const aged = await gc(root, defaultPolicy)
+      expect(aged.orphansRemoved).toContain(orphanDir)
+      expect(await dirExists(orphanDir)).toBe(false)
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
+
+// The soak's simultaneous pair (cycles 15/16): both delegations raced the same
+// sweep and both returned a directory the host could not resolve.
+test("two concurrent delegates provision and start under a running sweep", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_parent_pair",
+      })
+      await saveRun(root, parent)
+
+      const sessions = recordingSessions()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const sweeps = startSweeps(root)
+      try {
+        const results = await Promise.all([
+          api.delegate(delegateBrief("pair-a"), callerFor(parent)),
+          api.delegate(delegateBrief("pair-b"), callerFor(parent)),
+        ])
+        for (const result of results) {
+          const started = provisioned(result)
+          // The host resolves this directory when it opens the child session;
+          // the soak failed here with `NotFound: FileSystem.realPath`.
+          expect(await fs.realpath(started.directory)).toBe(started.directory)
+          const stored = await loadRun(root, started.run)
+          expect(stored?.state).toBe("starting")
+          expect(stored?.worktree).toBe("present")
+          expect(stored?.directory).toBe(started.directory)
+        }
+        expect(sessions.created).toHaveLength(2)
+        expect(sessions.prompted).toHaveLength(2)
+      } finally {
+        await sweeps.stop()
+      }
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 60000)
+
+// Twenty provisions back to back, each one immediately under sweep pressure.
+// The in-flight slot is freed after each so this stays a test of provisioning,
+// not of the bounds policy.
+test("twenty back-to-back delegates provision and start under a running sweep", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_parent_twenty",
+      })
+      await saveRun(root, parent)
+
+      const sessions = recordingSessions()
+      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const sweeps = startSweeps(root)
+      try {
+        for (let i = 0; i < 20; i++) {
+          const started = provisioned(await api.delegate(delegateBrief(`run-${i}`), callerFor(parent)))
+          expect(await fs.realpath(started.directory)).toBe(started.directory)
+          const stored = await loadRun(root, started.run)
+          expect(stored?.state).toBe("starting")
+          expect(stored?.worktree).toBe("present")
+          if (stored !== undefined)
+            await saveRun(root, transition(stored, "superseded", "supersede", { reason: "provisioning test" }))
+        }
+        expect(sessions.created).toHaveLength(20)
+        expect(sessions.prompted).toHaveLength(20)
+      } finally {
+        await sweeps.stop()
+      }
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 120000)
 
 test("merge worktree in merge area survives GC while real orphan is removed", async () => {
   await withIsolatedTeamsRoot(async (root) => {
@@ -430,6 +718,7 @@ test("merge worktree in merge area survives GC while real orphan is removed", as
       const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "orphan-wt")
       const orphanBranch = "team/orphan/test-gc"
       await git(repo.dir, ["worktree", "add", "-b", orphanBranch, orphanDir, repo.head])
+      await agePastStartMs(orphanDir)
       expect(await dirExists(orphanDir)).toBe(true)
 
       const res = await gc(root, defaultPolicy)

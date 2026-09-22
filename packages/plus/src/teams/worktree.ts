@@ -70,27 +70,51 @@ export function mergeArea(owned: string): string {
 }
 
 export async function create(root: string, opts: CreateOptions): Promise<Created> {
+  return lock(root, "repo", opts.repoKey, () => createLocked(opts))
+}
+
+async function createLocked(opts: CreateOptions): Promise<Created> {
   const ts = stamp()
   // Resolve once, absolutely: the run record, the host's Location and git must
   // all name one directory even when the caller's workspace root is relative.
   const dir = resolve(ownedRoot(opts.workspaceRoot, opts.repoKey), opts.role, `${opts.name}-${ts}`)
   const branch = `team/${opts.role}/${opts.name}-${ts}`
+  const verify = await gitRaw(opts.repoRoot, ["rev-parse", "--verify", `${opts.base}^{commit}`])
+  if (verify.code !== 0)
+    throw toolError("E_BASE", `Unknown base "${opts.base}": ${verify.err || verify.out}`, "ocp-main")
+  if (await exists(dir)) throw toolError("E_WT_EXISTS", `Worktree directory already exists: ${dir}`)
+  // A brand-new data root has no worktrees/ yet. Creating the parent chain
+  // before git runs means the first delegate's directory exists as named, so
+  // nothing that resolves it (the host's FileSystem.realPath, the writes
+  // below) can miss it.
+  await mkdir(dirname(dir), { recursive: true })
+  await git(opts.repoRoot, ["worktree", "add", "-b", branch, dir, verify.out])
+  const head = await git(dir, ["rev-parse", "HEAD"])
+  // Hand back the canonical directory: the host realpaths the location it is
+  // given, and a data root reached through a symlink would otherwise yield two
+  // names for one worktree.
+  return { dir: await real(dir), branch, head }
+}
+
+export interface Provisioned<T> {
+  created: Created
+  value: T
+}
+
+// `create` plus the caller's run registration in ONE repository-lock hold.
+// The orphan sweep decides what it may remove under the same lock, so a
+// worktree provisioning is still registering can never be observed without
+// its run record and force-removed, and the host's `FileSystem.realPath` of
+// the returned directory cannot fail. A caller that only calls `create`
+// leaves that window open; `delegate` uses this.
+export async function provision<T>(
+  root: string,
+  opts: CreateOptions,
+  register: (created: Created) => Promise<T>,
+): Promise<Provisioned<T>> {
   return lock(root, "repo", opts.repoKey, async () => {
-    const verify = await gitRaw(opts.repoRoot, ["rev-parse", "--verify", `${opts.base}^{commit}`])
-    if (verify.code !== 0)
-      throw toolError("E_BASE", `Unknown base "${opts.base}": ${verify.err || verify.out}`, "ocp-main")
-    if (await exists(dir)) throw toolError("E_WT_EXISTS", `Worktree directory already exists: ${dir}`)
-    // A brand-new data root has no worktrees/ yet. Creating the parent chain
-    // before git runs means the first delegate's directory exists as named, so
-    // nothing that resolves it (the host's FileSystem.realPath, the writes
-    // below) can miss it.
-    await mkdir(dirname(dir), { recursive: true })
-    await git(opts.repoRoot, ["worktree", "add", "-b", branch, dir, verify.out])
-    const head = await git(dir, ["rev-parse", "HEAD"])
-    // Hand back the canonical directory: the host realpaths the location it is
-    // given, and a data root reached through a symlink would otherwise yield two
-    // names for one worktree.
-    return { dir: await real(dir), branch, head }
+    const created = await createLocked(opts)
+    return { created, value: await register(created) }
   })
 }
 
@@ -104,11 +128,16 @@ export interface RemoveOptions {
 // there is nothing to delete first and nothing to special-case.
 export async function remove(root: string, dir: string, opts: RemoveOptions): Promise<void> {
   if (!(await exists(dir))) return
-  await lock(root, "repo", opts.repoKey, async () => {
-    if (!(await exists(dir))) return
-    const extra = opts.force === true ? ["--force"] : []
-    await git(opts.repoRoot, ["worktree", "remove", ...extra, dir])
-  })
+  await lock(root, "repo", opts.repoKey, () => removeLocked(dir, opts))
+}
+
+// The body of `remove` without its repository lock. GC's orphan sweep already
+// holds that lock while it decides and removes, so taking it again there would
+// deadlock; every other caller goes through `remove`.
+export async function removeLocked(dir: string, opts: RemoveOptions): Promise<void> {
+  if (!(await exists(dir))) return
+  const extra = opts.force === true ? ["--force"] : []
+  await git(opts.repoRoot, ["worktree", "remove", ...extra, dir])
 }
 
 export interface WorktreeEntry {
@@ -162,12 +191,24 @@ export async function list(repoRoot: string): Promise<WorktreeEntry[]> {
   return entries
 }
 
+export interface OrphanOptions {
+  /** Worktrees younger than this are treated as owned. A directory mid-
+   * provision has no run record yet — `create` finished but the caller has not
+   * registered the run — so the sweep must not judge it an orphan. */
+  minAgeMs?: number
+}
+
 // Listed worktree paths under `owned` (never the main checkout) that are not
 // in `knownDirs`, compared by `realpath`. The boundary is taken as an argument
 // rather than left to the caller because GC force-removes what this returns:
 // a repository's other worktrees — a developer's own checkouts of it — are
 // not the team's to delete.
-export async function orphans(repoRoot: string, owned: string, knownDirs: string[]): Promise<string[]> {
+export async function orphans(
+  repoRoot: string,
+  owned: string,
+  knownDirs: string[],
+  opts?: OrphanOptions,
+): Promise<string[]> {
   const entries = await list(repoRoot)
   const mainReal = await real(repoRoot)
   const ownedReal = await real(owned)
@@ -181,9 +222,20 @@ export async function orphans(repoRoot: string, owned: string, knownDirs: string
     if (!under(ownedReal, key)) continue
     // A live merge worktree is owned by the merge in flight, not by a run record.
     if (key === mergeReal || under(mergeReal, key)) continue
-    if (!known.has(key)) result.push(e.path)
+    if (known.has(key)) continue
+    if (opts?.minAgeMs !== undefined && (await youngerThan(e.path, opts.minAgeMs))) continue
+    result.push(e.path)
   }
   return result
+}
+
+function youngerThan(dir: string, minAgeMs: number): Promise<boolean> {
+  return Effect.runPromise(
+    io(() => stat(dir)).pipe(
+      Effect.map((info) => Date.now() - info.mtimeMs < minAgeMs),
+      Effect.catchIf(() => true, () => Effect.succeed(false)),
+    ),
+  )
 }
 
 function under(root: string, candidate: string): boolean {
