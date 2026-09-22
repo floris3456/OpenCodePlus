@@ -142,7 +142,7 @@ export const layer = Layer.effect(
         .where(eq(KVTable.key, requestKey(requestID)))
         .get()
         .pipe(Effect.orDie)
-      if (row === undefined) return undefined
+      if (!row) return undefined
       return Option.getOrUndefined(decodeStored(row.value))
     })
 
@@ -163,20 +163,39 @@ export const layer = Layer.effect(
         .where(eq(KVTable.key, permitKey(permitID)))
         .get()
         .pipe(Effect.orDie)
-      if (row === undefined || typeof row.value !== "string") return undefined
+      if (!row || typeof row.value !== "string") return undefined
       return row.value
     })
 
-    /** Spends a permit exactly once. Reports false when another request already spent it. */
-    const claimPermit = Effect.fn("ReleaseRequestStore.claimPermit")(function* (permitID: string, requestID: string) {
-      const inserted = yield* db
-        .insert(KVTable)
-        .values({ key: permitKey(permitID), value: requestID })
-        .onConflictDoNothing()
-        .returning({ key: KVTable.key })
-        .get()
+    /**
+     * Spends the permit and records the transition it authorized in one commit, so a
+     * process that dies mid-write leaves both facts or neither. Reports false when
+     * another request already spent this permit.
+     */
+    const commitAuthorization = Effect.fn("ReleaseRequestStore.commitAuthorization")(function* (
+      permitID: string,
+      running: StoredRequest,
+    ) {
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const claimed = yield* tx
+              .insert(KVTable)
+              .values({ key: permitKey(permitID), value: running.status.requestID })
+              .onConflictDoNothing()
+              .returning({ key: KVTable.key })
+              .get()
+            if (!claimed) return false
+            const value = encodeStored(running)
+            yield* tx
+              .insert(KVTable)
+              .values({ key: requestKey(running.status.requestID), value })
+              .onConflictDoUpdate({ target: KVTable.key, set: { value, time_updated: Date.now() } })
+              .run()
+            return true
+          }),
+        )
         .pipe(Effect.orDie)
-      return inserted !== undefined
     })
 
     const anchor = Effect.fn("ReleaseRequestStore.anchor")(function* () {
@@ -312,12 +331,6 @@ export const layer = Layer.effect(
             `Session admission could not be fenced for release request ${input.requestID}: ${fenced.message}`,
           )
 
-        // A permit another process spent between the read above and here is a replay.
-        // The fence stays engaged: this process refuses, it does not reopen admission
-        // on an outcome it cannot explain.
-        const claimed = yield* claimPermit(permit.permitID, input.requestID)
-        if (!claimed) return refuse("replayed_permit", `Permit ${permit.permitID} was already consumed`)
-
         const running: StoredRequest = {
           request: stored.request,
           fingerprint: stored.fingerprint,
@@ -330,7 +343,11 @@ export const layer = Layer.effect(
           },
           token: permit.permitID,
         }
-        yield* saveRequest(running)
+        // A permit another process spent between the read above and here is a replay.
+        // The fence stays engaged: this process refuses, it does not reopen admission
+        // on an outcome it cannot explain.
+        const committed = yield* commitAuthorization(permit.permitID, running)
+        if (!committed) return refuse("replayed_permit", `Permit ${permit.permitID} was already consumed`)
         return recorded(running.status, false)
       }),
 
