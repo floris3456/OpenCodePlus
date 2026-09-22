@@ -1290,19 +1290,25 @@ run record.
 `run.json`'s `worktree` field follows the directory it names: `present` while it
 exists, `dirty` when GC found uncommitted changes in a stopped run's copy, and
 `removed` once the directory is gone. The pass that removes the directory owns
-the field, and `removed` is terminal for it: a later save of a copy read before
-the removal cannot put `present` or `dirty` back.
+the field, and `removed` is terminal for it.
 
+- `saveRun` enforces that at the record boundary: when the record already on
+  disk has `worktree === "removed"`, the write keeps `removed` — whatever the
+  caller supplied, `"present"`, `"dirty"` or an omitted field — and applies
+  every other field of the caller's record unchanged. A stored `removed`
+  therefore survives any later full-record write, by any writer. This is a
+  field-level guarantee for `worktree` only, not a general lost-update fix:
+  other fields written from a stale copy can still be overwritten.
 - `integrate` marks a landed child `removed` only after `worktree.remove`
   succeeds, and applies the mark through `run.updateRun`, so only that field
   changes on the record as it is at write time.
 - The passes that settle a run without a tool call — `reconcile`'s dead-run
   pass, `session.execution.started`, and `onSessionIdle` (including the stop
   transition when `stopRequested` is set) — also load, modify and write through
-  `run.updateRun`, in one `state` lock hold. Their writes are therefore based on
-  the record as it is after a concurrent removal instead of on the copy they
-  read first, so a settle that began before a landing can no longer resurrect
-  the worktree that landing removed. Either interleaving ends with `removed`.
+  `run.updateRun`, in one `state` lock hold. Their writes are based on the
+  record as it is after a concurrent removal, so a settle that began before a
+  landing cannot resurrect the worktree that landing removed. Either
+  interleaving ends with `removed`.
 - `updateRun(root, id, update)` reads `runs/<id>/run.json`, calls `update` with
   the current record, and writes what it returns under the same `state` lock
   `loadRun`/`saveRun` use; returning the record unchanged skips the write. It
