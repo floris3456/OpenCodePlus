@@ -236,3 +236,57 @@ test(
   },
   60_000,
 )
+
+test(
+  "search MCP server speaks protocol correctly and stdout carries protocol traffic only",
+  async () => {
+    const cwd = await makeTempDir("plus-search-stdio-")
+    const command = [process.execPath, await resolveSearchBinPath()]
+    const proc = Bun.spawn(command, {
+      cwd,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, BUN_BE_BUN: "0", TAVILY_API_KEY: "", EXA_API_KEY: "" },
+    })
+
+    const initMsg =
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "test-client", version: "1.0.0" },
+        },
+      }) + "\n"
+
+    proc.stdin.write(new TextEncoder().encode(initMsg))
+    proc.stdin.flush()
+
+    const reader = proc.stdout.getReader()
+    let stdoutBuffer = ""
+    const decoder = new TextDecoder()
+    while (!stdoutBuffer.includes("\n")) {
+      const { value, done } = await reader.read()
+      if (done) break
+      stdoutBuffer += decoder.decode(value)
+    }
+
+    const lines = stdoutBuffer.trim().split("\n").filter(Boolean)
+    expect(lines.length).toBeGreaterThan(0)
+    for (const line of lines) {
+      const parsed = JSON.parse(line)
+      expect(parsed.jsonrpc).toBe("2.0")
+      if (parsed.id === 1) {
+        expect(parsed.result).toBeDefined()
+        expect(parsed.result.serverInfo.name).toBe("opencodeplus-search")
+      }
+    }
+
+    proc.stdin.end()
+    await proc.exited
+  },
+  30_000,
+)

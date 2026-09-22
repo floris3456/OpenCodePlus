@@ -516,7 +516,24 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         stdio: Flag.boolean("stdio").pipe(Flag.withDefault(false)),
       },
     }),
+    Spec.make("build-info", {
+      description: "Show build and release identity information",
+      params: {
+        json: Flag.boolean("json").pipe(Flag.withDescription("Output identity information as JSON"), Flag.withDefault(false)),
+      },
+    }),
+    Spec.make("search-mcp", {
+      description: "Run internal search MCP server over stdio",
+    }),
   ],
 })
 
-export const Commands = Root
+type BaseCommands = typeof Root
+type RelaxedCommands = Omit<BaseCommands, "commands"> & {
+  readonly commands: Omit<BaseCommands["commands"], "build-info" | "search-mcp"> & {
+    readonly "build-info"?: BaseCommands["commands"]["build-info"]
+    readonly "search-mcp"?: BaseCommands["commands"]["search-mcp"]
+  }
+}
+
+export const Commands: RelaxedCommands = Root
