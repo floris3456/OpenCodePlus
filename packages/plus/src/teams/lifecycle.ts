@@ -313,7 +313,7 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
 // The idle handoff: everything pending becomes ONE new attempt's prompt.
 // Items already delivered as an earlier attempt's prompt are consumed without
 // being prompted again, so an immediately delivered followup is not repeated.
-async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
+export async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
   const sessionID = run.sessionID
   if (run.state !== "idle" || sessionID === null || sessionID === undefined) return run
   // startAttempt's precondition, checked before take so a run that cannot
