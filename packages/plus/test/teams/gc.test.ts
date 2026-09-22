@@ -12,8 +12,8 @@ import { git } from "../../src/teams/git.js"
 import { gc, sweep } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Policy } from "../../src/teams/schema.js"
-import { atomicJson } from "../../src/teams/store.js"
-import { mergeArea, ownedRoot } from "../../src/teams/worktree.js"
+import { atomicJson, lock } from "../../src/teams/store.js"
+import { create, mergeArea, ownedRoot, slug } from "../../src/teams/worktree.js"
 
 const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
 
@@ -363,6 +363,100 @@ test("stale superseded run with dirty worktree is reaped with --force", async ()
     }
   })
 })
+
+// The soak's class-A failure: `team_delegate` returned the worktree directory
+// and the host's `FileSystem.realPath` then failed ENOENT because the periodic
+// sweep had force-removed it as an orphan. The sweep judged orphans from the
+// run records it read before its slow steps, so a worktree created after that
+// read was unclaimed even while `delegate` was still registering its run. This
+// test holds the new run's state lock, so its `saveRun` cannot land while gc
+// runs: gc reads its records without the run, exactly the interleaving the
+// soak hit. `delegateHandler`'s order is `worktree.create` then `saveRun`.
+test("gc never removes a worktree whose run record is being written", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    const childID = "w-1234567890abcdef"
+    let releaseLock: (() => void) | undefined
+    let holdingLock: Promise<void> | undefined
+    let writing: Promise<void> | undefined
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_parent_provisioning",
+      })
+      await saveRun(root, parent)
+
+      // What delegateHandler does first: create the worktree...
+      const created = await create(root, {
+        repoRoot: repo.dir,
+        repoKey: parent.repoKey,
+        role: "implementer",
+        name: slug("prov", childID),
+        base: repo.head,
+        workspaceRoot: root,
+      })
+
+      // ...and only then register the run. Holding the record's state lock is
+      // the deterministic form of that window: the record cannot reach disk.
+      let holding = false
+      const held = new Promise<void>((resolve) => {
+        releaseLock = resolve
+      })
+      holdingLock = lock(root, "state", childID, async () => {
+        holding = true
+        await held
+      })
+      for (let i = 0; i < 1000 && !holding; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(holding).toBe(true)
+
+      writing = saveRun(
+        root,
+        baseRun({
+          id: childID,
+          role: "muse-implementer",
+          directory: created.dir,
+          branch: created.branch,
+          base: repo.head,
+          head: created.head,
+          state: "starting",
+          attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+          parent: parent.id,
+          sessionID: null,
+          projectDirectory: repo.dir,
+        }),
+      )
+
+      const res = await gc(root, defaultPolicy)
+
+      // The host resolves exactly this directory when it creates the child
+      // session. Before the fix this threw the soak's verbatim failure,
+      // `NotFound: FileSystem.realPath (<worktree dir>)`, because gc had
+      // force-removed the fresh worktree as an orphan.
+      expect(await fs.realpath(created.dir)).toBe(created.dir)
+      expect(await dirExists(created.dir)).toBe(true)
+      expect(res.orphansRemoved).not.toContain(created.dir)
+
+      releaseLock?.()
+      await holdingLock
+      await writing
+      const stored = await loadRun(root, childID)
+      expect(stored?.directory).toBe(created.dir)
+      expect(stored?.worktree).toBe("present")
+    } finally {
+      releaseLock?.()
+      await holdingLock?.catch(() => undefined)
+      await writing?.catch(() => undefined)
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
 
 test("orphan worktree unclaimed by any run is removed by GC", async () => {
   await withIsolatedTeamsRoot(async (root) => {
