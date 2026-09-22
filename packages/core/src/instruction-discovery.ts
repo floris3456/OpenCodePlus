@@ -164,7 +164,7 @@ export const layer = (options?: Options) =>
       })
 
       const list = Effect.fn("InstructionDiscovery.list")(function* () {
-        if (environment?.placement?.error) return yield* Effect.die(environment.placement.error)
+        if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
         const current = state.get()
         if (!current.available) return Instructions.unavailable
         return Array.from(current.files.values())
@@ -177,7 +177,7 @@ export const layer = (options?: Options) =>
         reload: state.reload,
         list,
         load: Effect.fn("InstructionDiscovery.load")(function* () {
-          if (environment?.placement?.error) return yield* Effect.die(environment.placement.error)
+          if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
           const current = state.get()
           if (!current.available)
             return [

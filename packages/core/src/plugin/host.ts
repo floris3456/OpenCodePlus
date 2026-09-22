@@ -14,7 +14,6 @@ import { Command } from "../command.js"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
 import { Environment } from "../environment/index.js"
-import { ForbiddenError } from "@opencode/protocol/errors"
 import { Integration } from "../integration.js"
 import { KV } from "../kv.js"
 import { Location } from "../location.js"
@@ -40,6 +39,16 @@ import { Permission } from "../permission.js"
 import { PluginHooks } from "./hooks.js"
 import type { Interface } from "../plugin.js"
 import { LayerNode } from "@opencode/util/effect/layer-node"
+
+/**
+ * A plugin running in a workspace-managed location asked for host-only state.
+ * The host credential store and unplaced Sessions stay out of reach of placed
+ * execution, so the request is refused instead of being served from the host.
+ */
+export class PlacedHostAccessError extends Schema.TaggedError<PlacedHostAccessError>()(
+  "PluginHost.PlacedHostAccessError",
+  { message: Schema.String },
+) {}
 
 const mutable = <T>(value: T) => value as DeepMutable<T>
 type RpcEvent = Event.Payload & {
@@ -278,7 +287,9 @@ export const make = Effect.fn("PluginHost.make")(function* (
       connect: {
         key: (input) => {
           if (location.workspaceID !== undefined) {
-            return Effect.fail(new ForbiddenError({ message: "Placed operations cannot modify host credential store" }))
+            return Effect.fail(
+              new PlacedHostAccessError({ message: "Placed operations cannot modify host credential store" }),
+            )
           }
           return integration.connection.key({
             integrationID: Integration.ID.make(input.integrationID),
@@ -344,7 +355,9 @@ export const make = Effect.fn("PluginHost.make")(function* (
         active: (id) => integration.connection.active(Integration.ID.make(id)),
         resolve: (connection) => {
           if (location.workspaceID !== undefined) {
-            return Effect.fail(new ForbiddenError({ message: "Placed operations cannot access host credential store" }))
+            return Effect.fail(
+              new PlacedHostAccessError({ message: "Placed operations cannot access host credential store" }),
+            )
           }
           return integration.connection.resolve(
             connection.type === "credential" ? { ...connection, id: Credential.ID.make(connection.id) } : connection,
@@ -546,8 +559,12 @@ export const make = Effect.fn("PluginHost.make")(function* (
     session: {
       hook: (name, callback, options) => hooks.register("session", name, callback, options),
       create: (input) => {
-        if (location.workspaceID !== undefined && input?.location?.workspace === undefined) {
-          return Effect.fail(new ForbiddenError({ message: "Placed operations cannot create unplaced host sessions" }))
+        // An omitted location inherits this placement below. An explicit one without a workspace
+        // asks for a host Session, which placed execution must not be able to open.
+        if (location.workspaceID !== undefined && input?.location && input.location.workspaceID === undefined) {
+          return Effect.fail(
+            new PlacedHostAccessError({ message: "Placed operations cannot create unplaced host sessions" }),
+          )
         }
         return sessions.create({
           id: input?.id,

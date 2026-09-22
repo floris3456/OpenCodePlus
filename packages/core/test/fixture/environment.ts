@@ -13,7 +13,11 @@ export const hostEnvironmentLayer = Layer.effect(
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const driver = Environment.makeLocalDriver(spawner)
-    return Environment.Service.of({ files: Environment.makeFiles(driver), spawner: driver.spawner })
+    return Environment.Service.of({
+      files: Environment.makeFiles(driver),
+      spawner: driver.spawner,
+      placement: { kind: "host" },
+    })
   }),
 ).pipe(Layer.provide(LayerNode.compile(CrossSpawnSpawner.node)))
 

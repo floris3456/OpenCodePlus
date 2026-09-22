@@ -614,7 +614,11 @@ test("reports a local MCP server as failed when the location has no execution pl
   const driver = Environment.makeMemoryDriver()
   const environment = Layer.succeed(
     Environment.Service,
-    Environment.Service.of({ files: Environment.makeFiles(driver), spawner: EnvironmentUnavailable.spawner }),
+    Environment.Service.of({
+      files: Environment.makeFiles(driver),
+      spawner: EnvironmentUnavailable.spawner,
+      placement: { kind: "host" },
+    }),
   )
 
   await Effect.runPromise(
@@ -750,6 +754,7 @@ test("closes a stdio process that finishes spawning after close", async () => {
           })
         }),
       ),
+      placement: { kind: "host" },
     }),
   )
 

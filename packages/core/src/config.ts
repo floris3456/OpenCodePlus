@@ -144,7 +144,7 @@ export const layer = (options?: Options) =>
             const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(configDir, filePath)
             const fileBytes = yield* environment.files.read(resolvedPath).pipe(
               Effect.map((result) => new TextDecoder().decode(result.bytes)),
-              Effect.catchAll(() => Effect.succeed("")),
+              Effect.catch(() => Effect.succeed("")),
             )
             out += JSON.stringify(fileBytes.trim()).slice(1, -1)
             cursor = index + token.length
@@ -160,9 +160,15 @@ export const layer = (options?: Options) =>
       })
 
       const loadFile = Effect.fnUntraced(function* (filepath: string) {
-        if (environment?.placement?.error) return
+        const placed = location.workspaceID !== undefined
+        // Placed config comes from the workspace or nowhere. A missing Environment is broken
+        // wiring and an unbound one has no config at all (`entries` dies on it); in neither case
+        // may the host copy stand in, or workspace-managed execution inherits the host's secrets.
+        if (placed && !environment)
+          return yield* Effect.die(new Error(`Config has no Environment bound to ${location.workspaceID}`))
+        if (environment?.placement.kind === "unplaceable") return
         const text =
-          location.workspaceID !== undefined && environment
+          placed && environment
             ? yield* environment.files.read(filepath).pipe(
                 Effect.map((result) => new TextDecoder().decode(result.bytes)),
                 Effect.catchTag("Environment.NotFound", () => Effect.succeed(undefined)),
@@ -361,7 +367,7 @@ export const layer = (options?: Options) =>
 
       return Service.of({
         entries: Effect.fnUntraced(function* () {
-          if (environment?.placement?.error) return yield* Effect.die(environment.placement.error)
+          if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
           return configs
         }),
         changes: () => Stream.fromPubSub(updates),

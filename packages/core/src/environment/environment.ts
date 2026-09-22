@@ -11,28 +11,33 @@ import { Workspace } from "../workspace.js"
 
 export class UnplaceableError extends Schema.TaggedError<UnplaceableError>()("Environment.UnplaceableError", {
   message: Schema.String,
-  workspaceID: Schema.optional(Workspace.ID),
+  workspaceID: Workspace.ID,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export interface Placement {
-  readonly workspaceID?: Workspace.ID
-  readonly isPlaced: boolean
-  readonly error?: UnplaceableError
-}
+/**
+ * How this Environment is bound, decided once when the location's services boot.
+ *
+ * `host` reaches the process's own machine. `workspace` routes every file
+ * operation and spawn through the workspace driver. `unplaceable` is a placed
+ * location whose workspace could not be bound: agent-controlled I/O must fail
+ * rather than silently fall back to secret-bearing host state, so its driver
+ * refuses every operation and the consumers that would otherwise degrade
+ * quietly (config, instruction discovery, shell) refuse too.
+ */
+export type Placement =
+  | { readonly kind: "host" }
+  | { readonly kind: "workspace"; readonly workspaceID: Workspace.ID }
+  | { readonly kind: "unplaceable"; readonly workspaceID: Workspace.ID; readonly error: UnplaceableError }
 
 export interface Interface {
   readonly files: Files
   readonly spawner: ChildProcessSpawner["Service"]
-  readonly placement?: Placement
+  readonly placement: Placement
 }
 
-export function makeUnplaceableDriver(workspaceID: Workspace.ID, cause: unknown): Driver {
-  const error = new UnplaceableError({
-    message: `Location cannot be placed: workspace ${workspaceID} connection failed`,
-    workspaceID,
-    cause,
-  })
+/** Every file operation and spawn fails with `error`, so nothing reaches the host instead. */
+export function makeUnplaceableDriver(error: UnplaceableError): Driver {
   const spawner = make(() =>
     Effect.fail(
       PlatformError.systemError({
@@ -44,7 +49,7 @@ export function makeUnplaceableDriver(workspaceID: Workspace.ID, cause: unknown)
       }),
     ),
   )
-  const fail = Effect.fail(new Failed({ path: `workspace://${workspaceID}`, cause: error }))
+  const fail = Effect.fail(new Failed({ path: `workspace://${error.workspaceID}`, cause: error }))
   return {
     spawner,
     overrides: {
@@ -67,37 +72,35 @@ const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner
     const location = yield* Location.Service
     const workspace = yield* Workspace.Service
-    if (!location.workspaceID) {
-      const driver = makeLocalDriver(spawner)
-      return Service.of({
-        files: makeFiles(driver),
-        spawner: driver.spawner,
-        placement: { isPlaced: false },
-      })
-    }
     const workspaceID = location.workspaceID
-    const connection = yield* workspace.connect(workspaceID).pipe(
-      Effect.map((driver) => ({ driver, error: undefined })),
-      Effect.catch((cause) =>
-        Effect.succeed({
-          driver: makeUnplaceableDriver(workspaceID, cause),
-          error: new UnplaceableError({
-            message: `Failed to bind Environment to workspace ${workspaceID}`,
-            workspaceID,
-            cause,
-          }),
+    if (workspaceID === undefined) {
+      const driver = makeLocalDriver(spawner)
+      return Service.of({ files: makeFiles(driver), spawner: driver.spawner, placement: { kind: "host" } })
+    }
+    return yield* workspace.connect(workspaceID).pipe(
+      Effect.map((driver) =>
+        Service.of({
+          files: makeFiles(driver),
+          spawner: driver.spawner,
+          placement: { kind: "workspace", workspaceID },
         }),
       ),
+      Effect.catch((cause) => {
+        const error = new UnplaceableError({
+          message: `Failed to bind Environment to workspace ${workspaceID}`,
+          workspaceID,
+          cause,
+        })
+        const driver = makeUnplaceableDriver(error)
+        return Effect.succeed(
+          Service.of({
+            files: makeFiles(driver),
+            spawner: driver.spawner,
+            placement: { kind: "unplaceable", workspaceID, error },
+          }),
+        )
+      }),
     )
-    return Service.of({
-      files: makeFiles(connection.driver),
-      spawner: connection.driver.spawner,
-      placement: {
-        workspaceID,
-        isPlaced: true,
-        error: connection.error,
-      },
-    })
   }),
 )
 
