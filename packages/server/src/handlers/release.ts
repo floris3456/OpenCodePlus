@@ -1,4 +1,4 @@
-import { ReleaseRequestStore } from "@opencode/core/release/request"
+import { ReleaseRequestStore } from "@opencode/core/release/index"
 import { ConflictError, ForbiddenError } from "@opencode/protocol/errors"
 import { RELEASE_PERMIT_HEADER, ReleaseRequestNotFoundError } from "@opencode/protocol/groups/release"
 import { Effect, Option, Schema } from "effect"
@@ -19,7 +19,7 @@ export const ReleaseHandler = HttpApiBuilder.group(Api, "server.release", (handl
       .handle("release.request", (ctx) =>
         Effect.gen(function* () {
           const submitted = yield* store.submit({ request: ctx.payload })
-          if (!submitted.ok) return yield* refused(submitted, ctx.payload.requestID)
+          if (!submitted.ok) return yield* Effect.fail(refused(submitted, ctx.payload.requestID))
           const presented = ctx.headers[RELEASE_PERMIT_HEADER]
           if (presented === undefined || presented.length === 0) return submitted.status
           // Unparseable permit material stays unparsed: the store decodes it against
@@ -28,7 +28,7 @@ export const ReleaseHandler = HttpApiBuilder.group(Api, "server.release", (handl
             requestID: ctx.payload.requestID,
             permit: Option.getOrElse(decodeHeaderJson(presented), () => presented),
           })
-          if (!authorized.ok) return yield* refused(authorized, ctx.payload.requestID)
+          if (!authorized.ok) return yield* Effect.fail(refused(authorized, ctx.payload.requestID))
           return authorized.status
         }),
       )

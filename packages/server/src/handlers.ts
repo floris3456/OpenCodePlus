@@ -33,7 +33,7 @@ import { MigrationHandler } from "./handlers/migration"
 import { ConfigHandler } from "./handlers/config"
 import { WorkspaceHandler } from "./handlers/workspace"
 import { ReleaseHandler } from "./handlers/release"
-import { ReleaseRequestStore } from "@opencode/core/release/request"
+import { ReleaseRequestStore } from "@opencode/core/release/index"
 
 export const handlers = Layer.mergeAll(
   HealthHandler,

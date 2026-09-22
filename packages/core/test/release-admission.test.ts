@@ -4,7 +4,7 @@ import { SessionAdmission, AdmissionFencedError } from "@opencode/core/session/a
 import { SessionPrompt } from "@opencode/core/session/prompt"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
 import { Database } from "@opencode/core/database/database"
-import { ReleaseRequestStore } from "@opencode/core/release/request"
+import { ReleaseRequestStore } from "@opencode/core/release/index"
 import { Global } from "@opencode/util/global"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Session } from "@opencode/schema/session"
