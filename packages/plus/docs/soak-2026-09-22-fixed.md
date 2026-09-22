@@ -437,19 +437,39 @@ In the original report, paired-cycle `Elapsed` figures reflected a runner that s
 | **37** | pair | `gemini-implementer` | `w-4bf5d7eef28f6038` | 2026-09-22T14:52:42.982524Z | 2026-09-22T14:53:07.968162Z | 25.0s | 25.0s | `landed` | **Simultaneous Pair (A)**. Base `39795fc`. Checkpointed `0a7c18c`, integrated `0a7c18c9147336607e20aae3de0c87bcf39bc677` (receipt `01M34SPDX39820FKHGKS0WYGCK`). |
 | **38** | pair | `muse-implementer` | `w-9f9dd29e58158281` | 2026-09-22T14:52:42.983034Z | 2026-09-22T14:53:08.236816Z | 25.3s | 1.7s | `landed` | **Simultaneous Pair (B)**. Base `39795fc`. Driver active: 1.7s (waited behind Cycle 37). Checkpointed `1e1a550`, integrated `0a68d9b326c0803dcbb15959be724ecc7ce2ce9f` (receipt `01M34SPE7C4J2JDYWBA3P29H7B`). |
 | **39** | single | `gemini-implementer` | `w-0dfe29528eb15d14` | 2026-09-22T14:54:32.769689Z | 2026-09-22T14:54:54.708733Z | 21.9s | 21.9s | `landed` | Checkpointed `daf6dd9`, integrated `daf6dd9a31437fe42a386b6ce3945a5633e45131` (receipt `01M34SSP1DAMDFSDZ1K13Q329P`). Worktree removed. |
-| **40** | single | `muse-implementer` | `w-b619b0181c8f95f7` | 2026-09-22T14:54:55.732332Z | 2026-09-22T14:55:23.203282Z | 27.5s | 27.5s | `landed` | Checkpointed `1a9a44c`, integrated `1a9a44c12c6bc30cc11d3691768b23eb7af4aa86` (receipt `01M34STJ0BS6XDNSG8DPCC4WCT`). Stale run metadata anomaly: recorded `worktree: "present"` while filesystem scan was already empty (see Section 5.6). |
+| **40** | single | `muse-implementer` | `w-b619b0181c8f95f7` | 2026-09-22T14:54:55.732332Z | 2026-09-22T14:55:23.203282Z | 27.5s | 27.5s | `landed` | Checkpointed `1a9a44c`, integrated `1a9a44c12c6bc30cc11d3691768b23eb7af4aa86` (receipt `01M34STJ0BS6XDNSG8DPCC4WCT`). Stale run metadata defect: recorded `worktree: "present"` while filesystem scan was already empty; diagnosed and resolved (see Section 5.6). |
 | **41** | single | `gemini-implementer` | `w-b268fb2e138b912a` | 2026-09-22T14:55:24.221313Z | 2026-09-22T14:55:46.464842Z | 22.2s | 22.2s | `landed` | Checkpointed `60dcb1c`, integrated `60dcb1c321a450eb2cd2b9cc6efa29967e08e173` (receipt `01M34SV8R73GT73RVT42590Z36`). Worktree removed. |
 | **42** | single | `gemini-implementer` | `w-799521cb59e24a98` | 2026-09-22T14:55:47.499319Z | 2026-09-22T14:56:17.478855Z | 30.0s | 30.0s | `landed` | Checkpointed `e0d1692`, integrated `e0d169212ad87321fc26ce8ef805a09d7ceca2e8` (receipt `01M34SW6SM3XGP09KCYT53B9KK`). Worktree removed. |
 | **43** | single | `muse-implementer` | `w-a6db49d81689660a` | 2026-09-22T14:56:18.494812Z | 2026-09-22T14:56:46.755597Z | 28.3s | 28.3s | `landed` | Checkpointed `13c68c9`, integrated `13c68c927d6325f1bea6b5a8ea71fdf791ab591b` (receipt `01M34SX3M1Q5NAGGV59NC9AB8N`). Worktree removed. |
 | **44** | pair | `gemini-implementer` | `w-a36034bb0095edc7` | 2026-09-22T14:56:47.821954Z | 2026-09-22T14:57:20.865038Z | 33.0s | 33.1s | `landed` | **Simultaneous Pair (A)**. Base `13c68c9`. Checkpointed `6c721d8`, integrated `6c721d88506f02986c8fdaebddca7be47ac67473` (receipt `01M34SY4Y7EXWPZ9VGV533BX52`). |
 | **45** | pair | `muse-implementer` | `w-fb4355a62e68d6b5` | 2026-09-22T14:56:47.822214Z | 2026-09-22T14:57:21.667476Z | 33.8s | 5.4s | `landed` | **Simultaneous Pair (B)**. Base `13c68c9`. Driver active: 5.4s (waited behind Cycle 44). Checkpointed `0c0b7b3`, integrated `aadc3d821c12574de14fcab2a5c419026038b8e5` (receipt `01M34SY5ABWX4S1ARW8A43GPJR`). |
 
-### 5.6 Cycle 40 Stale Metadata Anomaly
+### 5.6 Cycle 40 Stale Metadata Defect (Resolved Second In-Round Defect)
 
-An open anomaly is recorded for Cycle 40:
-- Run `w-b619b0181c8f95f7` (cycle 40) is recorded `worktree: "present"` in both `supplementary/captures/gc-list-audit.json` and `supplementary/captures/list-all.json`, while the filesystem scan at the same moment was already empty (`worktreeDirsRemaining: []`).
+The Cycle 40 metadata discrepancy is a diagnosed and fixed product defect resolved in this round (plan end-state item 8). While originally recorded as an open anomaly under investigation, it has been root-caused, repaired in production code, and protected with deterministic regression tests.
+
+**Observation.**
+- Run `w-b619b0181c8f95f7` (cycle 40) was recorded `worktree: "present"` in both [`soak-2026-09-22-fixed/supplementary/captures/gc-list-audit.json`](soak-2026-09-22-fixed/supplementary/captures/gc-list-audit.json) and [`soak-2026-09-22-fixed/supplementary/captures/list-all.json`](soak-2026-09-22-fixed/supplementary/captures/list-all.json), while the filesystem scan at the same moment was already empty (`worktreeDirsRemaining: []`).
 - Its integration completed and **landed** — the merge receipt join for cycle 40 is unaffected and all thirty durable joins remain valid.
-- This is **stale run metadata**, being investigated as a product defect in this same round (a lost update in which a later save of a stale record re-asserts `present` after integrate marked the worktree removed), **not** evidence the directory survived until teardown.
+- This was **stale run metadata**, not evidence that the directory survived until teardown.
+
+**Cause.** `loadRun` and `saveRun` each took the per-run `state` lock only around their own I/O, so there was no atomic read-modify-write. A settle-path writer holding a record read *before* `integrateHandler` removed the worktree could save it afterwards, putting `worktree: "present"` back over `"removed"`. That is exactly the observed record: `state: "idle"`, `worktree: "present"`, directory genuinely gone.
+
+**Fix (in two parts):**
+- **Atomic Read-Modify-Write via `run.updateRun(root, id, update)`**: `run.updateRun(root, id, update)` loads, modifies, and writes the run record inside **one** `state` lock. All critical writers that could lose the update were converted to it: the integrate removal mark (`packages/plus/src/teams/api-integrate.ts`), `reconcile` (`packages/plus/src/teams/lifecycle.ts`), `session.execution.started` (`packages/plus/src/teams/lifecycle.ts`), `onSessionIdle` (`packages/plus/src/teams/lifecycle.ts`), and both `deliverInbox` write sites (`packages/plus/src/teams/lifecycle.ts`): its working-delivery write and its prompt **error rollback** path.
+- **Boundary Latch in `saveRun`**: When the record on disk already reads `worktree: "removed"`, any later full-record write keeps `removed` — whatever the caller supplied, whether `"present"`, `"dirty"`, or an omitted field — while every other field of that write is applied unchanged. Because it sits in `saveRun`, it covers **every** full-record writer across the codebase, with no need to argue about which writers can run concurrently.
+
+**Scope and Guarantee Limit.** This is a **field-level guarantee for `worktree` only**, not a general lost-update fix; other fields written from a stale copy can still be overwritten. The boundary latch preserves a stored `"removed"` equally against `"present"`, `"dirty"`, and an omitted field, because writing `"dirty"` over `"removed"` misrepresents a directory that no longer exists just as `"present"` does. Every other field supplied in that write is applied unchanged.
+
+**Regression tests (all deterministic, no sleeps):**
+- *Settle pass cannot resurrect removed worktree* (`packages/plus/test/teams/api-lifecycle.test.ts`): Proves a settle pass cannot resurrect a worktree another writer removed during integration.
+- *Three `saveRun` latch shapes* (`packages/plus/test/teams/api-lifecycle.test.ts`):
+  - Stale `present` cannot take a stored `removed` back, asserting that an unrelated field update (`head`) still persisted.
+  - Stale `dirty` cannot take a stored `removed` back, asserting that an unrelated field update (`attempts`) still persisted.
+  - Omitted `worktree` field cannot default a stored `removed` to `present`, asserting that an unrelated field update (`lastUsed`) still persisted.
+- *Two `deliverInbox` cases* (`packages/plus/test/teams/lifecycle-events.test.ts`):
+  - `deliverInbox` working path cannot resurrect a worktree another writer removed before save, asserting state transitions to `working` with admitted attempt.
+  - `deliverInbox` prompt error rollback path cannot resurrect a worktree removed while the prompt was in flight, asserting state reverts to `idle` with original attempt retained.
 
 ---
 
@@ -497,3 +517,113 @@ To verify that the tests are genuinely sensitive to each component of the fix an
 
 ### Conclusion
 Each half of the fix, removed on its own, turns the tests red — so the lock and the in-lock re-list are now protected against silent regression rather than being masked by the age guard.
+
+---
+
+## 7. Final-Source Live Verification (resoak5, Cycles 51–60)
+
+### 7.1 Relationship Between the Three Labs
+
+The relationship between the three distinct labs executed during this soak campaign is strictly demarcated — they are independent runs that are not blended or conflated:
+- **resoak3** — the original thirty-cycle run; cycles 16–30 retain their receipts inline, cycles 1–15 do not (receipt files unrecoverable after teardown).
+- **resoak4** — fifteen supplementary cycles (31–45) with durable per-cycle receipt export, closing that preservation gap; combined with resoak3's 16–30 this gives **30 distinct fully auditable cycles**, 6 paired, 3 qualifying stops.
+- **resoak5** — this final-source verification on `d17b8560`, which is the run that proves the run-record fix live.
+
+The 30 auditable cycles ran on source in which `packages/plus/src` was identical between `386b224ffa51ece53e63ce5cc02da936eaf97429` (`resoak3`) and `a539b0bfba6a48f4d6696d7c33b248d19390549e` (`resoak4`), with intervening commits touching only tests, documentation, and the test harness runner. Source commit `d17b8560688dbe7584a9a75c9c7f573e8d7f56fa` additionally contains the run-record atomicity fixes (`updateRun` and `saveRun` boundary latch), re-verified live in `resoak5`. The thirty-cycle auditable set was not itself re-run on `d17b8560`; rather, `resoak5` provides direct live verification of the final integrated source code and proves the run-record fix live.
+
+### 7.2 Measured Facts and Headline Metrics
+
+The final-source verification run established the following verified metrics:
+- **Total Cycles Executed**: **10 cycles** (Cycles 51 through 60), all reaching `status: "done"` and `state: "landed"` (100% landing rate).
+- **Simultaneous Delegation Pairs**: **1 pair** (Cycles 55 & 56, 2 cycles in flight dispatched simultaneously at `2026-09-22T15:29:21.679Z` from common base `d5167bf9f11508715e34301bcfd4272093ae0bba`).
+- **Merge Receipt Joins**: **10 of 10 cycles** individually joined to their own raw merge receipt matching `childRun`, `expectedParentHead`, and `landedHead`.
+- **Decisive Metadata-vs-Filesystem Cross-Check**: **11 runs, 0 mismatches**. All 10 landed child workers read `worktree: "removed"` with directory absent (`dirExists=False`), and the 1 root orchestrator run reads `worktree: "present"` with its project directory present (`dirExists=True`).
+- **The Three Zero-Counts**:
+  - **Zero** `FileSystem.realPath` failures (**0**).
+  - **Zero** in-flight `E_BOUNDS` refusals (**0**).
+  - **Zero** stray root runs (**0**; exactly 1 root run `main-c3ecef8bdc4ed16a` exists in the lab).
+- **Garbage Collection (GC)**:
+  - Evaluated 11 runs against policy (`reapAfter: "0ms"`, `keepPromotedFrom: true`).
+  - **0 reaped**, **0 orphans removed**, **0 dirty skips**, **0 remove failures**.
+  - **0 worktree directories left** (`worktreeDirsRemaining: []`).
+  - Post-GC inventory (`team_list({all:true})`): **11 runs** (1 working root orchestrator + 10 idle completed workers).
+- **Cryptographic Audit Chain**:
+  - Verification confirmed **`{"ok": true, "lines": 103}`** unbroken HMAC-SHA256 signature chain.
+- **Teardown Verification**:
+  - 13 owned processes terminated (derived from `/proc` cwd).
+  - Port `46615` released: `connect_ex=111`, `listeners=[]`, `not_listening=true`.
+  - Lab directory removed: `directory_absent=true`.
+  - Residual processes: **0 residual `/proc` references** to any resoak lab.
+  - Human operator server on port `40374` untouched and still listening (`connect_ex=0`).
+
+### 7.3 Evidence Inventory
+
+All durable evidence for this final-source live verification is committed under [`packages/plus/docs/soak-2026-09-22-fixed/final-verification/`](soak-2026-09-22-fixed/final-verification/):
+- **Model Proof**: [`soak-2026-09-22-fixed/final-verification/captures/model-proof.txt`](soak-2026-09-22-fixed/final-verification/captures/model-proof.txt) — `/api/agent` query showing all three roles (`gemini-implementer`, `muse-implementer`, `sol-orchestrator`) on `cliproxyapi/gpt-5.6-luna` variant `low`, taken **before any delegation**, on source **`d17b8560688dbe7584a9a75c9c7f573e8d7f56fa`**.
+- **Durable Receipts & Cycles**: [`soak-2026-09-22-fixed/final-verification/receipts/cycle-51.json`](soak-2026-09-22-fixed/final-verification/receipts/cycle-51.json) through `cycle-60.json` and [`soak-2026-09-22-fixed/final-verification/cycles/`](soak-2026-09-22-fixed/final-verification/cycles/) — **10 cycles** (including simultaneous pair Cycles 55 & 56), all `done` + `landed`, each joined to its own merge receipt.
+- **Run Summary**: [`soak-2026-09-22-fixed/final-verification/summary-1790091106.json`](soak-2026-09-22-fixed/final-verification/summary-1790091106.json) — Full machine-readable summary with all receipt joins, timestamps, and wall times.
+- **Decisive Cross-Check Capture**: [`soak-2026-09-22-fixed/final-verification/captures/metadata-vs-filesystem.txt`](soak-2026-09-22-fixed/final-verification/captures/metadata-vs-filesystem.txt) — Per-run verification comparing record `worktree` against actual directory existence across all 11 runs.
+- **GC & Complete Inventory**: [`soak-2026-09-22-fixed/final-verification/captures/gc-list-audit.json`](soak-2026-09-22-fixed/final-verification/captures/gc-list-audit.json) and [`soak-2026-09-22-fixed/final-verification/captures/list-all.json`](soak-2026-09-22-fixed/final-verification/captures/list-all.json).
+- **Teardown Capture**: [`soak-2026-09-22-fixed/final-verification/captures/teardown.txt`](soak-2026-09-22-fixed/final-verification/captures/teardown.txt).
+
+### 7.4 Final-Verification Execution Table (Cycles 51–60)
+
+| Cycle | Kind | Role | Run ID | Start Time | End Time | Wall Time | Driver Active | Outcome | Landed Commit / Merge Receipt ID |
+|:---:|:---|:---|:---|:---|:---|:---:|:---:|:---:|:---|
+| **51** | single | `gemini-implementer` | `w-981ec10d303d1833` | 2026-09-22T15:27:36.384382Z | 2026-09-22T15:28:03.668971Z | 27.3s | 27.3s | `landed` | Checkpointed `c6d2f4e`, integrated `c6d2f4ea4ce99a510ead67ed9f9762c3d4515372` (receipt `01M34VPCHVJ52Y9VPSBP1F9Y7C`). Worktree removed. |
+| **52** | single | `muse-implementer` | `w-30ea97e64efdf5e0` | 2026-09-22T15:28:04.680273Z | 2026-09-22T15:28:33.708905Z | 29.0s | 29.0s | `landed` | Checkpointed `d387e41`, integrated `d387e41ed91a6850d0b85f44a3021a112d466c5a` (receipt `01M34VQ9WKVT5K8DPFKCP5QNVT`). Worktree removed. |
+| **53** | single | `gemini-implementer` | `w-cf9a2ec035ca8feb` | 2026-09-22T15:28:34.712023Z | 2026-09-22T15:28:57.034082Z | 22.3s | 22.3s | `landed` | Checkpointed `a65c8e6`, integrated `a65c8e6a298358954c62f9e4381e0b5f378f1549` (receipt `01M34VR0NEKP3D3N05PT68MFCS`). Worktree removed. |
+| **54** | single | `gemini-implementer` | `w-7fc685a9ca6af2d9` | 2026-09-22T15:28:58.037937Z | 2026-09-22T15:29:20.673650Z | 22.6s | 22.6s | `landed` | Checkpointed `d5167bf`, integrated `d5167bf9f11508715e34301bcfd4272093ae0bba` (receipt `01M34VRQR2ZXBYZ35MMXV5AHH7`). Worktree removed. |
+| **55** | pair | `gemini-implementer` | `w-50b8e675435a16d2` | 2026-09-22T15:29:21.679102Z | 2026-09-22T15:29:41.978986Z | 20.3s | 19.7s | `landed` | **Simultaneous Pair (A)**. Base `d5167bf`. Checkpointed `ed67b25`, integrated `ed67b25868174db4902a31eace536a5da5ad4c7a` (receipt `01M34VSCG59M131MYJM6BWPTMP`). Worktree removed. |
+| **56** | pair | `muse-implementer` | `w-f04543295a7241aa` | 2026-09-22T15:29:21.679447Z | 2026-09-22T15:29:42.271379Z | 20.6s | 2.0s | `landed` | **Simultaneous Pair (B)**. Base `d5167bf`. Driver active: 2.0s (waited behind Cycle 55). Checkpointed `37d628d`, integrated `10f407cfe881637bad06d8e69fff8ac70eace835` (receipt `01M34VSCTSQBXMVW7831P43NY5`). Worktree removed. |
+| **57** | single | `gemini-implementer` | `w-3f1b3bb8a34585a2` | 2026-09-22T15:29:43.285318Z | 2026-09-22T15:30:11.264287Z | 28.0s | 28.0s | `landed` | Checkpointed `e1ba1b8`, integrated `e1ba1b89d1fab40ded15533d59a6162577d95b1f` (receipt `01M34VT94824X710QAYTB635W0`). Worktree removed. |
+| **58** | single | `muse-implementer` | `w-c69e351cbd84b310` | 2026-09-22T15:30:12.274062Z | 2026-09-22T15:30:34.398379Z | 22.1s | 22.1s | `landed` | Checkpointed `867f978`, integrated `867f978b192436c361919324db389a96ad42675f` (receipt `01M34VTZQ53ETYGD3N11PHA6GE`). Worktree removed. |
+| **59** | single | `gemini-implementer` | `w-0293b888c5a69bf0` | 2026-09-22T15:30:35.402227Z | 2026-09-22T15:31:03.198383Z | 27.8s | 27.8s | `landed` | Checkpointed `8d69dcf`, integrated `8d69dcfe2fd56dc09689755e9d1f6d20c502020c` (receipt `01M34VVVW3MWMXHNYMKMMHQ1S2`). Worktree removed. |
+| **60** | single | `gemini-implementer` | `w-55693baa06d57ed3` | 2026-09-22T15:31:04.222655Z | 2026-09-22T15:31:45.785658Z | 41.6s | 41.6s | `landed` | Checkpointed `2dc1b6d`, integrated `2dc1b6dc13e75452d933ee830f6597db1e8786e7` (receipt `01M34VX59Y3Z2VV2Y6H7N7G1VV`). Worktree removed. |
+
+### 7.5 Decisive Check: Per-Run Metadata vs. Filesystem Verification
+
+Following the settlement of all terminal events across the 10 cycles, a complete cross-check was performed comparing every registered run record's `worktree` attribute directly against physical filesystem directory existence ([`soak-2026-09-22-fixed/final-verification/captures/metadata-vs-filesystem.txt`](soak-2026-09-22-fixed/final-verification/captures/metadata-vs-filesystem.txt)):
+
+```text
+PER-RUN CROSS-CHECK: record.worktree vs actual directory existence
+Taken after terminal events settled, on the final integrated source.
+
+  main-c3ecef8bdc4ed16a  kind=main state=working   worktree=present  dirExists=True  OK
+  w-0293b888c5a69bf0     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-30ea97e64efdf5e0     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-3f1b3bb8a34585a2     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-50b8e675435a16d2     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-55693baa06d57ed3     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-7fc685a9ca6af2d9     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-981ec10d303d1833     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-c69e351cbd84b310     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-cf9a2ec035ca8feb     kind=w    state=idle      worktree=removed  dirExists=False OK
+  w-f04543295a7241aa     kind=w    state=idle      worktree=removed  dirExists=False OK
+
+total runs: 11   mismatches: 0
+
+VERDICT: no run record disagrees with the filesystem
+```
+
+**Result**: Across all 11 runs, exactly **0 mismatches** occurred. All ten landed children read `worktree: "removed"` with the directory physically absent, and the one root run reads `worktree: "present"` with its project directory present. This confirms live that the run-record lost-update race observed in Cycle 40 is eliminated.
+
+### 7.6 Post-Run GC, Cryptographic Audit, and Clean Teardown
+
+- **Garbage Collection**: As recorded in [`soak-2026-09-22-fixed/final-verification/captures/gc-list-audit.json`](soak-2026-09-22-fixed/final-verification/captures/gc-list-audit.json), the sweep with policy (`reapAfter: "0ms"`, `keepPromotedFrom: true`) evaluated all 11 runs (1 working root orchestrator + 10 idle landed workers). Because all completed workers landed cleanly without mid-work supersessions, zero runs were eligible for reaping: **0 reaped**, **0 orphans removed**, **0 dirty skips**, **0 remove failures**, leaving **0 remaining worktree directories** (`worktreeDirsRemaining: []`).
+- **Complete Run Inventory (`list all:true`)**: [`soak-2026-09-22-fixed/final-verification/captures/list-all.json`](soak-2026-09-22-fixed/final-verification/captures/list-all.json) confirmed **11 registered runs**: exactly 1 working root run `main-c3ecef8bdc4ed16a` and 10 idle landed child workers, with zero stray root runs.
+- **Cryptographic Audit Chain**: Verification of the HMAC-SHA256 signature chain via `post-run.ts` confirmed:
+  ```json
+  {
+    "ok": true,
+    "lines": 103
+  }
+  ```
+  All 103 audit lines verified cryptographically with zero breaks or skips.
+- **Lab Teardown**: As recorded in [`soak-2026-09-22-fixed/final-verification/captures/teardown.txt`](soak-2026-09-22-fixed/final-verification/captures/teardown.txt):
+  - 13 owned processes terminated via `tui-lab.sh down resoak5` (derived from `/proc` cwd).
+  - Port `46615` released: `connect_ex=111`, `not_listening=true`, `listeners=[]`.
+  - Lab directory removed: `directory_absent=true`.
+  - Residual processes: **0 residual `/proc` references** to any resoak lab across kernel scans.
+  - Human operator's server on port `40374` untouched and still listening (`connect_ex=0`).
+
