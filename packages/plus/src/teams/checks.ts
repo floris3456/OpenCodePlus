@@ -9,6 +9,7 @@ import { toolError } from "./schema.js"
 import type { Check } from "./schema.js"
 import { git, parsePorcelain, PLUS_PROJECT_FILE, systemPath } from "./git.js"
 import { errCode, io } from "./io.js"
+import { Release } from "../release/identity.js"
 
 // Check executor (docs/team-v2/07-code-mode.md §check serialization,
 // docs/team-v2/03-tools.md §check, docs/team-v2/05-runtime-and-storage.md
@@ -38,6 +39,19 @@ export interface Receipt {
   tree?: string
   dirty?: boolean
   porcelain?: string[]
+  policyDigest?: string
+}
+
+export function computePolicyDigest(check: {
+  readonly id: string
+  readonly argv: readonly string[]
+  readonly cwd?: string | undefined
+}): string {
+  return Release.digest({
+    id: check.id,
+    argv: [...check.argv],
+    cwd: check.cwd ?? "",
+  })
 }
 
 export interface ExecuteOptions {
@@ -243,6 +257,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       await Effect.runPromise(io(() => mkdir(join(root, "runs", opts.runID, "receipts"), { recursive: true })))
       const capped = tailBytes(full, MAX_LOG_BYTES)
       await Effect.runPromise(io(() => writeFile(paths.log, capped, "utf8")))
+      const policyDigest = computePolicyDigest(opts.check)
       const receipt: Receipt = {
         id: opts.check.id,
         argv: [...opts.check.argv],
@@ -255,6 +270,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         outputPath: paths.log,
         tree,
         dirty,
+        policyDigest,
       }
       if (dirty) {
         receipt.porcelain = statusBefore
@@ -311,7 +327,104 @@ export async function lastReceipt(root: string, runID: string, id: string, head?
 export function isCleanReceipt(receipt: Receipt): boolean {
   if (receipt.dirty !== false) return false
   if (typeof receipt.tree !== "string" || receipt.tree.length === 0) return false
+  if (receipt.code === "E_CHECK_MUTATED") return false
   return true
+}
+
+export type CheckBindingRejectionReason =
+  | "changed_definition"
+  | "different_head"
+  | "different_tree"
+  | "dirty_tree"
+  | "missing_dirty_flag"
+  | "mutated_source"
+
+export interface SourceFacts {
+  readonly head: string
+  readonly tree: string
+}
+
+export type VerifyReceiptResult =
+  | {
+      readonly ok: true
+      readonly accepted: true
+      readonly reason?: undefined
+      readonly message?: undefined
+    }
+  | {
+      readonly ok: false
+      readonly accepted: false
+      readonly reason: CheckBindingRejectionReason
+      readonly message: string
+    }
+
+export function verifyReceipt(
+  receipt: Receipt,
+  check: Check | { readonly id: string; readonly argv: readonly string[]; readonly cwd?: string | undefined },
+  facts: SourceFacts,
+): VerifyReceiptResult {
+  if (receipt.dirty === undefined || typeof receipt.dirty !== "boolean") {
+    return {
+      ok: false,
+      accepted: false,
+      reason: "missing_dirty_flag",
+      message: `Receipt for check "${receipt.id}" is missing the dirty flag (unusable legacy receipt).`,
+    }
+  }
+
+  if (receipt.dirty !== false) {
+    return {
+      ok: false,
+      accepted: false,
+      reason: "dirty_tree",
+      message: `Receipt for check "${receipt.id}" was recorded on a dirty tree.`,
+    }
+  }
+
+  if (receipt.code === "E_CHECK_MUTATED") {
+    return {
+      ok: false,
+      accepted: false,
+      reason: "mutated_source",
+      message: `Receipt for check "${receipt.id}" failed due to mutating the worktree.`,
+    }
+  }
+
+  const expectedPolicyDigest = computePolicyDigest(check)
+  const receiptDefinitionMatches =
+    receipt.id === check.id &&
+    receipt.cwd === (check.cwd ?? "") &&
+    receipt.argv.length === check.argv.length &&
+    receipt.argv.every((arg, i) => arg === check.argv[i])
+
+  if (!receiptDefinitionMatches || (receipt.policyDigest !== undefined && receipt.policyDigest !== expectedPolicyDigest)) {
+    return {
+      ok: false,
+      accepted: false,
+      reason: "changed_definition",
+      message: `Check definition changed for "${check.id}": id, argv or cwd does not match receipt.`,
+    }
+  }
+
+  if (receipt.head !== facts.head) {
+    return {
+      ok: false,
+      accepted: false,
+      reason: "different_head",
+      message: `Receipt HEAD ${receipt.head} does not match current HEAD ${facts.head}.`,
+    }
+  }
+
+  if (!receipt.tree || receipt.tree !== facts.tree) {
+    return {
+      ok: false,
+      accepted: false,
+      reason: "different_tree",
+      message: `Receipt tree ${receipt.tree ?? "none"} does not match current tree ${facts.tree}.`,
+    }
+  }
+
+  return { ok: true, accepted: true }
 }
 
 /** All receipts recorded at exactly `head`. */
@@ -333,7 +446,15 @@ export async function stale(root: string, assigned: Check[], runID: string, head
   const out: Check[] = []
   for (const c of assigned) {
     const r = await readJson<Receipt>(receiptPaths(root, runID, c.id, head).json)
-    if (!r || r.head !== head || !isCleanReceipt(r) || r.passed !== true) out.push(c)
+    if (!r || r.head !== head || !isCleanReceipt(r) || r.passed !== true) {
+      out.push(c)
+      continue
+    }
+    const digest = computePolicyDigest(c)
+    if (computePolicyDigest(r) !== digest || (r.policyDigest !== undefined && r.policyDigest !== digest)) {
+      out.push(c)
+      continue
+    }
   }
   return out
 }
