@@ -637,6 +637,7 @@
         "@modelcontextprotocol/sdk": "1.29.0",
         "@opencode/plugin": "workspace:*",
         "@opencode/schema": "workspace:*",
+        "@opencode/util": "workspace:*",
         "@opentui/solid": "catalog:",
         "effect": "catalog:",
         "solid-js": "catalog:",
