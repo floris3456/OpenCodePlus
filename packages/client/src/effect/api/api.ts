@@ -2041,6 +2041,65 @@ export interface WorkspaceApi<E = never> {
   readonly destroy: WorkspaceDestroyOperation<E>
 }
 
+export type ReleaseRequestInput = {
+  readonly "x-opencode-release-permit"?: string | undefined
+  readonly payload:
+    | {
+        readonly requestID: string
+        readonly kind: "build"
+        readonly sourceSha: string
+        readonly version: string
+        readonly recipeDigest: string
+        readonly approvalRef: string | null
+        readonly requestedAt: string
+      }
+    | {
+        readonly requestID: string
+        readonly kind: "promote"
+        readonly release: {
+          readonly product: "opencodeplus"
+          readonly channel: "plus"
+          readonly version: string
+          readonly sourceSha: string
+          readonly recipeDigest: string
+          readonly toolchainDigest: string
+        }
+        readonly artifact: {
+          readonly target: "linux-arm64" | "linux-x64" | "darwin-arm64" | "darwin-x64"
+          readonly archiveName: string
+          readonly archiveSha256: string
+          readonly binarySha256: string
+          readonly bytes: number
+        }
+        readonly expectedCurrentGeneration: number
+        readonly approvalRef: string | null
+        readonly requestedAt: string
+      }
+}
+export type ReleaseRequestOutput = {
+  readonly requestID: string
+  readonly state: "accepted" | "rejected" | "running" | "completed" | "failed"
+  readonly generation: number
+  readonly detail: string | null
+  readonly observedAt: string
+}
+export type ReleaseRequestOperation<E = never> = (input: ReleaseRequestInput) => Effect.Effect<ReleaseRequestOutput, E>
+
+export type ReleaseStatusInput = { readonly requestID: string }
+export type ReleaseStatusOutput = {
+  readonly requestID: string
+  readonly state: "accepted" | "rejected" | "running" | "completed" | "failed"
+  readonly generation: number
+  readonly detail: string | null
+  readonly observedAt: string
+}
+export type ReleaseStatusOperation<E = never> = (input: ReleaseStatusInput) => Effect.Effect<ReleaseStatusOutput, E>
+
+export interface ReleaseApi<E = never> {
+  readonly request: ReleaseRequestOperation<E>
+  readonly status: ReleaseStatusOperation<E>
+}
+
 export type VcsGetInput = {
   readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
 }
@@ -2178,6 +2237,7 @@ export interface AppApi<E = never> {
   readonly reference: ReferenceApi<E>
   readonly worktree: WorktreeApi<E>
   readonly workspace: WorkspaceApi<E>
+  readonly release: ReleaseApi<E>
   readonly vcs: VcsApi<E>
   readonly debug: DebugApi<E>
   readonly migration: MigrationApi<E>

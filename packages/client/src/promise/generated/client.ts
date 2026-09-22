@@ -246,6 +246,10 @@ import type {
   WorkspaceCreateOutput,
   WorkspaceDestroyInput,
   WorkspaceDestroyOutput,
+  ReleaseRequestInput,
+  ReleaseRequestOutput,
+  ReleaseStatusInput,
+  ReleaseStatusOutput,
   VcsGetInput,
   VcsGetOutput,
   VcsBaseInput,
@@ -2054,6 +2058,32 @@ export function make(options: ClientOptions) {
             path: `/api/workspace/${encodeURIComponent(input.workspaceID)}`,
             successStatus: 200,
             declaredStatuses: [400, 401, 500],
+            empty: false,
+          },
+          requestOptions,
+        ),
+    },
+    release: {
+      request: (input: ReleaseRequestInput, requestOptions?: RequestOptions) =>
+        request<ReleaseRequestOutput>(
+          {
+            method: "POST",
+            path: `/api/release/request`,
+            headers: { "x-opencode-release-permit": input["x-opencode-release-permit"] },
+            body: input["payload"],
+            successStatus: 200,
+            declaredStatuses: [400, 401, 403, 404, 409],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      status: (input: ReleaseStatusInput, requestOptions?: RequestOptions) =>
+        request<ReleaseStatusOutput>(
+          {
+            method: "GET",
+            path: `/api/release/request/${encodeURIComponent(input.requestID)}`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
             empty: false,
           },
           requestOptions,

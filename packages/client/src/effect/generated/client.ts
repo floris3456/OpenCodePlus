@@ -250,6 +250,10 @@ import type {
   WorkspaceCreateOutput,
   WorkspaceDestroyInput,
   WorkspaceDestroyOutput,
+  ReleaseRequestInput,
+  ReleaseRequestOutput,
+  ReleaseStatusInput,
+  ReleaseStatusOutput,
   VcsGetInput,
   VcsGetOutput,
   VcsBaseInput,
@@ -1506,6 +1510,25 @@ const adaptGroupWorkspace = (raw: RawClient["server.workspace"]) => ({
   destroy: EndpointWorkspaceDestroy(raw),
 })
 
+type ReleaseRequestRequest = Parameters<RawClient["server.release"]["release.request"]>[0]
+const EndpointReleaseRequest = (raw: RawClient["server.release"]) => (input: ReleaseRequestInput) =>
+  preserveEffect<ReleaseRequestOutput>()(
+    raw["release.request"]({
+      headers: { "x-opencode-release-permit": input["x-opencode-release-permit"] },
+      payload: input["payload"],
+    } as ReleaseRequestRequest).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointReleaseStatus = (raw: RawClient["server.release"]) => (input: ReleaseStatusInput) =>
+  preserveEffect<ReleaseStatusOutput>()(
+    raw["release.status"]({ params: { requestID: input["requestID"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const adaptGroupRelease = (raw: RawClient["server.release"]) => ({
+  request: EndpointReleaseRequest(raw),
+  status: EndpointReleaseStatus(raw),
+})
+
 const EndpointVcsGet = (raw: RawClient["server.vcs"]) => (input?: VcsGetInput) =>
   preserveEffect<VcsGetOutput>()(
     raw["vcs.get"]({ query: { location: input?.["location"] } }).pipe(Effect.mapError(mapClientError)),
@@ -1613,6 +1636,7 @@ const adaptClient = (raw: RawClient) => ({
   reference: adaptGroupReference(raw["server.reference"]),
   worktree: adaptGroupWorktree(raw["server.worktree"]),
   workspace: adaptGroupWorkspace(raw["server.workspace"]),
+  release: adaptGroupRelease(raw["server.release"]),
   vcs: adaptGroupVcs(raw["server.vcs"]),
   debug: adaptGroupDebug(raw["server.debug"]),
   migration: adaptGroupMigration(raw["server.migration"]),

@@ -412,6 +412,8 @@ export type WorktreeInfo = { directory: string }
 
 export type WorkspaceDestroyResult = { destroyed: boolean }
 
+export type ReleaseRequestState = "accepted" | "rejected" | "running" | "completed" | "failed"
+
 export type VcsBranch = { current?: string; default?: string }
 
 export type VcsBase = { name: string; ref: string; source: "reflog" | "default" }
@@ -1616,6 +1618,14 @@ export type ReferenceSource = ReferenceLocalSource | ReferenceGitSource
 
 export type WorktreeList = Array<WorktreeDirectory>
 
+export type ReleaseRequestStatus = {
+  requestID: string
+  state: ReleaseRequestState
+  generation: number
+  detail: string | null
+  observedAt: string
+}
+
 export type VcsInfo = { branch: VcsBranch }
 
 export type PermissionRuleset = Array<PermissionRule>
@@ -2586,6 +2596,14 @@ export type WorktreeError = {
 }
 export const isWorktreeError = (value: unknown): value is WorktreeError =>
   typeof value === "object" && value !== null && "name" in value && value["name"] === "WorktreeError"
+
+export type ReleaseRequestNotFoundError = {
+  readonly _tag: "ReleaseRequestNotFoundError"
+  readonly requestID: string
+  readonly message: string
+}
+export const isReleaseRequestNotFoundError = (value: unknown): value is ReleaseRequestNotFoundError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ReleaseRequestNotFoundError"
 
 export type HealthGetOutput = ServiceHealth
 
@@ -6345,6 +6363,50 @@ export type WorkspaceCreateOutput = { data: string }["data"]
 export type WorkspaceDestroyInput = { readonly workspaceID: { readonly workspaceID: string }["workspaceID"] }
 
 export type WorkspaceDestroyOutput = WorkspaceDestroyResult
+
+export type ReleaseRequestInput = {
+  readonly "x-opencode-release-permit"?: {
+    readonly "x-opencode-release-permit"?: string | undefined
+  }["x-opencode-release-permit"]
+  readonly payload:
+    | {
+        readonly requestID: string
+        readonly kind: "build"
+        readonly sourceSha: string
+        readonly version: string
+        readonly recipeDigest: string
+        readonly approvalRef: string | null
+        readonly requestedAt: string
+      }
+    | {
+        readonly requestID: string
+        readonly kind: "promote"
+        readonly release: {
+          readonly product: "opencodeplus"
+          readonly channel: "plus"
+          readonly version: string
+          readonly sourceSha: string
+          readonly recipeDigest: string
+          readonly toolchainDigest: string
+        }
+        readonly artifact: {
+          readonly target: "linux-arm64" | "linux-x64" | "darwin-arm64" | "darwin-x64"
+          readonly archiveName: string
+          readonly archiveSha256: string
+          readonly binarySha256: string
+          readonly bytes: number
+        }
+        readonly expectedCurrentGeneration: number
+        readonly approvalRef: string | null
+        readonly requestedAt: string
+      }
+}
+
+export type ReleaseRequestOutput = ReleaseRequestStatus
+
+export type ReleaseStatusInput = { readonly requestID: { readonly requestID: string }["requestID"] }
+
+export type ReleaseStatusOutput = ReleaseRequestStatus
 
 export type VcsGetInput = {
   readonly location?: {
