@@ -36,39 +36,40 @@ runs:
           ACTUAL_SHA=$(shasum -a 256 "$BUN_BIN" | awk '{print $1}')
         fi
 
-        EXPECTED_SHA="$EXPECTED_SHA_INPUT"
+        OS="$(uname -s)"
+        ARCH="$(uname -m)"
 
-        # Fall back to release/toolchain.json if not provided
-        if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" = "null" ] || [ "$EXPECTED_SHA" = "TODO" ]; then
+        EXPECTED_SHA="$EXPECTED_SHA_INPUT"
+        if [ "$EXPECTED_SHA" = "null" ] || [ "$EXPECTED_SHA" = "TODO" ]; then
+          EXPECTED_SHA=""
+        fi
+
+        # Bun ships a different executable for every platform, so a recorded hash only
+        # means anything on the platform it was measured on. release/toolchain.json holds
+        # a single measurement taken on the build seat (Linux arm64); asserting it on any
+        # other runner would fail a correct binary. Every other platform stays unmeasured
+        # until someone measures it and records it in the matrix as expected-sha256.
+        if [ -z "$EXPECTED_SHA" ] && [ "$OS" = "Linux" ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; }; then
           if [ -f "release/toolchain.json" ]; then
-            TOOLCHAIN_SHA=$(bun -e '
+            EXPECTED_SHA=$(bun -e '
               const tc = await Bun.file("release/toolchain.json").json()
               const sha = tc?.bun?.executableSha256
               if (sha && typeof sha === "string" && sha !== "null") process.stdout.write(sha)
             ' 2>/dev/null || true)
-            if [ -n "$TOOLCHAIN_SHA" ]; then
-              EXPECTED_SHA="$TOOLCHAIN_SHA"
-            fi
           fi
-        fi
-
-        # Fall back to measured linux-aarch64 pin when running on that architecture
-        if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" = "null" ] || [ "$EXPECTED_SHA" = "TODO" ]; then
-          OS="$(uname -s)"
-          ARCH="$(uname -m)"
-          if [ "$OS" = "Linux" ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; }; then
+          if [ -z "$EXPECTED_SHA" ]; then
             EXPECTED_SHA="616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1"
           fi
         fi
 
-        if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "null" ] && [ "$EXPECTED_SHA" != "TODO" ]; then
+        if [ -n "$EXPECTED_SHA" ]; then
           if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
             echo "::error::Bun executable SHA256 mismatch! Expected: $EXPECTED_SHA, Got: $ACTUAL_SHA"
             exit 1
           fi
           echo "Verified Bun executable SHA256 matches pinned value: $EXPECTED_SHA"
         else
-          echo "Bun executable SHA256 unmeasured for this platform (measuredBy: build-seat). Computed: $ACTUAL_SHA"
+          echo "Bun executable SHA256 unmeasured for ${OS}/${ARCH} (measuredBy: build-seat). Computed: $ACTUAL_SHA"
         fi
 
     - name: Install dependencies (frozen)

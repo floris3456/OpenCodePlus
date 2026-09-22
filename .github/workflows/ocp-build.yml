@@ -34,10 +34,10 @@ jobs:
             runner: ubuntu-24.04
             bun_sha256: null # TODO: measuredBy: build-seat
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             bun_sha256: null # TODO: measuredBy: build-seat
           - target: darwin-x64
-            runner: macos-13
+            runner: macos-15-intel
             bun_sha256: null # TODO: measuredBy: build-seat
     runs-on: ${{ matrix.runner }}
     env:

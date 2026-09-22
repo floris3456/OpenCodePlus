@@ -103,11 +103,15 @@ describe("native build workflow (ocp-build.yml)", () => {
     expect(matrixInclude).toBeDefined()
     expect(matrixInclude?.length).toBe(4)
 
+    // Labels verified 2026-09-23 against the "Available Images" table in
+    // actions/runner-images@main README and the GitHub-hosted runners reference.
+    // macos-15 (arm64) and macos-15-intel (x64) are the current non-deprecated
+    // standard macOS labels; both Darwin targets therefore build on macOS 15.
     const expectedMapping: Record<string, string> = {
       "linux-arm64": "ubuntu-24.04-arm",
       "linux-x64": "ubuntu-24.04",
-      "darwin-arm64": "macos-14",
-      "darwin-x64": "macos-13",
+      "darwin-arm64": "macos-15",
+      "darwin-x64": "macos-15-intel",
     }
 
     const actualTargets = matrixInclude?.map((entry) => entry.target).sort()
@@ -119,6 +123,39 @@ describe("native build workflow (ocp-build.yml)", () => {
       const target = entry.target as string
       expect(expectedMapping[target]).toBeDefined()
       expect(entry.runner).toBe(expectedMapping[target])
+    }
+  })
+
+  test("pins no retired or deprecated GitHub-hosted runner label", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
+
+    // Verified 2026-09-23: macos-13 was fully retired on 2025-12-04 and the macOS 14
+    // images are marked deprecated with removal scheduled for 2026-11-02. A job pinned
+    // to a retired label cannot start, so it can never produce a qualification run.
+    const retiredOrDeprecated = [
+      "macos-11",
+      "macos-12",
+      "macos-13",
+      "macos-13-large",
+      "macos-13-xlarge",
+      "macos-14",
+      "macos-14-large",
+      "macos-14-xlarge",
+      "ubuntu-20.04",
+    ]
+
+    const labels = Object.values(doc.jobs ?? {}).flatMap((job) => {
+      const runsOn = job["runs-on"]
+      const matrixRunners = (job.strategy?.matrix?.include ?? [])
+        .map((entry) => entry.runner)
+        .filter((runner): runner is string => typeof runner === "string")
+      if (typeof runsOn === "string" && !runsOn.includes("${{")) return [runsOn, ...matrixRunners]
+      return matrixRunners
+    })
+
+    expect(labels.length).toBeGreaterThan(0)
+    for (const label of labels) {
+      expect(retiredOrDeprecated).not.toContain(label)
     }
   })
 
