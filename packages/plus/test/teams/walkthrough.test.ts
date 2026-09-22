@@ -219,6 +219,13 @@ function dirExists(target: string): Promise<boolean> {
   )
 }
 
+// Age a worktree past policy.timeouts.startMs so the orphan sweep may reap it:
+// a younger directory may be mid-provision and is left alone.
+async function agePastStartMs(dir: string): Promise<void> {
+  const abandoned = new Date(Date.now() - defaultPolicy.timeouts.startMs - 60_000)
+  await fs.utimes(dir, abandoned, abandoned)
+}
+
 interface ListRows {
   rows: Array<{ id: string; label?: string; text?: string; badges?: string; source?: string }>
   total: number
@@ -669,6 +676,7 @@ test("[20g] one GC pass reaps a stale run and one orphan", async () => {
       await git(repo.dir, ["worktree", "add", "-b", "team/implementer/stale", reapDir, repo.head])
       await git(repo.dir, ["worktree", "add", "-b", "team/implementer/kept", keptDir, repo.head])
       await git(repo.dir, ["worktree", "add", "-b", "team/implementer/orphan", orphanDir, repo.head])
+      await agePastStartMs(orphanDir)
 
       const parentRun = baseRun({
         id: "main-0123456789abcdef",
