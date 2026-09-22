@@ -10,8 +10,10 @@ import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
 import { loadRun, saveRun, isAttemptTerminal, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
+import { integrateHandler } from "../../src/teams/api-integrate.js"
 import { stopHandler, stopRun, supersedeHandler } from "../../src/teams/api-lifecycle.js"
-import { onSessionIdle } from "../../src/teams/lifecycle.js"
+import { onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
+import { atomicJson } from "../../src/teams/store.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -637,6 +639,97 @@ test("stopRun on ready run sets stopRequested and returns accurate state ready",
     expect(stored?.stopRequested).toBe(true)
   })
 })
+
+test("a settle pass cannot resurrect a worktree another writer removed", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    const scratch = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-lifecycle-wt-"))
+    try {
+      const parent = baseRun({
+        id: "main-9876543210fedcba",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+        sessionID: "ses_parent_settle_001",
+        children: ["w-9999999999999999"],
+      })
+      const childDir = path.join(scratch, "child")
+      const childBranch = "team/muse-implementer/settle"
+      await git(repo.dir, ["worktree", "add", "-b", childBranch, childDir, repo.head])
+      await fs.writeFile(path.join(childDir, "child.txt"), "settled work\n")
+      await git(childDir, ["add", "-A"])
+      await git(childDir, ["commit", "-m", "feat: child settles and lands"])
+      const childHead = await git(childDir, ["rev-parse", "HEAD"])
+      const now = new Date().toISOString()
+      const child = baseRun({
+        id: "w-9999999999999999",
+        role: "muse-implementer",
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        directory: childDir,
+        branch: childBranch,
+        base: repo.head,
+        head: childHead,
+        parent: parent.id,
+        sessionID: "ses_child_settle_001",
+        worktree: "present",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), {
+        status: "done",
+        summary: "child finished",
+      })
+
+      // The settle pass reads the record first (worktree "present") and only
+      // then asks the host whether the session is alive. That liveness probe is
+      // the one seam between the read and the write, so the real integrate runs
+      // inside it: read (present) → landing removes the directory and marks it
+      // removed → the settle pass saves. The order is fixed by the probe; no
+      // timing or retry is involved.
+      const landing = { ok: false }
+      const sessions = {
+        get: (input: { sessionID: unknown }) => {
+          const id = String(input.sessionID)
+          if (id !== child.sessionID) return Effect.succeed({ id: Session.ID.make(id) })
+          return Effect.promise(async () => {
+            const integrated = await integrateHandler(
+              context({}),
+              { run: child.id, expectedParentHead: repo.head },
+              callerFor(parent),
+            )
+            landing.ok = integrated.ok
+            return undefined
+          })
+        },
+        wait: () => Effect.succeed(undefined),
+      } as unknown as SessionDomain
+
+      const dead = await reconcile(context({ session: sessions }), root)
+      expect(dead).toContain(child.id)
+
+      // integrate really landed the commit and really removed the directory.
+      expect(landing.ok).toBe(true)
+      expect(await fs.stat(childDir).then(() => false, () => true)).toBe(true)
+      expect(await git(repo.dir, ["rev-parse", childBranch])).toBe(childHead)
+
+      // The settle pass wrote its own fields from a record read before the
+      // landing, and the removal it did not own is not resurrected by that
+      // earlier "present".
+      const stored = await loadRun(root, child.id)
+      expect(stored?.state).toBe("dead")
+      expect(stored?.worktree).toBe("removed")
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true })
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
 
 test("waitHandler race timer does not hold process open when run settles during wait", async () => {
   const parentTmp = process.env.TMPDIR ?? os.tmpdir()
