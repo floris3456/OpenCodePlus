@@ -412,10 +412,21 @@ function runPath(root: string, id: string): string {
 }
 
 export async function saveRun(root: string, run: RunRecord): Promise<void> {
-  const toSave: RunRecord = run.worktree === undefined ? { ...run, worktree: "present" } : run
   const created = await lock(root, "state", run.id, async () => {
     const target = runPath(root, run.id)
-    const existed = await Bun.file(target).exists()
+    const stored = await readJson<RunRecord>(target)
+    const existed = stored !== undefined || (await Bun.file(target).exists())
+    // A stored "removed" is a one-way latch: the directory it names is gone,
+    // and a later full-record write must not put "present", "dirty" or an
+    // omitted field back over that fact. Only the worktree field is guarded —
+    // everything else the caller supplied is written unchanged, so this is a
+    // field-level guarantee, not a general lost-update fix.
+    const toSave: RunRecord =
+      stored?.worktree === "removed"
+        ? { ...run, worktree: "removed" }
+        : run.worktree === undefined
+          ? { ...run, worktree: "present" }
+          : run
     await atomicJson(target, toSave)
     return !existed
   })
