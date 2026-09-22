@@ -204,10 +204,11 @@ export function authorizeReleaseRequest(input: AuthorizeInput): RequestResult {
   if (!verifyPermit(permit, key))
     return refuse("bad_signature", `Permit ${permit.permitID} is not signed by ${permit.issuer}`)
 
-  const window = validityWindow(permit)
-  if (window === undefined) return refuse("malformed_permit", `Permit ${permit.permitID} has an unreadable validity window`)
+  const validity = validityWindow(permit)
+  if (validity === undefined)
+    return refuse("malformed_permit", `Permit ${permit.permitID} has an unreadable validity window`)
   const now = input.now ?? Date.now()
-  if (now < window.from || now >= window.until)
+  if (now < validity.from || now >= validity.until)
     return refuse("expired_permit", `Permit ${permit.permitID} is not valid at ${new Date(now).toISOString()}`)
 
   if (permit.requestID !== input.requestID)
