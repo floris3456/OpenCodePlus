@@ -8,7 +8,7 @@ import path from "node:path"
 import { context } from "../harness.js"
 import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
-import { loadRun, saveRun, isAttemptTerminal, type RunRecord } from "../../src/teams/run.js"
+import { loadRun, saveRun, isAttemptTerminal, type AttemptRecord, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
 import { stopHandler, stopRun, supersedeHandler } from "../../src/teams/api-lifecycle.js"
@@ -730,6 +730,58 @@ test("a settle pass cannot resurrect a worktree another writer removed", async (
     }
   })
 }, 30000)
+
+// A stored "removed" is a one-way latch at the saveRun boundary: any later
+// full-record write keeps the removal, whichever writer makes it, while every
+// other field that write supplied still lands. Each shape below carries an
+// unrelated change so the assertions also prove the write itself was applied
+// rather than discarded.
+test("a stale save with worktree present cannot take a stored removed back", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const removed = baseRun({ id: "w-removed-present-01", worktree: "removed" })
+    await saveRun(root, removed)
+    expect((await loadRun(root, removed.id))?.worktree).toBe("removed")
+
+    const movedHead = "1111111111111111111111111111111111111111"
+    await saveRun(root, { ...removed, worktree: "present", head: movedHead })
+
+    const stored = await loadRun(root, removed.id)
+    expect(stored?.worktree).toBe("removed")
+    expect(stored?.head).toBe(movedHead)
+  })
+})
+
+test("a stale save with worktree dirty cannot take a stored removed back", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const removed = baseRun({ id: "w-removed-dirty-001", worktree: "removed" })
+    await saveRun(root, removed)
+    expect((await loadRun(root, removed.id))?.worktree).toBe("removed")
+
+    const attempt: AttemptRecord = { n: 1, state: "queued", startedAt: new Date().toISOString(), trigger: "followup" }
+    await saveRun(root, { ...removed, worktree: "dirty", attempts: [attempt] })
+
+    const stored = await loadRun(root, removed.id)
+    expect(stored?.worktree).toBe("removed")
+    expect(stored?.attempts).toEqual([attempt])
+  })
+})
+
+test("a stale save that omits worktree cannot default a stored removed to present", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const removed = baseRun({ id: "w-removed-omitted-1", worktree: "removed" })
+    await saveRun(root, removed)
+    expect((await loadRun(root, removed.id))?.worktree).toBe("removed")
+
+    const withoutWorktree: RunRecord = { ...removed }
+    delete withoutWorktree.worktree
+    const bumped = new Date(Date.parse(removed.lastUsed) + 1000).toISOString()
+    await saveRun(root, { ...withoutWorktree, lastUsed: bumped })
+
+    const stored = await loadRun(root, removed.id)
+    expect(stored?.worktree).toBe("removed")
+    expect(stored?.lastUsed).toBe(bumped)
+  })
+})
 
 test("waitHandler race timer does not hold process open when run settles during wait", async () => {
   const parentTmp = process.env.TMPDIR ?? os.tmpdir()
