@@ -27,6 +27,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsgo --noEmit -p tsconfig.test.json",
+    "release:typecheck": "bun run script/release-typecheck.ts",
     "test": "bun test"
   },
   "dependencies": {
