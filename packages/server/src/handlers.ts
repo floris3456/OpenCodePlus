@@ -32,6 +32,8 @@ import { EventFeed } from "./event-feed"
 import { MigrationHandler } from "./handlers/migration"
 import { ConfigHandler } from "./handlers/config"
 import { WorkspaceHandler } from "./handlers/workspace"
+import { ReleaseHandler } from "./handlers/release"
+import { ReleaseRequestStore } from "@opencode/core/release/request"
 
 export const handlers = Layer.mergeAll(
   HealthHandler,
@@ -64,6 +66,7 @@ export const handlers = Layer.mergeAll(
   ReferenceHandler,
   WorktreeHandler,
   WorkspaceHandler,
+  ReleaseHandler.pipe(Layer.provide(ReleaseRequestStore.layer)),
   VcsHandler,
   ConfigHandler,
 )

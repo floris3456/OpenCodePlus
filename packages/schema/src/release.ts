@@ -13,6 +13,11 @@ const Hex64 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).annotate({
   description: "64-character lowercase hexadecimal hash",
 })
 
+const Hex128 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{128}$/)).annotate({
+  identifier: "Release.Hex128",
+  description: "128-character lowercase hexadecimal Ed25519 signature",
+})
+
 export const ReleaseTarget = Schema.Literals(["linux-arm64", "linux-x64", "darwin-arm64", "darwin-x64"]).annotate({
   identifier: "Release.Target",
 })
@@ -88,6 +93,75 @@ export const ReleaseRequest = Schema.Union([ReleaseBuildRequest, ReleasePromotio
 export type ReleaseRequest = typeof ReleaseRequest.Type
 export const Request = ReleaseRequest
 export type Request = ReleaseRequest
+
+/**
+ * One controller decision, signed out of band and presented to a running product.
+ * Every fact the authorized transition depends on is inside the signature: the
+ * request it authorizes, the exact request body (`requestDigest`), the exact
+ * artifact and the generation it replaces. A request therefore cannot widen what
+ * it was authorized for after the permit was issued. The product verifies permits
+ * against trusted issuer public keys and holds no key that can mint one.
+ */
+export const ReleaseControllerPermit = Schema.Struct({
+  permitID: Schema.String,
+  requestID: Schema.String,
+  requestDigest: Hex64,
+  artifactSha256: Hex64,
+  expectedGeneration: Schema.Int,
+  issuer: Schema.String,
+  issuedAt: Schema.String,
+  expiresAt: Schema.String,
+  signature: Hex128,
+}).annotate({ identifier: "Release.ControllerPermit" })
+export interface ReleaseControllerPermit extends Schema.Schema.Type<typeof ReleaseControllerPermit> {}
+export const ControllerPermit = ReleaseControllerPermit
+export type ControllerPermit = ReleaseControllerPermit
+
+export type ReleasePermitBody = Omit<ReleaseControllerPermit, "signature">
+export type PermitBody = ReleasePermitBody
+
+/**
+ * The exact bytes a controller signs for one permit. Issuer and verifier read the
+ * signed span from here so they cannot drift apart; the signature covers every
+ * permit field except itself.
+ */
+export function releasePermitPayload(body: ReleasePermitBody): string {
+  return JSON.stringify([
+    body.permitID,
+    body.requestID,
+    body.requestDigest,
+    body.artifactSha256,
+    body.expectedGeneration,
+    body.issuer,
+    body.issuedAt,
+    body.expiresAt,
+  ])
+}
+
+/**
+ * The exact bytes a request body is digested from for `ControllerPermit.requestDigest`.
+ * Deterministic by construction: object keys sort and absent values are omitted, so a
+ * permit issuer and a verifier in another process agree byte for byte. This is part of
+ * the wire contract, not a convenience, so it lives with the contract it binds.
+ */
+export function canonicalReleaseJson(value: unknown): string {
+  if (value === null) return "null"
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") return JSON.stringify(value)
+  if (typeof value === "undefined" || typeof value === "symbol" || typeof value === "function") return "null"
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalReleaseJson(item)).join(",")}]`
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>
+    const entries = Object.keys(record)
+      .sort()
+      .filter((key) => {
+        const item = record[key]
+        return item !== undefined && typeof item !== "function" && typeof item !== "symbol"
+      })
+      .map((key) => `${JSON.stringify(key)}:${canonicalReleaseJson(record[key])}`)
+    return `{${entries.join(",")}}`
+  }
+  return JSON.stringify(value)
+}
 
 export const ReleaseRequestState = Schema.Literals(["accepted", "rejected", "running", "completed", "failed"]).annotate({
   identifier: "Release.RequestState",

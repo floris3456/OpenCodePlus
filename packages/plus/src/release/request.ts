@@ -1,7 +1,13 @@
 import { Option, Schema } from "effect"
 import { createPublicKey, verify } from "node:crypto"
-import { ReleaseRequest, type ReleaseRequestStatus } from "@opencode/schema/release"
-import { digest } from "./identity.js"
+import {
+  canonicalReleaseJson,
+  ReleaseControllerPermit,
+  releasePermitPayload,
+  ReleaseRequest,
+  type ReleasePermitBody,
+  type ReleaseRequestStatus,
+} from "@opencode/schema/release"
 
 // The bounded release request surface. A caller may submit a promotion or build
 // intent and read its status; that is the whole product-facing vocabulary. This
@@ -12,34 +18,10 @@ import { digest } from "./identity.js"
 // way to mint one — a candidate-written flag, a model-signed blob or an empty
 // approval reference is not authority.
 
-const Hex64 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).annotate({
-  identifier: "Release.Hex64",
-})
-
-const Hex128 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{128}$/)).annotate({
-  identifier: "Release.Hex128",
-})
-
-/**
- * One controller decision, signed out of band. Every fact the transition depends
- * on is inside the signature: the request it authorizes, the exact request body
- * (`requestDigest`), the exact artifact and the generation it replaces. A request
- * therefore cannot widen what it was authorized for after the permit was issued.
- */
-export interface ControllerPermit extends Schema.Schema.Type<typeof ControllerPermit> {}
-export const ControllerPermit = Schema.Struct({
-  permitID: Schema.String,
-  requestID: Schema.String,
-  requestDigest: Hex64,
-  artifactSha256: Hex64,
-  expectedGeneration: Schema.Int,
-  issuer: Schema.String,
-  issuedAt: Schema.String,
-  expiresAt: Schema.String,
-  signature: Hex128,
-}).annotate({ identifier: "Release.ControllerPermit" })
-
-export type PermitBody = Omit<ControllerPermit, "signature">
+// The permit and the bytes it signs are wire contracts owned by @opencode/schema,
+// re-exported here so the existing plugin-side callers keep one import site.
+export type ControllerPermit = ReleaseControllerPermit
+export type PermitBody = ReleasePermitBody
 
 /** Trusted controller issuers, each mapped to an SPKI PEM verification key. */
 export interface ControllerTrust {
@@ -126,12 +108,12 @@ export function resetReleaseStore(): void {
 
 /** The canonical digest a controller signs to bind a permit to one exact request body. */
 export function releaseRequestDigest(request: ReleaseRequest): string {
-  return digest(request)
+  return new Bun.CryptoHasher("sha256").update(canonicalReleaseJson(request)).digest("hex")
 }
 
 /** The exact bytes a controller signs. Exported so an issuer and this verifier cannot drift. */
 export function permitSigningPayload(body: PermitBody): string {
-  return canonicalPermit(body)
+  return releasePermitPayload(body)
 }
 
 export function submitReleaseRequest(raw: unknown, options?: { readonly now?: number }): RequestResult {
@@ -139,7 +121,7 @@ export function submitReleaseRequest(raw: unknown, options?: { readonly now?: nu
   if (Option.isNone(decoded))
     return refuse("malformed_request", "Submitted value does not match the release request contract")
   const request = decoded.value
-  const fingerprint = digest(request)
+  const fingerprint = releaseRequestDigest(request)
   const existing = requests.get(request.requestID)
   if (existing !== undefined) {
     // A bounded retry reconciles the recorded request; only a changed body conflicts.
@@ -188,7 +170,7 @@ export function authorizeReleaseRequest(input: AuthorizeInput): RequestResult {
   if (input.permit === undefined || input.permit === null)
     return refuse("no_authority", `Release request ${input.requestID} was presented without a controller permit`)
 
-  const decoded = Schema.decodeUnknownOption(ControllerPermit)(input.permit)
+  const decoded = Schema.decodeUnknownOption(ReleaseControllerPermit)(input.permit)
   if (Option.isNone(decoded))
     return refuse("malformed_permit", "Presented value is not a controller permit")
   const permit = decoded.value
@@ -320,26 +302,13 @@ function isTerminal(state: ReleaseRequestStatus["state"]): boolean {
   return state === "completed" || state === "failed" || state === "rejected"
 }
 
-function canonicalPermit(body: PermitBody): string {
-  return JSON.stringify([
-    body.permitID,
-    body.requestID,
-    body.requestDigest,
-    body.artifactSha256,
-    body.expectedGeneration,
-    body.issuer,
-    body.issuedAt,
-    body.expiresAt,
-  ])
-}
-
 // A malformed key or a signature over the wrong curve throws rather than
 // returning false, and an unverifiable permit must never authorize anything.
 function verifyPermit(permit: ControllerPermit, key: string): boolean {
   try {
     return verify(
       null,
-      Buffer.from(canonicalPermit(permit), "utf8"),
+      Buffer.from(releasePermitPayload(permit), "utf8"),
       createPublicKey(key),
       Buffer.from(permit.signature, "hex"),
     )

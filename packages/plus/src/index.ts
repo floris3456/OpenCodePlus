@@ -22,6 +22,7 @@ import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
 import { apply, roleUpdates, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
+import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
 import { byDirectory } from "./teams/run.js"
@@ -3322,8 +3323,11 @@ async function installTooling(ctx: Context, state: PlusState): Promise<Registrat
   const api = createPlusApi(ctx, state)
   const teaching = await installTeaching(ctx)
   const tools = await registerInstructionTools(ctx, api)
+  // The release namespace records intents and reads them back; it grants no
+  // authority, so it installs with the rest of the tooling rather than behind one.
+  const release = await registerReleaseTools(ctx)
   const search = await registerSearchMcp(ctx)
-  return search !== undefined ? [...teaching, tools, search] : [...teaching, tools]
+  return search !== undefined ? [...teaching, tools, release, search] : [...teaching, tools, release]
 }
 
 function disposeTooling(state: PlusState): Effect.Effect<void> {
