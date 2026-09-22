@@ -1,0 +1,76 @@
+name: "setup-ocp"
+description: "Prepare OpenCode Plus build environment with pinned Bun and frozen lockfile"
+
+inputs:
+  bun-version:
+    description: "Exact Bun version to install (defaults to 1.4.2 from release/toolchain.json)"
+    required: false
+    default: "1.4.2"
+  expected-sha256:
+    description: "Expected SHA256 checksum of the Bun executable"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - name: Verify Bun executable SHA256
+      shell: bash
+      env:
+        EXPECTED_SHA_INPUT: ${{ inputs.expected-sha256 }}
+      run: |
+        BUN_BIN="$(which bun)"
+        if [ -z "$BUN_BIN" ] || [ ! -f "$BUN_BIN" ]; then
+          echo "::error::Bun executable not found on PATH"
+          exit 1
+        fi
+
+        if command -v sha256sum >/dev/null 2>&1; then
+          ACTUAL_SHA=$(sha256sum "$BUN_BIN" | awk '{print $1}')
+        else
+          ACTUAL_SHA=$(shasum -a 256 "$BUN_BIN" | awk '{print $1}')
+        fi
+
+        EXPECTED_SHA="$EXPECTED_SHA_INPUT"
+
+        # Fall back to release/toolchain.json if not provided
+        if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" = "null" ] || [ "$EXPECTED_SHA" = "TODO" ]; then
+          if [ -f "release/toolchain.json" ]; then
+            TOOLCHAIN_SHA=$(bun -e '
+              const tc = await Bun.file("release/toolchain.json").json()
+              const sha = tc?.bun?.executableSha256
+              if (sha && typeof sha === "string" && sha !== "null") process.stdout.write(sha)
+            ' 2>/dev/null || true)
+            if [ -n "$TOOLCHAIN_SHA" ]; then
+              EXPECTED_SHA="$TOOLCHAIN_SHA"
+            fi
+          fi
+        fi
+
+        # Fall back to measured linux-aarch64 pin when running on that architecture
+        if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" = "null" ] || [ "$EXPECTED_SHA" = "TODO" ]; then
+          OS="$(uname -s)"
+          ARCH="$(uname -m)"
+          if [ "$OS" = "Linux" ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; }; then
+            EXPECTED_SHA="616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1"
+          fi
+        fi
+
+        if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "null" ] && [ "$EXPECTED_SHA" != "TODO" ]; then
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Bun executable SHA256 mismatch! Expected: $EXPECTED_SHA, Got: $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Verified Bun executable SHA256 matches pinned value: $EXPECTED_SHA"
+        else
+          echo "Bun executable SHA256 unmeasured for this platform (measuredBy: build-seat). Computed: $ACTUAL_SHA"
+        fi
+
+    - name: Install dependencies (frozen)
+      shell: bash
+      run: bun install --frozen-lockfile

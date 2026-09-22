@@ -1,0 +1,65 @@
+name: ocp-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: "Type 'approve' to confirm publication of this immutable prerelease"
+        required: true
+        type: string
+      tag:
+        description: "Release tag name (e.g. v0.0.1-plus.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: publish immutable prerelease
+    runs-on: ubuntu-24.04
+    environment: ocp-release
+    steps:
+      - name: Verify approval input
+        shell: bash
+        run: |
+          if [ "${{ inputs.approval }}" != "approve" ]; then
+            echo "::error::Release publication requires explicit approval input ('approve'). Received: '${{ inputs.approval }}'"
+            exit 1
+          fi
+
+      - name: Download recorded release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ocp-release-assets
+          path: assets
+
+      - name: Verify checksums before publication
+        working-directory: assets
+        shell: bash
+        run: |
+          if [ ! -f "SHA256SUMS" ]; then
+            echo "::error::SHA256SUMS checksum file not found in downloaded release assets"
+            exit 1
+          fi
+          sha256sum -c SHA256SUMS
+
+      - name: Publish immutable prerelease to GitHub Releases
+        working-directory: assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.tag }}" \
+            --title "${{ inputs.tag }}" \
+            --prerelease \
+            --latest=false \
+            --notes "OpenCode Plus immutable prerelease ${{ inputs.tag }}" \
+            opencodeplus-linux-arm64.tar.gz \
+            opencodeplus-linux-x64.tar.gz \
+            opencodeplus-darwin-arm64.tar.gz \
+            opencodeplus-darwin-x64.tar.gz \
+            install.sh \
+            release.json \
+            SHA256SUMS
