@@ -1,4 +1,5 @@
 import { Global } from "@opencode/util/global"
+import { Product } from "@opencode/util/product"
 import { AppProcess } from "@opencode/util/process"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION } from "../version"
 import { Context, Duration, Effect, FileSystem, Layer, Ref, Schedule } from "effect"
@@ -29,6 +30,7 @@ export const pollUpdates = Effect.fnUntraced(function* (input: {
   readonly initialDelay?: Duration.Input
   readonly interval?: Duration.Input
 }) {
+  if (Product.namespace === "opencodeplus") return
   const interval = input.interval ?? "10 minutes"
   return yield* input.check.pipe(
     Effect.repeat(Schedule.spaced(interval)),
@@ -101,6 +103,7 @@ const make = Effect.gen(function* () {
   })
 
   const method = Effect.fnUntraced(function* () {
+    if (Product.namespace === "opencodeplus") return undefined
     const binary = path.join(
       global.home,
       ".opencode",
@@ -125,6 +128,7 @@ const make = Effect.gen(function* () {
   })
 
   const removal = (method: Method) => {
+    if (Product.namespace === "opencodeplus") return undefined
     if (method === "curl" || !installedPackage) return undefined
     const commands = {
       npm: ["npm", "uninstall", "--global", installedPackage],
@@ -165,7 +169,10 @@ const make = Effect.gen(function* () {
     return { package: data.metadata.package, version: data.version }
   })
 
-  const latest = () => release().pipe(Effect.map((data) => data.version))
+  const latest = () =>
+    Product.namespace === "opencodeplus"
+      ? Effect.fail(new Error("Self-update is disabled for OpenCodePlus"))
+      : release().pipe(Effect.map((data) => data.version))
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -173,6 +180,8 @@ const make = Effect.gen(function* () {
     )
 
   const upgrade = Effect.fnUntraced(function* (method: Method, input: string) {
+    if (Product.namespace === "opencodeplus")
+      return yield* Effect.fail(new Error("Self-update is disabled for OpenCodePlus"))
     if (!parseReleaseVersion(input)) return yield* Effect.fail(new Error(`Invalid version: ${input}`))
     const version = input.trim().replace(/^v/, "")
     const packageName = (yield* release()).package
@@ -219,6 +228,10 @@ const make = Effect.gen(function* () {
   })
 
   const inspect = Effect.fnUntraced(function* () {
+    if (Product.namespace === "opencodeplus") {
+      yield* Effect.logInfo("update check skipped", { reason: "opencodeplus-disabled" })
+      return undefined
+    }
     if (OPENCODE_LOCAL || ["1", "true"].includes(process.env.OPENCODE_DISABLE_AUTOUPDATE?.toLowerCase() ?? "")) {
       yield* Effect.logInfo("update check skipped", {
         reason: OPENCODE_LOCAL ? "local-install" : "disabled",
@@ -262,10 +275,17 @@ const make = Effect.gen(function* () {
   })
 
   const apply = Effect.fn("cli.updater.apply")(function* (version: string) {
+    if (Product.namespace === "opencodeplus")
+      return yield* Effect.fail(new Error("Self-update is disabled for OpenCodePlus"))
     if (!(yield* install(version))) return yield* Effect.fail(new Error("Installation method not found"))
   })
 
   const check = Effect.fn("cli.updater.check")(function* () {
+    if (Product.namespace === "opencodeplus")
+      return {
+        type: "unavailable" as const,
+        message: "Updates are disabled for OpenCodePlus.",
+      }
     if (OPENCODE_LOCAL)
       return {
         type: "unavailable" as const,
@@ -285,6 +305,7 @@ const make = Effect.gen(function* () {
 
   const run = Effect.fn("cli.updater.run")(
     function* () {
+      if (Product.namespace === "opencodeplus") return undefined
       const result = yield* inspect()
       if (!result) return undefined
       if (result.policy === "notify") return { type: "available" as const, version: result.version }

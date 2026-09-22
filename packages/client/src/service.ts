@@ -24,6 +24,24 @@ export type DiscoverOptions = {
 /** Reason ensuring the service requires a new process. */
 export type EnsureReason = "missing" | "version-mismatch"
 
+/** Reason a client refused automatic service replacement. */
+export type ServiceRefusalReason = "version-mismatch" | "timeout" | "unexpected-peer"
+
+/** Error thrown or failed with when automatic service replacement is refused. */
+export class ServiceRefusalError extends Error {
+  readonly _tag = "ServiceRefusalError" as const
+  readonly reason: ServiceRefusalReason
+  readonly info?: Info
+
+  constructor(reason: ServiceRefusalReason, message: string, info?: Info) {
+    super(message)
+    this.name = "ServiceRefusalError"
+    this.reason = reason
+    this.info = info
+    Object.setPrototypeOf(this, new.target.prototype)
+  }
+}
+
 /** Options used to ensure the local OpenCode service is running. */
 export type EnsureOptions = DiscoverOptions & {
   /** Service command and arguments. Defaults to `opencode serve --service`. */
@@ -34,6 +52,8 @@ export type EnsureOptions = DiscoverOptions & {
   readonly env?: Readonly<Record<string, string>>
   /** Called once before spawning a new service process. */
   readonly onStart?: (reason: EnsureReason, previousVersion?: string) => void
+  /** Whether automatic replacement of an incumbent service is permitted. Defaults to true for upstream, false for OpenCodePlus. */
+  readonly replace?: boolean
 }
 
 /** Options used to stop the local OpenCode service. */

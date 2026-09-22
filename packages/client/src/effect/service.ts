@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { DiscoverOptions, Endpoint, EnsureOptions, StopOptions } from "../service.js"
+import { ServiceRefusalError } from "../service.js"
 import {
   contenderFailure,
   contenderFinished,
@@ -52,6 +53,7 @@ export const incumbent = Effect.fn("service.incumbent")(function* (
 /** Ensure a healthy, compatible local service is running. */
 export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOptions = {}) {
   const timing = ensureTiming(options)
+  const allowReplacement = options.replace ?? !isPlusProduct()
   const contenders = new Set<ServiceContender>()
   let timeouts: { readonly info: Info; readonly count: number } | undefined
   let announced = false
@@ -85,6 +87,11 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
     const info = registration.info
     const service = registration.service
     if (registration.timedOut && info !== undefined) {
+      if (!allowReplacement) {
+        return yield* Effect.fail(
+          new ServiceRefusalError("timeout", "Background service is unresponsive; replacement refused", info),
+        )
+      }
       timeouts = {
         info,
         count: timeouts !== undefined && same(timeouts.info, info) ? timeouts.count + 1 : 1,
@@ -98,6 +105,22 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
         lastSpawn = Date.now() - spawnDelay
       }
     } else timeouts = undefined
+
+    if (registration.unexpectedPeer && info !== undefined) {
+      const running = yield* Effect.try({ try: () => process.kill(info.pid, 0), catch: () => false }).pipe(
+        Effect.orElseSucceed(() => false),
+      )
+      if (running && !allowReplacement) {
+        return yield* Effect.fail(
+          new ServiceRefusalError(
+            "unexpected-peer",
+            "Unexpected service peer encountered; replacement refused",
+            info,
+          ),
+        )
+      }
+    }
+
     if (service !== undefined) {
       pendingFailure = undefined
       spawnDelay = timing.spawnDelay
@@ -109,6 +132,17 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
       if (compatible && service.state === "failed")
         return yield* Effect.fail(new Error("Background service failed to start"))
       if (compatible) return Option.none<LocalService>()
+
+      if (!allowReplacement) {
+        return yield* Effect.fail(
+          new ServiceRefusalError(
+            "version-mismatch",
+            `Service version mismatch: running ${service.version ?? "unknown"}, replacement refused`,
+            service.info,
+          ),
+        )
+      }
+
       yield* announce("version-mismatch", service.version)
       if (!service.legacy && service.state !== "ready")
         yield* Effect.logWarning("Background service is not ready; replacement cannot preserve persistent terminals")
@@ -170,8 +204,14 @@ export const stop = Effect.fn("service.stop")(function* (options: StopOptions = 
 })
 
 function fallback() {
+  const app = isPlusProduct() ? "opencodeplus" : "opencode"
   const state = process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state")
-  return join(state, "opencode", "service.json")
+  return join(state, app, "service.json")
+}
+
+function isPlusProduct() {
+  const product = process.env["OPENCODE_PRODUCT"]
+  return product === "opencodeplus" || product === "plus"
 }
 
 /** Create HTTP authentication headers for a service endpoint. */
@@ -238,14 +278,14 @@ const probeResult = Effect.fnUntraced(function* (
         (cause: unknown) => ({ cause }),
       ),
   )
-  if ("cause" in result) return { service: undefined, timedOut: signal.aborted }
+  if ("cause" in result) return { service: undefined, timedOut: signal.aborted, unexpectedPeer: false }
   const response = result.value.response
   const body = result.value.body
   const health = decodeHealth(body)
   if (Option.isSome(health)) {
-    if (health.value.pid !== info.pid) return { service: undefined, timedOut: false }
+    if (health.value.pid !== info.pid) return { service: undefined, timedOut: false, unexpectedPeer: true }
     if (info.version !== undefined && health.value.version !== info.version)
-      return { service: undefined, timedOut: false }
+      return { service: undefined, timedOut: false, unexpectedPeer: true }
     return {
       service: {
         info,
@@ -255,6 +295,7 @@ const probeResult = Effect.fnUntraced(function* (
         legacy: false,
       } satisfies LocalService,
       timedOut: false,
+      unexpectedPeer: false,
     }
   }
   if (
@@ -262,16 +303,17 @@ const probeResult = Effect.fnUntraced(function* (
     Option.isNone(decodeLegacyHealth(body)) ||
     (typeof body === "object" && body !== null && ("version" in body || "pid" in body))
   )
-    return { service: undefined, timedOut: false }
+    return { service: undefined, timedOut: false, unexpectedPeer: true }
   return {
     service: { info, endpoint, state: "ready", legacy: true } satisfies LocalService,
     timedOut: false,
+    unexpectedPeer: false,
   }
 })
 
 const registered = Effect.fnUntraced(function* (file?: string, allowLegacy = false, timeout?: number) {
   const info = yield* read(file)
-  if (info === undefined) return { info: undefined, service: undefined, timedOut: false }
+  if (info === undefined) return { info: undefined, service: undefined, timedOut: false, unexpectedPeer: false }
   return { info, ...(yield* probeResult(info, allowLegacy, timeout)) }
 })
 
@@ -313,4 +355,4 @@ const terminate = Effect.fnUntraced(function* (info: Info, options: { readonly f
 })
 
 /** Effect-based local service lifecycle operations. */
-export const Service = { discover, incumbent, ensure, stop, headers, Info }
+export const Service = { discover, incumbent, ensure, stop, headers, Info, ServiceRefusalError }

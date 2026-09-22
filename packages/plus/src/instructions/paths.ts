@@ -1,14 +1,15 @@
 import os from "node:os"
 import path from "node:path"
+import { Product } from "@opencode/util/product"
 
-// Mirrors the global config resolution in @opencode/util without importing it:
-// an explicit OPENCODE_CONFIG_DIR override, else <XDG_CONFIG_HOME>/opencode,
-// else ~/.config/opencode.
+// Resolves global config from the shared Product identity:
+// an explicit OPENCODE_CONFIG_DIR override, else <XDG_CONFIG_HOME>/<Product.namespace>,
+// else ~/.config/<Product.namespace>.
 export function globalConfigDir(): string {
   const override = process.env.OPENCODE_CONFIG_DIR
   if (override) return override
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
-  return path.join(base, "opencode")
+  return path.join(base, Product.namespace)
 }
 
 export function projectRecordsPath(directory: string): string {
@@ -16,6 +17,9 @@ export function projectRecordsPath(directory: string): string {
 }
 
 export function globalRecordsPath(configDir: string = globalConfigDir()): string {
+  if (Product.namespace === "opencodeplus") {
+    return path.join(configDir, "instructions", "records.jsonl")
+  }
   return path.join(configDir, "opencodeplus", "instructions", "records.jsonl")
 }
 
@@ -24,6 +28,9 @@ export function projectLogPath(directory: string): string {
 }
 
 export function globalLogPath(configDir: string = globalConfigDir()): string {
+  if (Product.namespace === "opencodeplus") {
+    return path.join(configDir, "instructions", "log.jsonl")
+  }
   return path.join(configDir, "opencodeplus", "instructions", "log.jsonl")
 }
 
@@ -32,6 +39,9 @@ export function projectTeamsPath(directory: string): string {
 }
 
 export function globalTeamsPath(configDir: string = globalConfigDir()): string {
+  if (Product.namespace === "opencodeplus") {
+    return path.join(configDir, "teams")
+  }
   return path.join(configDir, "opencodeplus", "teams")
 }
 
@@ -40,7 +50,10 @@ export function globalTeamsPath(configDir: string = globalConfigDir()): string {
 // while .opencodeplus/ holds project-scoped instruction records only.
 export function teamsDataDir(): string {
   const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share")
-  return path.join(base, "opencode", "opencodeplus", "teams")
+  if (Product.namespace === "opencodeplus") {
+    return path.join(base, Product.namespace, "teams")
+  }
+  return path.join(base, Product.namespace, "opencodeplus", "teams")
 }
 
 // Only the path-confined delete types live here; creation result types stay
@@ -92,6 +105,9 @@ export function resolveInstructionPath(
 // discover.ts and apply.ts share them without a dependency cycle and without
 // hardcoding the strings twice.
 export function teachingFilePath(configDir: string = globalConfigDir()): string {
+  if (Product.namespace === "opencodeplus") {
+    return path.join(configDir, "instructions", "OPENCODEPLUS.md")
+  }
   return path.join(configDir, "opencodeplus", "instructions", "OPENCODEPLUS.md")
 }
 

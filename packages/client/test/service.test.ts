@@ -2,7 +2,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { expect, test } from "bun:test"
 import { Effect, FileSystem } from "effect"
 import { writeFile } from "node:fs/promises"
-import { Service, type EnsureReason } from "../src/effect/service"
+import { Service, type EnsureReason, ServiceRefusalError } from "../src/effect/service"
 import { serviceFixture } from "./fixture/service-fixture"
 import { accelerate } from "./fixture/service-timing"
 
@@ -307,6 +307,81 @@ test("replaces an incompatible owner that appears during startup", async () => {
   expect(endpoint.url).toBe(info.url)
   expect(info.version).toBe("test")
   await old.exited
+})
+
+test("refuses replacement on version mismatch and preserves incumbent process", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("incompatible")
+  await fixture.waitForFile()
+
+  const starts: EnsureReason[] = []
+  const failure = await run(
+    ensure({
+      file: registration,
+      version: (version) => version.startsWith("2."),
+      command: fixture.command("delayed-compatible", "10"),
+      replace: false,
+      onStart: (reason) => starts.push(reason),
+    }),
+  ).catch((error: unknown) => error)
+
+  expect(failure).toBeInstanceOf(ServiceRefusalError)
+  if (failure instanceof ServiceRefusalError) {
+    expect(failure.reason).toBe("version-mismatch")
+  }
+  expect(starts).toEqual([])
+  expect(existing.exitCode).toBe(null)
+})
+
+test("refuses replacement on timeout and preserves incumbent process", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("hanging")
+  await fixture.waitForFile()
+
+  const failure = await run(
+    ensure({
+      file: registration,
+      version: "test",
+      command: fixture.command("delayed", "10"),
+      replace: false,
+    }),
+  ).catch((error: unknown) => error)
+
+  expect(failure).toBeInstanceOf(ServiceRefusalError)
+  if (failure instanceof ServiceRefusalError) {
+    expect(failure.reason).toBe("timeout")
+  }
+  expect(existing.exitCode).toBe(null)
+})
+
+test("refuses replacement under OPENCODE_PRODUCT=opencodeplus by default", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("incompatible")
+  await fixture.waitForFile()
+
+  const oldEnv = process.env.OPENCODE_PRODUCT
+  try {
+    process.env.OPENCODE_PRODUCT = "opencodeplus"
+    const failure = await run(
+      ensure({
+        file: registration,
+        version: (version) => version.startsWith("2."),
+        command: fixture.command("delayed-compatible", "10"),
+      }),
+    ).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(ServiceRefusalError)
+    if (failure instanceof ServiceRefusalError) {
+      expect(failure.reason).toBe("version-mismatch")
+    }
+    expect(existing.exitCode).toBe(null)
+  } finally {
+    if (oldEnv === undefined) delete process.env.OPENCODE_PRODUCT
+    else process.env.OPENCODE_PRODUCT = oldEnv
+  }
 })
 
 function run<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) {

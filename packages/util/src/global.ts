@@ -8,27 +8,45 @@ import { Context, Effect, Layer } from "effect"
 import { roots } from "#global-roots"
 import { Flock } from "./flock.js"
 import { makeGlobalNode } from "./effect/app-node.js"
-
-const app = "opencode"
-const { data, cache, config, state, tmp } = roots(app)
+import { Product } from "./product.js"
 
 const paths = {
   get home() {
     return process.env.OPENCODE_TEST_HOME ?? os.homedir()
   },
-  data,
-  bin: path.join(cache, "bin"),
-  log: path.join(data, "log"),
-  repos: path.join(data, "repos"),
-  cache,
-  config,
-  state,
-  tmp,
+  get data() {
+    return roots(Product.namespace).data
+  },
+  get bin() {
+    return path.join(this.cache, "bin")
+  },
+  get log() {
+    return path.join(this.data, "log")
+  },
+  get repos() {
+    return path.join(this.data, "repos")
+  },
+  get cache() {
+    return roots(Product.namespace).cache
+  },
+  get config() {
+    return roots(Product.namespace).config
+  },
+  get state() {
+    return roots(Product.namespace).state
+  },
+  get tmp() {
+    return roots(Product.namespace).tmp
+  },
 }
 
 export const Path = paths
 
-Flock.setGlobal({ state })
+Flock.setGlobal({
+  get state() {
+    return Path.state
+  },
+})
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Global") {}
 
