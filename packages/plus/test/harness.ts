@@ -27,6 +27,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Skill } from "@opencode/schema/skill"
 import type { Tool } from "@opencode/schema/tool"
+import { Mcp } from "@opencode/schema/mcp"
 import { Effect, Schema, Stream, type Types } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -600,20 +601,20 @@ export interface McpHarness {
 // modeling McpClient.connect on every replaceServer; a server that stays
 // disabled across the rebuild never starts. Discovery reads inside
 // readTransform observe the rebuilt list.
-export function mcpHarness(initial: [string, { type: "remote"; url: string; disabled?: boolean }][]): McpHarness {
+export function mcpHarness(initial: [string, Mcp.ServerConfig][]): McpHarness {
   const upstream = new Map(initial.map(([name, config]) => [name, structuredClone(config)]))
   const installed: Array<Parameters<MCPDomain["transform"]>[0]> = []
   const counts = { starts: 0 }
-  function visible(): Map<string, { type: "remote"; url: string; disabled?: boolean }> {
-    const servers = new Map<string, { type: "remote"; url: string; disabled?: boolean }>()
+  function visible(): Map<string, Mcp.ServerConfig> {
+    const servers = new Map<string, Mcp.ServerConfig>()
     for (const [name, config] of upstream) servers.set(name, structuredClone(config))
     const editor = {
       list: () => Array.from(servers.entries()),
       get: (name: string) => servers.get(name),
-      set: (name: string, config: { type: "remote"; url: string; disabled?: boolean }) => {
+      set: (name: string, config: Mcp.ServerConfig) => {
         servers.set(name, structuredClone(config))
       },
-      update: (name: string, update: (config: { type: "remote"; url: string; disabled?: boolean }) => void) => {
+      update: (name: string, update: (config: Mcp.ServerConfig) => void) => {
         const current = servers.get(name)
         if (current) update(current)
       },
@@ -702,7 +703,7 @@ export function fullContext(options: {
   agents?: Agent.Info[]
   skills?: Skill.Info[]
   tools?: { id: string; description: string; options?: Tool.Info["options"] }[]
-  servers?: [string, { type: "remote"; url: string; disabled?: boolean }][]
+  servers?: [string, Mcp.ServerConfig][]
   hooks?: { current: number }
   models?: Model.Info[]
   templates?: { id: string; title: string; text: string }[]
