@@ -35,3 +35,8 @@ UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# Release and packaging outputs
+dist-release/
+release-assets/
+
