@@ -1278,9 +1278,9 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// R1 (reviewer counterexample): the announced-table checks never compared the
-// string table regions against the argv / trailing-record region. A one-entry
-// table (4 + 4 + 36 = 44 bytes) can therefore be announced over a 44-byte
+// Adversarial: the announced-table checks never compared the string table
+// regions against the argv / trailing-record region. A one-entry table
+// (4 + 4 + 36 = 44 bytes) can therefore be announced over a 44-byte
 // `--compile-exec-argv` string and canonicalization will rewrite the argv bytes
 // as if they were a chunk-token record, masking a real difference between two
 // binaries. These bytes are exactly what the pinned toolchain writes for the
