@@ -29,7 +29,10 @@
  *
  *   1. The buffer must be an executable with a Bun standalone payload:
  *      ELF64-LE with a `.bun` section, or Mach-O64-LE with `__BUN,__bun`.
- *      The section is bounds-checked and must lie inside a loadable segment.
+ *      The section is bounds-checked and must lie inside a loadable segment
+ *      that validates as one: an ELF `PT_LOAD` whose file range fits the file,
+ *      or a Mach-O `__BUN` segment whose own name and file range say so and
+ *      contain the section.
  *   2. The payload is `[u64 length][graph bytes][Offsets][trailer]`. The graph
  *      length, trailer, offsets struct and module table are parsed and
  *      bounds-checked against the section.
@@ -43,8 +46,10 @@
  *      `--compile-exec-argv` string with its NUL terminator as the last byte of
  *      the graph. The argv string and the builtin ranges are located from the
  *      parsed bytes, so every tail byte is accounted for. The announced string
- *      tables must be in bounds and disjoint from every module subrange, the
- *      module table, the builtin ranges and each other.
+ *      tables must be in bounds, must end in the data region before the module
+ *      table (the tail bytes are never a table region), and must be disjoint
+ *      from every module subrange, the module table, the builtin ranges and
+ *      each other.
  *   4. Only entries of that parsed string table are eligible, and only 8-bit
  *      ones: every entry is re-derived from its own bytes, reserved hash bits
  *      must be zero, the stored hash must equal `rapidhash(raw entry bytes) &
@@ -136,9 +141,13 @@ const ELF64_PH_FILESZ = 0x20
 const MACHO64_MAGIC_LE = 0xfeedfacf
 const MACHO_HEADER_BYTES = 32
 const MACHO_LC_SEGMENT_64 = 0x19
+const MACHO_BUN_SEGMENT_NAME = "__BUN"
 const MACHO_FILE_TYPE_EXECUTE = 2
 const MACHO_HEADER_NCMDS = 0x10
 const MACHO_HEADER_SIZEOFCMDS = 0x14
+const MACHO_SEGMENT_64_NAME = 0x08
+const MACHO_SEGMENT_64_FILEOFF = 0x28
+const MACHO_SEGMENT_64_FILESIZE = 0x30
 const MACHO_SEGMENT_64_NSECTS = 0x40
 const MACHO_SEGMENT_64_SECTIONS = 0x48
 const MACHO_SECTION_64_BYTES = 80
@@ -570,6 +579,12 @@ function locateElfBunPayload(bytes: Uint8Array): Located {
     if (readUint32LE(bytes, header + ELF64_PH_TYPE) !== ELF_PT_LOAD) continue
     const segmentOffset = readUint64(bytes, header + ELF64_PH_OFFSET)
     const segmentSize = readUint64(bytes, header + ELF64_PH_FILESZ)
+    // A PT_LOAD describes bytes the file must actually hold. Without this
+    // bound an out-of-file range would contain the section trivially and pass
+    // the containment test while describing nothing.
+    if (!fits(bytes, segmentOffset, segmentSize)) {
+      return malformedExecutable("ELF PT_LOAD segment file range is out of bounds")
+    }
     if (segmentOffset <= bunSection.offset && bunSection.offset + bunSection.size <= segmentOffset + segmentSize) {
       loadable = true
       break
@@ -600,17 +615,39 @@ function locateMachO64BunPayload(bytes: Uint8Array): Located {
     if (command === MACHO_LC_SEGMENT_64) {
       if (commandSize < MACHO_SEGMENT_64_SECTIONS) return malformedExecutable("Mach-O segment command is too short")
       const sectionCount = readUint32LE(bytes, cursor + MACHO_SEGMENT_64_NSECTS)
-      if (!fits(bytes, cursor + MACHO_SEGMENT_64_SECTIONS, sectionCount * MACHO_SECTION_64_BYTES)) return malformedExecutable("Mach-O segment sections are out of bounds")
+      // Section records belong to the load command that declares them: the
+      // array may not reach past the command's own size. Bounding it against
+      // the whole buffer instead lets an inflated count read later load
+      // commands as section headers.
+      if (sectionCount * MACHO_SECTION_64_BYTES > commandSize - MACHO_SEGMENT_64_SECTIONS) {
+        return malformedExecutable("Mach-O segment section records do not fit their load command")
+      }
       for (let section = 0; section < sectionCount; section += 1) {
         const header = cursor + MACHO_SEGMENT_64_SECTIONS + section * MACHO_SECTION_64_BYTES
         const sectionName = fixedCstringAt(bytes, header + MACHO_SECTION_64_NAME, 16)
         const segmentName = fixedCstringAt(bytes, header + MACHO_SECTION_64_SEGNAME, 16)
-        if (sectionName !== "__bun" || segmentName !== "__BUN") continue
+        if (sectionName !== "__bun" || segmentName !== MACHO_BUN_SEGMENT_NAME) continue
         if (bunSection !== null) return malformedExecutable("Mach-O contains more than one '__BUN,__bun' section")
-        bunSection = {
-          offset: readUint32LE(bytes, header + MACHO_SECTION_64_OFFSET),
-          size: readUint64(bytes, header + MACHO_SECTION_64_SIZE),
+        // A section header's `segname` is self-asserted. The section is only a
+        // Bun section if the load command it lives inside carries the expected
+        // name and a file range that contains it.
+        const enclosingSegmentName = fixedCstringAt(bytes, cursor + MACHO_SEGMENT_64_NAME, 16)
+        if (enclosingSegmentName !== MACHO_BUN_SEGMENT_NAME) {
+          return malformedExecutable(
+            `Mach-O '__BUN,__bun' section is declared in segment '${enclosingSegmentName}', not the '${MACHO_BUN_SEGMENT_NAME}' segment`,
+          )
         }
+        const segmentFileOffset = readUint64(bytes, cursor + MACHO_SEGMENT_64_FILEOFF)
+        const segmentFileSize = readUint64(bytes, cursor + MACHO_SEGMENT_64_FILESIZE)
+        if (!fits(bytes, segmentFileOffset, segmentFileSize)) {
+          return malformedExecutable("Mach-O segment file range is out of bounds")
+        }
+        const sectionOffset = readUint32LE(bytes, header + MACHO_SECTION_64_OFFSET)
+        const sectionSize = readUint64(bytes, header + MACHO_SECTION_64_SIZE)
+        if (sectionOffset < segmentFileOffset || sectionOffset + sectionSize > segmentFileOffset + segmentFileSize) {
+          return malformedExecutable("Mach-O '__BUN,__bun' section is not contained in its segment's file range")
+        }
+        bunSection = { offset: sectionOffset, size: sectionSize }
       }
     }
     cursor += commandSize
@@ -838,6 +875,18 @@ function parseGraph(
     }
     const start = payload.start + table.offset
     const end = start + table.length
+    // Every byte from the module table on is owned by the parsed module table
+    // and the pinned trailing records (content hashes, builtin record, table
+    // locators, startup count, argv and its NUL). A table that reaches into
+    // that region aliases them: an argv string could be announced as a string
+    // table and normalized. Measured on Bun 1.4.2 output, both tables always
+    // end at or before the module table.
+    if (table.offset + table.length > modules.offset) {
+      return locatorMalformed(
+        start,
+        `announced string table (${table.offset} + ${table.length}) does not end in the ${modules.offset}-byte data region before the module table`,
+      )
+    }
     const overlapsModule = moduleRanges.some((range) => start < range.end && range.start < end)
     if (overlapsModule) return locatorMalformed(start, "announced string table region overlaps a module subrange")
     const overlapsModules = start < modulesStart + modules.length && modulesStart < end
