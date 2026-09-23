@@ -9,6 +9,7 @@ const packages = [
   "util",
   "tui",
   "plus",
+  "plugin",
   "server",
   "protocol",
   "schema",
