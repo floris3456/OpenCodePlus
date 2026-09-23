@@ -28,12 +28,14 @@
  * pattern match over raw bytes:
  *
  *   1. The buffer must be an executable with a Bun standalone payload:
- *      ELF64-LE with `e_type` `ET_EXEC` and a `.bun` section, or Mach-O64-LE
- *      with filetype `MH_EXECUTE` and a `__BUN,__bun` section.
+ *      ELF64-LE with `e_type` `ET_EXEC`, an `e_machine` of a qualified ELF
+ *      target architecture, a header that describes an ELF64 image, and a
+ *      `.bun` section, or Mach-O64-LE with filetype `MH_EXECUTE` and a
+ *      `__BUN,__bun` section.
  *      The section is bounds-checked and must lie inside a loadable segment
- *      that validates as one: an ELF `PT_LOAD` whose file range fits the file,
- *      or a Mach-O `__BUN` segment whose own name and file range say so and
- *      contain the section.
+ *      that validates as one: an ELF `PT_LOAD` whose file range fits the file
+ *      and whose memory size is at least its file size, or a Mach-O `__BUN`
+ *      segment whose own name and file range say so and contain the section.
  *   2. The payload is `[u64 length][graph bytes][Offsets][trailer]`. The graph
  *      length, trailer, offsets struct and module table are parsed and
  *      bounds-checked against the section.
@@ -122,14 +124,20 @@ const ELFDATA2LSB = 1
 const ELF_FILE_TYPE_EXECUTE = 2
 const ELF_PROGBITS = 1
 const ELF_PT_LOAD = 1
+const ELF_MACHINE_X86_64 = 62
+const ELF_MACHINE_AARCH64 = 183
+const ELF_E_VERSION_CURRENT = 1
 const ELF64_HEADER_BYTES = 64
 const ELF64_PROGRAM_HEADER_BYTES = 56
 const ELF64_SECTION_HEADER_BYTES = 64
+const ELF64_TABLE_ALIGNMENT = 8
 const ELF64_SECTION_NAME_OFFSET = 0x00
 const ELF64_SECTION_TYPE_OFFSET = 0x04
 const ELF64_SECTION_OFFSET = 0x18
 const ELF64_SECTION_SIZE_OFFSET = 0x20
 const ELF64_E_TYPE = 0x10
+const ELF64_E_MACHINE = 0x12
+const ELF64_E_VERSION = 0x14
 const ELF64_E_PHOFF = 0x20
 const ELF64_E_PHENTSIZE = 0x36
 const ELF64_E_PHNUM = 0x38
@@ -137,9 +145,22 @@ const ELF64_E_SHOFF = 0x28
 const ELF64_E_SHENTSIZE = 0x3a
 const ELF64_E_SHNUM = 0x3c
 const ELF64_E_SHSTRNDX = 0x3e
+const ELF64_E_EHSIZE = 0x34
 const ELF64_PH_TYPE = 0x00
 const ELF64_PH_OFFSET = 0x08
 const ELF64_PH_FILESZ = 0x20
+const ELF64_PH_MEMSZ = 0x28
+
+/**
+ * `e_machine` values accepted for ELF containers. `release/contract.json`
+ * qualifies `linux-x64` and `linux-arm64`, which produce `EM_X86_64` (62) and
+ * `EM_AARCH64` (183). A set pinned to the locally measured value (183 on this
+ * arm64 host) would falsely refuse x64 release binaries, so the set follows
+ * the qualified target architectures rather than the build host. Both sides of
+ * a comparison are held to this set; a left/right disagreement in `e_machine`
+ * is a residual difference, never normalized away.
+ */
+const ELF_MACHINES: ReadonlySet<number> = new Set([ELF_MACHINE_X86_64, ELF_MACHINE_AARCH64])
 
 const MACHO64_MAGIC_LE = 0xfeedfacf
 const MACHO_HEADER_BYTES = 32
@@ -532,6 +553,20 @@ function locateElfBunPayload(bytes: Uint8Array): Located {
   if (fileType !== ELF_FILE_TYPE_EXECUTE) {
     return malformedExecutable(`ELF file type is ${fileType}, expected ${ELF_FILE_TYPE_EXECUTE}`)
   }
+  const machine = readUint16LE(bytes, ELF64_E_MACHINE)
+  if (!ELF_MACHINES.has(machine)) {
+    return malformedExecutable(
+      `ELF machine is ${machine}, expected ${ELF_MACHINE_X86_64} (EM_X86_64) or ${ELF_MACHINE_AARCH64} (EM_AARCH64)`,
+    )
+  }
+  const version = readUint32LE(bytes, ELF64_E_VERSION)
+  if (version !== ELF_E_VERSION_CURRENT) {
+    return malformedExecutable(`ELF header version is ${version}, expected ${ELF_E_VERSION_CURRENT}`)
+  }
+  const headerSize = readUint16LE(bytes, ELF64_E_EHSIZE)
+  if (headerSize !== ELF64_HEADER_BYTES) {
+    return malformedExecutable(`ELF header size is ${headerSize}, expected ${ELF64_HEADER_BYTES}`)
+  }
 
   const programHeaderOffset = readUint64(bytes, ELF64_E_PHOFF)
   const programHeaderSize = readUint16LE(bytes, ELF64_E_PHENTSIZE)
@@ -547,6 +582,16 @@ function locateElfBunPayload(bytes: Uint8Array): Located {
   if (sectionNameIndex >= sectionHeaderCount) return malformedExecutable("ELF section name table index is out of range")
   if (!fits(bytes, programHeaderOffset, programHeaderCount * programHeaderSize)) return malformedExecutable("ELF program header table is out of bounds")
   if (!fits(bytes, sectionHeaderOffset, sectionHeaderCount * sectionHeaderSize)) return malformedExecutable("ELF section header table is out of bounds")
+  if (programHeaderOffset % ELF64_TABLE_ALIGNMENT !== 0) {
+    return malformedExecutable(
+      `ELF program header table offset ${programHeaderOffset} is not ${ELF64_TABLE_ALIGNMENT}-byte aligned`,
+    )
+  }
+  if (sectionHeaderOffset % ELF64_TABLE_ALIGNMENT !== 0) {
+    return malformedExecutable(
+      `ELF section header table offset ${sectionHeaderOffset} is not ${ELF64_TABLE_ALIGNMENT}-byte aligned`,
+    )
+  }
 
   const nameHeader = sectionHeaderOffset + sectionNameIndex * sectionHeaderSize
   const namesStart = readUint64(bytes, nameHeader + ELF64_SECTION_OFFSET)
@@ -586,15 +631,24 @@ function locateElfBunPayload(bytes: Uint8Array): Located {
     if (readUint32LE(bytes, header + ELF64_PH_TYPE) !== ELF_PT_LOAD) continue
     const segmentOffset = readUint64(bytes, header + ELF64_PH_OFFSET)
     const segmentSize = readUint64(bytes, header + ELF64_PH_FILESZ)
+    const segmentMemorySize = readUint64(bytes, header + ELF64_PH_MEMSZ)
     // A PT_LOAD describes bytes the file must actually hold. Without this
     // bound an out-of-file range would contain the section trivially and pass
     // the containment test while describing nothing.
     if (!fits(bytes, segmentOffset, segmentSize)) {
       return malformedExecutable("ELF PT_LOAD segment file range is out of bounds")
     }
+    // The file range is a subset of the segment's in-memory image: a genuine
+    // ELF64 executable never declares p_memsz < p_filesz. Every PT_LOAD is
+    // held to this, including ones that do not contain '.bun', so the check
+    // cannot depend on which segment happens to be found first.
+    if (segmentMemorySize < segmentSize) {
+      return malformedExecutable(
+        `ELF PT_LOAD segment memory size ${segmentMemorySize} is smaller than its file size ${segmentSize}`,
+      )
+    }
     if (segmentOffset <= bunSection.offset && bunSection.offset + bunSection.size <= segmentOffset + segmentSize) {
       loadable = true
-      break
     }
   }
   if (!loadable) return malformedExecutable("ELF '.bun' section is not contained in any PT_LOAD segment")

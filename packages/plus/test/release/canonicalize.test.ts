@@ -42,6 +42,7 @@ const ENTRY = join(SOURCE_DIR, "entry.ts")
 const OUT_LEFT = join(scratch, "left")
 const OUT_RIGHT = join(scratch, "right")
 const OUT_DARWIN = join(scratch, "darwin")
+const OUT_LINUX_X64 = join(scratch, "linux-x64")
 const OUT_MANY_LEFT = join(scratch, "many-left")
 const OUT_MANY_RIGHT = join(scratch, "many-right")
 const OUT_ARGV = join(scratch, "argv")
@@ -64,6 +65,7 @@ interface RealBuilds {
   readonly left: Buffer
   readonly right: Buffer
   readonly darwin: Buffer
+  readonly linuxX64: Buffer
   readonly manyLeft: Buffer
   readonly manyRight: Buffer
   readonly argv: Buffer
@@ -145,6 +147,9 @@ beforeAll(() => {
     left: compile(OUT_LEFT),
     right: compile(OUT_RIGHT),
     darwin: compile(OUT_DARWIN, { target: "bun-darwin-arm64" }),
+    // The other qualified ELF architecture. This host is arm64, so a parser
+    // pinned to the locally measured `e_machine` would only be caught here.
+    linuxX64: compile(OUT_LINUX_X64, { target: "bun-linux-x64" }),
     manyLeft: compile(OUT_MANY_LEFT, { entry: manyEntry }),
     manyRight: compile(OUT_MANY_RIGHT, { entry: manyEntry }),
     argv: compile(OUT_ARGV, { extra: ["--compile-exec-argv", "--smol"] }),
@@ -481,6 +486,7 @@ describe("ELF file type (e_type)", () => {
       ["mixedLeft", builds.mixedLeft],
       ["mixedRight", builds.mixedRight],
       ["noBytecode", builds.noBytecode],
+      ["linuxX64", builds.linuxX64],
     ]
     const observed = fixtures.map(([name, bytes]) => ({ name, fileType: bytes.readUInt16LE(0x10) }))
     expect(observed).toEqual(fixtures.map(([name]) => ({ name, fileType: 2 })))
@@ -510,6 +516,198 @@ describe("ELF file type (e_type)", () => {
     }
     expect(comparison.rejection.code).toBe("executable-structure-malformed")
     expect(comparison.rejection.detail).toContain("file type is 1, expected 2")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The ELF header and program-header fields the parser reads, validated as one
+// coherent set rather than field by field. `e_machine` is not pinned to the
+// locally measured value: the ELF targets qualified in `release/contract.json`
+// are `linux-x64` (EM_X86_64, 62) and `linux-arm64` (EM_AARCH64, 183), and a
+// parser pinned to 183 alone would falsely refuse the x64 release binaries.
+// The remaining invariants (`e_version`, `e_ehsize`, table alignments) are
+// properties of a genuine ELF64 image, and a `PT_LOAD` must satisfy
+// `p_memsz >= p_filesz`. The pair tests below edit both members identically:
+// that is the shape that produced the false accepts, because identical
+// corruption leaves the two canonical images equal.
+// ---------------------------------------------------------------------------
+
+/** The `PT_LOAD` segment whose file range contains the '.bun' section. */
+function bunContainingLoad(bytes: Buffer): ElfProgramHeader {
+  const bun = requireElfSection(bytes, ".bun")
+  const load = elfProgramHeaders(bytes).find(
+    (header) =>
+      header.type === 1 &&
+      header.offset <= bun.offset &&
+      bun.offset + bun.size <= header.offset + header.fileSize,
+  )
+  if (!load) throw new Error("fixture has no PT_LOAD segment containing the '.bun' section")
+  return load
+}
+
+describe("ELF header and load-segment invariants (executable-structure-malformed)", () => {
+  test("every real ELF fixture satisfies the validated ELF64 invariants", () => {
+    const fixtures: [name: string, bytes: Buffer][] = [
+      ["left", builds.left],
+      ["right", builds.right],
+      ["manyLeft", builds.manyLeft],
+      ["manyRight", builds.manyRight],
+      ["argv", builds.argv],
+      ["argvLong", builds.argvLong],
+      ["builtinLeft", builds.builtinLeft],
+      ["builtinRight", builds.builtinRight],
+      ["mixedLeft", builds.mixedLeft],
+      ["mixedRight", builds.mixedRight],
+      ["noBytecode", builds.noBytecode],
+      ["linuxX64", builds.linuxX64],
+    ]
+    const observed = fixtures.map(([name, bytes]) => ({
+      name,
+      fileType: bytes.readUInt16LE(0x10),
+      machine: bytes.readUInt16LE(0x12),
+      version: bytes.readUInt32LE(0x14),
+      headerSize: bytes.readUInt16LE(0x34),
+      phoffAligned: Number(bytes.readBigUInt64LE(0x20)) % 8 === 0,
+      shoffAligned: Number(bytes.readBigUInt64LE(0x28)) % 8 === 0,
+      loadSegmentsValid: elfProgramHeaders(bytes)
+        .filter((header) => header.type === 1)
+        .every((header) => header.memorySize >= header.fileSize),
+    }))
+    expect(observed).toEqual(
+      fixtures.map(([name]) => ({
+        name,
+        fileType: 2,
+        machine: name === "linuxX64" ? 62 : 183,
+        version: 1,
+        headerSize: 64,
+        phoffAligned: true,
+        shoffAligned: true,
+        loadSegmentsValid: true,
+      })),
+    )
+  })
+
+  test("the qualified linux-x64 target is accepted, not refused as a foreign machine", () => {
+    expect(builds.linuxX64.readUInt16LE(0x12)).toBe(62)
+
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.linuxX64 })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    expect(parsed.structure.container).toBe("elf")
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: builds.linuxX64 })
+    if (!outcome.ok) throw new Error(`unexpected rejection: ${outcome.rejection.detail}`)
+    expect(outcome.records.length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("rejects a real ELF build whose e_machine is EM_NONE", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(0, 0x12)
+    expectMalformedElf(binary, "machine is 0, expected 62 (EM_X86_64) or 183 (EM_AARCH64)")
+  })
+
+  test("rejects an unqualified architecture even when the value is a real EM_* constant", () => {
+    const binary = Buffer.from(builds.left)
+    // EM_RISCV: a genuine machine, but not an architecture this release
+    // qualifies, so its binaries are refused rather than guessed at.
+    binary.writeUInt16LE(243, 0x12)
+    expectMalformedElf(binary, "machine is 243, expected")
+  })
+
+  test("rejects an identically edited EM_NONE pair instead of accepting it", () => {
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.right)
+    left.writeUInt16LE(0, 0x12)
+    right.writeUInt16LE(0, 0x12)
+
+    const leftOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const rightOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: right })
+    if (leftOutcome.ok || rightOutcome.ok) {
+      throw new Error("FALSE ACCEPT: an EM_NONE header was parsed as an executable")
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically edited EM_NONE binaries compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("machine is 0, expected")
+  })
+
+  test("rejects a real ELF build whose PT_LOAD memory size is smaller than its file size", () => {
+    const binary = Buffer.from(builds.left)
+    const load = bunContainingLoad(binary)
+    binary.writeBigUInt64LE(BigInt(load.fileSize - 1), load.header + 0x28)
+    expectMalformedElf(
+      binary,
+      `memory size ${load.fileSize - 1} is smaller than its file size ${load.fileSize}`,
+    )
+  })
+
+  test("rejects p_memsz < p_filesz on a PT_LOAD that does not contain '.bun'", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    const other = elfProgramHeaders(binary).find(
+      (header) =>
+        header.type === 1 &&
+        header.fileSize > 0 &&
+        !(header.offset <= bun.offset && bun.offset + bun.size <= header.offset + header.fileSize),
+    )
+    if (!other) throw new Error("fixture has no second PT_LOAD segment")
+    binary.writeBigUInt64LE(BigInt(other.fileSize - 1), other.header + 0x28)
+    expectMalformedElf(binary, "is smaller than its file size")
+  })
+
+  test("rejects an identically zeroed p_memsz pair instead of accepting it", () => {
+    // The reviewer's mutation on the real release pair: p_memsz := 0 in both
+    // members. The two binaries compared equivalent before this check existed.
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.right)
+    const leftLoad = bunContainingLoad(left)
+    const rightLoad = bunContainingLoad(right)
+    left.writeBigUInt64LE(0n, leftLoad.header + 0x28)
+    right.writeBigUInt64LE(0n, rightLoad.header + 0x28)
+
+    const leftOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const rightOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: right })
+    if (leftOutcome.ok || rightOutcome.ok) {
+      throw new Error("FALSE ACCEPT: a PT_LOAD with p_memsz 0 was parsed as an executable")
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically zeroed p_memsz binaries compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("memory size 0 is smaller than its file size")
+  })
+
+  test("rejects an ELF header version that is not EV_CURRENT", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt32LE(0, 0x14)
+    expectMalformedElf(binary, "header version is 0, expected 1")
+  })
+
+  test("rejects an ELF header that does not declare the ELF64 header size", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(63, 0x34)
+    expectMalformedElf(binary, "header size is 63, expected 64")
+  })
+
+  test("rejects an unaligned ELF program header table offset", () => {
+    const binary = Buffer.from(builds.left)
+    const aligned = Number(binary.readBigUInt64LE(0x20))
+    binary.writeBigUInt64LE(BigInt(aligned + 1), 0x20)
+    expectMalformedElf(binary, "program header table offset")
+    expectMalformedElf(binary, "is not 8-byte aligned")
+  })
+
+  test("rejects an unaligned ELF section header table offset", () => {
+    const binary = Buffer.from(builds.left)
+    const aligned = Number(binary.readBigUInt64LE(0x28))
+    if (aligned < 8) throw new Error("fixture section header table offset is unexpectedly small")
+    binary.writeBigUInt64LE(BigInt(aligned - 7), 0x28)
+    expectMalformedElf(binary, "section header table offset")
+    expectMalformedElf(binary, "is not 8-byte aligned")
   })
 })
 
@@ -1591,6 +1789,7 @@ interface ElfProgramHeader {
   readonly type: number
   readonly offset: number
   readonly fileSize: number
+  readonly memorySize: number
 }
 
 /** Read the program headers of a real ELF fixture the way the parser does. */
@@ -1606,6 +1805,7 @@ function elfProgramHeaders(bytes: Buffer): ElfProgramHeader[] {
       type: bytes.readUInt32LE(header),
       offset: Number(bytes.readBigUInt64LE(header + 0x08)),
       fileSize: Number(bytes.readBigUInt64LE(header + 0x20)),
+      memorySize: Number(bytes.readBigUInt64LE(header + 0x28)),
     })
   }
   return headers
