@@ -17,10 +17,12 @@
  *   - `packages/plus/test/teams/roles.test.ts` proves built-in role ceilings (shell only for
  *     orchestrators).
  *
- * Two dimensions cannot be fully proven from an in-process unit seat and are reported to the
- * parent: PTY allocation is not routed through the Environment seam, and the executable-plugin
- * loading path that resolves host filesystem targets is a second reported finding. Both are named
- * in the test bodies and in the report, with the operational gate each one needs.
+ * For accepted security residuals and open findings that cannot be closed from an in-process unit
+ * seat — including repository-local git filter and transport execution vectors, PTY allocation
+ * routing, and host-plane executable plugin loading — see `packages/plus/docs/releases/contracts.md`
+ * ("Known Security Residuals"). That document serves as the single source of truth for documented
+ * residuals, owner decisions, and evidence, rather than duplicating or restating them here where
+ * they could drift.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
