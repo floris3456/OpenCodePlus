@@ -790,7 +790,7 @@ describe("executable plugins: executor-controlled configuration cannot load a mo
       content: JSON.stringify({ plugins: [allowed] }),
     })
     // The refused document really was read: the canary would be vacuous if it were merely absent.
-    expect(product.documents).toContain(join(location, "opencode.json"))
+    expect(product.documents).toContain(AbsolutePath.make(join(location, "opencode.json")))
     expect(await Bun.file(refusedSentinel).exists()).toBe(false)
     expect(selected(product.inventory, "canary-refused")).toBe(false)
     expect(selected(product.inventory, "canary-allowed")).toBe(true)
@@ -823,7 +823,7 @@ describe("executable plugins: executor-controlled configuration cannot load a mo
     // The workspace really was bound and its document really was read: the refusal is not a
     // side effect of a document that never reached the plugin source.
     expect(product.placement).toBe("workspace")
-    expect(product.documents).toContain(join(location, "opencode.json"))
+    expect(product.documents).toContain(AbsolutePath.make(join(location, "opencode.json")))
     expect(await Bun.file(refusedSentinel).exists()).toBe(false)
     expect(selected(product.inventory, "canary-placed-refused")).toBe(false)
     expect(selected(product.inventory, "canary-placed-allowed")).toBe(true)
