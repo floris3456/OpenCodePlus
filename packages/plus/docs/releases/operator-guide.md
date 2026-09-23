@@ -124,9 +124,9 @@ A safe production rollback requires a coordinated five-phase transition:
 
 1. **Identity**: The target release directory `<prefix>/releases/<target-version>/` must exist in immutable local storage, with valid `metadata.json` and a matching binary SHA-256 hash.
 2. **Authorization**: An artifact-specific `ReleaseControllerPermit` must be issued and signed by a trusted issuer public key configured in the host's trust anchor (`<config>/release/controller.json`).
-3. **Quiescence and Fencing**: The permit is submitted to the controller authorization seam (`POST /api/release/authorize`), engaging Core session admission fencing (`SessionAdmission.engage`) to block new session requests and allowing in-flight session work to drain to an idle boundary.
+3. **Quiescence and Fencing**: The permit is submitted alongside the request to the controller authorization seam via the `x-opencode-release-permit` HTTP header (`POST /api/release/request`), engaging Core session admission fencing (`SessionAdmission.engage`) to block new session requests and allowing in-flight session work to drain to an idle boundary.
 4. **Fenced Activation**: While the admission fence is held and active sessions are drained, the activation symlink `<prefix>/bin/opencodeplus` is atomically updated and the background daemon is restarted with the rolled-back binary.
-5. **Settlement**: After verifying that the new daemon is healthy and running the target version, the controller calls `POST /api/release/settle` with the authorization token to mark the request completed and release the session admission fence.
+5. **Settlement**: After verifying that the new daemon is healthy and running the target version, the controller calls `POST /api/release/request/:requestID/settle` with the authorization token (`token`) to mark the request completed and release the session admission fence.
 
 ### Operational Status in This Source Repository
 
@@ -141,17 +141,52 @@ Live rollback operations must be escalated to the **workspace controller operato
 If and only if the daemon is completely stopped and confirmed idle (for example, disaster recovery or initial deployment repair where kernel state confirms no background process is running):
 
 1. **Verify daemon quiescence via kernel state**:
+   Cold rollback requires affirmative proof that no daemon process is running and no service port remains bound. Absent or unreadable evidence fails the check immediately rather than being assumed quiescent.
+
    ```bash
-   REG="$HOME/.local/state/opencodeplus/service.json"
-   if [ -f "$REG" ]; then
-     PID=$(jq -r .pid "$REG" 2>/dev/null || true)
-     if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
-       echo "ERROR: Service daemon is still running (PID $PID). Cold rollback is forbidden on a running system."
+   STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/opencodeplus"
+   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencodeplus"
+   REG="$STATE_DIR/service.json"
+   CONFIG="$CONFIG_DIR/service.json"
+
+   # 1. Require registration evidence; missing or corrupt registration fails
+   if [ ! -f "$REG" ]; then
+     echo "ERROR: Service registration file ($REG) is absent. Cannot verify daemon quiescence from absent evidence."
+     exit 1
+   fi
+   if ! jq -e '.pid and .url' "$REG" >/dev/null 2>&1; then
+     echo "ERROR: Service registration file ($REG) is corrupt or unreadable. Cannot verify daemon quiescence."
+     exit 1
+   fi
+
+   PID=$(jq -r .pid "$REG")
+   REG_URL=$(jq -r .url "$REG")
+
+   # 2. Derive configured service port (fail if configuration file exists but is unreadable/corrupt)
+   PORT=""
+   if [ -f "$CONFIG" ]; then
+     if ! jq -e . "$CONFIG" >/dev/null 2>&1; then
+       echo "ERROR: Service configuration file ($CONFIG) is corrupt or unreadable."
        exit 1
      fi
+     PORT=$(jq -r '.port // empty' "$CONFIG")
    fi
-   # Verify port is closed
-   ss -tulpn | grep -q :49374 && { echo "ERROR: Port 49374 is still bound."; exit 1; }
+   if [ -z "$PORT" ]; then
+     PORT=$(echo "$REG_URL" | grep -oE '[0-9]+$')
+   fi
+   PORT="${PORT:-49374}"
+
+   # 3. Verify daemon PID is absent from kernel state
+   if [ -d "/proc/$PID" ]; then
+     echo "ERROR: Service daemon is still running (PID $PID). Cold rollback is forbidden on a running system."
+     exit 1
+   fi
+
+   # 4. Verify derived service port is not bound
+   if ss -tulpn 2>/dev/null | grep -qE ":$PORT\b"; then
+     echo "ERROR: Service port $PORT is still bound. Cold rollback is forbidden while port is in use."
+     exit 1
+   fi
    ```
 
 2. **Verify target release integrity**:
@@ -223,7 +258,7 @@ Submitting a promotion or rollback intent via the model-facing `release.request`
   `<config>/release/controller.json` (under `$HOME/.config/opencodeplus/release/controller.json` or `$XDG_CONFIG_HOME/opencodeplus/release/controller.json`).
 - Core verifies the permit's cryptographic signature, expiration window, `requestID`, `requestDigest`, `expectedGeneration`, and `artifactSha256` (`packages/core/src/release/request.ts` lines 304–358).
 - Upon authorization, Core engages session admission fencing (`SessionAdmission.engage`) to block new session work during the transition.
-- Once the controller finishes activating the binary and restarting the daemon, it issues `POST /api/release/settle` with the authorization token to mark the request `"completed"` and release the admission fence.
+- Once the controller finishes activating the binary and restarting the daemon, it issues `POST /api/release/request/:requestID/settle` with the authorization token to mark the request `"completed"` and release the admission fence.
 
 ---
 
@@ -333,38 +368,17 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
      opencodeplus service start
      ```
 
-  3. **Case 3: Process is verified from kernel state as an owned OpenCode Plus daemon, but is unresponsive/wedged**:
+  3. **Case 3: Process is unresponsive or wedged**:
      - Attempt clean shutdown via CLI first:
        ```bash
        opencodeplus service stop
        ```
-     - If the CLI fails to stop it and the process remains wedged, verify kernel ownership and executable identity immediately before sending any signal:
-       ```bash
-       EXE_TARGET=$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)
-       OWNER_UID=$(stat -c %u "/proc/$PID" 2>/dev/null || echo -1)
-       if [ "$OWNER_UID" = "$(id -u)" ] && [[ "$EXE_TARGET" == *"/opencodeplus"* ]]; then
-         # Send SIGTERM for graceful shutdown
-         kill -TERM "$PID"
-         # Poll kernel state up to 10 seconds for clean termination
-         for i in $(seq 1 10); do
-           [ ! -d "/proc/$PID" ] && break
-           sleep 1
-         done
-         # Only if kernel state confirms the process is still running after grace period,
-         # re-verify identity before SIGKILL (to protect against PID recycling during sleep)
-         if [ -d "/proc/$PID" ]; then
-           RECHECK_EXE=$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)
-           if [ "$RECHECK_EXE" = "$EXE_TARGET" ]; then
-             kill -KILL "$PID"
-           else
-             echo "ERROR: PID $PID identity changed during grace period; refusing to send SIGKILL."
-           fi
-         fi
-       else
-         echo "ERROR: Kernel ownership or executable verification failed; refusing to signal PID $PID."
-       fi
-       ```
-     - Remove the registration file only after `/proc/$PID` is verified absent:
+     - **Direct Signaling of an Unresponsive Daemon Is Unavailable and Prohibited**:
+       If `opencodeplus service stop` fails and the process remains running, an operator shell cannot establish authoritative task ownership and idleness. Verifying a UID match and matching executable pathname substrings (`*opencodeplus*`) proves only that a process belongs to the current user and executes an OpenCode binary; it does **not** establish task ownership in the workspace nor that the runtime is confirmed idle.
+       Sending `SIGTERM` or `SIGKILL` without authoritative proof of task ownership and idleness violates workspace standing rules (§C Processes: *"Stop only owned, confirmed-idle test or worker runtimes. Never kill by executable name, and never restart unrelated hosts"*).
+     - **Escalation**:
+       Wedged service daemon incidents must be escalated to the **workspace controller operator** (or host supervisor). The controller operator holds supervisor context across runs, can inspect active task ownership, drain or fence dependent work, and perform an authorized, controlled process termination via workspace supervisor tooling (`bin/team`).
+     - Once the controller operator has resolved the wedged process and kernel state confirms `/proc/$PID` is absent, remove the stale registration file and start the service:
        ```bash
        [ ! -d "/proc/$PID" ] && rm -f "$HOME/.local/state/opencodeplus/service.json"
        opencodeplus service start
@@ -379,9 +393,11 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
      To configure a different port: opencode service set port <port>
      ```
      (Pinned by `packages/cli/test/service.test.ts` line 359: *"unrelated managed port occupancy reports an actionable conflict"*).
-  2. Identify which process has bound the port (default port is `49374` / `0xc0de`):
+  2. Identify which process has bound the port:
      ```bash
-     lsof -i :49374 || ss -tulpn | grep :49374
+     CONFIG="$HOME/.config/opencodeplus/service.json"
+     PORT=$(jq -r '.port // 49374' "$CONFIG" 2>/dev/null || echo "49374")
+     lsof -i :"$PORT" || ss -tulpn | grep ":$PORT"
      ```
 - **Remediation**:
   - **Option 1 (Reconfigure OpenCode Plus port)**:
@@ -392,42 +408,9 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
     opencodeplus service start
     ```
     (Pinned by `packages/cli/test/service.test.ts` lines 290–315: *"configured managed service port overrides the channel default"*).
-  - **Option 2 (Terminate confirmed-idle, owned orphaned occupant)**:
-    Before signaling any port occupant, the operator must verify from kernel state that the process is an owned, orphaned, idle OpenCode Plus test or worker runtime.
-    **Never terminate an unverified process or kill by executable name.**
-
-    1. **Derive identity and ownership from kernel state**:
-       ```bash
-       OCCUPANT_PID=<occupant-pid>
-       # Check ownership
-       [ "$(stat -c %u "/proc/$OCCUPANT_PID" 2>/dev/null)" = "$(id -u)" ] || {
-         echo "ERROR: Process $OCCUPANT_PID is not owned by current user. Termination is forbidden."
-         exit 1
-       }
-       # Check executable identity
-       OCCUPANT_EXE=$(readlink -f "/proc/$OCCUPANT_PID/exe" 2>/dev/null || true)
-       echo "Occupant executable: $OCCUPANT_EXE"
-       case "$OCCUPANT_EXE" in
-         *opencodeplus*|*bun*|*node*) ;;
-         *) echo "ERROR: Process $OCCUPANT_PID is not an OpenCode runtime. Termination is forbidden."; exit 1 ;;
-       esac
-       # Check command line and environment
-       tr '\0' ' ' < "/proc/$OCCUPANT_PID/cmdline" 2>/dev/null; echo ""
-       ```
-    2. **Unavailability / Prohibition**:
-       If the occupant is not an owned, confirmed-idle test/worker runtime (for example, another team member's active worker, a system daemon, or an unrelated developer tool), **terminating it is STRICTLY FORBIDDEN**.
-       The operator must use **Option 1 (Port Reconfiguration)** instead.
-    3. **Controlled termination of verified occupant**:
-       If ownership, idle status, and runtime identity are confirmed:
-       ```bash
-       kill -TERM "$OCCUPANT_PID"
-       for i in $(seq 1 10); do
-         [ ! -d "/proc/$OCCUPANT_PID" ] && break
-         sleep 1
-       done
-       [ ! -d "/proc/$OCCUPANT_PID" ] || { echo "Occupant failed to exit cleanly on SIGTERM."; exit 1; }
-       opencodeplus service start
-       ```
+  - **Option 2 (Escalate for Occupant Resolution)**:
+    Terminating a port occupant from an operator shell is **unavailable and prohibited**. An operator shell cannot authoritatively prove task ownership or idleness of an occupant process; matching executable paths or substrings (`*opencodeplus*`, `*bun*`, `*node*`) does not establish an owned, idle runtime.
+    If the occupant cannot be identified or if port reconfiguration (Option 1) is not viable, escalate to the **workspace controller operator** to verify task ownership across workspace runs and safely stop the occupant.
 
 ### Scenario D: Active Release Directory Is Damaged
 

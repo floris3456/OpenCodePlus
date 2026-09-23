@@ -18,11 +18,15 @@
  *     orchestrators).
  *
  * For accepted security residuals and open findings that cannot be closed from an in-process unit
- * seat — including repository-local git filter and transport execution vectors, PTY allocation
- * routing, and host-plane executable plugin loading — see `packages/plus/docs/releases/contracts.md`
- * ("Known Security Residuals"). That document serves as the single source of truth for documented
- * residuals, owner decisions, and evidence, rather than duplicating or restating them here where
- * they could drift.
+ * seat:
+ *   - Owner-accepted residuals (repository-local git filters and remote transport execution) are
+ *     documented under "Known Security Residuals" in `packages/plus/docs/releases/contracts.md`.
+ *   - Open, unaccepted findings barring publication (PTY allocation routing, host-plane executable
+ *     plugin loading, and attribute-selected merge drivers) are documented separately under
+ *     "Open Security Findings" in `packages/plus/docs/releases/contracts.md`.
+ * That document serves as the single source of truth for documented residuals, open findings,
+ * owner decisions, and evidence, rather than duplicating or restating them here where they could
+ * drift.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
