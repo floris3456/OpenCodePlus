@@ -45,7 +45,7 @@ jobs:
       - name: release-bindings
         id: release-bindings
         working-directory: packages/plus
-        run: bun test test/release/model-pins.test.ts test/release/check-binding.test.ts test/release/placement.test.ts test/release/requests.test.ts test/teams/checks.test.ts
+        run: bun test test/release/model-pins.test.ts test/release/check-binding.test.ts test/release/placement.test.ts test/release/canaries.test.ts test/release/requests.test.ts test/teams/checks.test.ts
 
       - name: service-clients
         id: service-clients
