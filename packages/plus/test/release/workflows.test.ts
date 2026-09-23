@@ -441,6 +441,80 @@ describe("release publication workflow (ocp-release.yml)", () => {
       }
     }
   })
+
+  test("fetches the recorded release assets from the named build run, not this run", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+
+    // This workflow builds nothing, so the bundle can only come from another run.
+    // The run id is a required dispatch input instead of a value defaulted by the
+    // action, which would look in this run and never find the bundle.
+    const dispatch = doc.on?.workflow_dispatch as
+      | { inputs?: Record<string, { required?: boolean }> }
+      | undefined
+    expect(dispatch?.inputs?.run_id).toBeDefined()
+    expect(dispatch?.inputs?.run_id?.required).toBe(true)
+
+    const steps = doc.jobs?.publish?.steps ?? []
+    const downloadStep = steps.find((s) => s.uses?.includes("download-artifact"))
+    expect(downloadStep).toBeDefined()
+    expect(downloadStep?.with?.name).toBe("ocp-release-assets")
+
+    // `actions/download-artifact` defaults `run-id` to the current run when the
+    // input is absent. Binding it to the dispatch input is what keeps this a
+    // cross-run download; the token carries the actions: read permission it needs.
+    expect(downloadStep?.with?.["run-id"]).toBe("${{ inputs.run_id }}")
+    expect(String(downloadStep?.with?.["github-token"])).toMatch(
+      /\$\{\{\s*(github\.token|secrets\.GITHUB_TOKEN)\s*\}\}/,
+    )
+  })
+
+  test("verifies the named build run's repository, workflow, conclusion, and commit before downloading", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const steps = doc.jobs?.publish?.steps ?? []
+
+    const guardIndex = steps.findIndex((s) => s.name === "Verify build run identity for tag")
+    const downloadIndex = steps.findIndex((s) => s.uses?.includes("download-artifact"))
+    expect(guardIndex).toBeGreaterThan(-1)
+    expect(downloadIndex).toBeGreaterThan(-1)
+    expect(guardIndex).toBeLessThan(downloadIndex)
+
+    const guard = steps[guardIndex]
+    expect(guard.shell).toBe("bash")
+    expect(guard.env?.RELEASE_TAG).toBe("${{ inputs.tag }}")
+    expect(guard.env?.BUILD_RUN_ID).toBe("${{ inputs.run_id }}")
+
+    const run = guard.run ?? ""
+
+    // The tag's commit is resolved from the repository rather than trusted from
+    // the dispatch input, so the run cannot be checked against the wrong commit.
+    expect(run).toContain("gh api")
+    expect(run).toContain("commits/${RELEASE_TAG}")
+    expect(run).toContain("tag_sha")
+
+    // The named run is queried and checked for repository, workflow, conclusion,
+    // and head commit; a run started from the tag's own ref is required too, so a
+    // branch build of the same commit cannot supply a differently versioned bundle.
+    expect(run).toContain("actions/runs/${BUILD_RUN_ID}")
+    expect(run).toContain("run_repository")
+    expect(run).toContain("ocp-build")
+    expect(run).toContain("conclusion")
+    expect(run).toContain("head_sha")
+    expect(run).toContain("head_branch")
+    expect(run).toContain("success")
+
+    // Each rejected condition is an annotated failure, and the step stops there.
+    const errorAnnotations = run.match(/::error::/g) ?? []
+    expect(errorAnnotations.length).toBeGreaterThanOrEqual(5)
+    expect(run).toContain("exit 1")
+  })
+
+  test("grants contents: write and actions: read, and no other permission", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+
+    // contents: write publishes the release; actions: read resolves the build run
+    // and lets download-artifact fetch that run's artifact. Nothing else is needed.
+    expect(doc.permissions).toEqual({ contents: "write", actions: "read" })
+  })
 })
 
 describe("upstream inventory workflow (ocp-upstream-inventory.yml)", () => {
