@@ -9,7 +9,7 @@ import {
   ReleaseRequest,
   ReleaseRequestStatus,
 } from "@opencode/schema/release"
-import { eq } from "drizzle-orm"
+import { eq, like } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { createHash, createPublicKey, verify } from "node:crypto"
 import { readFile } from "node:fs/promises"
@@ -122,7 +122,8 @@ const decodePermit = Schema.decodeUnknownOption(ReleaseControllerPermit)
 
 const untrusted: ControllerAnchor = { generation: 0, issuers: {} }
 
-const requestKey = (requestID: string) => `release:request:${requestID}`
+const requestPrefix = "release:request:"
+const requestKey = (requestID: string) => `${requestPrefix}${requestID}`
 const permitKey = (permitID: string) => `release:permit:${permitID}`
 
 export const layer = Layer.effect(
@@ -206,6 +207,47 @@ export const layer = Layer.effect(
 
     const moment = (now: number | undefined) =>
       now === undefined ? Clock.currentTimeMillis : Effect.succeed(now)
+
+    // A promotion replaces this process, so the replacement rebuilds this store over
+    // the same durable records. A request still running from the process that
+    // authorized it must find its fence engaged again here, before this store admits
+    // anything, or the replacement would silently reopen admission while a release is
+    // in flight. Re-engaging with the recorded token — the permit ID authorize used —
+    // keeps a later settle from the controller matching its holder. A running request
+    // whose fence cannot be re-engaged is an outcome this process cannot explain, so
+    // it refuses to construct rather than admit work into a session being replaced.
+    const running = yield* db
+      .select({ value: KVTable.value })
+      .from(KVTable)
+      .where(like(KVTable.key, `${requestPrefix}%`))
+      .all()
+      .pipe(Effect.orDie)
+    yield* Effect.forEach(
+      running.flatMap((row) => {
+        const stored = Option.getOrUndefined(decodeStored(row.value))
+        return stored !== undefined && stored.status.state === "running" ? [stored] : []
+      }),
+      (stored) =>
+        Effect.gen(function* () {
+          if (stored.token === null)
+            return yield* Effect.die(
+              new Error(
+                `Release request ${stored.status.requestID} is running without a recorded permit; session admission cannot be re-engaged`,
+              ),
+            )
+          const engaged = SessionAdmission.engage({
+            token: stored.token,
+            reason: `release promotion ${stored.status.requestID}`,
+          })
+          if (!engaged.ok)
+            return yield* Effect.die(
+              new Error(
+                `Session admission could not be re-engaged for release request ${stored.status.requestID}: ${engaged.message}`,
+              ),
+            )
+        }),
+      { discard: true },
+    )
 
     return Service.of({
       submit: Effect.fn("ReleaseRequestStore.submit")(function* (input) {

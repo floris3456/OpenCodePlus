@@ -6408,6 +6408,27 @@ export type ReleaseStatusInput = { readonly requestID: { readonly requestID: str
 
 export type ReleaseStatusOutput = ReleaseRequestStatus
 
+export type ReleaseSettleInput = {
+  readonly requestID: { readonly requestID: string }["requestID"]
+  readonly token: {
+    readonly token: string
+    readonly outcome: "completed" | "failed" | "rejected"
+    readonly detail?: string | undefined
+  }["token"]
+  readonly outcome: {
+    readonly token: string
+    readonly outcome: "completed" | "failed" | "rejected"
+    readonly detail?: string | undefined
+  }["outcome"]
+  readonly detail?: {
+    readonly token: string
+    readonly outcome: "completed" | "failed" | "rejected"
+    readonly detail?: string | undefined
+  }["detail"]
+}
+
+export type ReleaseSettleOutput = ReleaseRequestStatus
+
 export type VcsGetInput = {
   readonly location?: {
     readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined

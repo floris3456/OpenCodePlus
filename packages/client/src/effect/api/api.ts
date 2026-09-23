@@ -2095,9 +2095,25 @@ export type ReleaseStatusOutput = {
 }
 export type ReleaseStatusOperation<E = never> = (input: ReleaseStatusInput) => Effect.Effect<ReleaseStatusOutput, E>
 
+export type ReleaseSettleInput = {
+  readonly requestID: string
+  readonly token: string
+  readonly outcome: "completed" | "failed" | "rejected"
+  readonly detail?: string | undefined
+}
+export type ReleaseSettleOutput = {
+  readonly requestID: string
+  readonly state: "accepted" | "rejected" | "running" | "completed" | "failed"
+  readonly generation: number
+  readonly detail: string | null
+  readonly observedAt: string
+}
+export type ReleaseSettleOperation<E = never> = (input: ReleaseSettleInput) => Effect.Effect<ReleaseSettleOutput, E>
+
 export interface ReleaseApi<E = never> {
   readonly request: ReleaseRequestOperation<E>
   readonly status: ReleaseStatusOperation<E>
+  readonly settle: ReleaseSettleOperation<E>
 }
 
 export type VcsGetInput = {
