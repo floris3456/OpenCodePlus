@@ -142,9 +142,7 @@ Crucially, these entries are **not** accepted vectors and are kept strictly dist
 
 ## Open Security Findings (Unaccepted Vectors Barring Publication)
 
-Unlike the owner-accepted residuals and dispositioned deferrals above, the following open finding has **not** been accepted by the workspace owner. It represents an unaccepted boundary risk that currently bars release publication until formally addressed or scoped by an explicit owner decision:
+There are currently no open, unaccepted security findings barring release publication.
 
-### Host-Plane Executable Plugin Loading
-
-While canary assertions (`packages/plus/test/release/canaries.test.ts`) verify that placed stdio MCP servers are refused by the workspace plane, plugin tools cannot execute without an authorizing permission service, and the plugin host cannot assemble without the durable release store, dynamic host-plane executable plugin loading remains an open finding. Executable plugins that run host-plane code without process isolation or sandboxing remain an unaccepted boundary risk barring release publication pending plugin sandboxing or a scoped owner decision.
+> **Note (Closed Findings)**: Dynamic host-plane executable plugin loading (formerly tracked as an open finding barring publication) was closed in source by enforcing host-plane provenance on executable plugin configuration and refusing executor-controlled configuration discovered during upward project directory walks. Host PTY allocation is tracked as owner-dispositioned accepted residual [F3](#f3--host-pty-allocation) above.
 

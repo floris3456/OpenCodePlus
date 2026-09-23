@@ -47,7 +47,7 @@ Config sources are loaded in this order (later sources override earlier ones):
 2. **Global config** (`~/.config/opencode/opencode.json`) - user preferences
 3. **Custom config** (`OPENCODE_CONFIG` env var) - custom overrides
 4. **Project config** (`opencode.json` in project) - project-specific settings
-5. **`.opencode` directories** - agents, commands, plugins
+5. **`.opencode` directories** - agents, commands, tools
 6. **Inline config** (`OPENCODE_CONFIG_CONTENT` env var) - runtime overrides
 7. **Managed config files** (`/Library/Application Support/opencode/` on macOS) - admin-controlled
 8. **macOS managed preferences** (`.mobileconfig` via MDM) - highest priority, not user-overridable
@@ -55,7 +55,7 @@ Config sources are loaded in this order (later sources override earlier ones):
 This means project configs can override global defaults, and global configs can override remote organizational defaults. Managed settings override everything.
 
 :::note
-The `.opencode` and `~/.config/opencode` directories use **plural names** for subdirectories: `agents/`, `commands/`, `modes/`, `plugins/`, `skills/`, `tools/`, and `themes/`. Singular names (e.g., `agent/`) are also supported for backwards compatibility.
+The `.opencode` and `~/.config/opencode` directories use **plural names** for subdirectories: `agents/`, `commands/`, `modes/`, `plugins/` (global only), `skills/`, `tools/`, and `themes/`. Singular names (e.g., `agent/`) are also supported for backwards compatibility.
 :::
 
 ---
@@ -138,9 +138,9 @@ Custom config is loaded between global and project configs in the precedence ord
 ### Custom directory
 
 Specify a custom config directory using the `OPENCODE_CONFIG_DIR`
-environment variable. This directory will be searched for agents, commands,
-modes, and plugins just like the standard `.opencode` directory, and should
-follow the same structure.
+environment variable. This directory overrides the global config directory
+(`~/.config/opencode`) and will be searched for agents, commands,
+modes, and plugins following the same structure.
 
 ```bash
 export OPENCODE_CONFIG_DIR=/path/to/my/config-directory
@@ -798,14 +798,21 @@ You can configure MCP servers you want to use through the `mcp` option.
 
 [Plugins](/docs/plugins) extend OpenCode with custom tools, hooks, and integrations.
 
-Place plugin files in `.opencode/plugins/` or `~/.config/opencode/plugins/`. You can also load plugins from npm through the `plugin` option.
+Executable plugins are loaded only from trusted host-level sources:
 
-```json title="opencode.json"
+- **Global configuration**: `~/.config/opencode/opencode.json` (or `~/.config/opencode/plugins/`)
+- **Explicit custom config**: A config file specified via the `OPENCODE_CONFIG` environment variable
+- **Inline config**: Host-injected configuration via the `OPENCODE_CONFIG_CONTENT` environment variable
+- **Remote configuration**: Organizational defaults via `.well-known/opencode`
+
+```json title="~/.config/opencode/opencode.json"
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-helicone-session", "@my-org/custom-plugin"]
 }
 ```
+
+Project-local and repository-local declarations do not load executable plugins. Defining `plugin` in a project-level `opencode.json` or placing files in a project `.opencode/plugins/` directory is refused and will not execute; configuration documents discovered through the upward project directory walk cannot select executable modules.
 
 [Learn more here](/docs/plugins).
 
