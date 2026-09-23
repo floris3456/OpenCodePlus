@@ -71,7 +71,7 @@ import {
 } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
-import { provision, slug } from "./worktree.js"
+import { provision, slug, NO_REPOSITORY_HOOKS } from "./worktree.js"
 
 export interface TeamApiError {
   readonly code: string
@@ -702,6 +702,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
       const cached = await gitRaw(record.directory, ["diff", "--cached", "--quiet"])
       if (cached.code === 0) return false
       await git(record.directory, [
+        ...NO_REPOSITORY_HOOKS,
         "-c",
         `user.name=team/${record.role}`,
         "-c",

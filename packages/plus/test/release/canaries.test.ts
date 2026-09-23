@@ -18,10 +18,9 @@
  *     orchestrators).
  *
  * Two dimensions cannot be fully proven from an in-process unit seat and are reported to the
- * parent: PTY allocation is not routed through the Environment seam, and the product's git
- * operations do not neutralize planted hooks. The executable-plugin loading path that resolves
- * host filesystem targets is a third reported finding. All three are named in the test bodies and
- * in the report, with the operational gate each one needs.
+ * parent: PTY allocation is not routed through the Environment seam, and the executable-plugin
+ * loading path that resolves host filesystem targets is a second reported finding. Both are named
+ * in the test bodies and in the report, with the operational gate each one needs.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
@@ -45,6 +44,7 @@ import { Credential } from "../../../core/src/credential.js"
 import { Environment } from "../../../core/src/environment/index.js"
 import { EnvironmentService } from "../../../core/src/environment/environment.js"
 import { EnvironmentUnavailable } from "../../../core/src/environment/unavailable.js"
+import { Git } from "../../../core/src/git.js"
 import { InstructionDiscovery } from "../../../core/src/instruction-discovery.js"
 import { Instructions } from "../../../core/src/instructions/index.js"
 import { Location } from "../../../core/src/location.js"
@@ -60,8 +60,12 @@ import { Workspace } from "../../../core/src/workspace.js"
 import { WorkspaceDriver } from "../../../core/src/workspace/driver.js"
 import { PtyEnvironment } from "../../../server/src/pty-environment.js"
 import { spawn } from "../../../core/src/pty/pty.workerd.js"
+import { context } from "../harness.js"
+import { createState } from "../../src/index.js"
+import { createTeamApi } from "../../src/teams/api.js"
 import { execute } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
+import { type RunRecord } from "../../src/teams/run.js"
 import { create } from "../../src/teams/worktree.js"
 
 const repoRoot = join(import.meta.dirname, "../../../..")
@@ -666,7 +670,12 @@ describe("executable plugins, tools, and MCP: placement does not load host code"
 describe("git hooks: repository operations on an executor worktree", () => {
   const SENTINEL_NAME = "hook-sentinel"
 
-  const initHostileRepo = async (path: string, sentinel: string): Promise<void> => {
+  const plantHook = async (directory: string, name: string, sentinel: string): Promise<void> => {
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, name), `#!/bin/sh\necho ran > ${JSON.stringify(sentinel)}\n`, { mode: 0o755 })
+  }
+
+  const initRepo = async (path: string): Promise<void> => {
     await mkdir(path, { recursive: true })
     await git(path, ["init", "-b", "main"])
     await git(path, ["config", "user.email", "canary@test.local"])
@@ -674,13 +683,73 @@ describe("git hooks: repository operations on an executor worktree", () => {
     await writeFile(join(path, "README.md"), "fixture\n")
     await git(path, ["add", "README.md"])
     await git(path, ["commit", "-m", "chore: fixture commit"])
+  }
+
+  const initHostileRepo = async (path: string, sentinel: string): Promise<void> => {
+    await initRepo(path)
     const hooks = join(path, ".git", "hooks")
-    await mkdir(hooks, { recursive: true })
-    for (const name of ["pre-commit", "post-checkout"]) {
-      await writeFile(join(hooks, name), `#!/bin/sh\necho ran > ${JSON.stringify(sentinel)}\n`, { mode: 0o755 })
+    for (const name of ["pre-commit", "prepare-commit-msg", "post-commit", "post-checkout"]) {
+      await plantHook(hooks, name, sentinel)
     }
     // Repo-local config so an ambient global core.hooksPath cannot mask the planted hook.
     await git(path, ["config", "core.hooksPath", hooks])
+  }
+
+  // The checkpoint handler resolves its state root from XDG_DATA_HOME, like the
+  // real host: a per-test root keeps its locks and run records out of the real
+  // teams data directory.
+  const withTeamsRoot = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+    const prior = process.env.XDG_DATA_HOME
+    process.env.XDG_DATA_HOME = join(scratch, `teams-${label}`)
+    try {
+      return await fn()
+    } finally {
+      if (prior === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = prior
+    }
+  }
+
+  const checkpointRun = (repo: string, head: string, id: string): RunRecord => {
+    const at = new Date(0).toISOString()
+    return {
+      id,
+      role: "muse-implementer",
+      kind: "w",
+      repo: "opencode",
+      repoKey: "canary-repo",
+      directory: repo,
+      paths: ["notes/*"],
+      branch: "team/canary/hooks",
+      base: head,
+      head,
+      state: "working",
+      attempts: [],
+      task: null,
+      parent: null,
+      children: [],
+      briefSha: "canary",
+      bundle: "canary",
+      budget: {},
+      createdAt: at,
+      lastUsed: at,
+      sessionID: "ses_canary_hooks",
+      configDigest: null,
+      history: [],
+    }
+  }
+
+  /** A real checkpoint through the team API for a run whose directory is the hostile repo. */
+  const checkpoint = async (repo: string, record: RunRecord, label: string) => {
+    await mkdir(join(repo, "notes"), { recursive: true })
+    await writeFile(join(repo, "notes", "canary.md"), "# canary\n")
+    return withTeamsRoot(label, async () => {
+      const result = await createTeamApi(context(), createState()).checkpoint(
+        { expectedHead: record.head, files: ["notes/canary.md"], message: "test: canary checkpoint" },
+        { sessionID: "ses_canary_hooks", agent: "muse-implementer", run: record },
+      )
+      if (!result.ok) throw new Error(`checkpoint failed: ${result.error.code} ${result.error.message}`)
+      return result.value
+    })
   }
 
   test("the check executor's own repository inspection runs no planted hook", async () => {
@@ -699,21 +768,17 @@ describe("git hooks: repository operations on an executor worktree", () => {
   })
 
   /**
-   * Finding, reported to the parent: the product's worktree provisioning runs `git worktree add`
-   * with no hook neutralization (packages/plus/src/teams/worktree.ts createLocked), and git runs
-   * the repository's `post-checkout` hook for worktree add. An executor that can write the shared
-   * repository's hook files (or its repo-local core.hooksPath) therefore runs code in the host
-   * plane during the next provisioning. This test documents the open escape: when the host adds
-   * neutralization (for example `-c core.hooksPath=<empty>` or `--no-checkout` plus an explicit
-   * checkout), flip the assertion to `false`. The operational gate must prove the property on the
-   * real host with a real shared repository.
+   * Canary: a task executor can write the shared repository's `.git/hooks`, and the next
+   * host-plane provisioning must not execute that script. The assertion is the positive
+   * property — the worktree is checked out and no sentinel appears — so this fails if the
+   * hook neutralization or the `-c core.hooksPath` precedence it relies on is ever removed.
    */
-  test("finding: worktree provisioning still runs a planted post-checkout hook", async () => {
+  test("worktree provisioning runs no planted post-checkout hook", async () => {
     const repo = join(scratch, "hooks-worktree-repo")
     const sentinel = join(scratch, `worktree-${SENTINEL_NAME}`)
     await initHostileRepo(repo, sentinel)
 
-    await create(join(scratch, "worktree-state"), {
+    const created = await create(join(scratch, "worktree-state"), {
       repoRoot: repo,
       repoKey: "canary-repo",
       role: "muse-implementer",
@@ -722,7 +787,81 @@ describe("git hooks: repository operations on an executor worktree", () => {
       workspaceRoot: join(scratch, "worktree-workspace"),
     })
 
+    // The checkout really happened, so an unneutralized post-checkout would have run.
+    expect(await Bun.file(join(created.dir, "README.md")).exists()).toBe(true)
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: the core Git seam is the same exposure — `Git.worktree.create`
+   * provisions a linked worktree in the shared repository. The checkout must
+   * happen without running the planted post-checkout hook.
+   */
+  test("the core Git worktree seam runs no planted post-checkout hook", async () => {
+    const repo = join(scratch, "hooks-core-repo")
+    const sentinel = join(scratch, `core-${SENTINEL_NAME}`)
+    const linked = join(scratch, "hooks-core-linked")
+    await initHostileRepo(repo, sentinel)
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* Git.Service
+          const repository = yield* service.repo.discover(AbsolutePath.make(repo))
+          if (repository === undefined) throw new Error("the hostile repository did not discover")
+          yield* service.worktree.create({ repository, directory: AbsolutePath.make(linked) })
+        }),
+      ).pipe(Effect.provide(LayerNode.compile(Git.node))),
+    )
+
+    expect(await Bun.file(join(linked, "README.md")).exists()).toBe(true)
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: the commit path, including the hooks `--no-verify` does not cover
+   * (`post-commit`) and the ones it does (`pre-commit`, `prepare-commit-msg`).
+   * The control proves the planted hooks run and that `--no-verify` alone is not
+   * a complete fix; the checkpoint then commits through the real handler.
+   */
+  test("checkpoint runs no planted commit hook", async () => {
+    const repo = join(scratch, "hooks-commit-repo")
+    const sentinel = join(scratch, `commit-${SENTINEL_NAME}`)
+    await initHostileRepo(repo, sentinel)
+
+    await git(repo, ["commit", "--no-verify", "--allow-empty", "-m", "chore: hook control"])
     expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const head = await git(repo, ["rev-parse", "HEAD"])
+    const value = await checkpoint(repo, checkpointRun(repo, head, "w-ca9a9a9a9a9a9a9a"), "commit")
+    expect(value).toMatchObject({ committed: true })
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: a repository-local `core.hooksPath` pointing at an attacker-controlled
+   * directory, with no hook under `.git/hooks`. `--no-verify` cannot see this
+   * redirection, so only neutralized hook discovery keeps the commit clean.
+   */
+  test("a repository-local core.hooksPath cannot redirect a checkpoint's hooks", async () => {
+    const repo = join(scratch, "hooks-redirect-repo")
+    const attackerHooks = join(scratch, "attacker-hooks")
+    const sentinel = join(scratch, `redirect-${SENTINEL_NAME}`)
+    await initRepo(repo)
+    for (const name of ["pre-commit", "prepare-commit-msg", "post-commit"]) {
+      await plantHook(attackerHooks, name, sentinel)
+    }
+    await git(repo, ["config", "core.hooksPath", attackerHooks])
+
+    await git(repo, ["commit", "--no-verify", "--allow-empty", "-m", "chore: redirect control"])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const head = await git(repo, ["rev-parse", "HEAD"])
+    const value = await checkpoint(repo, checkpointRun(repo, head, "w-dbdbdbdbdbdbdbdb"), "redirect")
+    expect(value).toMatchObject({ committed: true })
+    expect(await Bun.file(sentinel).exists()).toBe(false)
   })
 })
 
