@@ -65,6 +65,7 @@ import { createState } from "../../src/index.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { execute } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
+import { drain, enqueue } from "../../src/teams/merge.js"
 import { type RunRecord } from "../../src/teams/run.js"
 import { create } from "../../src/teams/worktree.js"
 
@@ -695,6 +696,139 @@ describe("git hooks: repository operations on an executor worktree", () => {
     await git(path, ["config", "core.hooksPath", hooks])
   }
 
+  // The hooks the integrate path can reach: `worktree add` runs post-checkout,
+  // `rebase` runs pre-rebase/post-rewrite (and post-checkout through the merge
+  // backend's checkout), and `merge --ff-only` runs post-merge.
+  const INTEGRATE_HOOKS = ["post-checkout", "pre-rebase", "post-rewrite", "post-merge"]
+
+  const plantIntegrateHooks = async (hooks: string, label: string): Promise<Record<string, string>> => {
+    const sentinels: Record<string, string> = {}
+    for (const name of INTEGRATE_HOOKS) {
+      const sentinel = join(scratch, `integrate-${label}-${name}-${SENTINEL_NAME}`)
+      await plantHook(hooks, name, sentinel)
+      sentinels[name] = sentinel
+    }
+    return sentinels
+  }
+
+  const firedHooks = async (sentinels: Record<string, string>): Promise<Record<string, boolean>> => {
+    const fired: Record<string, boolean> = {}
+    for (const [name, sentinel] of Object.entries(sentinels)) fired[name] = await Bun.file(sentinel).exists()
+    return fired
+  }
+
+  interface IntegrateFixture {
+    repo: string
+    state: string
+    workspace: string
+    parent: string
+    parentHead: string
+    childBranch: string
+    childHead: string
+    sentinels: Record<string, string>
+  }
+
+  /**
+   * A hostile fixture for the integrate path. The parent worktree is a commit
+   * ahead of the child, so the child genuinely replays onto a new base and a
+   * no-op rebase cannot mask a missing post-rewrite hook. `redirect` plants the
+   * hooks in an external directory named by the repository-local
+   * `core.hooksPath` instead of `.git/hooks`.
+   */
+  const integrateFixture = async (label: string, redirect: boolean): Promise<IntegrateFixture> => {
+    const repo = join(scratch, `integrate-${label}`)
+    await initRepo(repo)
+    const start = await git(repo, ["rev-parse", "HEAD"])
+    const parent = join(scratch, `integrate-${label}-parent`)
+    await git(repo, ["worktree", "add", "-b", `${label}-parent`, parent, start])
+    const child = join(scratch, `integrate-${label}-child`)
+    await git(repo, ["worktree", "add", "-b", `${label}-child`, child, start])
+    await writeFile(join(child, "child.txt"), "child\n")
+    await git(child, ["add", "child.txt"])
+    await git(child, ["commit", "-m", "feat: child commit"])
+    const childHead = await git(child, ["rev-parse", "HEAD"])
+    // Advance the parent so the rebase has a commit to replay.
+    await writeFile(join(parent, "parent.txt"), "parent\n")
+    await git(parent, ["add", "parent.txt"])
+    await git(parent, ["commit", "-m", "feat: parent advance"])
+    const hooks = redirect ? join(scratch, `integrate-${label}-hooks`) : join(repo, ".git", "hooks")
+    const sentinels = await plantIntegrateHooks(hooks, label)
+    if (redirect) await git(repo, ["config", "core.hooksPath", hooks])
+    return {
+      repo,
+      state: join(scratch, `integrate-${label}-state`),
+      workspace: join(scratch, `integrate-${label}-ws`),
+      parent,
+      parentHead: await git(parent, ["rev-parse", "HEAD"]),
+      childBranch: `${label}-child`,
+      childHead,
+      sentinels,
+    }
+  }
+
+  /** The integrate path's three host-plane commands, run with no neutralization. */
+  const runRawIntegrate = async (fx: IntegrateFixture, temp: string): Promise<void> => {
+    await git(fx.repo, ["worktree", "add", "--detach", temp, fx.childHead])
+    await git(temp, ["rebase", fx.parentHead])
+    const tip = await git(temp, ["rev-parse", "HEAD"])
+    await git(fx.parent, ["merge", "--ff-only", tip])
+  }
+
+  /** The real integrate path: enqueue the child, then drain the queue. */
+  const runIntegrate = async (fx: IntegrateFixture, parentRun: string, childRun: string) => {
+    const repoKey = `canary-${parentRun}`
+    await mkdir(join(fx.workspace, "worktrees", repoKey, "merge"), { recursive: true })
+    await enqueue(fx.state, {
+      parentRun,
+      parentWorktree: fx.parent,
+      childRun,
+      childBranch: fx.childBranch,
+      childHead: fx.childHead,
+      expectedParentHead: fx.parentHead,
+    })
+    const result = await drain(fx.state, parentRun, {
+      repoRoot: fx.repo,
+      repoKey,
+      workspaceRoot: fx.workspace,
+      parentWorktree: fx.parent,
+      checks: [],
+    })
+    return result.processed[0]
+  }
+
+  /**
+   * Canary body for both integrate variants. The control runs the three
+   * host-plane commands unneutralized, proving every planted hook really fires
+   * there; the same fixture shape then goes through the real queue. Absent
+   * sentinels therefore mean the hook was neutralized, not that the integrate
+   * silently skipped the operations — the landed assertions pin the positive.
+   */
+  const assertIntegrateNeutralizesHooks = async (label: string, redirect: boolean): Promise<void> => {
+    const control = await integrateFixture(`${label}-control`, redirect)
+    await runRawIntegrate(control, join(scratch, `integrate-${label}-control-temp`))
+    expect(await firedHooks(control.sentinels)).toEqual({
+      "post-checkout": true,
+      "pre-rebase": true,
+      "post-rewrite": true,
+      "post-merge": true,
+    })
+    expect(await Bun.file(join(control.parent, "child.txt")).exists()).toBe(true)
+    expect(await git(control.parent, ["rev-parse", "HEAD"])).not.toBe(control.parentHead)
+
+    const fixture = await integrateFixture(label, redirect)
+    const landed = await runIntegrate(fixture, `w-canary-${label}-parent`, `w-canary-${label}-child`)
+    expect(landed.state).toBe("landed")
+    expect(landed.landedHead).toBe(await git(fixture.parent, ["rev-parse", "HEAD"]))
+    expect(landed.landedHead).not.toBe(fixture.parentHead)
+    expect(await Bun.file(join(fixture.parent, "child.txt")).exists()).toBe(true)
+    expect(await firedHooks(fixture.sentinels)).toEqual({
+      "post-checkout": false,
+      "pre-rebase": false,
+      "post-rewrite": false,
+      "post-merge": false,
+    })
+  }
+
   // The checkpoint handler resolves its state root from XDG_DATA_HOME, like the
   // real host: a per-test root keeps its locks and run records out of the real
   // teams data directory.
@@ -861,6 +995,53 @@ describe("git hooks: repository operations on an executor worktree", () => {
     const head = await git(repo, ["rev-parse", "HEAD"])
     const value = await checkpoint(repo, checkpointRun(repo, head, "w-dbdbdbdbdbdbdbdb"), "redirect")
     expect(value).toMatchObject({ committed: true })
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: the integrate path runs `worktree add`, `rebase` and `merge
+   * --ff-only` against the shared repository, so an executor-planted hook must
+   * not run as the host. The child's commit must still land in the parent.
+   */
+  test("the integrate path runs no planted hook", () => assertIntegrateNeutralizesHooks("merge", false))
+
+  /**
+   * Canary: the same path under a repository-local `core.hooksPath` pointing at
+   * an executor-controlled directory — the bypass a hooks-directory-only fix
+   * would miss; only command-line `-c core.hooksPath` outranks it.
+   */
+  test("a repository-local core.hooksPath cannot redirect the integrate path's hooks", () =>
+    assertIntegrateNeutralizesHooks("merge-redirect", true))
+
+  /**
+   * The merge path's removal tail (`removeTemp`) runs `git worktree remove
+   * --force` with `prune` as its fallback — both unneutralized. Git runs no
+   * hook for either, so this canary pins the absence itself: the control proves
+   * the planted post-checkout hook fires on an add, and the plain remove and
+   * prune then produce no sentinel.
+   */
+  test("worktree removal and prune run no planted hook", async () => {
+    const repo = join(scratch, "hooks-remove-repo")
+    const sentinel = join(scratch, `remove-${SENTINEL_NAME}`)
+    await initHostileRepo(repo, sentinel)
+
+    const control = join(scratch, "hooks-remove-control")
+    await git(repo, ["worktree", "add", "--detach", control, "HEAD"])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    // An unneutralized remove fires nothing, and the worktree is really gone.
+    await git(repo, ["worktree", "remove", "--force", control])
+    expect(await Bun.file(join(control, "README.md")).exists()).toBe(false)
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+
+    // Prune of a manually deleted worktree likewise.
+    const stale = join(scratch, "hooks-remove-stale")
+    await git(repo, ["worktree", "add", "--detach", stale, "HEAD"])
+    await rm(sentinel, { force: true })
+    await rm(stale, { recursive: true, force: true })
+    await git(repo, ["worktree", "prune"])
+    expect(await git(repo, ["worktree", "list", "--porcelain"])).not.toContain(stale)
     expect(await Bun.file(sentinel).exists()).toBe(false)
   })
 })
