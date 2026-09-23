@@ -1289,11 +1289,14 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
 
 /**
  * Overwrite the 44-byte argv string with a structurally exact one-entry string
- * table and redirect the bytecode-table locator at it. The argv pointer and
+ * table and redirect one announced-table locator at it. The argv pointer and
  * length, the final NUL terminator and every other byte stay unchanged, so the
- * only thing wrong with the image is that one table region aliases the tail.
+ * only thing wrong with the image is that one announced region aliases the
+ * tail. Both announced locators are exercised: the bytecode table (which the
+ * canonicalizer parses for records) and the module-info table (which it does
+ * not).
  */
-function craftArgvAliasedTable(source: Buffer, key: string): Buffer {
+function craftArgvAliasedTable(source: Buffer, key: string, target: "bytecode" | "moduleInfo"): Buffer {
   const layout = readGraphLayout(source)
   if (layout.argvLength !== ARGV_44.length) {
     throw new Error(`argv fixture holds ${layout.argvLength} argv byte(s), expected ${ARGV_44.length}`)
@@ -1312,7 +1315,11 @@ function craftArgvAliasedTable(source: Buffer, key: string): Buffer {
   binary.write(token, argvStart + 16, token.length, "latin1")
   binary.fill(0, argvStart + 16 + token.length, argvStart + ARGV_44.length)
 
-  const locator = layout.tailStart + layout.moduleCount * 4 + 4 + layout.builtinCount * 12
+  // Bytecode-table locator, or the module-info locator after the startup count.
+  const locator =
+    target === "bytecode"
+      ? layout.tailStart + layout.moduleCount * 4 + 4 + layout.builtinCount * 12
+      : layout.tailStart + layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4
   binary.writeUInt32LE(layout.argvOffset, locator)
   binary.writeUInt32LE(layout.argvLength, locator + 4)
   return binary
@@ -1320,8 +1327,8 @@ function craftArgvAliasedTable(source: Buffer, key: string): Buffer {
 
 describe("adversarial: announced string tables may not alias the graph tail", () => {
   test("a table announced over the argv bytes cannot mask an argv difference", () => {
-    const left = craftArgvAliasedTable(builds.argvLong, KEY_A)
-    const right = craftArgvAliasedTable(builds.argvLong, KEY_B)
+    const left = craftArgvAliasedTable(builds.argvLong, KEY_A, "bytecode")
+    const right = craftArgvAliasedTable(builds.argvLong, KEY_B, "bytecode")
 
     const layout = readGraphLayout(builds.argvLong)
     const argvStart = layout.tailStart + layout.tailLength - layout.argvLength - 1
@@ -1346,6 +1353,16 @@ describe("adversarial: announced string tables may not alias the graph tail", ()
     expect(outcome.rejection.code).toBe("string-table-locator-malformed")
     expect(comparison.rejection.code).toBe("string-table-locator-malformed")
     expect(comparison.rejection.offset).not.toBeNull()
+  })
+
+  test("a module-info table announced over the argv bytes is rejected too", () => {
+    const aliased = craftArgvAliasedTable(builds.argvLong, KEY_A, "moduleInfo")
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: aliased })
+    if (outcome.ok) {
+      throw new Error(`FALSE ACCEPT: argv bytes were adopted as an announced module-info region (${outcome.entriesParsed} entries)`)
+    }
+    expect(outcome.rejection.code).toBe("string-table-locator-malformed")
+    expect(outcome.rejection.offset).not.toBeNull()
   })
 })
 
