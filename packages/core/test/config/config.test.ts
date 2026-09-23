@@ -167,17 +167,22 @@ describe("Config", () => {
         const once = Effect.gen(function* () {
           const config = yield* Config.Service
           const watcher = yield* Watcher.Test
-          const entries = yield* config.entries()
+          // The temp root sits inside a real checkout, so the walk also reaches
+          // the host workspace's own .opencode. Scope every assertion to this
+          // fixture: only the global directory's single discovery is under test.
+          const entries = (yield* config.entries()).filter((entry) => !entry.path || inFixture(tmp.path, entry.path))
           expect(entries.flatMap((entry) => (entry.type === "directory" ? [entry.path] : []))).toEqual([global])
           expect(entries.flatMap((entry) => (entry.type === "document" ? [entry.info.shell] : []))).toEqual(["global"])
           expect(
             (yield* watcher.subscriptions())
-              .filter((subscription) => subscription.type === "directory")
+              .filter((subscription) => subscription.type === "directory" && inFixture(tmp.path, subscription.path))
               .map((subscription) => subscription.path),
           ).toEqual([global])
           expect(
-            (yield* watcher.subscriptions()).filter((subscription) =>
-              subscription.path.includes(`${path.sep}.opencode${path.sep}`),
+            (yield* watcher.subscriptions()).filter(
+              (subscription) =>
+                inFixture(tmp.path, subscription.path) &&
+                subscription.path.includes(`${path.sep}.opencode${path.sep}`),
             ),
           ).toEqual([])
         })
