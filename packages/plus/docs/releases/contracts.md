@@ -76,7 +76,7 @@ To evaluate binary rebuild equivalence without making false assertions of raw by
 
 ### Per-Target Scope and Boundary Decision
 
-Rebuild equivalence under D3-B is scoped strictly per target. OpenCode Plus does not claim unqualified binary reproducibility: two of the four qualified targets say "not proven" or "uncertifiable", and the document reflects this without qualification.
+Rebuild equivalence under D3-B is scoped strictly per target. OpenCode Plus does not claim unqualified binary reproducibility: the status is two targets proven (linux-arm64 and linux-x64) and two targets uncertifiable (darwin-arm64 and darwin-x64), and the document reflects this without qualification.
 
 The workspace owner has decided, by explicit decision, that darwin rebuild equivalence is a **scope boundary, not a prerequisite**. The reasoning must be recorded, because it is what makes this a boundary rather than an excuse:
 
@@ -88,8 +88,8 @@ The per-target status of rebuild equivalence under D3-B is:
 
 | target | rebuild equivalence under D3-B |
 | --- | --- |
-| linux-arm64 | proven on the real release artifact, non-vacuously |
-| linux-x64 | same ELF path; cross-built fixture accepted; not measured as a real same-source pair |
+| linux-arm64 | proven on the real release artifact (206,752,040 bytes), non-vacuously |
+| linux-x64 | proven on the real release artifact (211,035,616 bytes), non-vacuously |
 | darwin-arm64 | uncertifiable — `LC_CODE_SIGNATURE` covers the per-build bundler key |
 | darwin-x64 | uncertifiable — same mechanism |
 
@@ -173,16 +173,31 @@ The canonicalizer specification and parser arithmetic are strictly pinned to Bun
 
 ### Measured Verification Evidence
 
-Empirical rebuild equivalence was measured on production-like release binaries at source commit `274013bd899c09b2d22cbda21e732e8ff9261ca9`. Two independent local rebuilds of the release binary produced:
+Empirical rebuild equivalence was measured on real product binaries for both qualified Linux targets:
 
-```
-equivalent true, container elf, rawIdentical false
-recordsParsed 189, recordsRewritten 189, rawDifferingBytes 3401
-bundler keys 0cf5d472ba4a2d96 and 0f6ec238c7a0a049
-canonicalSha256 634d042c11502b7af91f1d0bd232111c20fe06bf86633e93a2038539c14eefa3
-```
+1. **`linux-arm64` (206,752,040 bytes)** at source commit `274013bd899c09b2d22cbda21e732e8ff9261ca9`:
+   ```
+   equivalent true, container elf, rawIdentical false
+   recordsParsed 189, recordsRewritten 189, rawDifferingBytes 3401
+   bundler keys 0cf5d472ba4a2d96 and 0f6ec238c7a0a049
+   canonicalSha256 634d042c11502b7af91f1d0bd232111c20fe06bf86633e93a2038539c14eefa3
+   ```
+   Every one of the 3,401 raw differing bytes fell strictly within the 189 rewritten token records (16 key bytes plus 4 hash word bytes per record); zero differences existed outside those spans.
 
-Every one of the 3,401 raw differing bytes fell strictly within the 189 rewritten token records (16 key bytes plus 4 hash word bytes per record); zero differences existed outside those spans.
+2. **`linux-x64` (211,035,616 bytes)** at source commit `c485c658d1945ac2cba8c5018a6f5bdcc1290c80`:
+   ```
+   target      linux-x64, SOURCE_SHA c485c658d1945ac2cba8c5018a6f5bdcc1290c80
+   builds      A 04f8ffb4b66fb3952b70c946ac112b2fd28e9b7defd3d9d47a51aa185e9f50a2
+               B 408b6da65180d862fded5d13168b8d032b55d22cad59479a8d4e390de64d41ca
+               both 211,035,616 bytes; source tree fingerprint identical before and after both builds
+   header      e_machine 62 (EM_X86_64), e_type 2 (ET_EXEC) — measured on a real product build
+   verdict     equivalent: true, 189 records parsed / 189 rewritten, 3,211 raw differing bytes
+   keys        0aee78fdb955908d / 0cedd6a79cbcacb9
+   canonical   bc29950fa72a072fdce928dc5e857d2fa0dadf918c773be9f31fb68c7d14256c
+   controls    identically-edited ET_REL pair → rejected; e_machine = 0 pair → rejected;
+               A vs A → equivalent
+   ```
+   Every one of the 3,211 raw differing bytes fell strictly within the 189 rewritten token records; zero differences existed outside those spans.
 
 The gate was proven non-vacuous through active tamper rejection tests:
 - A single byte flipped in module bytecode is rejected with `residual-difference` reporting the exact byte offset (`test/release/canonicalize.test.ts:1428`).
@@ -193,9 +208,9 @@ The gate was proven non-vacuous through active tamper rejection tests:
 - An announced string table that aliases the graph tail is rejected, never normalized: a structurally exact one-entry table written over a real 44-byte `--compile-exec-argv` string is refused with `string-table-locator-malformed`, for the bytecode locator and for the module-info locator (`test/release/canonicalize.test.ts`, `adversarial: announced string tables may not alias the graph tail`).
 - Mach-O container provenance is enforced against the real Darwin fixture: an inflated segment section count that reaches past its load command (with a forged `__BUN,__bun` header planted in the escaped slot), a section whose enclosing segment declares no file range, a section declared inside a segment not named `__BUN`, and a segment whose file range escapes the file are each refused with `executable-structure-malformed` (`test/release/canonicalize.test.ts`, `Mach-O container structure rejection (executable-structure-malformed)`).
 - An ELF `PT_LOAD` segment whose file range escapes the file is refused with `executable-structure-malformed`, so an out-of-file range can no longer satisfy `.bun` containment trivially (`test/release/canonicalize.test.ts`, `rejects a PT_LOAD segment whose file range escapes the file`).
-- An ELF image whose `e_type` is not `ET_EXEC` is refused with `executable-structure-malformed`, measured against every real ELF fixture the suite builds (all `ET_EXEC`, including a cross-built `linux-x64` fixture, so the pin is evidenced for both qualified ELF architectures and not only for this arm64 host) and including the pair case where both sides are edited identically to `ET_REL` (`test/release/canonicalize.test.ts`, `ELF file type (e_type)`).
-- An ELF image whose header or load segments violate the validated ELF64 invariants — an `e_machine` outside the qualified set (`EM_X86_64` 62, `EM_AARCH64` 183), an `e_version` other than `EV_CURRENT`, an `e_ehsize` other than 64, an unaligned program or section header table offset, or a `PT_LOAD` whose `p_memsz` is smaller than its `p_filesz` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real ELF fixture the suite builds (`linux-arm64` and the cross-built qualified `linux-x64` target, the latter with `e_machine` 62) satisfies the same invariants (`test/release/canonicalize.test.ts:560-724`, `ELF header and load-segment invariants (executable-structure-malformed)`).
-- A Mach-O image whose header or segments violate the validated Mach-O64 invariants — a `cputype` outside the qualified set, a `cpusubtype` that is not valid for its `cputype` (including the arm64 subtype on an x64 image and vice versa), a load command whose size is not 8-byte aligned, or an `LC_SEGMENT_64` whose file range escapes the file or whose `vmsize` is smaller than its `filesize` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real Mach-O fixture the suite builds (`darwin-arm64` and the cross-built qualified `darwin-x64` target, the latter with `cputype` `0x01000007` and `cpusubtype` `0x80000003`) satisfies the same invariants (`test/release/canonicalize.test.ts:926-1122`, `Mach-O header and segment invariants (executable-structure-malformed)`).
+- An ELF image whose `e_type` is not `ET_EXEC` is refused with `executable-structure-malformed`, measured against real product builds on both qualified ELF targets (`linux-arm64` and `linux-x64`, both declaring `ET_EXEC`) as well as every real ELF fixture the suite builds, and including the pair case where both sides are edited identically to `ET_REL` (`test/release/canonicalize.test.ts`, `ELF file type (e_type)`).
+- An ELF image whose header or load segments violate the validated ELF64 invariants — an `e_machine` outside the qualified set (`EM_X86_64` 62, `EM_AARCH64` 183), an `e_version` other than `EV_CURRENT`, an `e_ehsize` other than 64, an unaligned program or section header table offset, or a `PT_LOAD` whose `p_memsz` is smaller than its `p_filesz` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real ELF product build and test fixture (`linux-arm64` with `e_machine` 183 and `linux-x64` with `e_machine` 62) satisfies the same invariants (`test/release/canonicalize.test.ts:560-724`, `ELF header and load-segment invariants (executable-structure-malformed)`). This measurement on real product binaries for `linux-x64` retires the prior parser residual that native builds from a different Bun distribution variant might diverge on ELF `e_machine` or `e_type`.
+- A Mach-O image whose header or segments violate the validated Mach-O64 invariants — a `cputype` outside the qualified set, a `cpusubtype` that is not valid for its `cputype` (including the arm64 subtype on an x64 image and vice versa), a load command whose size is not 8-byte aligned, or an `LC_SEGMENT_64` whose file range escapes the file or whose `vmsize` is smaller than its `filesize` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real Mach-O fixture the suite builds (`darwin-arm64` and the cross-built qualified `darwin-x64` target, the latter with `cputype` `0x01000007` and `cpusubtype` `0x80000003`) satisfies the same invariants (`test/release/canonicalize.test.ts:926-1122`, `Mach-O header and segment invariants (executable-structure-malformed)`). With the ELF targets now evidenced by real product builds, the cross-built-fixture limitation narrows strictly to Darwin: the darwin `cputype`/`cpusubtype` pairs remain evidenced solely by test fixtures and have not been measured on real product rebuilds.
 - The Mach-O header `flags` word is enforced as an enumerated opaque field rather than a pin: a divergent value is a `residual-difference` with its offset, while an edited value is accepted by the parser (`test/release/canonicalize.test.ts`, `Mach-O header and segment invariants (executable-structure-malformed)`).
 
 ### Known Equivalence Limitations
