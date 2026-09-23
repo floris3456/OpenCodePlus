@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import path from "path"
 import { Script } from "@opencode/script"
 import { resolveBuildConfig } from "../script/build"
 import { resolvePlusBuildConfig } from "../script/build-plus"
@@ -124,6 +125,21 @@ describe("plus build configuration", () => {
     expect(typeof plusHandlers.$).toBe("function")
     expect(findMissingHandlers(Commands, plusHandlers)).toEqual([])
     expect(() => Runtime.handlers(Commands, plusHandlers)).not.toThrow()
+  })
+
+  test("package.json dependency keys follow bun canonical order", async () => {
+    const pkg = await Bun.file(path.resolve(import.meta.dirname, "../package.json")).json()
+    const blocks = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const
+
+    expect(pkg.dependencies).toBeDefined()
+    expect(pkg.devDependencies).toBeDefined()
+
+    for (const block of blocks) {
+      const record = pkg[block]
+      if (!record) continue
+      const keys = Object.keys(record)
+      expect(keys).toEqual([...keys].sort())
+    }
   })
 })
 
