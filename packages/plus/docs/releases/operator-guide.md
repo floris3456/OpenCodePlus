@@ -16,6 +16,16 @@ An operator inspecting a live system must distinguish between three distinct app
 | **Staged** | An installed release present on disk whose binary is **not** currently referenced by the active symlink pointer. | `<prefix>/releases/<staged-version>/` |
 | **Running** | The active background server daemon currently executing in memory and bound to a local TCP port. | In-memory process identified by `<state>/service.json` |
 
+### Installing a Release
+
+Each release is a GitHub prerelease of `floris3456/OpenCodePlus`, tagged `v<version>`. `install.sh` downloads one fixed release per invocation from `https://github.com/floris3456/OpenCodePlus/releases/download/v<version>/` (override with `--base-url` or `OPENCODE_RELEASE_BASE_URL`); there is no implicit "latest", so a download without `--version` is refused. It is a bash script: pipe it into `bash`, not `sh`.
+
+```bash
+curl -fsSL https://github.com/floris3456/OpenCodePlus/releases/download/v<version>/install.sh | bash -s -- --version v<version>
+```
+
+The installer verifies `release.json`, the archive SHA-256 and the extracted binary SHA-256 before anything is installed, needs no Node, npm or Bun, and never edits a read-only shell profile.
+
 ### Install Prefix and Directory Layout
 
 The default install prefix `<prefix>` is `$HOME/.opencodeplus` (overridable during installation via `-p, --prefix <path>` or the `PREFIX` environment variable).
@@ -36,7 +46,7 @@ The installation filesystem follows this structure:
         └── ...
 ```
 
-The immutable record for any version is the `<prefix>/releases/<version>` directory itself. During installation, `install.sh` locks this directory with `chmod -R a-w` (`chmod 755` on the binary). Existing releases are immutable; reinstalling an existing version exits immediately without rewriting disk contents (`install.sh` lines 440–451).
+The immutable record for any version is the `<prefix>/releases/<version>` directory itself. During installation, `install.sh` locks this directory with `chmod -R a-w` (`chmod 755` on the binary). Existing releases are immutable; reinstalling an existing version exits immediately without rewriting disk contents (`install.sh` lines 448–459).
 
 ### Identification Commands
 
@@ -482,7 +492,7 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
 ### Scenario E: Installer Interrupted Mid-Install
 
 - **Diagnostic**:
-  - `install.sh` uses a scratch directory created via `mktemp -d` and installs an exit trap (`trap cleanup EXIT` at `install.sh` lines 118–123).
+  - `install.sh` uses a scratch directory created via `mktemp -d` and installs an exit trap (`trap cleanup EXIT` at `install.sh` lines 128–133).
   - Checksum validation, tarball safety checks, member size bounds, and binary hash verification happen entirely within the sandbox before the release directory `<prefix>/releases/<version>` is created.
   - If interrupted during download, check, or extraction, the sandbox is removed automatically, leaving no partial directory under `<prefix>/releases/`.
 - **Remediation**:

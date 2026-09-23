@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# This is a bash script. Piped into another shell (`curl ... | sh` runs dash on
+# Debian), it has to stop with instructions before the first bash construct.
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "Error: install.sh requires bash. Run: curl -fsSL <install.sh URL> | bash -s -- --version <version>" >&2
+    exit 1
+fi
+# bash started as `sh` runs in POSIX mode; bash before 5.1 (macOS /bin/sh is
+# bash 3.2) then rejects the process substitution used below.
+set +o posix
 set -euo pipefail
 
 APP="opencodeplus"
@@ -31,7 +40,8 @@ offline=false
 asset_dir=""
 archive_path=""
 manifest_path=""
-base_url="${OPENCODE_RELEASE_BASE_URL:-https://releases.opencode.ai/plus}"
+# Releases are GitHub release assets: <base>/v<version>/<asset>.
+base_url="${OPENCODE_RELEASE_BASE_URL:-https://github.com/floris3456/OpenCodePlus/releases/download}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -215,12 +225,13 @@ if [ -z "$manifest_path" ]; then
             exit 1
         fi
     else
-        manifest_url="$base_url"
-        if [ -n "$requested_version" ]; then
-            manifest_url="$manifest_url/v$requested_version/release.json"
-        else
-            manifest_url="$manifest_url/release.json"
+        # A download installs exactly one fixed release per invocation; there is
+        # no implicit "latest" (releases are prereleases, never marked Latest).
+        if [ -z "$requested_version" ]; then
+            echo "Error: a download needs a release version, e.g. --version v0.0.0-plus-r4.1 (releases: https://github.com/floris3456/OpenCodePlus/releases)" >&2
+            exit 1
         fi
+        manifest_url="$base_url/v$requested_version/release.json"
         verify_url_origin "$manifest_url"
         manifest_path="$tmp_dir/release.json"
         curl -fsSL "$manifest_url" -o "$manifest_path" || {
@@ -306,10 +317,7 @@ elif [ "$offline" = "true" ]; then
         exit 1
     fi
 else
-    archive_url="$base_url/$expected_archive_name"
-    if [ -n "$requested_version" ]; then
-        archive_url="$base_url/v$requested_version/$expected_archive_name"
-    fi
+    archive_url="$base_url/v$requested_version/$expected_archive_name"
     verify_url_origin "$archive_url"
     resolved_archive="$tmp_dir/$expected_archive_name"
     curl -fsSL "$archive_url" -o "$resolved_archive" || {

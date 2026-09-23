@@ -391,6 +391,80 @@ describe("installer positive execution", () => {
   })
 })
 
+describe("installer download location and shell", () => {
+  // A stub curl records each URL and serves the matching file from a local
+  // asset directory, so the real download path runs without network.
+  async function stubCurl(assetDir: string, log: string): Promise<string> {
+    const bin = join(testDir, "stub-bin")
+    await mkdir(bin, { recursive: true })
+    await writeFile(
+      join(bin, "curl"),
+      [
+        "#!/usr/bin/env bash",
+        "url=''; out=''",
+        'while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done',
+        `echo "$url" >> ${JSON.stringify(log)}`,
+        `cp ${JSON.stringify(assetDir)}/"$(basename "$url")" "$out"`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    )
+    return bin
+  }
+
+  test("downloads the fixed-tag release.json and archive from the GitHub release by default", async () => {
+    const assetDir = join(testDir, "assets")
+    const log = join(testDir, "curl.log")
+    const version = "0.0.0-plus-r4.1"
+    const { archiveName } = await setupReleaseAssets(assetDir, { version })
+    const bin = await stubCurl(assetDir, log)
+    // An empty override counts as unset, so the built-in default is what runs.
+    const res = await runInstaller(
+      ["--prefix", join(testDir, "opt/opencodeplus"), "--no-modify-path", "--version", `v${version}`],
+      { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, OPENCODE_RELEASE_BASE_URL: "" } },
+    )
+
+    expect(res.exitCode).toBe(0)
+    const base = `https://github.com/floris3456/OpenCodePlus/releases/download/v${version}`
+    expect((await Bun.file(log).text()).trim().split("\n")).toEqual([`${base}/release.json`, `${base}/${archiveName}`])
+    expect(await Bun.file(join(testDir, `opt/opencodeplus/releases/${version}/bin/opencodeplus`)).exists()).toBe(true)
+  })
+
+  test("a download without a version is refused instead of guessing a latest release", async () => {
+    const res = await runInstaller(["--prefix", join(testDir, "opt/none"), "--no-modify-path"])
+    expect(res.exitCode).not.toBe(0)
+    expect(res.stderr).toContain("a download needs a release version")
+  })
+
+  test("run by a non-bash sh it stops with instructions before any bash construct", async () => {
+    const posixSh = Bun.which("dash")
+    if (!posixSh) throw new Error("this check needs dash, the /bin/sh of Debian")
+    const proc = Bun.spawn([posixSh, join(repoRoot, "install.sh"), "--version", "v1.0.0"], {
+      cwd: testDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited])
+    expect(exitCode).not.toBe(0)
+    expect(stderr.trim()).toBe(
+      "Error: install.sh requires bash. Run: curl -fsSL <install.sh URL> | bash -s -- --version <version>",
+    )
+  })
+
+  test("bash started as sh (POSIX mode) still installs", async () => {
+    const assetDir = join(testDir, "assets")
+    await setupReleaseAssets(assetDir, { version: "1.0.0" })
+    const proc = Bun.spawn(
+      ["bash", "--posix", join(repoRoot, "install.sh"), "--offline", "--asset-dir", assetDir, "--no-modify-path"],
+      { cwd: testDir, env: { ...process.env, PREFIX: join(testDir, "opt/posix") }, stdout: "pipe", stderr: "pipe" },
+    )
+    const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited])
+    expect(stderr).toBe("")
+    expect(exitCode).toBe(0)
+    expect(await Bun.file(join(testDir, "opt/posix/releases/1.0.0/bin/opencodeplus")).exists()).toBe(true)
+  })
+})
+
 describe("installer negative execution and hostile archive protection", () => {
   test("negative case: bad archive hash fails closed", async () => {
     const assetDir = join(testDir, "assets-bad-hash")
