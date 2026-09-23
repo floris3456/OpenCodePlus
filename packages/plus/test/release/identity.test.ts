@@ -304,10 +304,16 @@ describe("release policy and scheme JSON files", () => {
     expect(version.fallbackScheme.scheme).toBe("commit-labelled")
   })
 
-  test("release/toolchain.json parses cleanly with unmeasured external facts as null", async () => {
+  test("release/toolchain.json pins the measured Bun hash to its platform and keeps unmeasured external facts null", async () => {
     const toolchainPath = path.join(rootDir, "release/toolchain.json")
     const toolchain = (await Bun.file(toolchainPath).json()) as {
-      bun: { version: string; executableSha256: unknown; source: unknown; measuredBy: string }
+      bun: {
+        version: string
+        executableSha256: unknown
+        executablePlatform: unknown
+        source: unknown
+        measuredBy: string
+      }
       builderImage: { ref: unknown; digest: unknown; measuredBy: string }
       fixedBuildPath: string
       locale: string
@@ -323,7 +329,11 @@ describe("release policy and scheme JSON files", () => {
     }
 
     expect(toolchain.bun.version).toBe("1.4.2")
-    expect(toolchain.bun.executableSha256).toBeNull()
+    // Bun ships a different executable per platform, so this hash is only meaningful
+    // alongside the platform it was measured on. builderImage stays null: no Docker
+    // daemon is reachable from the build seat, so its digest is genuinely unmeasured.
+    expect(toolchain.bun.executableSha256).toBe("616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1")
+    expect(toolchain.bun.executablePlatform).toBe("linux-arm64")
     expect(toolchain.bun.source).toBeNull()
     expect(toolchain.bun.measuredBy).toBe("build-seat")
     expect(toolchain.builderImage.ref).toBeNull()
