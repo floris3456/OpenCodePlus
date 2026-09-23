@@ -31,6 +31,7 @@ jobs:
         uses: ./.github/actions/setup-ocp
         with:
           bun-version: "1.4.2"
+          expected-sha256: "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c"
 
       - name: Run upstream divergence inventory
         run: |
