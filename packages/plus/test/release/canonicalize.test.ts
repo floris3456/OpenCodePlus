@@ -45,6 +45,8 @@ const OUT_DARWIN = join(scratch, "darwin")
 const OUT_MANY_LEFT = join(scratch, "many-left")
 const OUT_MANY_RIGHT = join(scratch, "many-right")
 const OUT_ARGV = join(scratch, "argv")
+const OUT_BUILTIN_LEFT = join(scratch, "builtin-left")
+const OUT_BUILTIN_RIGHT = join(scratch, "builtin-right")
 
 const MANY_MODULES = 384
 
@@ -55,6 +57,8 @@ interface RealBuilds {
   readonly manyLeft: Buffer
   readonly manyRight: Buffer
   readonly argv: Buffer
+  readonly builtinLeft: Buffer
+  readonly builtinRight: Buffer
 }
 
 let builds: RealBuilds
@@ -95,6 +99,16 @@ beforeAll(() => {
     `async function main() {\n  const mods = await Promise.all([\n    ${lines.join(",\n    ")},\n  ])\n  console.log(mods.length)\n}\nmain()\n`,
   )
 
+  // A production-like graph: the entry imports several node: builtins, so the
+  // payload carries the embedded builtin-bytecode record that the real release
+  // binary has (a nonzero count followed by {id, offset, length} entries),
+  // which is the shape the small fixtures never exercise.
+  const builtinEntry = join(SOURCE_DIR, "builtin-entry.ts")
+  writeFileSync(
+    builtinEntry,
+    "import { readFileSync } from 'node:fs'\nimport { join } from 'node:path'\nimport { createHash } from 'node:crypto'\nimport { platform, release } from 'node:os'\nimport process from 'node:process'\nasync function main() {\n  const [alpha, beta] = await Promise.all([import('./alpha.ts'), import('./beta.ts')])\n  console.log(typeof readFileSync, join('a', 'b'), typeof createHash, platform(), release(), process.pid, alpha.alpha, beta.beta)\n}\nmain()\n",
+  )
+
   // Both rebuilds use the same output basename so the only difference Bun is
   // allowed to introduce is the per-build bundler key.
   builds = {
@@ -104,6 +118,8 @@ beforeAll(() => {
     manyLeft: compile(OUT_MANY_LEFT, { entry: manyEntry }),
     manyRight: compile(OUT_MANY_RIGHT, { entry: manyEntry }),
     argv: compile(OUT_ARGV, { extra: ["--compile-exec-argv", "--smol"] }),
+    builtinLeft: compile(OUT_BUILTIN_LEFT, { entry: builtinEntry }),
+    builtinRight: compile(OUT_BUILTIN_RIGHT, { entry: builtinEntry }),
   }
 
   const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.left })
@@ -578,11 +594,14 @@ describe("tamper rejection", () => {
 //
 // A real `bun build --compile --bytecode --format=esm --splitting` output ends
 // its graph with: one `u32` content hash per module (`rapidhash(contents) &
-// 0xffffff`), a zero word, a bytecode string-table {offset, length}, the
-// startup module count, a module-info string-table {offset, length}, the
+// 0xffffff`), the embedded builtin-bytecode record (a count plus that many
+// 12-byte `{id, offset, length}` entries; count 0 when no builtins are
+// embedded), a bytecode string-table {offset, length}, the startup module
+// count, a module-info string-table {offset, length}, the
 // `--compile-exec-argv` string, and its NUL terminator as the final byte. The
-// tests below pin that arithmetic on a four-module build and on a
-// several-hundred-module build, so the model cannot regress to the small case.
+// tests below pin that arithmetic on a four-module build, on a
+// several-hundred-module build, and on a build that embeds node: builtins, so
+// the model cannot regress to the small case.
 // ---------------------------------------------------------------------------
 
 describe("graph tail model (measured against the pinned toolchain)", () => {
@@ -590,7 +609,7 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
     const layout = readGraphLayout(builds.left)
     // sentinel(4) + bytecode table(8) + startup count(4) + module-info table(8)
     expect(layout.tailLength).toBe(
-      layout.moduleCount * 4 + 4 + 8 + 4 + 8 + layout.argvLength + 1,
+      layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4 + 8 + layout.argvLength + 1,
     )
     expect(builds.left.readUInt32LE(layout.tailStart + layout.moduleCount * 4)).toBe(0)
     for (let index = 0; index < layout.moduleCount; index += 1) {
@@ -605,7 +624,7 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
     const layout = readGraphLayout(builds.manyLeft)
     expect(layout.moduleCount).toBeGreaterThanOrEqual(300)
     expect(layout.tailLength).toBe(
-      layout.moduleCount * 4 + 4 + 8 + 4 + 8 + layout.argvLength + 1,
+      layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4 + 8 + layout.argvLength + 1,
     )
     expect(builds.manyLeft.readUInt32LE(layout.tailStart + layout.moduleCount * 4)).toBe(0)
     for (let index = 0; index < layout.moduleCount; index += 1) {
@@ -674,7 +693,7 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
     const layout = readGraphLayout(builds.argv)
     expect(layout.argvLength).toBe("--smol".length)
     expect(layout.tailLength).toBe(
-      layout.moduleCount * 4 + 4 + 8 + 4 + 8 + layout.argvLength + 1,
+      layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4 + 8 + layout.argvLength + 1,
     )
 
     const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.argv })
@@ -724,6 +743,96 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
   })
 })
 
+describe("embedded builtin bytecode record (production-like graph)", () => {
+  test("the builtin record is parsed, explains the tail, and its blobs are in the data region", () => {
+    const layout = readGraphLayout(builds.builtinLeft)
+    expect(layout.builtinCount).toBeGreaterThanOrEqual(40)
+    expect(layout.tailLength).toBe(
+      layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4 + 8 + layout.argvLength + 1,
+    )
+
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.builtinLeft })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    expect(parsed.structure.builtinBytecodeCount).toBe(layout.builtinCount)
+
+    const entryBase = layout.tailStart + layout.moduleCount * 4 + 4
+    const seen = new Set<number>()
+    for (let index = 0; index < layout.builtinCount; index += 1) {
+      const id = builds.builtinLeft.readUInt32LE(entryBase + index * 12)
+      const offset = builds.builtinLeft.readUInt32LE(entryBase + index * 12 + 4)
+      const length = builds.builtinLeft.readUInt32LE(entryBase + index * 12 + 8)
+      expect(id).toBeGreaterThanOrEqual(0)
+      expect(seen.has(id)).toBe(false)
+      seen.add(id)
+      expect(offset + length).toBeLessThanOrEqual(layout.modulesOffset)
+      expect(offset + length).toBeLessThanOrEqual(layout.byteCount)
+      const start = layout.payloadStart + offset
+      for (const range of parsed.structure.moduleRanges) {
+        expect(start + length <= range.start || range.end <= start).toBe(true)
+      }
+    }
+  })
+
+  test("a production-like rebuild pair canonicalizes identically", () => {
+    const left = builds.builtinLeft
+    const right = builds.builtinRight
+    const layout = readGraphLayout(left)
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (!comparison.equivalent) throw new Error(`unexpected rejection: ${comparison.rejection.detail}`)
+    expect(comparison.recordsRewritten).toBeGreaterThanOrEqual(1)
+    expect(comparison.bundlerKeys.left).not.toBe("")
+    if (comparison.rawIdentical) {
+      expect(left.equals(right)).toBe(true)
+      expect(comparison.rawDifferingBytes).toBe(0)
+      return
+    }
+
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: left })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    const spans = normalizedSpans(parsed.structure)
+    for (let index = 0; index < left.byteLength; index += 1) {
+      if (left[index] !== right[index]) expect(spans.has(index)).toBe(true)
+    }
+    expect(layout.builtinCount).toBe(readGraphLayout(right).builtinCount)
+  })
+
+  test("a tampered builtin count fails closed instead of sliding the tail", () => {
+    const layout = readGraphLayout(builds.builtinLeft)
+    const tampered = Buffer.from(builds.builtinLeft)
+    const countAt = layout.tailStart + layout.moduleCount * 4
+    tampered.writeUInt32LE(layout.builtinCount + 1, countAt)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: tampered })
+    if (outcome.ok) throw new Error("expected the tampered builtin count to be rejected")
+    expect(outcome.rejection.code).toBe("string-table-locator-malformed")
+  })
+
+  test("a builtin blob redirected outside the graph fails closed", () => {
+    const layout = readGraphLayout(builds.builtinLeft)
+    const tampered = Buffer.from(builds.builtinLeft)
+    const countAt = layout.tailStart + layout.moduleCount * 4
+    const firstOffsetField = countAt + 4 + 4
+    tampered.writeUInt32LE(layout.byteCount, firstOffsetField)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: tampered })
+    if (outcome.ok) throw new Error("expected the redirected builtin blob to be rejected")
+    expect(outcome.rejection.code).toBe("string-table-locator-malformed")
+  })
+
+  test("a builtin blob pointed at the module table fails closed", () => {
+    const layout = readGraphLayout(builds.builtinLeft)
+    const tampered = Buffer.from(builds.builtinLeft)
+    const countAt = layout.tailStart + layout.moduleCount * 4
+    const firstOffsetField = countAt + 4 + 4
+    tampered.writeUInt32LE(layout.modulesOffset, firstOffsetField)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: tampered })
+    if (outcome.ok) throw new Error("expected the module-table-pointing builtin blob to be rejected")
+    expect(outcome.rejection.code).toBe("string-table-locator-malformed")
+  })
+})
+
 interface GraphLayout {
   readonly payloadStart: number
   readonly payloadLength: number
@@ -737,6 +846,7 @@ interface GraphLayout {
   readonly flags: number
   readonly tailStart: number
   readonly tailLength: number
+  readonly builtinCount: number
 }
 
 /**
@@ -785,6 +895,7 @@ function readGraphLayout(bytes: Buffer): GraphLayout {
     flags: bytes.readUInt32LE(offsetsStart + 28),
     tailStart,
     tailLength: byteCount - (modulesOffset + modulesLength),
+    builtinCount: bytes.readUInt32LE(tailStart + (modulesLength / 52) * 4),
   }
 }
 
