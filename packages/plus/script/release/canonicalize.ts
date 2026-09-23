@@ -30,12 +30,14 @@
  *   1. The buffer must be an executable with a Bun standalone payload:
  *      ELF64-LE with `e_type` `ET_EXEC`, an `e_machine` of a qualified ELF
  *      target architecture, a header that describes an ELF64 image, and a
- *      `.bun` section, or Mach-O64-LE with filetype `MH_EXECUTE` and a
+ *      `.bun` section, or Mach-O64-LE with filetype `MH_EXECUTE`, a
+ *      `cputype`/`cpusubtype` pair of a qualified Darwin target, and a
  *      `__BUN,__bun` section.
  *      The section is bounds-checked and must lie inside a loadable segment
  *      that validates as one: an ELF `PT_LOAD` whose file range fits the file
  *      and whose memory size is at least its file size, or a Mach-O `__BUN`
- *      segment whose own name and file range say so and contain the section.
+ *      segment whose own name says so, whose file range fits the file and
+ *      contains the section, and whose virtual size is at least its file size.
  *   2. The payload is `[u64 length][graph bytes][Offsets][trailer]`. The graph
  *      length, trailer, offsets struct and module table are parsed and
  *      bounds-checked against the section.
@@ -167,9 +169,18 @@ const MACHO_HEADER_BYTES = 32
 const MACHO_LC_SEGMENT_64 = 0x19
 const MACHO_BUN_SEGMENT_NAME = "__BUN"
 const MACHO_FILE_TYPE_EXECUTE = 2
+const MACHO_CPU_TYPE_X86_64 = 0x01000007
+const MACHO_CPU_TYPE_ARM64 = 0x0100000c
+const MACHO_CPU_SUBTYPE_ARM64_ALL = 0x00000000
+const MACHO_CPU_SUBTYPE_X86_64_ALL = 0x00000003
+const MACHO_CPU_SUBTYPE_LIB64 = 0x80000000
+const MACHO_COMMAND_ALIGNMENT = 8
+const MACHO_HEADER_CPUTYPE = 0x04
+const MACHO_HEADER_CPUSUBTYPE = 0x08
 const MACHO_HEADER_NCMDS = 0x10
 const MACHO_HEADER_SIZEOFCMDS = 0x14
 const MACHO_SEGMENT_64_NAME = 0x08
+const MACHO_SEGMENT_64_VMSIZE = 0x20
 const MACHO_SEGMENT_64_FILEOFF = 0x28
 const MACHO_SEGMENT_64_FILESIZE = 0x30
 const MACHO_SEGMENT_64_NSECTS = 0x40
@@ -179,6 +190,22 @@ const MACHO_SECTION_64_NAME = 0x00
 const MACHO_SECTION_64_SEGNAME = 0x10
 const MACHO_SECTION_64_SIZE = 0x28
 const MACHO_SECTION_64_OFFSET = 0x30
+
+/**
+ * Accepted `cputype`/`cpusubtype` pairs for Mach-O containers. `release/contract.json`
+ * qualifies `darwin-arm64` and `darwin-x64`; the pinned Bun 1.4.2 target binaries
+ * for those two targets declare `CPU_TYPE_ARM64` with `CPU_SUBTYPE_ARM64_ALL`
+ * (0x0) and `CPU_TYPE_X86_64` with `CPU_SUBTYPE_X86_64_ALL | CPU_SUBTYPE_LIB64`
+ * (0x80000003). The subtype is target-varying: pinning the arm64 value would
+ * falsely refuse x64 release binaries. Both sides of a comparison are held to
+ * this set; a left/right disagreement is a residual difference, never
+ * normalized away.
+ */
+const MACHO_CPUS: ReadonlyMap<number, ReadonlySet<number>> = new Map([
+  // `|` coerces to a signed 32-bit int; `>>> 0` keeps the subtype unsigned.
+  [MACHO_CPU_TYPE_X86_64, new Set([(MACHO_CPU_SUBTYPE_X86_64_ALL | MACHO_CPU_SUBTYPE_LIB64) >>> 0])],
+  [MACHO_CPU_TYPE_ARM64, new Set([MACHO_CPU_SUBTYPE_ARM64_ALL])],
+])
 
 export const CANONICAL_BUNDLER_KEY = "0".repeat(KEY_HEX_LENGTH)
 
@@ -660,6 +687,19 @@ function locateMachO64BunPayload(bytes: Uint8Array): Located {
   if (bytes.byteLength < MACHO_HEADER_BYTES) return malformedExecutable("Mach-O image is shorter than its header")
   const fileType = readUint32LE(bytes, 0x0c)
   if (fileType !== MACHO_FILE_TYPE_EXECUTE) return malformedExecutable(`Mach-O file type is ${fileType}, expected ${MACHO_FILE_TYPE_EXECUTE}`)
+  const cpuType = readUint32LE(bytes, MACHO_HEADER_CPUTYPE)
+  const cpuSubtype = readUint32LE(bytes, MACHO_HEADER_CPUSUBTYPE)
+  const acceptedSubtypes = MACHO_CPUS.get(cpuType)
+  if (!acceptedSubtypes) {
+    return malformedExecutable(
+      `Mach-O CPU type ${formatWord(cpuType)} is not a qualified target architecture, expected ${formatWord(MACHO_CPU_TYPE_X86_64)} (x86_64) or ${formatWord(MACHO_CPU_TYPE_ARM64)} (arm64)`,
+    )
+  }
+  if (!acceptedSubtypes.has(cpuSubtype)) {
+    return malformedExecutable(
+      `Mach-O CPU subtype ${formatWord(cpuSubtype)} is not valid for CPU type ${formatWord(cpuType)}; expected ${[...acceptedSubtypes].map((subtype) => formatWord(subtype)).join(" or ")}`,
+    )
+  }
   const commandCount = readUint32LE(bytes, MACHO_HEADER_NCMDS)
   const commandBytes = readUint32LE(bytes, MACHO_HEADER_SIZEOFCMDS)
   if (commandCount > 4096) return malformedExecutable(`Mach-O load command count ${commandCount} is implausible`)
@@ -673,6 +713,13 @@ function locateMachO64BunPayload(bytes: Uint8Array): Located {
     const command = readUint32LE(bytes, cursor)
     const commandSize = readUint32LE(bytes, cursor + 4)
     if (commandSize < 8 || cursor + commandSize > commandEnd) return malformedExecutable("Mach-O load command size is invalid")
+    // Every load command in a 64-bit Mach-O image occupies a multiple of 8
+    // bytes, so the walk can never resume at a misaligned boundary.
+    if (commandSize % MACHO_COMMAND_ALIGNMENT !== 0) {
+      return malformedExecutable(
+        `Mach-O load command size ${commandSize} is not ${MACHO_COMMAND_ALIGNMENT}-byte aligned`,
+      )
+    }
     if (command === MACHO_LC_SEGMENT_64) {
       if (commandSize < MACHO_SEGMENT_64_SECTIONS) return malformedExecutable("Mach-O segment command is too short")
       const sectionCount = readUint32LE(bytes, cursor + MACHO_SEGMENT_64_NSECTS)
@@ -682,6 +729,22 @@ function locateMachO64BunPayload(bytes: Uint8Array): Located {
       // commands as section headers.
       if (sectionCount * MACHO_SECTION_64_BYTES > commandSize - MACHO_SEGMENT_64_SECTIONS) {
         return malformedExecutable("Mach-O segment section records do not fit their load command")
+      }
+      // File and virtual ranges belong to the segment command, not to any one
+      // section: validate them once for every LC_SEGMENT_64, so the checks do
+      // not depend on which segment happens to carry '.bun'.
+      const segmentFileOffset = readUint64(bytes, cursor + MACHO_SEGMENT_64_FILEOFF)
+      const segmentFileSize = readUint64(bytes, cursor + MACHO_SEGMENT_64_FILESIZE)
+      const segmentVirtualSize = readUint64(bytes, cursor + MACHO_SEGMENT_64_VMSIZE)
+      if (!fits(bytes, segmentFileOffset, segmentFileSize)) {
+        return malformedExecutable("Mach-O segment file range is out of bounds")
+      }
+      // The file range is a subset of the segment's in-memory image: a genuine
+      // Mach-O64 executable never declares vmsize < filesize.
+      if (segmentVirtualSize < segmentFileSize) {
+        return malformedExecutable(
+          `Mach-O segment virtual size ${segmentVirtualSize} is smaller than its file size ${segmentFileSize}`,
+        )
       }
       for (let section = 0; section < sectionCount; section += 1) {
         const header = cursor + MACHO_SEGMENT_64_SECTIONS + section * MACHO_SECTION_64_BYTES
@@ -697,11 +760,6 @@ function locateMachO64BunPayload(bytes: Uint8Array): Located {
           return malformedExecutable(
             `Mach-O '__BUN,__bun' section is declared in segment '${enclosingSegmentName}', not the '${MACHO_BUN_SEGMENT_NAME}' segment`,
           )
-        }
-        const segmentFileOffset = readUint64(bytes, cursor + MACHO_SEGMENT_64_FILEOFF)
-        const segmentFileSize = readUint64(bytes, cursor + MACHO_SEGMENT_64_FILESIZE)
-        if (!fits(bytes, segmentFileOffset, segmentFileSize)) {
-          return malformedExecutable("Mach-O segment file range is out of bounds")
         }
         const sectionOffset = readUint32LE(bytes, header + MACHO_SECTION_64_OFFSET)
         const sectionSize = readUint64(bytes, header + MACHO_SECTION_64_SIZE)

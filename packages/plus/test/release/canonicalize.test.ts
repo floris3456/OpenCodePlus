@@ -42,6 +42,8 @@ const ENTRY = join(SOURCE_DIR, "entry.ts")
 const OUT_LEFT = join(scratch, "left")
 const OUT_RIGHT = join(scratch, "right")
 const OUT_DARWIN = join(scratch, "darwin")
+const OUT_DARWIN_RIGHT = join(scratch, "darwin-right")
+const OUT_DARWIN_X64 = join(scratch, "darwin-x64")
 const OUT_LINUX_X64 = join(scratch, "linux-x64")
 const OUT_MANY_LEFT = join(scratch, "many-left")
 const OUT_MANY_RIGHT = join(scratch, "many-right")
@@ -65,6 +67,8 @@ interface RealBuilds {
   readonly left: Buffer
   readonly right: Buffer
   readonly darwin: Buffer
+  readonly darwinRight: Buffer
+  readonly darwinX64: Buffer
   readonly linuxX64: Buffer
   readonly manyLeft: Buffer
   readonly manyRight: Buffer
@@ -147,6 +151,14 @@ beforeAll(() => {
     left: compile(OUT_LEFT),
     right: compile(OUT_RIGHT),
     darwin: compile(OUT_DARWIN, { target: "bun-darwin-arm64" }),
+    // A second independent darwin-arm64 build of the same source: the pair
+    // regressions below need two different binaries whose only legitimate
+    // difference is the bundler key.
+    darwinRight: compile(OUT_DARWIN_RIGHT, { target: "bun-darwin-arm64" }),
+    // The other qualified Darwin architecture; its cpusubtype (0x80000003)
+    // differs from arm64's (0x0), so an arm64-pinned subtype check would only
+    // be caught here.
+    darwinX64: compile(OUT_DARWIN_X64, { target: "bun-darwin-x64" }),
     // The other qualified ELF architecture. This host is arm64, so a parser
     // pinned to the locally measured `e_machine` would only be caught here.
     linuxX64: compile(OUT_LINUX_X64, { target: "bun-linux-x64" }),
@@ -894,6 +906,211 @@ describe("Mach-O container structure rejection (executable-structure-malformed)"
     const bun = machoBunSection(binary)
     binary.writeBigUInt64LE(BigInt(binary.byteLength) * 2n, bun.command.offset + MACHO_SEGMENT_64_FILESIZE)
     expectMalformedMachO(binary, "segment file range is out of bounds")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The Mach-O64 header and LC_SEGMENT_64 fields the parser reads, validated as
+// one coherent set. The header splits three ways: invariants (`magic`,
+// `filetype`), target-varying fields (`cputype`, `cpusubtype`; the qualified
+// Darwin targets measure 0x0100000c/0x0 and 0x01000007/0x80000003, and pinning
+// the arm64 subtype would falsely refuse x64 binaries), and program-varying
+// fields (`ncmds`, `sizeofcmds`, only ever bounds-checked, never pinned). Every
+// LC_SEGMENT_64 must describe a file range the file holds and a virtual size at
+// least as large as its file size. `flags` is measured 0xa10085 on both targets
+// but only for two trivial programs, so it stays an enumerated opaque field,
+// compared byte-for-byte. The pair tests edit both members identically: that is
+// the shape that produced the false accepts.
+// ---------------------------------------------------------------------------
+
+describe("Mach-O header and segment invariants (executable-structure-malformed)", () => {
+  test("every real Mach-O fixture satisfies the validated header and segment invariants", () => {
+    const fixtures: [name: string, bytes: Buffer][] = [
+      ["darwinArm64", builds.darwin],
+      ["darwinX64", builds.darwinX64],
+    ]
+    const observed = fixtures.map(([name, bytes]) => ({
+      name,
+      magic: bytes.readUInt32LE(0),
+      cpuType: bytes.readUInt32LE(0x04),
+      cpuSubtype: bytes.readUInt32LE(0x08),
+      fileType: bytes.readUInt32LE(0x0c),
+      segmentsValid: machoCommands(bytes)
+        .filter((command) => command.cmd === MACHO_LC_SEGMENT_64)
+        .every(
+          (command) =>
+            command.virtualSize >= command.fileSize &&
+            command.fileOffset + command.fileSize <= bytes.byteLength,
+        ),
+    }))
+    expect(observed).toEqual([
+      {
+        name: "darwinArm64",
+        magic: 0xfeedfacf,
+        cpuType: 0x0100000c,
+        cpuSubtype: 0x0,
+        fileType: 2,
+        segmentsValid: true,
+      },
+      {
+        name: "darwinX64",
+        magic: 0xfeedfacf,
+        cpuType: 0x01000007,
+        cpuSubtype: 0x80000003,
+        fileType: 2,
+        segmentsValid: true,
+      },
+    ])
+  })
+
+  test("the qualified darwin-x64 target is accepted, not refused as an arm64-only subtype", () => {
+    expect(builds.darwinX64.readUInt32LE(0x04)).toBe(0x01000007)
+    expect(builds.darwinX64.readUInt32LE(0x08)).toBe(0x80000003)
+
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.darwinX64 })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    expect(parsed.structure.container).toBe("macho")
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: builds.darwinX64 })
+    if (!outcome.ok) throw new Error(`unexpected rejection: ${outcome.rejection.detail}`)
+    expect(outcome.records.length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("rejects a real Mach-O build whose cputype is not a qualified architecture", () => {
+    const binary = Buffer.from(builds.darwin)
+    // CPU_TYPE_ARM (32-bit): a real Mach-O CPU type, but not a qualified one.
+    binary.writeUInt32LE(0x0000000c, 0x04)
+    expectMalformedMachO(binary, "CPU type 0x0000000c is not a qualified target architecture")
+  })
+
+  test("rejects a cpusubtype that is valid only for the other qualified architecture", () => {
+    const binary = Buffer.from(builds.darwin)
+    // CPU_SUBTYPE_X86_64_ALL | CPU_SUBTYPE_LIB64 on an arm64 cputype.
+    binary.writeUInt32LE(0x80000003, 0x08)
+    expectMalformedMachO(binary, "CPU subtype 0x80000003 is not valid for CPU type 0x0100000c")
+  })
+
+  test("rejects an identically edited cpusubtype pair instead of accepting it", () => {
+    const left = Buffer.from(builds.darwin)
+    const right = Buffer.from(builds.darwinRight)
+    left.writeUInt32LE(0x00000003, 0x08)
+    right.writeUInt32LE(0x00000003, 0x08)
+
+    const leftOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const rightOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: right })
+    if (leftOutcome.ok || rightOutcome.ok) {
+      throw new Error("FALSE ACCEPT: an unqualified CPU subtype was parsed as an executable")
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically edited CPU subtype binaries compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("CPU subtype")
+  })
+
+  test("rejects a real Mach-O segment whose virtual size is smaller than its file size", () => {
+    const binary = Buffer.from(builds.darwin)
+    const segment = machoBunSection(binary).command
+    if (segment.fileSize === 0) throw new Error("fixture '.bun' segment has no file bytes")
+    binary.writeBigUInt64LE(0n, segment.offset + MACHO_SEGMENT_64_VMSIZE)
+    expectMalformedMachO(binary, `virtual size 0 is smaller than its file size ${segment.fileSize}`)
+  })
+
+  test("rejects paging-inconsistent vmsize on an LC_SEGMENT_64 that does not carry '.bun'", () => {
+    const binary = Buffer.from(builds.darwin)
+    const bun = machoBunSection(binary)
+    const other = machoCommands(binary).find(
+      (command) =>
+        command.cmd === MACHO_LC_SEGMENT_64 &&
+        command.offset !== bun.command.offset &&
+        command.fileSize > 0,
+    )
+    if (!other) throw new Error("fixture has no second non-empty LC_SEGMENT_64 command")
+    binary.writeBigUInt64LE(BigInt(other.fileSize - 1), other.offset + MACHO_SEGMENT_64_VMSIZE)
+    expectMalformedMachO(binary, "is smaller than its file size")
+  })
+
+  test("rejects an identically zeroed Mach-O vmsize pair instead of accepting it", () => {
+    const left = Buffer.from(builds.darwin)
+    const right = Buffer.from(builds.darwinRight)
+    const leftSegment = machoBunSection(left).command
+    const rightSegment = machoBunSection(right).command
+    left.writeBigUInt64LE(0n, leftSegment.offset + MACHO_SEGMENT_64_VMSIZE)
+    right.writeBigUInt64LE(0n, rightSegment.offset + MACHO_SEGMENT_64_VMSIZE)
+
+    const leftOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const rightOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: right })
+    if (leftOutcome.ok || rightOutcome.ok) {
+      throw new Error("FALSE ACCEPT: a segment with vmsize 0 was parsed as an executable")
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically zeroed vmsize binaries compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("virtual size 0 is smaller than its file size")
+  })
+
+  test("rejects a segment file range escape on an LC_SEGMENT_64 that does not carry '.bun'", () => {
+    const binary = Buffer.from(builds.darwin)
+    const bun = machoBunSection(binary)
+    const other = machoCommands(binary).find(
+      (command) => command.cmd === MACHO_LC_SEGMENT_64 && command.offset !== bun.command.offset,
+    )
+    if (!other) throw new Error("fixture has no second LC_SEGMENT_64 command")
+    binary.writeBigUInt64LE(BigInt(binary.byteLength) * 2n, other.offset + MACHO_SEGMENT_64_FILESIZE)
+    expectMalformedMachO(binary, "segment file range is out of bounds")
+  })
+
+  test("rejects a load command whose size is not 8-byte aligned", () => {
+    const binary = Buffer.from(builds.darwin)
+    const commands = machoCommands(binary)
+    const last = commands[commands.length - 1]
+    // Extend the final command by one byte and the declared sizeofcmds by the
+    // same byte, so the walk still fills the region exactly and the only
+    // violated invariant is the command-size alignment.
+    binary.writeUInt32LE(last.size + 1, last.offset + 4)
+    binary.writeUInt32LE(binary.readUInt32LE(0x14) + 1, 0x14)
+    expectMalformedMachO(binary, "load command size")
+    expectMalformedMachO(binary, "is not 8-byte aligned")
+  })
+
+  test("a divergent Mach-O flags word is a residual difference, never normalized", () => {
+    if (builds.darwin.readUInt32LE(0x18) === 0) {
+      throw new Error("fixture flags word is already zero")
+    }
+    const right = Buffer.from(builds.darwinRight)
+    right.writeUInt32LE(0x00000000, 0x18)
+
+    const comparison = compareRebuild({ bunVersion: BUN, left: builds.darwin, right })
+    if (comparison.equivalent) throw new Error("expected a residual-difference rejection")
+    expect(comparison.rejection.code).toBe("residual-difference")
+    expect(comparison.rejection.offset).toBe(0x18)
+  })
+
+  test("the Mach-O flags word is not pinned: an edited flags word is accepted", () => {
+    // The deliberate carve-out: `flags` measures 0xa10085 on both qualified
+    // targets, but two trivial programs cannot prove it invariant across
+    // programs, so it is preserved and compared rather than pinned. Divergence
+    // is caught (previous test); an edited word is not a rejection.
+    const mutated = Buffer.from(builds.darwin)
+    mutated.writeUInt32LE(0xdeadbeef, 0x18)
+    expect(mutated.readUInt32LE(0x18)).toBe(0xdeadbeef)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: mutated })
+    if (!outcome.ok) throw new Error(`unexpected rejection: ${outcome.rejection.detail}`)
+    expect(outcome.records.length).toBeGreaterThanOrEqual(1)
+
+    const comparison = compareRebuild({
+      bunVersion: BUN,
+      left: mutated,
+      right: Buffer.from(mutated),
+    })
+    if (!comparison.equivalent) throw new Error(`unexpected rejection: ${comparison.rejection.detail}`)
+    expect(comparison.rawIdentical).toBe(true)
   })
 })
 
@@ -1816,7 +2033,9 @@ const MACHO_SEGMENT_64_SECTIONS = 0x48
 const MACHO_SECTION_64_BYTES = 80
 const MACHO_SEGMENT_64_NSECTS = 0x40
 const MACHO_SEGMENT_64_SEGNAME = 0x08
+const MACHO_SEGMENT_64_VMSIZE = 0x20
 const MACHO_SEGMENT_64_FILESIZE = 0x30
+const MACHO_SEGMENT_64_FILEOFF = 0x28
 const MACHO_SECTION_64_SEGNAME = 0x10
 const MACHO_SECTION_64_SIZE = 0x28
 const MACHO_SECTION_64_OFFSET = 0x30
@@ -1826,6 +2045,9 @@ interface MachoCommand {
   readonly cmd: number
   readonly size: number
   readonly sectionCount: number
+  readonly fileOffset: number
+  readonly fileSize: number
+  readonly virtualSize: number
 }
 
 interface MachoSection {
@@ -1850,6 +2072,9 @@ function machoCommands(bytes: Buffer): MachoCommand[] {
       cmd,
       size,
       sectionCount: cmd === MACHO_LC_SEGMENT_64 ? bytes.readUInt32LE(cursor + MACHO_SEGMENT_64_NSECTS) : 0,
+      fileOffset: cmd === MACHO_LC_SEGMENT_64 ? Number(bytes.readBigUInt64LE(cursor + MACHO_SEGMENT_64_FILEOFF)) : 0,
+      fileSize: cmd === MACHO_LC_SEGMENT_64 ? Number(bytes.readBigUInt64LE(cursor + MACHO_SEGMENT_64_FILESIZE)) : 0,
+      virtualSize: cmd === MACHO_LC_SEGMENT_64 ? Number(bytes.readBigUInt64LE(cursor + MACHO_SEGMENT_64_VMSIZE)) : 0,
     })
     cursor += size
   }
