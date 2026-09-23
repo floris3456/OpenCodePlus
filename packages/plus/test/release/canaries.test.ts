@@ -65,8 +65,10 @@ import { createState } from "../../src/index.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { execute } from "../../src/teams/checks.js"
 import { git, gitRaw } from "../../src/teams/git.js"
+import { teamsDataDir } from "../../src/instructions/paths.js"
+import { gc } from "../../src/teams/lifecycle.js"
 import { drain, enqueue } from "../../src/teams/merge.js"
-import { type RunRecord } from "../../src/teams/run.js"
+import { saveRun, type RunRecord } from "../../src/teams/run.js"
 import { create } from "../../src/teams/worktree.js"
 
 const repoRoot = join(import.meta.dirname, "../../../..")
@@ -1194,6 +1196,75 @@ describe("git config: repository operations run no config-named program", () => 
     expect(created.head).toBe(head)
     expect(await Bun.file(join(created.dir, "README.md")).exists()).toBe(true)
     expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: a repository-local `core.fsmonitor` naming a program makes the raw
+   * `git status` run it. The lifecycle handlers (the `status` that checks dirty
+   * state in GC and the `status` that detects uncommitted changes on supersede)
+   * must both run clean, and both operations must still genuinely succeed.
+   */
+  test("a repository-local core.fsmonitor cannot run through gc or supersede lifecycle operations", async () => {
+    // 1. GC dirty inspection runs clean.
+    const repoGc = resolve(scratch, "config-fsmonitor-gc-repo")
+    const headGc = await initRepo(repoGc)
+    const sentinelGc = sentinelFor("fsmonitor-gc")
+    await git(repoGc, ["config", "core.fsmonitor", await plantProgram("fsmonitor-gc", sentinelGc)])
+
+    await rm(sentinelGc, { force: true })
+    await gitRaw(repoGc, ["status", "--porcelain", "-uall"])
+    expect(await Bun.file(sentinelGc).exists()).toBe(true)
+    await rm(sentinelGc, { force: true })
+
+    await writeFile(join(repoGc, "dirty.txt"), "dirty\n")
+    const runGc: RunRecord = {
+      ...runRecord(repoGc, headGc, headGc, "w-ca3a3a3a3a3a3a3a"),
+      state: "stopped",
+      lastUsed: new Date(0).toISOString(),
+    }
+
+    const gcResult = await withTeamsRoot("fsmonitor-gc", async () => {
+      const root = teamsDataDir()
+      await saveRun(root, runGc)
+      return gc(root)
+    })
+    expect(gcResult.skippedDirty).toContain(runGc.id)
+    expect(await Bun.file(sentinelGc).exists()).toBe(false)
+
+    // 2. Supersede headInfo status check runs clean.
+    const repoSupersede = resolve(scratch, "config-fsmonitor-supersede-repo")
+    const headSupersede = await initRepo(repoSupersede)
+    const sentinelSupersede = sentinelFor("fsmonitor-supersede")
+    await git(repoSupersede, ["config", "core.fsmonitor", await plantProgram("fsmonitor-supersede", sentinelSupersede)])
+
+    await rm(sentinelSupersede, { force: true })
+    await gitRaw(repoSupersede, ["status", "--porcelain"])
+    expect(await Bun.file(sentinelSupersede).exists()).toBe(true)
+    await rm(sentinelSupersede, { force: true })
+
+    await writeFile(join(repoSupersede, "uncommitted.txt"), "uncommitted\n")
+    const parent: RunRecord = {
+      ...runRecord(repoSupersede, headSupersede, headSupersede, "w-ca2a2a2a2a2a2a2a"),
+      children: ["w-ca1a1a1a1a1a1a1a"],
+    }
+    const child: RunRecord = {
+      ...runRecord(repoSupersede, headSupersede, headSupersede, "w-ca1a1a1a1a1a1a1a"),
+      parent: parent.id,
+      state: "superseded",
+    }
+
+    const supersedeResult = await withTeamsRoot("fsmonitor-supersede", async () => {
+      const root = teamsDataDir()
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      return createTeamApi(context(), createState()).supersede(
+        { run: child.id, reason: "canary supersede test" },
+        { sessionID: "ses_canary_config", agent: "muse-implementer", run: parent },
+      )
+    })
+    expect(supersedeResult.ok).toBe(true)
+    expect((supersedeResult as { ok: true; value: { hadUncommitted: boolean } }).value.hadUncommitted).toBe(true)
+    expect(await Bun.file(sentinelSupersede).exists()).toBe(false)
   })
 
   /**

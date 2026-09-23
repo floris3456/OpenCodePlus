@@ -25,7 +25,7 @@ import {
 } from "./run.js"
 import { Policy, parseDuration } from "./schema.js"
 import { lock, readJson } from "./store.js"
-import { orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
+import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -476,7 +476,7 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
       let isDirty = false
       if (record.directory) {
         try {
-          const porcelain = await gitRaw(record.directory, ["status", "--porcelain", "-uall"])
+          const porcelain = await gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
           if (porcelain.code === 0) {
             const dirtyFiles = parsePorcelain(porcelain.out)
             isDirty = dirtyFiles.length > 0
