@@ -379,6 +379,187 @@ describe("container anchoring", () => {
 })
 
 // ---------------------------------------------------------------------------
+// The container gate has two failure vocabularies. Corrupting an identification
+// byte fails the ELF64-LE/Mach-O dispatch outright as
+// `unsupported-executable-format`; corrupting a structural field inside an
+// otherwise identified ELF fails `locateElfBunPayload` as
+// `executable-structure-malformed`. Every case below mutates a real compiled
+// fixture and pins the exact branch through its detail string, so the two codes
+// are shown to be reachable through different corruptions.
+// ---------------------------------------------------------------------------
+
+/**
+ * Assert the buffer is refused by the ELF container checks (not the graph or
+ * string-table checks) and pin the exact `malformedExecutable` branch by a
+ * distinctive fragment of its detail.
+ */
+function expectMalformedElf(bytes: Uint8Array, detail: string): void {
+  const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes })
+  if (outcome.ok) throw new Error(`expected executable-structure-malformed: ${detail}`)
+  expect(outcome.rejection.code).toBe("executable-structure-malformed")
+  expect(outcome.rejection.offset).toBeNull()
+  expect(outcome.rejection.detail).toContain(detail)
+}
+
+/** Assert the buffer fails container identification before any structure is read. */
+function expectUnsupportedFormat(bytes: Uint8Array, detail: string): void {
+  const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes })
+  if (outcome.ok) throw new Error(`expected unsupported-executable-format: ${detail}`)
+  expect(outcome.rejection.code).toBe("unsupported-executable-format")
+  expect(outcome.rejection.offset).toBeNull()
+  expect(outcome.rejection.detail).toContain(detail)
+}
+
+describe("container identification bytes", () => {
+  test("rejects a corrupted ELF magic as unsupported-executable-format", () => {
+    const binary = Buffer.from(builds.left)
+    binary[0] = 0x00
+    expectUnsupportedFormat(binary, "not an ELF64-LE or Mach-O64-LE")
+  })
+
+  test("rejects a 32-bit class byte as unsupported-executable-format", () => {
+    const binary = Buffer.from(builds.left)
+    binary[4] = 1
+    expectUnsupportedFormat(binary, "not an ELF64-LE or Mach-O64-LE")
+  })
+
+  test("rejects a big-endian data byte as unsupported-executable-format", () => {
+    const binary = Buffer.from(builds.left)
+    binary[5] = 2
+    expectUnsupportedFormat(binary, "not an ELF64-LE or Mach-O64-LE")
+  })
+
+  test("rejects an ELF64-LE image with no '.bun' section as unsupported-executable-format", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    // Rename the only `.bun` header to the empty name at name-table offset 0.
+    binary.writeUInt32LE(0, bun.header)
+    expectUnsupportedFormat(binary, "has no '.bun' section")
+  })
+})
+
+describe("ELF container structure rejection (executable-structure-malformed)", () => {
+  test("rejects an ELF image shorter than its header", () => {
+    expectMalformedElf(builds.left.subarray(0, 63), "shorter than its header")
+  })
+
+  test("rejects an ELF identification version that is not the pinned layout", () => {
+    const binary = Buffer.from(builds.left)
+    binary[6] = 2
+    expectMalformedElf(binary, "identification version is not the pinned layout")
+  })
+
+  test("rejects a mismatched ELF program header entry size", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(55, 0x36)
+    expectMalformedElf(binary, "program header size is 55")
+  })
+
+  test("rejects a mismatched ELF section header entry size", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(63, 0x3a)
+    expectMalformedElf(binary, "section header size is 63")
+  })
+
+  test("rejects an ELF with no section headers", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(0, 0x3c)
+    expectMalformedElf(binary, "no section headers")
+  })
+
+  test("rejects an out-of-range ELF section name table index", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(binary.readUInt16LE(0x3c), 0x3e)
+    expectMalformedElf(binary, "section name table index is out of range")
+  })
+
+  test("rejects an ELF program header table outside the file", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeBigUInt64LE(BigInt(binary.byteLength), 0x20)
+    expectMalformedElf(binary, "program header table is out of bounds")
+  })
+
+  test("rejects an ELF section header table outside the file", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeBigUInt64LE(BigInt(binary.byteLength), 0x28)
+    expectMalformedElf(binary, "section header table is out of bounds")
+  })
+
+  test("rejects a section header count that cannot fit the file", () => {
+    // Every representable u16 count (65535 * 64 = 4 MiB) fits the real
+    // fixture, so this prefix keeps the ELF and program headers valid while the
+    // count becomes the term the section-table bounds check refuses.
+    const programEnd =
+      Number(builds.left.readBigUInt64LE(0x20)) +
+      builds.left.readUInt16LE(0x38) * builds.left.readUInt16LE(0x36)
+    const binary = Buffer.from(builds.left.subarray(0, Math.max(programEnd, 64)))
+    binary.writeBigUInt64LE(0n, 0x28)
+    binary.writeUInt16LE(0xffff, 0x3c)
+    expectMalformedElf(binary, "section header table is out of bounds")
+  })
+
+  test("rejects an ELF section name string table outside the file", () => {
+    const binary = Buffer.from(builds.left)
+    const names = requireElfSection(binary, ".shstrtab")
+    binary.writeBigUInt64LE(BigInt(binary.byteLength), names.header + 0x18)
+    expectMalformedElf(binary, "section name table is out of bounds")
+  })
+
+  test("rejects an ELF with more than one '.bun' section", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    const other = elfSections(binary).find(
+      (section) => section.name !== ".bun" && section.type === 1,
+    )
+    if (!other) throw new Error("fixture has no second PROGBITS section")
+    // Point a second PROGBITS header at the existing `.bun` name string. The
+    // duplicate is detected whichever of the two comes first in table order.
+    binary.writeUInt32LE(bun.nameOffset, other.header)
+    expectMalformedElf(binary, "more than one '.bun' section")
+  })
+
+  test("rejects a '.bun' section that is not PROGBITS", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    binary.writeUInt32LE(8, bun.header + 4)
+    expectMalformedElf(binary, "'.bun' section has type 8, expected 1")
+  })
+
+  test("rejects a '.bun' section whose bounds escape the file", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    binary.writeBigUInt64LE(BigInt(binary.byteLength), bun.header + 0x18)
+    expectMalformedElf(binary, "'.bun' section is out of bounds")
+  })
+
+  test("rejects a '.bun' section outside every PT_LOAD segment", () => {
+    const binary = Buffer.from(builds.left)
+    const programHeaderOffset = Number(binary.readBigUInt64LE(0x20))
+    const programHeaderSize = binary.readUInt16LE(0x36)
+    const programHeaderCount = binary.readUInt16LE(0x38)
+    for (let index = 0; index < programHeaderCount; index += 1) {
+      const header = programHeaderOffset + index * programHeaderSize
+      if (binary.readUInt32LE(header) === 1) binary.writeUInt32LE(0, header)
+    }
+    expectMalformedElf(binary, "'.bun' section is not contained in any PT_LOAD segment")
+  })
+
+  test("rejects a '.bun' section too small for a graph, offsets and trailer", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    binary.writeBigUInt64LE(48n, bun.header + 0x20)
+    expectMalformedElf(binary, "too small to hold a graph, offsets and trailer")
+  })
+
+  test("rejects a Bun payload length prefix that disagrees with its section", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    binary.writeBigUInt64LE(binary.readBigUInt64LE(bun.offset) + 8n, bun.offset)
+    expectMalformedElf(binary, "length prefix is")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Entry widths: bit 31 of the length word is JSC's `is8Bit` flag, not a
 // required marker. The mixed fixture's non-latin1 literals put both widths in
 // one table; the crafted tables below put a token-shaped UTF-16 entry into a
@@ -1100,34 +1281,62 @@ interface GraphLayout {
   readonly builtinCount: number
 }
 
+interface ElfSection {
+  readonly header: number
+  readonly nameOffset: number
+  readonly name: string
+  readonly offset: number
+  readonly size: number
+  readonly type: number
+}
+
 /**
- * Read the graph layout straight out of a real ELF `.bun` section. The tests
- * use this to pin the byte arithmetic the parser has to agree with; the parser
- * itself never takes this shortcut.
+ * Read every section header of a real ELF fixture. The container rejection
+ * tests corrupt these fields, so the arithmetic below locates the headers the
+ * same way the parser bounds-checks them instead of a second private copy.
  */
-function readGraphLayout(bytes: Buffer): GraphLayout {
+function elfSections(bytes: Buffer): ElfSection[] {
   const sectionHeaderOffset = Number(bytes.readBigUInt64LE(0x28))
   const sectionHeaderSize = bytes.readUInt16LE(0x3a)
   const sectionCount = bytes.readUInt16LE(0x3c)
   const nameIndex = bytes.readUInt16LE(0x3e)
   const namesHeader = sectionHeaderOffset + nameIndex * sectionHeaderSize
   const namesStart = Number(bytes.readBigUInt64LE(namesHeader + 0x18))
-  let sectionOffset = -1
-  let sectionSize = -1
+  const namesLength = Number(bytes.readBigUInt64LE(namesHeader + 0x20))
+  const sections: ElfSection[] = []
   for (let index = 0; index < sectionCount; index += 1) {
     const header = sectionHeaderOffset + index * sectionHeaderSize
     const nameOffset = bytes.readUInt32LE(header)
     const end = namesStart + nameOffset
     let stop = end
-    while (bytes[stop] !== 0) stop += 1
-    if (bytes.toString("latin1", end, stop) !== ".bun") continue
-    sectionOffset = Number(bytes.readBigUInt64LE(header + 0x18))
-    sectionSize = Number(bytes.readBigUInt64LE(header + 0x20))
+    while (stop < namesStart + namesLength && bytes[stop] !== 0) stop += 1
+    sections.push({
+      header,
+      nameOffset,
+      name: bytes.toString("latin1", end, stop),
+      offset: Number(bytes.readBigUInt64LE(header + 0x18)),
+      size: Number(bytes.readBigUInt64LE(header + 0x20)),
+      type: bytes.readUInt32LE(header + 4),
+    })
   }
-  if (sectionOffset < 0) throw new Error("fixture has no .bun section")
+  return sections
+}
 
-  const payloadStart = sectionOffset + 8
-  const payloadLength = sectionSize - 8
+function requireElfSection(bytes: Buffer, name: string): ElfSection {
+  const section = elfSections(bytes).find((item) => item.name === name)
+  if (!section) throw new Error(`fixture has no ${name} section`)
+  return section
+}
+
+/**
+ * Read the graph layout straight out of a real ELF `.bun` section. The tests
+ * use this to pin the byte arithmetic the parser has to agree with; the parser
+ * itself never takes this shortcut.
+ */
+function readGraphLayout(bytes: Buffer): GraphLayout {
+  const bun = requireElfSection(bytes, ".bun")
+  const payloadStart = bun.offset + 8
+  const payloadLength = bun.size - 8
   const offsetsStart = payloadStart + payloadLength - 16 - 32
   const byteCount = Number(bytes.readBigUInt64LE(offsetsStart))
   const modulesOffset = bytes.readUInt32LE(offsetsStart + 8)
