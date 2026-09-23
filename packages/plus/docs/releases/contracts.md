@@ -85,7 +85,7 @@ Canonicalization (`canonicalizeBuildOutput` in `packages/plus/script/release/can
    - `[3 bytes]`: Zero padding to align the record to 4 bytes.
 2. **Normalization Operation**: The canonicalizer identifies the unique non-filler bundler key across all parsed tokens, rewrites the 16-hex-digit key prefix to canonical zeros (`0000000000000000`), and recomputes the 24-bit rapidhash hash word over the canonical token. Constant filler keys (`3333333333333333` and `7777777777777777`) emitted from unrelated data are excluded from detection.
 3. **Strict Structural Anchoring**: Normalization eligibility is anchored strictly in parsed, validated container and payload structure, never in an unanchored scan or regex match across raw binary bytes:
-   - *Container validation*: The binary must parse as a valid ELF64-LE executable containing a `.bun` section inside a `PT_LOAD` segment whose file range fits the file, or a Mach-O64-LE executable containing a `__BUN,__bun` section inside an `LC_SEGMENT_64` command named `__BUN` whose file range fits the file and contains the section. A Mach-O section's segment name and containing range are read from the enclosing load command, never from the section header's self-asserted `segname`, and a segment's section records must fit within that load command.
+   - *Container validation*: The binary must parse as a valid ELF64-LE executable (`e_type` = `ET_EXEC`) containing a `.bun` section inside a `PT_LOAD` segment whose file range fits the file, or a valid Mach-O64-LE executable (`filetype` = `MH_EXECUTE`) containing a `__BUN,__bun` section inside an `LC_SEGMENT_64` command named `__BUN` whose file range fits the file and contains the section. A Mach-O section's segment name and containing range are read from the enclosing load command, never from the section header's self-asserted `segname`, and a segment's section records must fit within that load command.
    - *Payload validation*: The section must contain a valid Bun payload prefix (`[u64 length]`), the pinned trailer `\n---- Bun! ----\n`, and a valid 32-byte offsets structure.
    - *Graph and Module validation*: The module table (52-byte `CompiledModuleGraphFile` records) is parsed to bound every module subrange.
    - *String table validation*: The shared bytecode string table must be located via the graph tail, bounds-checked, confirmed to end in the data region before the module table (so it can never alias the `--compile-exec-argv` string or the trailing records), confirmed disjoint from all module subranges and builtin bytecode ranges, and parsed entry-by-entry. The optional module-info table locator is held to the same checks.
@@ -97,7 +97,7 @@ The canonicalizer fails closed on any malformed structure, unexpected field, or 
 
 | Rejection Code | Trigger Condition |
 | --- | --- |
-| `unsupported-toolchain` | Binary built with a Bun version other than the pinned release toolchain (`1.4.2`). |
+| `unsupported-toolchain` | Caller-supplied `bunVersion` other than the pinned release toolchain (`1.4.2`). |
 | `unsupported-executable-format` | Buffer is not an ELF64-LE or Mach-O64-LE standalone Bun binary (e.g. PE/Win32 binary or raw filler data). |
 | `executable-structure-malformed` | ELF or Mach-O headers, segments, section tables, or payload container bounds are corrupt or inconsistent. |
 | `bun-payload-malformed` | Bun payload length prefix, `\n---- Bun! ----\n` trailer, or offsets struct is missing, invalid, or out of bounds. |
@@ -115,7 +115,7 @@ The canonicalizer fails closed on any malformed structure, unexpected field, or 
 
 ### Toolchain Pinning
 
-The canonicalizer specification and parser arithmetic are strictly pinned to Bun `1.4.2` (`CANONICALIZER.bunVersion = "1.4.2"` and `CANONICALIZER.id = "bun-compile-chunk-token/v2"` in `packages/plus/script/release/canonicalize.ts:69-75`). If either binary in a rebuild pair declares or was compiled with any other toolchain version, `compareRebuild` immediately refuses the comparison as `unsupported-toolchain` without attempting structural recovery.
+The canonicalizer specification and parser arithmetic are strictly pinned to Bun `1.4.2` (`CANONICALIZER.bunVersion = "1.4.2"` and `CANONICALIZER.id = "bun-compile-chunk-token/v2"` in `packages/plus/script/release/canonicalize.ts`). `canonicalizeBuildOutput` and `compareRebuild` compare the **caller-supplied** `options.bunVersion` string against that pin and immediately refuse the comparison as `unsupported-toolchain` without attempting structural recovery when it does not match exactly. This is a pin check against an externally measured caller input, not independent detection of the compiler that produced either binary: neither function reads a toolchain version out of the input bytes, so measuring the producing toolchain remains the caller's responsibility.
 
 ### Measured Verification Evidence
 
@@ -134,11 +134,12 @@ The gate was proven non-vacuous through active tamper rejection tests:
 - A single byte flipped in module bytecode is rejected with `residual-difference` reporting the exact byte offset (`test/release/canonicalize.test.ts:957`).
 - A corrupted or tampered ELF container is rejected before any record is considered. A corrupted identification byte (magic, 64-bit class, or little-endian data byte) or an ELF64-LE image with no `.bun` section is rejected with `unsupported-executable-format` (`test/release/canonicalize.test.ts:432-458`); a corrupted ELF identification version, program or section header table, section name table, or `.bun` section header is rejected with `executable-structure-malformed` (`test/release/canonicalize.test.ts:460-606`).
 - A truncated or extended binary is rejected with `size-mismatch` (`test/release/canonicalize.test.ts:1066`).
-- Building with a mismatched Bun version is rejected with `unsupported-toolchain` (`test/release/canonicalize.test.ts:303`).
+- A caller-supplied Bun version that does not match the pin is rejected with `unsupported-toolchain` (`test/release/canonicalize.test.ts`, `version pinning > refuses an unsupported toolchain instead of guessing`). That test passes the same fixture, built by the pinned toolchain, with a different `bunVersion` argument; it does not rebuild with another compiler and it does not inspect toolchain provenance embedded in the binary.
 - A forged token hash or modified chunk index is rejected with `record-hash-underived` or `residual-difference` (`test/release/canonicalize.test.ts:970, 994`).
 - An announced string table that aliases the graph tail is rejected, never normalized: a structurally exact one-entry table written over a real 44-byte `--compile-exec-argv` string is refused with `string-table-locator-malformed`, for the bytecode locator and for the module-info locator (`test/release/canonicalize.test.ts`, `adversarial: announced string tables may not alias the graph tail`).
 - Mach-O container provenance is enforced against the real Darwin fixture: an inflated segment section count that reaches past its load command (with a forged `__BUN,__bun` header planted in the escaped slot), a section whose enclosing segment declares no file range, a section declared inside a segment not named `__BUN`, and a segment whose file range escapes the file are each refused with `executable-structure-malformed` (`test/release/canonicalize.test.ts`, `Mach-O container structure rejection (executable-structure-malformed)`).
 - An ELF `PT_LOAD` segment whose file range escapes the file is refused with `executable-structure-malformed`, so an out-of-file range can no longer satisfy `.bun` containment trivially (`test/release/canonicalize.test.ts`, `rejects a PT_LOAD segment whose file range escapes the file`).
+- An ELF image whose `e_type` is not `ET_EXEC` is refused with `executable-structure-malformed`, measured against every real ELF fixture the suite builds (all `ET_EXEC`) and including the pair case where both sides are edited identically to `ET_REL` (`test/release/canonicalize.test.ts`, `ELF file type (e_type)`).
 
 ### Known Equivalence Limitations
 

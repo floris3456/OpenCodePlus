@@ -28,7 +28,8 @@
  * pattern match over raw bytes:
  *
  *   1. The buffer must be an executable with a Bun standalone payload:
- *      ELF64-LE with a `.bun` section, or Mach-O64-LE with `__BUN,__bun`.
+ *      ELF64-LE with `e_type` `ET_EXEC` and a `.bun` section, or Mach-O64-LE
+ *      with filetype `MH_EXECUTE` and a `__BUN,__bun` section.
  *      The section is bounds-checked and must lie inside a loadable segment
  *      that validates as one: an ELF `PT_LOAD` whose file range fits the file,
  *      or a Mach-O `__BUN` segment whose own name and file range say so and
@@ -118,6 +119,7 @@ const TAIL_FIXED_BYTES_BOTH_TABLES = 8 + 4 + 8
 const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46] as const
 const ELFCLASS64 = 2
 const ELFDATA2LSB = 1
+const ELF_FILE_TYPE_EXECUTE = 2
 const ELF_PROGBITS = 1
 const ELF_PT_LOAD = 1
 const ELF64_HEADER_BYTES = 64
@@ -127,6 +129,7 @@ const ELF64_SECTION_NAME_OFFSET = 0x00
 const ELF64_SECTION_TYPE_OFFSET = 0x04
 const ELF64_SECTION_OFFSET = 0x18
 const ELF64_SECTION_SIZE_OFFSET = 0x20
+const ELF64_E_TYPE = 0x10
 const ELF64_E_PHOFF = 0x20
 const ELF64_E_PHENTSIZE = 0x36
 const ELF64_E_PHNUM = 0x38
@@ -525,6 +528,10 @@ function isMachO64Le(bytes: Uint8Array): boolean {
 function locateElfBunPayload(bytes: Uint8Array): Located {
   if (bytes.byteLength < ELF64_HEADER_BYTES) return malformedExecutable("ELF image is shorter than its header")
   if (bytes[6] !== 1) return malformedExecutable("ELF identification version is not the pinned layout")
+  const fileType = readUint16LE(bytes, ELF64_E_TYPE)
+  if (fileType !== ELF_FILE_TYPE_EXECUTE) {
+    return malformedExecutable(`ELF file type is ${fileType}, expected ${ELF_FILE_TYPE_EXECUTE}`)
+  }
 
   const programHeaderOffset = readUint64(bytes, ELF64_E_PHOFF)
   const programHeaderSize = readUint16LE(bytes, ELF64_E_PHENTSIZE)
