@@ -35,12 +35,21 @@ const snapshotConfig = `[core]
 	threads = true
 `
 
-// An executor can write `.git/hooks` and the repository-local `core.hooksPath`
-// of a repository the host also operates on, and git would run that script as
-// the host. Every git invocation in this service goes through this
-// neutralization: `-c` outranks repository config, and `/dev/null` can never be
-// a directory, so no hook path can resolve beneath it.
-const NO_REPOSITORY_HOOKS = ["-c", "core.hooksPath=/dev/null"]
+// An executor can write the repository-local git config of a repository the host
+// also operates on — hooks, `core.fsmonitor`, `commit.gpgSign` — and git would run
+// that program as the host. Every git invocation in this service goes through this
+// neutralization: `-c` outranks repository config, and each value cannot be
+// redirected (`/dev/null` can never be a directory; `false` disables the feature).
+// Keep this list in step with `packages/plus/src/teams/worktree.ts`, the source of
+// truth that this file cannot import.
+const NO_REPOSITORY_PROGRAMS = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "commit.gpgSign=false",
+]
 
 export const TreeID = Schema.String.pipe(Schema.brand("Git.TreeID"))
 export type TreeID = typeof TreeID.Type
@@ -304,7 +313,7 @@ const layer = Layer.effect(
     })
 
     const repositoryArgs = (repository: Repository, args: string[]) => [
-      ...NO_REPOSITORY_HOOKS,
+      ...NO_REPOSITORY_PROGRAMS,
       "--git-dir",
       repository.gitDirectory,
       "--work-tree",
@@ -554,6 +563,9 @@ const layer = Layer.effect(
             ? ""
             : (yield* repositoryOperation("diff", input.repository, [
                 "diff",
+                // Only a generated patch runs a config- or attribute-named diff program.
+                "--no-ext-diff",
+                "--no-textconv",
                 `--unified=${input.context ?? 3}`,
                 "--no-renames",
                 input.from,
@@ -627,7 +639,7 @@ const layer = Layer.effect(
       cwd = repository.worktree,
     ) {
       const result = yield* proc
-        .run(ChildProcess.make("git", [...NO_REPOSITORY_HOOKS, ...args], { cwd, extendEnv: true, stdin: "ignore" }))
+        .run(ChildProcess.make("git", [...NO_REPOSITORY_PROGRAMS, ...args], { cwd, extendEnv: true, stdin: "ignore" }))
         .pipe(
           Effect.mapError(
             (cause) => new WorktreeError({ operation, directory: worktreeDirectory, message: cause.message, cause }),
@@ -723,7 +735,7 @@ function run(cwd: string, proc: AppProcess.Interface, args: string[]) {
 function execute(cwd: string, proc: AppProcess.Interface, args: string[]) {
   return proc
     .run(
-      ChildProcess.make("git", [...NO_REPOSITORY_HOOKS, ...args], {
+      ChildProcess.make("git", [...NO_REPOSITORY_PROGRAMS, ...args], {
         cwd,
         extendEnv: true,
         stdin: "ignore",

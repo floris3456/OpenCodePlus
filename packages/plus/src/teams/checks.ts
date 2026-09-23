@@ -8,6 +8,7 @@ import { atomicJson, lock, readJson } from "./store.js"
 import { toolError } from "./schema.js"
 import type { Check } from "./schema.js"
 import { git, parsePorcelain, PLUS_PROJECT_FILE, systemPath } from "./git.js"
+import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import { errCode, io } from "./io.js"
 import { Release } from "../release/identity.js"
 
@@ -215,15 +216,15 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
     key,
     async () => {
       const started = Date.now()
-      const headBefore = await git(opts.worktree, ["rev-parse", "HEAD"])
-      const statusBefore = await git(opts.worktree, ["status", "--porcelain", "-uall"])
+      const headBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+      const statusBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
       // Provenance for the measured tree: the committed HEAD tree plus
       // whether the tree was dirty. Dirty status is captured up front (the
       // tree the check actually measured); the mutation gate below still
       // fails checks that dirty the tree themselves. Recording porcelain is
       // cheaper than a temporary-index write-tree and sufficient to refuse
       // the receipt as HEAD proof later.
-      const tree = await git(opts.worktree, ["rev-parse", "HEAD^{tree}"])
+      const tree = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"])
       const dirty = parsePorcelain(statusBefore).length > 0
       const cwd = opts.check.cwd ? join(opts.worktree, opts.check.cwd) : opts.worktree
       const env: Record<string, string> = { PATH: systemPath() }
@@ -241,8 +242,8 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         full += (full === "" || full.endsWith("\n") ? "" : "\n") + message + "\n"
       }
 
-      const headAfter = await git(opts.worktree, ["rev-parse", "HEAD"])
-      const statusAfter = await git(opts.worktree, ["status", "--porcelain", "-uall"])
+      const headAfter = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+      const statusAfter = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
       if (headAfter !== headBefore || statusAfter !== statusBefore) {
         // Post-condition failure overrides even a zero exit code.
         code = "E_CHECK_MUTATED"

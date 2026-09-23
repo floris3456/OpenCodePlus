@@ -25,7 +25,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { Agent } from "@opencode/schema/agent"
 import { Document, type Entry } from "@opencode/schema/config"
 import { Project } from "@opencode/schema/project"
@@ -64,7 +64,7 @@ import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { execute } from "../../src/teams/checks.js"
-import { git } from "../../src/teams/git.js"
+import { git, gitRaw } from "../../src/teams/git.js"
 import { drain, enqueue } from "../../src/teams/merge.js"
 import { type RunRecord } from "../../src/teams/run.js"
 import { create } from "../../src/teams/worktree.js"
@@ -1042,6 +1042,271 @@ describe("git hooks: repository operations on an executor worktree", () => {
     await rm(stale, { recursive: true, force: true })
     await git(repo, ["worktree", "prune"])
     expect(await git(repo, ["worktree", "list", "--porcelain"])).not.toContain(stale)
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+})
+
+/**
+ * The same property as the hooks block, for the rest of git's repository-local
+ * program-execution surface: `core.fsmonitor`, `commit.gpgSign` + `gpg.program`,
+ * `diff.external`, and `.gitattributes`-selected diff drivers (`command`,
+ * `textconv`). Each control runs the raw command and asserts the planted program
+ * really executed; each product path asserts it did not while the operation still
+ * succeeded. Attribute-selected *filters* are deliberately absent: once
+ * `$GIT_DIR/info/attributes` names a filter driver, no config key or command-line
+ * flag disables it, so that residual is reported instead of asserted away here.
+ */
+describe("git config: repository operations run no config-named program", () => {
+  const sentinelFor = (label: string): string => resolve(scratch, `config-${label}.sentinel`)
+
+  const plantProgram = async (label: string, sentinel: string): Promise<string> => {
+    const path = resolve(scratch, `config-${label}.sh`)
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, `#!/bin/sh\necho ran >> ${JSON.stringify(sentinel)}\ncat\nexit 0\n`, { mode: 0o755 })
+    return path
+  }
+
+  const initRepo = async (path: string): Promise<string> => {
+    await rm(path, { recursive: true, force: true })
+    await mkdir(path, { recursive: true })
+    await git(path, ["init", "-b", "main"])
+    await git(path, ["config", "user.email", "canary@test.local"])
+    await git(path, ["config", "user.name", "canary"])
+    await writeFile(join(path, "README.md"), "fixture\n")
+    await git(path, ["add", "README.md"])
+    await git(path, ["commit", "-m", "chore: fixture commit"])
+    return git(path, ["rev-parse", "HEAD"])
+  }
+
+  // The product handlers resolve their state root from XDG_DATA_HOME, like the
+  // real host: a per-test root keeps their locks and run records out of the real
+  // teams data directory.
+  const withTeamsRoot = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+    const prior = process.env.XDG_DATA_HOME
+    process.env.XDG_DATA_HOME = resolve(scratch, `config-teams-${label}`)
+    try {
+      return await fn()
+    } finally {
+      if (prior === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = prior
+    }
+  }
+
+  const runRecord = (repo: string, base: string, head: string, id: string): RunRecord => {
+    const at = new Date(0).toISOString()
+    return {
+      id,
+      role: "muse-implementer",
+      kind: "w",
+      repo: "opencode",
+      repoKey: "canary-config",
+      directory: repo,
+      paths: ["notes/*"],
+      branch: "team/canary/config",
+      base,
+      head,
+      state: "working",
+      attempts: [],
+      task: null,
+      parent: null,
+      children: [],
+      briefSha: "canary",
+      bundle: "canary",
+      budget: {},
+      createdAt: at,
+      lastUsed: at,
+      sessionID: "ses_canary_config",
+      configDigest: null,
+      history: [],
+    }
+  }
+
+  /** A real checkpoint through the team API for a run whose directory is `repo`. */
+  const checkpoint = async (repo: string, record: RunRecord, label: string): Promise<unknown> => {
+    await mkdir(join(repo, "notes"), { recursive: true })
+    await writeFile(join(repo, "notes", "canary.md"), "# canary\n")
+    return withTeamsRoot(label, async () => {
+      const result = await createTeamApi(context(), createState()).checkpoint(
+        { expectedHead: record.head, files: ["notes/canary.md"], message: "test: canary checkpoint" },
+        { sessionID: "ses_canary_config", agent: "muse-implementer", run: record },
+      )
+      if (!result.ok) throw new Error(`checkpoint failed: ${result.error.code} ${result.error.message}`)
+      return result.value
+    })
+  }
+
+  /** A real `diff` through the team API, patch generated by the handler's own git call. */
+  const runDiff = async (record: RunRecord, label: string): Promise<{ patch: string; from: string; head: string }> =>
+    withTeamsRoot(label, async () => {
+      const result = await createTeamApi(context(), createState()).diff(
+        { run: record.id, from: "base" },
+        { sessionID: "ses_canary_config", agent: "muse-implementer", run: record },
+      )
+      if (!result.ok) throw new Error(`diff failed: ${result.error.code} ${result.error.message}`)
+      return result.value as { patch: string; from: string; head: string }
+    })
+
+  /**
+   * Canary: a repository-local `core.fsmonitor` naming a program makes the raw
+   * `status` and `worktree add` run it. The check executor's own inspection (the
+   * `status` that decides `dirty` and the `rev-parse HEAD^{tree}` that records the
+   * measured tree) and worktree provisioning must both run clean, and both
+   * operations must still genuinely succeed.
+   */
+  test("a repository-local core.fsmonitor cannot run through the check executor or worktree provisioning", async () => {
+    const repo = resolve(scratch, "config-fsmonitor-repo")
+    const head = await initRepo(repo)
+    const tree = await git(repo, ["rev-parse", "HEAD^{tree}"])
+    const sentinel = sentinelFor("fsmonitor")
+    await git(repo, ["config", "core.fsmonitor", await plantProgram("fsmonitor", sentinel)])
+
+    await rm(sentinel, { force: true })
+    await git(repo, ["status", "--porcelain", "-uall"])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const res = await execute(resolve(scratch, "config-fsmonitor-check-state"), {
+      runID: "w-ca8a8a8a8a8a8a8a",
+      check: { id: "fsmonitor", argv: [process.execPath, "-e", "process.exit(0)"] },
+      worktree: repo,
+    })
+    // The inspection really ran: the receipt pins HEAD, the measured tree and a clean status.
+    expect(res.passed).toBe(true)
+    expect(res.head).toBe(head)
+    expect(res.tree).toBe(tree)
+    expect(res.dirty).toBe(false)
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+
+    // A raw `worktree add` fires the same repository-local program.
+    await rm(sentinel, { force: true })
+    await git(repo, ["worktree", "add", "--detach", resolve(scratch, "config-fsmonitor-control-wt"), "HEAD"])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const created = await create(resolve(scratch, "config-fsmonitor-worktree-state"), {
+      repoRoot: repo,
+      repoKey: "canary-fsmonitor",
+      role: "muse-implementer",
+      name: "fsmonitor",
+      base: "HEAD",
+      workspaceRoot: resolve(scratch, "config-fsmonitor-workspace"),
+    })
+    expect(created.head).toBe(head)
+    expect(await Bun.file(join(created.dir, "README.md")).exists()).toBe(true)
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: `commit.gpgSign=true` with a repository-local `gpg.program` makes the
+   * next `commit` run that program (the control commits an empty change and lets it
+   * fail on the bogus signature). A checkpoint's commit must not run it, and must
+   * land with the staged file in the resulting commit.
+   */
+  test("a repository-local commit.gpgSign and gpg.program cannot run through a checkpoint", async () => {
+    const repo = resolve(scratch, "config-gpg-repo")
+    const head = await initRepo(repo)
+    const sentinel = sentinelFor("gpg")
+    await git(repo, ["config", "commit.gpgSign", "true"])
+    await git(repo, ["config", "gpg.program", await plantProgram("gpg", sentinel)])
+
+    await rm(sentinel, { force: true })
+    await gitRaw(repo, ["commit", "--allow-empty", "-m", "chore: gpg control"])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const value = (await checkpoint(repo, runRecord(repo, head, head, "w-ca7a7a7a7a7a7a7a"), "gpg")) as {
+      committed?: boolean
+      subject?: string
+      sha?: string
+    }
+    expect(value.committed).toBe(true)
+    expect(value.subject).toBe("test: canary checkpoint")
+    expect(value.sha).toBeDefined()
+    expect(await git(repo, ["show", "--name-only", "--format=", value.sha as string])).toContain("notes/canary.md")
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: a repository-local `diff.external` runs when the raw `git diff` renders
+   * a patch. The team `diff` handler renders the same patch; it must show the real
+   * change and run no configured program.
+   */
+  test("a repository-local diff.external cannot run through the team diff inspection", async () => {
+    const repo = resolve(scratch, "config-extdiff-repo")
+    const base = await initRepo(repo)
+    await writeFile(join(repo, "README.md"), "fixture\nsecond\n")
+    await git(repo, ["add", "README.md"])
+    await git(repo, ["commit", "-m", "chore: second"])
+    const head = await git(repo, ["rev-parse", "HEAD"])
+    const sentinel = sentinelFor("extdiff")
+    await git(repo, ["config", "diff.external", await plantProgram("extdiff", sentinel)])
+
+    await rm(sentinel, { force: true })
+    const raw = await gitRaw(repo, ["diff", base, head])
+    expect(raw.code).toBe(0)
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const value = await runDiff(runRecord(repo, base, head, "w-ca6a6a6a6a6a6a6a"), "extdiff")
+    expect(value.from).toBe(base)
+    expect(value.head).toBe(head)
+    expect(value.patch).toContain("+second")
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: a `.gitattributes` `diff` attribute naming a driver whose repo-local
+   * `diff.<driver>.command` is a program — the attribute-selected external diff.
+   * The team `diff` handler must fall back to the builtin diff for those paths.
+   */
+  test("a repository-local diff driver command cannot run through the team diff inspection", async () => {
+    const repo = resolve(scratch, "config-diffcmd-repo")
+    const base = await initRepo(repo)
+    await writeFile(join(repo, ".gitattributes"), "* diff=evil\n")
+    await git(repo, ["add", ".gitattributes"])
+    await git(repo, ["commit", "-m", "chore: attributes"])
+    await writeFile(join(repo, "README.md"), "fixture\nsecond\n")
+    await git(repo, ["add", "README.md"])
+    await git(repo, ["commit", "-m", "chore: second"])
+    const head = await git(repo, ["rev-parse", "HEAD"])
+    const sentinel = sentinelFor("diffcmd")
+    await git(repo, ["config", "diff.evil.command", await plantProgram("diffcmd", sentinel)])
+
+    await rm(sentinel, { force: true })
+    await gitRaw(repo, ["diff", base, head])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const value = await runDiff(runRecord(repo, base, head, "w-ca5a5a5a5a5a5a5a"), "diffcmd")
+    expect(value.patch).toContain("+second")
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+  })
+
+  /**
+   * Canary: the textconv half of the same attribute vector — a repo-local
+   * `diff.<driver>.textconv` program selected by `.gitattributes`. The handler's
+   * patch must use the builtin diff instead.
+   */
+  test("a repository-local diff driver textconv cannot run through the team diff inspection", async () => {
+    const repo = resolve(scratch, "config-textconv-repo")
+    const base = await initRepo(repo)
+    await writeFile(join(repo, ".gitattributes"), "* diff=evil\n")
+    await git(repo, ["add", ".gitattributes"])
+    await git(repo, ["commit", "-m", "chore: attributes"])
+    await writeFile(join(repo, "README.md"), "fixture\nsecond\n")
+    await git(repo, ["add", "README.md"])
+    await git(repo, ["commit", "-m", "chore: second"])
+    const head = await git(repo, ["rev-parse", "HEAD"])
+    const sentinel = sentinelFor("textconv")
+    await git(repo, ["config", "diff.evil.textconv", await plantProgram("textconv", sentinel)])
+
+    await rm(sentinel, { force: true })
+    await gitRaw(repo, ["diff", base, head])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
+
+    const value = await runDiff(runRecord(repo, base, head, "w-ca4a4a4a4a4a4a4a"), "textconv")
+    expect(value.patch).toContain("+second")
     expect(await Bun.file(sentinel).exists()).toBe(false)
   })
 })

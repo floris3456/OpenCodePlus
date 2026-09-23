@@ -6,12 +6,22 @@ import { toolError } from "./schema.js"
 import { lock } from "./store.js"
 import { io } from "./io.js"
 
-// Team worktrees share one repository, so a task executor can write `.git/hooks`
-// and the repository-local `core.hooksPath`; a later host-plane git command would
-// run that script as the host, outside every placement boundary. `-c` outranks
-// repository config, and `/dev/null` can never be a directory, so no hook path
-// can resolve beneath it.
-export const NO_REPOSITORY_HOOKS = ["-c", "core.hooksPath=/dev/null"]
+// Team worktrees share one repository, so a task executor can write the
+// repository-local git config — hooks, `core.fsmonitor`, `commit.gpgSign` — and a
+// later host-plane git command would run that program as the host, outside every
+// placement boundary. `-c` outranks repository config, and each value cannot be
+// redirected by the executor: `/dev/null` can never be a directory, and `false`
+// disables the feature outright. Add a key here only once a canary proves git
+// spawns it for one of our subcommands; `packages/core/src/git.ts` carries the
+// same list as its own copy because it cannot import plugin code.
+export const NO_REPOSITORY_PROGRAMS = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "commit.gpgSign=false",
+]
 
 function exists(p: string): Promise<boolean> {
   return Effect.runPromise(
@@ -86,7 +96,7 @@ async function createLocked(opts: CreateOptions): Promise<Created> {
   // all name one directory even when the caller's workspace root is relative.
   const dir = resolve(ownedRoot(opts.workspaceRoot, opts.repoKey), opts.role, `${opts.name}-${ts}`)
   const branch = `team/${opts.role}/${opts.name}-${ts}`
-  const verify = await gitRaw(opts.repoRoot, ["rev-parse", "--verify", `${opts.base}^{commit}`])
+  const verify = await gitRaw(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--verify", `${opts.base}^{commit}`])
   if (verify.code !== 0)
     throw toolError("E_BASE", `Unknown base "${opts.base}": ${verify.err || verify.out}`, "ocp-main")
   if (await exists(dir)) throw toolError("E_WT_EXISTS", `Worktree directory already exists: ${dir}`)
@@ -95,8 +105,8 @@ async function createLocked(opts: CreateOptions): Promise<Created> {
   // nothing that resolves it (the host's FileSystem.realPath, the writes
   // below) can miss it.
   await mkdir(dirname(dir), { recursive: true })
-  await git(opts.repoRoot, [...NO_REPOSITORY_HOOKS, "worktree", "add", "-b", branch, dir, verify.out])
-  const head = await git(dir, ["rev-parse", "HEAD"])
+  await git(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "add", "-b", branch, dir, verify.out])
+  const head = await git(dir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   // Hand back the canonical directory: the host realpaths the location it is
   // given, and a data root reached through a symlink would otherwise yield two
   // names for one worktree.
@@ -144,7 +154,7 @@ export async function remove(root: string, dir: string, opts: RemoveOptions): Pr
 export async function removeLocked(dir: string, opts: RemoveOptions): Promise<void> {
   if (!(await exists(dir))) return
   const extra = opts.force === true ? ["--force"] : []
-  await git(opts.repoRoot, ["worktree", "remove", ...extra, dir])
+  await git(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "remove", ...extra, dir])
 }
 
 export interface WorktreeEntry {
@@ -159,7 +169,7 @@ export interface WorktreeEntry {
 // Parse `git worktree list --porcelain`. Branch refs are shortened
 // (`refs/heads/team/…` → `team/…`) to match the names `create` returns.
 export async function list(repoRoot: string): Promise<WorktreeEntry[]> {
-  const out = await git(repoRoot, ["worktree", "list", "--porcelain"])
+  const out = await git(repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "list", "--porcelain"])
   const entries: WorktreeEntry[] = []
   let cur: WorktreeEntry | undefined
   for (const line of out.split("\n")) {
