@@ -607,7 +607,7 @@ describe("tamper rejection", () => {
 describe("graph tail model (measured against the pinned toolchain)", () => {
   test("the small build carries the measured per-module content hash array", () => {
     const layout = readGraphLayout(builds.left)
-    // sentinel(4) + bytecode table(8) + startup count(4) + module-info table(8)
+    // builtin count(4, zero) + bytecode table(8) + startup count(4) + module-info table(8)
     expect(layout.tailLength).toBe(
       layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4 + 8 + layout.argvLength + 1,
     )
