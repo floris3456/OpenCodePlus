@@ -7,7 +7,7 @@ inputs:
     required: false
     default: "1.4.2"
   expected-sha256:
-    description: "Expected SHA256 checksum of the Bun executable"
+    description: "Recorded SHA256 checksum of the extracted Bun executable for this platform; the step fails closed when this is not a recorded 64-hex value"
     required: false
     default: ""
 
@@ -45,32 +45,21 @@ runs:
         fi
 
         # Bun ships a different executable for every platform, so a recorded hash only
-        # means anything on the platform it was measured on. release/toolchain.json holds
-        # a single measurement taken on the build seat (Linux arm64); asserting it on any
-        # other runner would fail a correct binary. Every other platform stays unmeasured
-        # until someone measures it and records it in the matrix as expected-sha256.
-        if [ -z "$EXPECTED_SHA" ] && [ "$OS" = "Linux" ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; }; then
-          if [ -f "release/toolchain.json" ]; then
-            EXPECTED_SHA=$(bun -e '
-              const tc = await Bun.file("release/toolchain.json").json()
-              const sha = tc?.bun?.executableSha256
-              if (sha && typeof sha === "string" && sha !== "null") process.stdout.write(sha)
-            ' 2>/dev/null || true)
-          fi
-          if [ -z "$EXPECTED_SHA" ]; then
-            EXPECTED_SHA="616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1"
-          fi
+        # means anything on the platform it was measured on. The expected value must
+        # come from the caller (the build matrix / workflow input) for this platform:
+        # there is no built-in fallback, and the expected value is never read through
+        # the executable being verified. An absent, sentinel, or malformed pin is an
+        # unmeasured toolchain, and an unmeasured toolchain must not proceed.
+        if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::No expected Bun executable SHA256 recorded for ${OS}/${ARCH}; refusing to continue with an unverified toolchain. Measure the sha256 of the extracted Bun executable for this platform and pass it as expected-sha256 (build matrix bun_sha256)."
+          exit 1
         fi
 
-        if [ -n "$EXPECTED_SHA" ]; then
-          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
-            echo "::error::Bun executable SHA256 mismatch! Expected: $EXPECTED_SHA, Got: $ACTUAL_SHA"
-            exit 1
-          fi
-          echo "Verified Bun executable SHA256 matches pinned value: $EXPECTED_SHA"
-        else
-          echo "Bun executable SHA256 unmeasured for ${OS}/${ARCH} (measuredBy: build-seat). Computed: $ACTUAL_SHA"
+        if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+          echo "::error::Bun executable SHA256 mismatch! Expected: $EXPECTED_SHA, Got: $ACTUAL_SHA"
+          exit 1
         fi
+        echo "Verified Bun executable SHA256 matches pinned value: $EXPECTED_SHA"
 
     - name: Install dependencies (frozen)
       shell: bash

@@ -207,6 +207,11 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job performs no checkout, so there is no local git repository for
+          # gh to discover. GH_REPO is the documented repository override for
+          # commands that otherwise operate on a local repository; the runner's
+          # GITHUB_REPOSITORY variable is not read by gh.
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "${{ inputs.tag }}" \
             --title "${{ inputs.tag }}" \

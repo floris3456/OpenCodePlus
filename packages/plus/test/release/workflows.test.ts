@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -193,6 +194,46 @@ async function runVerificationGuard(
   }
 }
 
+/**
+ * Runs the real setup-ocp "Verify Bun executable SHA256" shell step against a
+ * stub `bun` on PATH. The stub lets a scenario choose what the step will hash,
+ * so the fail-closed behaviour is proven by executing the step rather than by
+ * matching its text.
+ */
+async function runBunShaVerification(
+  script: string,
+  expectedShaInput: string,
+): Promise<{ exitCode: number; output: string; actualSha: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "setup-ocp-sha-"))
+  try {
+    const stubBin = join(dir, "bin")
+    await mkdir(stubBin, { recursive: true })
+    const stubPath = join(stubBin, "bun")
+    await writeFile(stubPath, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 })
+    const actualSha = createHash("sha256")
+      .update(Buffer.from(await Bun.file(stubPath).arrayBuffer()))
+      .digest("hex")
+
+    const proc = Bun.spawn(["bash", "-c", script], {
+      cwd: dir,
+      env: {
+        PATH: `${stubBin}:${process.env.PATH ?? ""}`,
+        EXPECTED_SHA_INPUT: expectedShaInput,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    return { exitCode, output: `${stdout}${stderr}`, actualSha }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 describe("native build workflow (ocp-build.yml)", () => {
   test("defines native build matrix with exact runner-to-target mapping for all qualified targets", async () => {
     const [doc, contract] = await Promise.all([
@@ -344,19 +385,50 @@ describe("native build workflow (ocp-build.yml)", () => {
     }
   })
 
-  test("pins linux-arm64 Bun SHA256 while leaving unmeasured platform archives null", async () => {
-    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
-    const matrixInclude = doc.jobs?.build?.strategy?.matrix?.include ?? []
+  test("pins a measured Bun executable SHA256 for every qualified target", async () => {
+    const [doc, contract, toolchain] = await Promise.all([
+      loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml"),
+      loadJson<ContractJson>("release/contract.json"),
+      loadJson<ToolchainJson>("release/toolchain.json"),
+    ])
 
-    const arm64Entry = matrixInclude.find((e) => e.target === "linux-arm64")
-    expect(arm64Entry).toBeDefined()
-    expect(arm64Entry?.bun_sha256).toBe("616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1")
-
-    const otherEntries = matrixInclude.filter((e) => e.target !== "linux-arm64")
-    expect(otherEntries.length).toBe(3)
-    for (const entry of otherEntries) {
-      expect(entry.bun_sha256 === null || entry.bun_sha256 === undefined).toBe(true)
+    // Recorded 2026-09-23 from Bun's official bun-v1.4.2 release archives. For
+    // each platform the archive sha256 was checked against that release's
+    // SHASUMS256.txt before the extracted `bun` executable was hashed, so the
+    // value is the sha256 of the binary setup-ocp actually verifies. On x64 the
+    // plain and -baseline archives carry the same executable bytes, so the pin
+    // holds however setup-bun resolves AVX2.
+    const expected: Record<string, string> = {
+      "linux-arm64": "616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1",
+      "linux-x64": "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c",
+      "darwin-arm64": "35d20dd0263e5c950194434b925454fdfa9ba6e4467da960410fa05b08a7a5b5",
+      "darwin-x64": "2fa513af22ac59e03aae640cad302e73cb1ddb0f6398501e2ddccf7dcd613596",
     }
+
+    const buildJob = doc.jobs?.build
+    const matrixInclude = buildJob?.strategy?.matrix?.include ?? []
+    expect(matrixInclude.map((entry) => entry.target).sort()).toEqual(contract.qualifiedTargets.slice().sort())
+
+    for (const entry of matrixInclude) {
+      const target = entry.target as string
+      expect(expected[target]).toBeDefined()
+      expect(entry.bun_sha256).toMatch(/^[0-9a-f]{64}$/)
+      expect(entry.bun_sha256).toBe(expected[target])
+    }
+
+    // Four platforms are four different binaries; a copied pin would verify nothing.
+    expect(new Set(Object.values(expected)).size).toBe(4)
+    // The seat's recorded measurement and the matrix pin cannot drift apart.
+    expect(toolchain.bun.executableSha256).toBe(expected["linux-arm64"])
+
+    const buildSetup = (buildJob?.steps ?? []).find((step) => step.uses?.includes("setup-ocp"))
+    expect(buildSetup?.with?.["expected-sha256"]).toBe("${{ matrix.bun_sha256 }}")
+
+    // record-release runs on ubuntu-24.04, so it pins the linux-x64 identity.
+    const recordJob = doc.jobs?.["record-release"]
+    expect(recordJob?.["runs-on"]).toBe("ubuntu-24.04")
+    const recordSetup = (recordJob?.steps ?? []).find((step) => step.uses?.includes("setup-ocp"))
+    expect(recordSetup?.with?.["expected-sha256"]).toBe(expected["linux-x64"])
   })
 
   test("pins OPENCODE_VERSION, OPENCODE_CHANNEL, TZ=UTC, LC_ALL=C.UTF-8, and SOURCE_DATE_EPOCH", async () => {
@@ -750,6 +822,35 @@ describe("release publication workflow (ocp-release.yml)", () => {
     expect(publish.run).toContain("--verify-tag")
   })
 
+  test("gives gh an explicit repository for publication and still performs no checkout", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const steps = doc.jobs?.publish?.steps ?? []
+
+    const publishIndex = steps.findIndex((step) => step.name?.includes("Publish immutable prerelease"))
+    expect(publishIndex).toBeGreaterThan(-1)
+    const publish = steps[publishIndex]
+
+    // The publish step runs from the downloaded artifact directory, which has no
+    // .git, so gh cannot discover a repository and would fail at the last step.
+    // GH_REPO is the documented override for commands that otherwise operate on
+    // a local repository; GITHUB_REPOSITORY is not read by gh.
+    expect(publish.env?.GH_REPO).toBe("${{ github.repository }}")
+    expect(publish.run).toContain("gh release create")
+    expect(publish.env?.GITHUB_REPOSITORY).toBeUndefined()
+    expect(publish.run).not.toContain("GITHUB_REPOSITORY")
+
+    // No checkout: GH_REPO is the only repository context the publish step gets.
+    for (const step of steps) {
+      expect(step.uses ?? "").not.toContain("actions/checkout")
+    }
+
+    // The guard's gh api calls pass literal repos/{owner}/{repo} paths built from
+    // an explicit repository variable, so they need no repo discovery.
+    const guard = steps.find((step) => step.name === "Verify build run identity for tag")
+    expect(guard?.env?.REPOSITORY).toBe("${{ github.repository }}")
+    expect(guard?.run).toContain("repos/${REPOSITORY}/")
+  })
+
   test("grants contents: write and actions: read, and no other permission", async () => {
     const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
 
@@ -830,6 +931,42 @@ describe("setup-ocp composite action (.github/actions/setup-ocp/action.yml)", ()
     const installStep = steps.find((s) => s.name?.includes("Install dependencies"))
     expect(installStep).toBeDefined()
     expect(installStep?.run).toBe("bun install --frozen-lockfile")
+  })
+
+  test("fails closed when no expected Bun executable SHA256 is recorded", async () => {
+    const actionDoc = await loadYaml<ActionDoc>(".github/actions/setup-ocp/action.yml")
+    const verifyStep = (actionDoc.runs?.steps ?? []).find((step) =>
+      step.name?.includes("Verify Bun executable SHA256"),
+    )
+    expect(verifyStep?.run).toBeDefined()
+    const script = verifyStep?.run ?? ""
+
+    // Fails against the previous action, which printed an "unmeasured" line and
+    // continued, and against the linux-arm64 fallback, which silently
+    // substituted a hash recorded for a different platform.
+    const missing = await runBunShaVerification(script, "")
+    expect(missing.exitCode).not.toBe(0)
+    expect(missing.output).toContain("::error::")
+    expect(missing.output).toMatch(/no expected bun executable sha256/i)
+    expect(missing.output.toLowerCase()).toContain("unverified")
+    expect(missing.output).not.toContain("unmeasured")
+
+    // No built-in hash and no expected value read through the executable under
+    // test: the pin must come from the caller.
+    expect(script).not.toContain("616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1")
+    expect(script).not.toContain("toolchain.json")
+    expect(script).not.toContain("bun -e")
+
+    const sentinel = await runBunShaVerification(script, "null")
+    expect(sentinel.exitCode).not.toBe(0)
+
+    const match = await runBunShaVerification(script, missing.actualSha)
+    expect(match.exitCode).toBe(0)
+    expect(match.output).toContain("Verified Bun executable SHA256")
+
+    const mismatch = await runBunShaVerification(script, "f".repeat(64))
+    expect(mismatch.exitCode).not.toBe(0)
+    expect(mismatch.output).toContain("::error::Bun executable SHA256 mismatch")
   })
 
   test("does not install Node or npm and touches no publication credentials", async () => {
