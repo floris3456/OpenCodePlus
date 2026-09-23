@@ -511,15 +511,26 @@ describe("string-table entry widths (JSC is8Bit flag)", () => {
   })
 
   test("a UTF-16 entry whose length * 2 overruns the region is rejected", () => {
-    const crafted = Buffer.from(builds.left)
-    const wideEntryOffset = craftWideTokenTable(crafted, WIDE_TOKEN)
+    const absurd = Buffer.from(builds.left)
+    const absurdOffset = craftWideTokenTable(absurd, WIDE_TOKEN)
     // Flag clear, 0x7fffffff code units: 4 GiB of data in a 108-byte region.
-    crafted.writeUInt32LE(0x7fffffff, wideEntryOffset)
+    absurd.writeUInt32LE(0x7fffffff, absurdOffset)
 
-    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: crafted })
-    if (outcome.ok) throw new Error("expected a string-table-malformed rejection")
-    expect(outcome.rejection.code).toBe("string-table-malformed")
-    expect(outcome.rejection.offset).toBe(wideEntryOffset)
+    const absurdOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: absurd })
+    if (absurdOutcome.ok) throw new Error("expected a string-table-malformed rejection")
+    expect(absurdOutcome.rejection.code).toBe("string-table-malformed")
+    expect(absurdOutcome.rejection.offset).toBe(absurdOffset)
+
+    // A count a byte-oriented reader would accept: 30 as bytes would fit the
+    // 52-byte remainder, but 30 code units (60 bytes) does not.
+    const subtle = Buffer.from(builds.left)
+    const subtleOffset = craftWideTokenTable(subtle, WIDE_TOKEN)
+    subtle.writeUInt32LE(30, subtleOffset)
+
+    const subtleOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: subtle })
+    if (subtleOutcome.ok) throw new Error("expected a string-table-malformed rejection")
+    expect(subtleOutcome.rejection.code).toBe("string-table-malformed")
+    expect(subtleOutcome.rejection.offset).toBe(subtleOffset)
   })
 })
 
