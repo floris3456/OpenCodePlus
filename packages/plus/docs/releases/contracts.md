@@ -100,13 +100,49 @@ In the standard team workflow, worktrees are created locally using `git worktree
 
 6. **Owner Disposition**: By workspace owner decision dated 2026-09-23, this execution vector is dispositioned and classified as an **accepted residual, not a deferred mandatory gate** or outstanding work for this release.
 
+## Owner-Dispositioned Deferred Findings (Accepted Residuals)
+
+This section records security findings that the workspace owner has explicitly dispositioned as deferred work items by formal decision dated 2026-09-23.
+
+These entries are **accepted residuals, not mandatory deferred items**. Outcome 12 of the round-4 plan requires that the mandatory deferred list remain empty and that no unresolved mandatory gate is concealed as a deferred item. What makes these residuals rather than hidden gates is that the workspace owner has explicitly dispositioned them: their classification as accepted residuals rests on that auditable 2026-09-23 owner decision, allowing any reader to independently verify the claim rather than taking it on assertion.
+
+Crucially, these entries are **not** accepted vectors and are kept strictly distinct from the "Known Security Residuals" above. The three Git vectors were accepted as configuration vectors sharing a common precondition (an attacker or malicious implementer with write access to repository-local configuration in the shared `.git`). In contrast, the three entries below are deferred *work items* with fundamentally different triggers and execution paths. Most notably, **F1 and F3 need no malicious repository configuration at all**: they arise in ordinary, legitimate developer workflows and operations.
+
+### F1 — Host Execution of Team Check Commands
+
+1. **Exact Mechanism**: When running assigned focused checks, `execute()` in `packages/plus/src/teams/checks.ts` (lines 208-233) constructs an environment containing the host `PATH`, host `HOME` (`process.env.HOME`), and `BUN_INSTALL_CACHE_DIR`, and calls `spawnAndWait()`. Inside `spawnAndWait()` (lines 117-137), the check argv is passed directly to `node:child_process.spawn` detached on the host plane under the task worktree directory. `ExecuteOptions` carries no placement capability whatsoever. Furthermore, `packages/plus/src/teams/merge.ts` (around line 300) invokes this exact same `execute()` function to run parent checks in a temporary worktree during landing verification.
+
+2. **Absence of Containment and Trigger**: This execution vector **needs no malicious repository configuration at all**. Unlike the Git vectors that require manipulating `.git/config` or `.gitattributes`, check execution is the normal, expected path for running candidate-authored tests and their imports during team check runs and integrate landing. Any ordinary incorrect or buggy test code, or dependency imported by candidate tests, executes directly on the host plane with host privileges and can read or mutate host state.
+
+3. **Astra Closure**: Route check execution through the owned executor plane and fail closed when required placement is unavailable.
+
+4. **Owner Disposition**: By workspace owner decision dated 2026-09-23, this finding is dispositioned as a deferred work item and classified as an **accepted residual, not a mandatory deferred gate** for this release.
+
+### F3 — Host PTY Allocation
+
+1. **Exact Mechanism**: When creating an interactive terminal session, `Pty.create` in `packages/core/src/pty.ts` (lines 164-182) merges the host environment (`process.env`) with requested environment variables and invokes `spawn()` from the host native PTY binding (`@opencode-ai/pty`) without consulting workspace placement. In `packages/server/src/handlers/pty.ts` (lines 41-55), the authenticated HTTP `pty.create` handler passes ordinary client PTY creation requests directly to this `Pty.create` service.
+
+2. **Absence of Containment and Trigger**: **No malicious repository configuration and no task edits are required** to trigger host execution. An ordinary client opening an interactive terminal session in a placed Location receives a process spawned directly on the host plane with host environment variables.
+
+3. **Test Suite Coverage Gap in Canaries**: The existing canary assertions in `packages/plus/test/release/canaries.test.ts` verify that the workerd PTY binding refuses allocation when no PTY plane exists and that the PTY allocation environment seam carries no host environment. However, these tests do not test the native production binding (`@opencode-ai/pty`), which executes directly on the host plane when invoked.
+
+4. **Astra Closure**: Route placed PTY allocation to the executor plane, or refuse allocation before host spawning when placed PTY capabilities are unavailable.
+
+5. **Owner Disposition**: Formerly tracked as an open security finding barring publication, this finding was dispositioned by workspace owner decision dated 2026-09-23 as a deferred work item and classified as an **accepted residual, not a mandatory deferred gate** for this release.
+
+### F8 — Admission Can Commit After Observed Quiescence
+
+1. **Exact Mechanism**: When a prompt is submitted, `SessionPrompt.prepare` in `packages/core/src/session/prompt.ts` (lines 30-56) calls `SessionAdmission.check` to evaluate the admission fence once before starting asynchronous preparation (plugin hooks and file attachment materialization). Later, `Session.prompt` in `packages/core/src/session/session.ts` (lines 152-164) executes `SessionRevert.commit` and `admission.admit` without holding a counted admission lease or performing a fence-coordinated commit. Meanwhile, `SessionAdmission.status` in `packages/core/src/session/admission.ts` (lines 89-99) determines quiescence (`quiescent: held !== undefined && active.size === 0`) by counting only registered execution keys (`sources`). Consequently, `engage` and `status` can report quiescent while an in-flight prompt preparation is still proceeding and will subsequently write durable message and inbox records.
+
+2. **Honest Scope and Trigger**: The owner explicitly defined the exact operational scope: **publishing an inert archive does not trigger this, no data loss is claimed, and it requires a real generation switch with adverse timing.** The condition is narrow and arises only when an active generation transition is engaged concurrently with an in-flight prompt that passed the initial fence check before preparation completed.
+
+3. **Plan Status and Owner Disposition**: The round-4 plan initially scheduled fence coordination under finish-first T7 wording. By explicit workspace owner decision dated 2026-09-23, this item is formally deferred rather than silently skipped, and is classified as an **accepted residual, not a mandatory deferred gate** for this release.
+
+4. **Astra Closure**: Hold counted admissions through durable commit and coordinate the admission fence with all required in-flight counters before declaring quiescence.
+
 ## Open Security Findings (Unaccepted Vectors Barring Publication)
 
-Unlike the three owner-accepted residuals above, the following open findings have **not** been accepted by the workspace owner. They represent unaccepted boundary risks that currently bar release publication until formally addressed or scoped by an explicit owner decision:
-
-### PTY Allocation Routing and Host Environment Boundary
-
-While canary assertions (`packages/plus/test/release/canaries.test.ts`) verify that workerd PTY bindings refuse allocation when no PTY plane exists and that the PTY allocation environment seam carries no host environment, PTY allocation routing across planes remains an open finding. In-process unit testing cannot verify full host-plane boundary isolation during interactive terminal sessions. This finding is unaccepted and bars release publication pending an isolated PTY spawner architecture or a scoped owner decision.
+Unlike the owner-accepted residuals and dispositioned deferrals above, the following open finding has **not** been accepted by the workspace owner. It represents an unaccepted boundary risk that currently bars release publication until formally addressed or scoped by an explicit owner decision:
 
 ### Host-Plane Executable Plugin Loading
 
