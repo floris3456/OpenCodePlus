@@ -1,6 +1,7 @@
 export * as Config from "./config.js"
 
 import { makeLocationNode } from "@opencode/util/effect/app-node"
+import os from "os"
 import path from "path"
 import { isDeepStrictEqual } from "node:util"
 import { type ParseError, parse } from "jsonc-parser"
@@ -127,37 +128,32 @@ export const layer = (options?: Options) =>
         })
       })
 
-      const substituteConfigText = Effect.fnUntraced(function* (filepath: string, rawText: string) {
-        if (location.workspaceID === undefined) {
-          return yield* ConfigVariable.substitute({ type: "path", path: filepath, text: rawText })
-        }
-        let resolvedText = rawText
-        if (environment && rawText.includes("{file:")) {
-          const configDir = path.dirname(filepath)
-          let out = ""
-          let cursor = 0
-          for (const match of rawText.matchAll(/\{file:[^}]+\}/g)) {
-            const token = match[0]
-            const index = match.index
-            out += rawText.slice(cursor, index)
-            const filePath = token.slice("{file:".length, -1)
-            const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(configDir, filePath)
-            const fileBytes = yield* environment.files.read(resolvedPath).pipe(
-              Effect.map((result) => new TextDecoder().decode(result.bytes)),
-              Effect.catch(() => Effect.succeed("")),
-            )
-            out += JSON.stringify(fileBytes.trim()).slice(1, -1)
-            cursor = index + token.length
+      const placedFiles = location.workspaceID !== undefined ? environment?.files : undefined
+      // Every `{file:}` reference in this location's config resolves through one reader. A placed
+      // config comes from its workspace, so its references resolve there too: reading them on the
+      // host would splice host bytes into a workspace document, which is exactly what an
+      // unplaceable placement refuses to do. `~/` carries no home for a placed read because this
+      // process's home describes the host, not the workspace.
+      const reader: ConfigVariable.Reader = placedFiles
+        ? {
+            read: (filepath) =>
+              placedFiles.read(filepath).pipe(
+                Effect.map((result) => new TextDecoder().decode(result.bytes)),
+                Effect.mapError((cause) => ({ missing: cause._tag === "Environment.NotFound", cause })),
+              ),
           }
-          resolvedText = out + rawText.slice(cursor)
-        }
-        return yield* ConfigVariable.substitute({
-          type: "path",
-          path: filepath,
-          text: resolvedText,
-          env: new Proxy({}, { get: () => "" }),
-        })
-      })
+        : {
+            read: (filepath) =>
+              fs.readFileString(filepath).pipe(
+                Effect.mapError((cause) => ({
+                  missing: cause._tag === "PlatformError" && cause.reason._tag === "NotFound",
+                  cause,
+                })),
+              ),
+            home: os.homedir(),
+          }
+      // A placed document must not resolve `{env:}` against this process's environment either.
+      const placedVariables = new Proxy({}, { get: () => "" })
 
       const loadFile = Effect.fnUntraced(function* (filepath: string) {
         const placed = location.workspaceID !== undefined
@@ -176,7 +172,13 @@ export const layer = (options?: Options) =>
               )
             : yield* fs.readFileStringSafe(filepath)
         if (text === undefined) return
-        const substituted = yield* substituteConfigText(filepath, text)
+        const substituted = yield* ConfigVariable.substitute({
+          type: "path",
+          path: filepath,
+          text,
+          reader,
+          env: placedFiles ? placedVariables : undefined,
+        })
         const info = yield* parseInfo(substituted, filepath)
         if (!info) return
         return new Document({ type: "document", path: AbsolutePath.make(filepath), info })
@@ -203,6 +205,7 @@ export const layer = (options?: Options) =>
             source: entry.origin,
             dir: entry.origin,
             text: JSON.stringify(config),
+            reader,
             env: variables,
           }).pipe(
             Effect.flatMap((text) => parseInfo(text, entry.origin)),
@@ -252,6 +255,7 @@ export const layer = (options?: Options) =>
                 source: "OPENCODE_CONFIG_CONTENT",
                 dir: location.directory,
                 text: options.content,
+                reader,
               }).pipe(
                 Effect.flatMap((text) => parseInfo(text, "OPENCODE_CONFIG_CONTENT")),
                 Effect.map((info) => (info ? [new Document({ type: "document", info })] : [])),

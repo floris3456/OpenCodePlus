@@ -1,4 +1,6 @@
+import path from "path"
 import { describe, expect } from "bun:test"
+import { Document } from "@opencode/schema/config"
 import { Config } from "@opencode/core/config"
 import { Credential } from "@opencode/core/credential"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -26,6 +28,7 @@ import { emptyCredentialNode, emptyWellknownNode } from "./fixture/config-nodes"
 import { tempGlobalLayer } from "./fixture/global"
 import { location } from "./fixture/location"
 import { emptyMcpLayer } from "./fixture/mcp"
+import { tmpdirScoped } from "./fixture/tmpdir"
 import { it, testEffect } from "./lib/effect"
 import { PluginTestLayer } from "./plugin/fixture"
 
@@ -179,6 +182,78 @@ describe("Config placement", () => {
         }),
       ),
     ),
+  )
+
+  const placedEntries = (driver: Environment.Driver) =>
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      return yield* config.entries()
+    }).pipe(
+      Effect.provide(LayerNode.compile(graph, { replacements: placedReplacements(placedRef, reachable(driver)) })),
+    )
+
+  const hostCredential = Effect.fnUntraced(function* () {
+    const tmp = yield* tmpdirScoped()
+    const filepath = path.join(tmp.path, "credential.txt")
+    const secret = "host-only-credential-value"
+    yield* Effect.promise(() => Bun.write(filepath, secret))
+    // The negative assertions below only mean something while this really is readable host state.
+    expect(yield* Effect.promise(() => Bun.file(filepath).text())).toBe(secret)
+    return { filepath, secret }
+  })
+
+  // Both files here are agent-writable in a managed placement, so this is the workspace naming a
+  // host path: the token a workspace file's content contributes is data, not a second reference to
+  // resolve. Resolving it would read that host path into the placed document.
+  it.live("leaves a host path named by workspace file content unresolved", () =>
+    Effect.gen(function* () {
+      const host = yield* hostCredential()
+      const driver = Environment.makeMemoryDriver()
+      const files = Environment.makeFiles(driver)
+      const encoder = new TextEncoder()
+      yield* files.write(path.join(directory, "token.txt"), encoder.encode(`{file:${host.filepath}}`))
+      yield* files.write(
+        path.join(directory, "opencode.jsonc"),
+        encoder.encode(`{
+          // Ignored reference: {file:./absent.txt}
+          "shell": "shell-{env:PATH}",
+          "username": "{file:./token.txt}"
+        }`),
+      )
+
+      const documents = (yield* placedEntries(driver)).filter((entry): entry is Document => entry.type === "document")
+      expect(documents.length).toBe(1)
+      // The workspace reference resolved, and the host path its content names stayed literal text.
+      // The commented-out reference stayed verbatim too, as it does on the host: resolving it would
+      // have failed the document on its absent target.
+      expect(documents[0].info.username).toBe(`{file:${host.filepath}}`)
+      expect(documents[0].info.username).not.toContain(host.secret)
+      // A placed document reads no host environment either.
+      expect(process.env.PATH).toBeTruthy()
+      expect(documents[0].info.shell).toBe("shell-")
+    }),
+  )
+
+  it.live("refuses a placed config that references a host path", () =>
+    Effect.gen(function* () {
+      const host = yield* hostCredential()
+      const driver = Environment.makeMemoryDriver()
+      yield* Environment.makeFiles(driver).write(
+        path.join(directory, "opencode.json"),
+        new TextEncoder().encode(JSON.stringify({ username: `{file:${host.filepath}}` })),
+      )
+
+      const exit = yield* Effect.exit(placedEntries(driver))
+      if (!Exit.isFailure(exit)) throw new Error("a placed config resolved a host file reference")
+      // The workspace has no such path, and an unreadable reference fails the document rather than
+      // substituting an empty value.
+      expect(Cause.squash(exit.cause)).toMatchObject({
+        name: "ConfigInvalidError",
+        data: {
+          message: `bad file reference: "{file:${host.filepath}}" ${host.filepath} does not exist`,
+        },
+      })
+    }),
   )
 })
 
