@@ -162,19 +162,22 @@ If and only if the daemon is completely stopped and confirmed idle (for example,
    PID=$(jq -r .pid "$REG")
    REG_URL=$(jq -r .url "$REG")
 
-   # 2. Derive configured service port (fail if configuration file exists but is unreadable/corrupt)
+   # 2. Derive configured service port; corrupt configuration or indeterminable port fails
    PORT=""
    if [ -f "$CONFIG" ]; then
      if ! jq -e . "$CONFIG" >/dev/null 2>&1; then
-       echo "ERROR: Service configuration file ($CONFIG) is corrupt or unreadable."
+       echo "ERROR: Service configuration file ($CONFIG) is corrupt or unreadable; escalate to controller operator."
        exit 1
      fi
      PORT=$(jq -r '.port // empty' "$CONFIG")
    fi
    if [ -z "$PORT" ]; then
-     PORT=$(echo "$REG_URL" | grep -oE '[0-9]+$')
+     PORT=$(jq -r .url "$REG" 2>/dev/null | grep -oE '[0-9]+$' || true)
    fi
-   PORT="${PORT:-49374}"
+   if [ -z "$PORT" ]; then
+     echo "ERROR: Service port cannot be determined from configuration ($CONFIG) or registration ($REG). Quiescence cannot be established; escalate to controller operator."
+     exit 1
+   fi
 
    # 3. Verify daemon PID is absent from kernel state
    if [ -d "/proc/$PID" ]; then
@@ -334,8 +337,19 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
        tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null; echo ""
 
        # 5. Check if this process holds the service port
-       PORT=$(jq -r .url "$REG" 2>/dev/null | grep -oE '[0-9]+$' || echo "49374")
-       ss -tulpn 2>/dev/null | grep "$PID" | grep -q ":$PORT" && echo "PID $PID holds port $PORT"
+       CONFIG="$HOME/.config/opencodeplus/service.json"
+       PORT=""
+       if [ -f "$CONFIG" ]; then
+         PORT=$(jq -r '.port // empty' "$CONFIG" 2>/dev/null || true)
+       fi
+       if [ -z "$PORT" ]; then
+         PORT=$(jq -r .url "$REG" 2>/dev/null | grep -oE '[0-9]+$' || true)
+       fi
+       if [ -n "$PORT" ]; then
+         ss -tulpn 2>/dev/null | grep "$PID" | grep -q ":$PORT" && echo "PID $PID holds port $PORT"
+       else
+         echo "WARNING: Service port cannot be determined from configuration or registration."
+       fi
      fi
      ```
 
@@ -396,7 +410,11 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
   2. Identify which process has bound the port:
      ```bash
      CONFIG="$HOME/.config/opencodeplus/service.json"
-     PORT=$(jq -r '.port // 49374' "$CONFIG" 2>/dev/null || echo "49374")
+     PORT=$(jq -r '.port // empty' "$CONFIG" 2>/dev/null || true)
+     if [ -z "$PORT" ]; then
+       # Inspect the conflicting port emitted by the startup failure above
+       PORT="<port>"
+     fi
      lsof -i :"$PORT" || ss -tulpn | grep ":$PORT"
      ```
 - **Remediation**:
