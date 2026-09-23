@@ -35,6 +35,13 @@ const snapshotConfig = `[core]
 	threads = true
 `
 
+// An executor can write `.git/hooks` and the repository-local `core.hooksPath`
+// of a repository the host also operates on, and git would run that script as
+// the host. Every git invocation in this service goes through this
+// neutralization: `-c` outranks repository config, and `/dev/null` can never be
+// a directory, so no hook path can resolve beneath it.
+const NO_REPOSITORY_HOOKS = ["-c", "core.hooksPath=/dev/null"]
+
 export const TreeID = Schema.String.pipe(Schema.brand("Git.TreeID"))
 export type TreeID = typeof TreeID.Type
 
@@ -297,6 +304,7 @@ const layer = Layer.effect(
     })
 
     const repositoryArgs = (repository: Repository, args: string[]) => [
+      ...NO_REPOSITORY_HOOKS,
       "--git-dir",
       repository.gitDirectory,
       "--work-tree",
@@ -619,7 +627,7 @@ const layer = Layer.effect(
       cwd = repository.worktree,
     ) {
       const result = yield* proc
-        .run(ChildProcess.make("git", args, { cwd, extendEnv: true, stdin: "ignore" }))
+        .run(ChildProcess.make("git", [...NO_REPOSITORY_HOOKS, ...args], { cwd, extendEnv: true, stdin: "ignore" }))
         .pipe(
           Effect.mapError(
             (cause) => new WorktreeError({ operation, directory: worktreeDirectory, message: cause.message, cause }),
@@ -715,7 +723,7 @@ function run(cwd: string, proc: AppProcess.Interface, args: string[]) {
 function execute(cwd: string, proc: AppProcess.Interface, args: string[]) {
   return proc
     .run(
-      ChildProcess.make("git", args, {
+      ChildProcess.make("git", [...NO_REPOSITORY_HOOKS, ...args], {
         cwd,
         extendEnv: true,
         stdin: "ignore",

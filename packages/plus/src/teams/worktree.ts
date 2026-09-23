@@ -6,6 +6,13 @@ import { toolError } from "./schema.js"
 import { lock } from "./store.js"
 import { io } from "./io.js"
 
+// Team worktrees share one repository, so a task executor can write `.git/hooks`
+// and the repository-local `core.hooksPath`; a later host-plane git command would
+// run that script as the host, outside every placement boundary. `-c` outranks
+// repository config, and `/dev/null` can never be a directory, so no hook path
+// can resolve beneath it.
+export const NO_REPOSITORY_HOOKS = ["-c", "core.hooksPath=/dev/null"]
+
 function exists(p: string): Promise<boolean> {
   return Effect.runPromise(
     io(() => stat(p)).pipe(
@@ -88,7 +95,7 @@ async function createLocked(opts: CreateOptions): Promise<Created> {
   // nothing that resolves it (the host's FileSystem.realPath, the writes
   // below) can miss it.
   await mkdir(dirname(dir), { recursive: true })
-  await git(opts.repoRoot, ["worktree", "add", "-b", branch, dir, verify.out])
+  await git(opts.repoRoot, [...NO_REPOSITORY_HOOKS, "worktree", "add", "-b", branch, dir, verify.out])
   const head = await git(dir, ["rev-parse", "HEAD"])
   // Hand back the canonical directory: the host realpaths the location it is
   // given, and a data root reached through a symlink would otherwise yield two
