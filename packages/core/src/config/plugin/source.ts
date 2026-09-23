@@ -3,12 +3,14 @@ export * as ConfigPluginSource from "./source.js"
 import { Directory, Document, type Entry } from "@opencode/schema/config"
 import { ConfigPlugin } from "@opencode/schema/config/plugin"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Global } from "@opencode/util/global"
 import { Host } from "@opencode/plugin/host"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Layer, Option, PubSub, Scope, Stream } from "effect"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Config } from "../../config.js"
+import { ConfigDiscovery } from "../../config/discovery.js"
 import { Watcher } from "../../filesystem/watcher.js"
 import { Location } from "../../location.js"
 import { PluginSourceDirectory } from "../../plugin/source-directory.js"
@@ -38,9 +40,31 @@ export const layer = Layer.effect(
     const config = yield* Config.Service
     const watcher = yield* Watcher.Service
     const fs = yield* FSUtil.Service
+    const global = yield* Global.Service
     const location = yield* Location.Service
     const configuredChanges = yield* PubSub.unbounded<void>()
     const watched = new Set<string>()
+
+    // Executable plugin selection is a host-plane privilege, so only host inputs may name a
+    // target: the global config root and documents that did not come from a file (wellknown
+    // integration config, OPENCODE_CONFIG_CONTENT). A document found by the upward project walk
+    // is executor-controlled — a task worktree and the tree above it are the executor's — and a
+    // placed location's documents are read from its workspace, so neither may select a module.
+    // The walk is the config layering's own provenance; it never tests where a plugin target
+    // points, which is the guessable and bypassable part.
+    const hostInput = (sources: ConfigDiscovery.Sources) => {
+      const executorRoots = [...sources.direct, ...sources.project.map((root) => root.path)]
+      const onHostPlane = location.workspaceID === undefined
+      return (entry: Entry) => {
+        if (entry.type === "document") {
+          const file = entry.path
+          if (file === undefined) return true
+          return onHostPlane && !executorRoots.some((root) => FSUtil.contains(root, file))
+        }
+        if (entry.type === "directory") return FSUtil.contains(global.config, entry.path)
+        return false
+      }
+    }
 
     // Configured local plugins can live outside config roots, where the
     // config change feed cannot see them; watch those targets directly.
@@ -74,7 +98,12 @@ export const layer = Layer.effect(
     return Service.of({
       operations: Effect.fn("ConfigPluginSource.operations")(function* () {
         const entries = yield* config.entries()
-        const operations = yield* scan(fs, location, entries)
+        const sources = yield* ConfigDiscovery.discover().pipe(
+          Effect.provideService(FSUtil.Service, fs),
+          Effect.provideService(Global.Service, global),
+          Effect.provideService(Location.Service, location),
+        )
+        const operations = yield* scan(fs, location, entries, hostInput(sources))
         yield* watchConfiguredSources(entries, operations)
         return operations
       }),
@@ -95,7 +124,7 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Config.node, FSUtil.node, Watcher.node, Location.node],
+  deps: [Config.node, FSUtil.node, Global.node, Watcher.node, Location.node],
 })
 
 export const empty = makeLocationNode({
@@ -123,16 +152,26 @@ const scan = Effect.fn("ConfigPluginSource.scan")(function* (
   fs: FSUtil.Interface,
   location: Location.Interface,
   entries: readonly Entry[],
+  hostInput: (entry: Entry) => boolean,
 ) {
+  const refused = entries.filter(
+    (entry) => (entry.type === "document" || entry.type === "directory") && !hostInput(entry),
+  )
+  yield* Effect.forEach(refused, (entry) =>
+    Effect.logWarning("executor-controlled plugin source refused", {
+      path: entry.path,
+      type: entry.type,
+    }),
+  )
   const discovered = yield* Effect.forEach(
-    entries.filter((entry): entry is Directory => entry.type === "directory"),
+    entries.filter((entry): entry is Directory => entry.type === "directory" && hostInput(entry)),
     (entry) =>
       PluginSourceDirectory.discover(fs, entry.path).pipe(
         Effect.map((targets) => targets.map((target): Operation => ({ type: "add", target, options: {} }))),
       ),
   ).pipe(Effect.map((items) => items.flat()))
   const configured = entries
-    .filter((entry): entry is Document => entry.type === "document")
+    .filter((entry): entry is Document => entry.type === "document" && hostInput(entry))
     .flatMap((entry) =>
       (entry.info.plugins ?? []).map(parse).map((operation) => {
         if (operation.type === "remove") return operation
