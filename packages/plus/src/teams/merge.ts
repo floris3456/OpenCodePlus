@@ -6,7 +6,7 @@ import { git, gitRaw } from "./git.js"
 import { execute } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
-import { NO_REPOSITORY_HOOKS } from "./worktree.js"
+import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import { toolError } from "./schema.js"
 import type { Check, MergeState } from "./schema.js"
 import { errCode, io } from "./io.js"
@@ -88,12 +88,12 @@ export function readQueueMeta(root: string, parentRun: string): Promise<QueueMet
 }
 
 function getHead(dir: string): Promise<string> {
-  return git(dir, ["rev-parse", "HEAD"])
+  return git(dir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
 }
 
 /** Tracked modifications only: ignore untracked (`??`) entries. */
 async function trackedDirtyFiles(worktree: string): Promise<string[]> {
-  const out = await git(worktree, ["status", "--porcelain"])
+  const out = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain"])
   if (out === "") return []
   const files: string[] = []
   for (const line of out.split("\n")) {
@@ -123,10 +123,12 @@ function tempDirFor(ctx: MergeContext, parentRun: string, entryID: string): stri
 
 async function removeTemp(root: string, ctx: MergeContext, dir: string): Promise<void> {
   await withRepoLock(root, ctx, async () => {
-    const r = await gitRaw(ctx.repoRoot, ["worktree", "remove", "--force", dir])
+    const r = await gitRaw(ctx.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "remove", "--force", dir])
     if (r.code !== 0) {
       await Effect.runPromise(Effect.ignore(io(() => rm(dir, { recursive: true, force: true }))))
-      await Effect.runPromise(Effect.ignore(io(() => gitRaw(ctx.repoRoot, ["worktree", "prune"]).then(() => undefined))))
+      await Effect.runPromise(
+        Effect.ignore(io(() => gitRaw(ctx.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "prune"]).then(() => undefined))),
+      )
     }
   })
 }
@@ -273,17 +275,17 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
       let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso() }
       yield* io(() => saveEntry(root, cur))
       const tempDir = tempDirFor(ctx, entry.parentRun, entry.id)
-      yield* io(() => withRepoLock(root, ctx, () => git(ctx.repoRoot, [...NO_REPOSITORY_HOOKS, "worktree", "add", "--detach", tempDir, entry.childHead])))
+      yield* io(() => withRepoLock(root, ctx, () => git(ctx.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "add", "--detach", tempDir, entry.childHead])))
       const inner = Effect.gen(function* () {
         // 1. rebasing
-        const rb = yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_HOOKS, "rebase", rebaseBase]))
+        const rb = yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_PROGRAMS, "rebase", rebaseBase]))
         if (rb.code !== 0) {
-          const diff = yield* io(() => gitRaw(tempDir, ["diff", "--name-only", "--diff-filter=U"]))
+          const diff = yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--diff-filter=U"]))
           const conflictFiles = diff.out
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s !== "")
-          yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_HOOKS, "rebase", "--abort"]).then(() => undefined))
+          yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_PROGRAMS, "rebase", "--abort"]).then(() => undefined))
           const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, conflictFiles, ctx.checks))
           cur = conflictEntry(cur, conflictFiles, reworkId)
           yield* io(() => saveEntry(root, cur))
@@ -310,7 +312,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         // 3. landing: re-read the parent HEAD under the repo lock.
         cur = { ...cur, state: "landing", updatedAt: nowIso() }
         yield* io(() => saveEntry(root, cur))
-        const rebasedTip = yield* io(() => git(tempDir, ["rev-parse", "HEAD"]))
+        const rebasedTip = yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]))
         let staleHead: string | undefined
         let landedHead = ""
         yield* io(() =>
@@ -320,7 +322,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
               staleHead = current
               return
             }
-            await git(ctx.parentWorktree, [...NO_REPOSITORY_HOOKS, "merge", "--ff-only", rebasedTip])
+            await git(ctx.parentWorktree, [...NO_REPOSITORY_PROGRAMS, "merge", "--ff-only", rebasedTip])
             landedHead = await getHead(ctx.parentWorktree)
           }),
         )

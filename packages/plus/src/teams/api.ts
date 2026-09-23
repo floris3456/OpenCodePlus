@@ -71,7 +71,7 @@ import {
 } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
-import { provision, slug, NO_REPOSITORY_HOOKS } from "./worktree.js"
+import { provision, slug, NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 
 export interface TeamApiError {
   readonly code: string
@@ -573,9 +573,9 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
 
   const worktree = stored.directory
   const assigned = await readChecks(root, stored.id)
-  const head = await git(worktree, ["rev-parse", "HEAD"])
-  const tree = await git(worktree, ["rev-parse", "HEAD^{tree}"])
-  const porcelain = await git(worktree, ["status", "--porcelain", "-uall"])
+  const head = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  const tree = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"])
+  const porcelain = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
 
   // Compound behaviour: assigned checks with no receipt at HEAD run now,
@@ -673,7 +673,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
   const record = stored ?? caller.run
   const key = await realpath(record.directory).catch(() => record.directory)
   return lock(root, "wt", key, async () => {
-    const head = await git(record.directory, ["rev-parse", "HEAD"])
+    const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
     if (head !== args.expectedHead) return fail("E_STALE_HEAD", `HEAD is ${head}, not ${args.expectedHead}.`)
     for (const file of args.files) {
       if (!inScope(record.paths, file))
@@ -685,7 +685,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
         `Use "<type>(<scope>)?: <subject>" with type in feat|fix|docs|chore|refactor|test. accepted: "${MESSAGE_ACCEPTED}"`,
         MESSAGE_ACCEPTED,
       )
-    const stagedOut = await git(record.directory, ["diff", "--cached", "--name-only"])
+    const stagedOut = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--name-only"])
     const staged = stagedOut
       .split("\n")
       .map((line) => line.trim())
@@ -694,15 +694,15 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
     const offenders = staged.filter((line) => !wanted.has(line))
     if (offenders.length > 0)
       return fail("E_STAGED", `Index has staged changes [${offenders.join(", ")}] not in files[]; include them or unstage.`)
-    const status = await git(record.directory, ["status", "--porcelain", "--", ...args.files])
+    const status = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "--", ...args.files])
     if (status.trim() === "") return succeeded({ head, committed: false })
     // Ref-writing git ops serialize per repository, like the reference.
     const committed = await lock(root, "repo", record.repoKey, async () => {
-      await git(record.directory, ["add", "--", ...args.files])
-      const cached = await gitRaw(record.directory, ["diff", "--cached", "--quiet"])
+      await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "add", "--", ...args.files])
+      const cached = await gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--quiet"])
       if (cached.code === 0) return false
       await git(record.directory, [
-        ...NO_REPOSITORY_HOOKS,
+        ...NO_REPOSITORY_PROGRAMS,
         "-c",
         `user.name=team/${record.role}`,
         "-c",
@@ -714,11 +714,11 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
       return true
     })
     if (!committed) {
-      const current = await git(record.directory, ["rev-parse", "HEAD"])
+      const current = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       return succeeded({ head: current, committed: false })
     }
-    const sha = await git(record.directory, ["rev-parse", "HEAD"])
-    const subject = await git(record.directory, ["log", "-1", "--format=%s"])
+    const sha = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+    const subject = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "log", "-1", "--format=%s"])
     const fresh = (await loadRun(root, record.id)) ?? record
     await saveRun(root, { ...fresh, head: sha, lastUsed: new Date().toISOString() })
     return succeeded({ head: sha, committed: true, sha, subject })
@@ -898,12 +898,22 @@ async function diffHandler(args: DiffInput, caller: TeamCaller): Promise<TeamApi
   const from = await diffFrom(root, target, args.from)
   const maxBytes = args.maxBytes === undefined || args.maxBytes <= 0 ? DIFF_MAX_BYTES : Math.trunc(args.maxBytes)
   const paths = args.paths ?? []
-  const result = await gitRaw(target.directory, ["diff", from, ...(paths.length === 0 ? [] : ["--", ...paths])])
+  // A generated patch is the one diff output that runs a program named by
+  // repository config (`diff.external`) or a `.gitattributes` diff driver
+  // (`command`/`textconv`), so both opt-outs travel with this call.
+  const result = await gitRaw(target.directory, [
+    ...NO_REPOSITORY_PROGRAMS,
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    from,
+    ...(paths.length === 0 ? [] : ["--", ...paths]),
+  ])
   if (result.code !== 0)
     return fail("E_INTERNAL", `git diff ${from} failed in ${target.directory}: ${result.err || result.out || "unknown error"}`)
   const bytes = Buffer.byteLength(result.out, "utf8")
   const truncated = bytes > maxBytes
-  const head = await git(target.directory, ["rev-parse", "HEAD"]).catch(() => target.head)
+  const head = await git(target.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]).catch(() => target.head)
   return succeeded({
     run: target.id,
     from,
@@ -951,27 +961,27 @@ async function depthOf(root: string, record: RunRecord): Promise<number> {
 
 async function resolveRepo(raw: string, parent: RunRecord): Promise<{ key: string; root: string } | undefined> {
   if (raw === parent.repoKey || raw === parent.repo) {
-    const top = await gitRaw(parent.directory, ["rev-parse", "--show-toplevel"])
+    const top = await gitRaw(parent.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--show-toplevel"])
     if (top.code !== 0) throw new Error(`Cannot resolve repository from ${parent.directory}: ${top.err || top.out || "unknown error"}`)
     return { key: parent.repoKey, root: top.out }
   }
   if (!path.isAbsolute(raw)) return undefined
-  const top = await gitRaw(raw, ["rev-parse", "--show-toplevel"])
+  const top = await gitRaw(raw, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--show-toplevel"])
   if (top.code !== 0) return undefined
   return { key: path.basename(top.out), root: top.out }
 }
 
 async function callerHead(callerDir: string, repoRoot: string): Promise<string> {
-  const head = await gitRaw(callerDir, ["rev-parse", "HEAD"])
+  const head = await gitRaw(callerDir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   if (head.code === 0) return head.out
-  const fallback = await gitRaw(repoRoot, ["rev-parse", "HEAD"])
+  const fallback = await gitRaw(repoRoot, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   if (fallback.code === 0) return fallback.out
   return "unknown"
 }
 
 async function resolveBase(repoRoot: string, base: string | undefined, defaultHead: string): Promise<string | undefined> {
   if (base === undefined) return defaultHead
-  const verify = await gitRaw(repoRoot, ["rev-parse", "--verify", `${base}^{commit}`])
+  const verify = await gitRaw(repoRoot, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--verify", `${base}^{commit}`])
   if (verify.code !== 0) return undefined
   return verify.out
 }
@@ -1060,7 +1070,7 @@ async function firstLogLine(outputPath: string | undefined): Promise<string> {
 
 async function loadCommits(worktree: string, base: string): Promise<Array<{ sha: string; subject: string }>> {
   if (base === "") return []
-  const out = await git(worktree, ["log", "--format=%H%x1f%s", `${base}..HEAD`]).catch(() => "")
+  const out = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "log", "--format=%H%x1f%s", `${base}..HEAD`]).catch(() => "")
   if (out.trim() === "") return []
   const commits: Array<{ sha: string; subject: string }> = []
   for (const line of out.split("\n")) {
@@ -1138,8 +1148,8 @@ async function statusOf(root: string, id: string) {
   const assigned = await readChecks(root, id)
   // Live worktree reads with stored fallbacks, so a parent sees the child's
   // current commit even when the child's record lags behind.
-  const head = await git(record.directory, ["rev-parse", "HEAD"]).catch(() => record.head)
-  const porcelain = await git(record.directory, ["status", "--porcelain", "-uall"]).catch(() => "")
+  const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]).catch(() => record.head)
+  const porcelain = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"]).catch(() => "")
   const dirtyFiles = parsePorcelain(porcelain)
   const checks = []
   for (const checkDef of assigned) {
