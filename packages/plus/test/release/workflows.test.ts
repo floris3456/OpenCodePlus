@@ -323,6 +323,26 @@ describe("source gate CI workflow (ocp-ci.yml)", () => {
     }
   })
 
+  test("every test file named in a check argv exists on disk", async () => {
+    const checksDoc = await loadJson<ChecksJson>("release/checks.json")
+
+    const namedTestFiles = checksDoc.checks.flatMap((check) =>
+      check.argv
+        .filter((arg) => /\.test\.tsx?$/.test(arg))
+        .map((arg) => join(check.cwd, arg)),
+    )
+    expect(namedTestFiles.length).toBeGreaterThan(0)
+
+    // `bun test` accepts an argv path that does not exist and still exits 0, so a
+    // check can name a missing test file and pass silently. The manifest must not.
+    const missing: string[] = []
+    for (const relPath of namedTestFiles) {
+      if (!(await Bun.file(join(repoRoot, relPath)).exists())) missing.push(relPath)
+    }
+
+    expect(missing).toEqual([])
+  })
+
   test("runs only focused checks: never a whole-suite test and never a root test", async () => {
     const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-ci.yml")
     const job = doc.jobs?.["focused-checks"]
