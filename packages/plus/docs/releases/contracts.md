@@ -1,6 +1,6 @@
 # Release Contracts and Verification Policy
 
-This document defines the typed release contracts, hashing rules, and baseline check policy for OpenCode Plus releases.
+This document defines the typed release contracts, hashing rules, and baseline check policy for OpenCode Plus releases. For operational procedures, rollback, offline verification, and recovery, see the [Release Operator Guide](operator-guide.md).
 
 ## Core Types
 
