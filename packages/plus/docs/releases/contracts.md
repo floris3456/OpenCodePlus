@@ -63,7 +63,7 @@ A `ReleaseAcceptanceReceipt` emits `verdict: "pass"` only when all required chec
 
 ## Known Security Residuals
 
-This section records accepted, evidenced security residuals where host-plane isolation does not close an execution vector in this release. These are classified as accepted residuals per workspace owner decision (dated 2026-09-23), not as deferred mandatory gates or outstanding work.
+This section records accepted, evidenced security residuals where host-plane isolation does not close an execution vector in this release. These are classified as accepted residuals per workspace owner decision (dated 2026-09-23), not as deferred mandatory gates or outstanding work. Exactly two vectors are covered by this acceptance: repository-local git filter execution and remote transport program execution.
 
 ### Repository-Local Git Filter Execution (`filter.<driver>`)
 
@@ -85,4 +85,22 @@ This section records accepted, evidenced security residuals where host-plane iso
 A related repository-local execution vector exists for remote transport operations. Configuration keys such as `core.sshCommand` and `protocol.ext.allow` with an `ext::` remote URL cause git to invoke external programs when executing remote transport commands (`fetch` and `clone`).
 
 In the standard team workflow, worktrees are created locally using `git worktree add` against local refs rather than cloning or fetching from executor-controlled remote repositories. Real-flow reachability in production is therefore narrower than in synthetic fixtures. However, this narrower reachability does not imply that the vector is closed: if host-plane operations perform a `fetch` or `clone` against a repository containing executor-controlled transport configuration, the named program executes on the host plane. Addressing this vector was likewise deferred under the 2026-09-23 workspace owner decision, and it is recorded here as an accepted security residual.
+
+## Open Security Findings (Unaccepted Vectors Barring Publication)
+
+Unlike the two owner-accepted residuals above, the following open findings have **not** been accepted by the workspace owner. They represent unaccepted boundary risks that currently bar release publication until formally addressed or scoped by an explicit owner decision:
+
+### PTY Allocation Routing and Host Environment Boundary
+
+While canary assertions (`packages/plus/test/release/canaries.test.ts`) verify that workerd PTY bindings refuse allocation when no PTY plane exists and that the PTY allocation environment seam carries no host environment, PTY allocation routing across planes remains an open finding. In-process unit testing cannot verify full host-plane boundary isolation during interactive terminal sessions. This finding is unaccepted and bars release publication pending an isolated PTY spawner architecture or a scoped owner decision.
+
+### Host-Plane Executable Plugin Loading
+
+While canary assertions (`packages/plus/test/release/canaries.test.ts`) verify that placed stdio MCP servers are refused by the workspace plane, plugin tools cannot execute without an authorizing permission service, and the plugin host cannot assemble without the durable release store, dynamic host-plane executable plugin loading remains an open finding. Executable plugins that run host-plane code without process isolation or sandboxing remain an unaccepted boundary risk barring release publication pending plugin sandboxing or a scoped owner decision.
+
+### Attribute-Selected Merge Driver Execution (`merge.<driver>.driver`)
+
+During an integrate rebase, git operations (`git rebase` and `git merge`) invoke custom merge drivers defined by repository-level `merge.<driver>.driver` configuration when selected by `.gitattributes` or `$GIT_DIR/info/attributes`. While `NO_REPOSITORY_PROGRAMS` suppresses hooks, fsmonitor, and commit signing (`core.hooksPath=/dev/null`, `core.fsmonitor=false`, `commit.gpgSign=false`), git provides no global command-line override to disable merge driver execution.
+
+This execution vector is **outside** the workspace owner's two-vector acceptance decision of 2026-09-23 (which covered only git filters and remote transports). Because merge drivers can execute arbitrary binaries on the host plane during merge or rebase operations on executor worktrees, this vector is not accepted and remains an open security finding awaiting a scoped decision.
 
