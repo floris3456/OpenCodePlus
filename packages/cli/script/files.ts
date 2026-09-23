@@ -9,5 +9,7 @@ export async function collectFiles(root: string, current = root): Promise<string
         return entry.isDirectory() ? collectFiles(root, target) : [path.relative(root, target)]
       }),
     )
-  ).flat()
+  )
+    .flat()
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
 }
