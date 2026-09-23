@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   packageTarget,
   createDeterministicArchive,
@@ -6,7 +9,11 @@ import {
   computeRecipeDigest,
   type RecipeInputs,
 } from "../../script/release.js"
-import { CANONICALIZER, deriveRecordHash } from "../../script/release/canonicalize.js"
+import {
+  CANONICALIZER,
+  deriveRecordHash,
+  parseBuildStructure,
+} from "../../script/release/canonicalize.js"
 import { verifyRebuildEquivalence } from "../../script/release/verify.js"
 
 describe("release reproducibility and normalisation", () => {
@@ -123,15 +130,77 @@ describe("release reproducibility and normalisation", () => {
 
 // `bun build --compile` is measurably NOT byte-reproducible for this product
 // graph: the bundler draws a random unique key per build and stamps it, plus a
-// hash derived from it, into every chunk token. The binary half of the
-// reproducibility gate is therefore equivalence under the named canonicalizer
-// in script/release/canonicalize.ts. That is strictly weaker than the raw byte
-// equality the archive half achieves, and these tests state that plainly.
+// hash derived from it, into the shared bytecode string table of the standalone
+// payload. The binary half of the reproducibility gate is therefore equivalence
+// under the named canonicalizer in script/release/canonicalize.ts, which only
+// accepts records it can derive from a parsed ELF/Mach-O Bun payload. That is
+// strictly weaker than the raw byte equality the archive half achieves, and
+// these tests state that plainly.
 describe("compiled binary reproducibility is rebuild equivalence, weaker than raw byte equality", () => {
-  const KEY_A = "a1b2c3d4e5f60718"
-  const KEY_B = "b0b0b0b0b0b0b0b0"
+  const scratch = mkdtempSync(join(tmpdir(), "ocp-reproducibility-"))
+  const SOURCE_DIR = join(scratch, "src")
+  const OUT_ONE = join(scratch, "one")
+  const OUT_TWO = join(scratch, "two")
+  let left: Buffer
+  let right: Buffer
 
-  function buildCompiledBinary(key: string): Buffer {
+  beforeAll(() => {
+    mkdirSync(SOURCE_DIR, { recursive: true })
+    writeFileSync(join(SOURCE_DIR, "shared.ts"), "export const shared = 42\n")
+    writeFileSync(
+      join(SOURCE_DIR, "alpha.ts"),
+      "import { shared } from './shared.ts'\nexport const alpha = shared + 1\n",
+    )
+    writeFileSync(
+      join(SOURCE_DIR, "beta.ts"),
+      "import { shared } from './shared.ts'\nexport const beta = shared + 2\n",
+    )
+    writeFileSync(
+      join(SOURCE_DIR, "entry.ts"),
+      "async function main() {\n  const [alpha, beta] = await Promise.all([import('./alpha.ts'), import('./beta.ts')])\n  console.log(alpha.alpha, beta.beta)\n}\nmain()\n",
+    )
+
+    // Same output basename in both rebuilds, so the only difference Bun is
+    // allowed to introduce is the per-build bundler key.
+    left = compile(OUT_ONE)
+    right = compile(OUT_TWO)
+  }, 120000)
+
+  afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true })
+  })
+
+  function compile(outDir: string): Buffer {
+    mkdirSync(outDir, { recursive: true })
+    const outfile = join(outDir, "app")
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "build",
+        join(SOURCE_DIR, "entry.ts"),
+        "--compile",
+        "--bytecode",
+        "--format=esm",
+        "--splitting",
+        "--outfile",
+        outfile,
+      ],
+      cwd: SOURCE_DIR,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env },
+    })
+    if (result.exitCode !== 0) {
+      throw new Error(`bun build --compile failed for ${outfile}: ${result.stderr.toString()}`)
+    }
+    return readFileSync(outfile)
+  }
+
+  function sha256(buffer: Uint8Array): string {
+    return new Bun.CryptoHasher("sha256").update(buffer).digest("hex")
+  }
+
+  function legacyFillerBinary(key: string): Buffer {
     const binary = Buffer.alloc(320)
     for (let index = 0; index < binary.length; index += 1) binary[index] = (index * 31 + 7) & 0xff
     ;[64, 192].forEach((offset, position) => {
@@ -144,14 +213,7 @@ describe("compiled binary reproducibility is rebuild equivalence, weaker than ra
     return binary
   }
 
-  function sha256(buffer: Uint8Array): string {
-    return new Bun.CryptoHasher("sha256").update(buffer).digest("hex")
-  }
-
   test("equivalent rebuilds are not raw-equal, and the report says so", () => {
-    const left = buildCompiledBinary(KEY_A)
-    const right = buildCompiledBinary(KEY_B)
-
     const report = verifyRebuildEquivalence({
       bunVersion: CANONICALIZER.bunVersion,
       left,
@@ -162,13 +224,14 @@ describe("compiled binary reproducibility is rebuild equivalence, weaker than ra
     expect(report.weakerThanRawReproducibility).toBe(true)
     expect(report.canonicalizerId).toBe(CANONICALIZER.id)
     expect(report.canonicalizerBunVersion).toBe("1.4.2")
+    expect(report.container).toBe("elf")
 
     expect(report.equivalent).toBe(true)
     // The weakening, stated explicitly: equivalence does not imply raw equality.
     expect(report.rawIdentical).toBe(false)
     expect(report.leftRawSha256).not.toBe(report.rightRawSha256)
     expect(report.rawDifferingBytes).toBeGreaterThan(0)
-    expect(report.recordsRewritten).toBe(2)
+    expect(report.recordsRewritten).toBeGreaterThanOrEqual(1)
 
     // Both raw identities are retained; the canonical one is a third digest
     // that exists only for this comparison.
@@ -179,28 +242,45 @@ describe("compiled binary reproducibility is rebuild equivalence, weaker than ra
   })
 
   test("the equivalence gate still rejects any byte it cannot derive", () => {
-    const left = buildCompiledBinary(KEY_A)
-    const right = buildCompiledBinary(KEY_B)
-    right[300] = right[300] ^ 0xff
+    const parsed = parseBuildStructure({ bunVersion: CANONICALIZER.bunVersion, bytes: left })
+    if (!parsed.ok) throw new Error(`fixture failed to parse: ${parsed.rejection.detail}`)
+    const range = parsed.structure.moduleRanges.find((item) => item.end - item.start >= 8)
+    if (!range) throw new Error("fixture has no module subrange to tamper with")
+    const tamperAt = range.start + 4
+
+    const tampered = Buffer.from(right)
+    tampered[tamperAt] = tampered[tamperAt] ^ 0xff
 
     const report = verifyRebuildEquivalence({
       bunVersion: CANONICALIZER.bunVersion,
       left,
-      right,
+      right: tampered,
     })
 
     expect(report.equivalent).toBe(false)
     expect(report.rejection?.code).toBe("residual-difference")
-    expect(report.rejection?.offset).toBe(300)
+    expect(report.rejection?.offset).toBe(tamperAt)
+    expect(report.canonicalSha256).toBeNull()
+  })
+
+  test("the gate no longer accepts record-shaped data outside a parsed payload", () => {
+    const report = verifyRebuildEquivalence({
+      bunVersion: CANONICALIZER.bunVersion,
+      left: legacyFillerBinary("a1b2c3d4e5f60718"),
+      right: legacyFillerBinary("b0b0b0b0b0b0b0b0"),
+    })
+
+    expect(report.equivalent).toBe(false)
+    expect(report.rejection?.code).toBe("unsupported-executable-format")
     expect(report.canonicalSha256).toBeNull()
   })
 
   test("the canonical digest never replaces the raw binary identity in the manifest", () => {
-    const binaryContent = buildCompiledBinary(KEY_A)
+    const binaryContent = left
     const report = verifyRebuildEquivalence({
       bunVersion: CANONICALIZER.bunVersion,
       left: binaryContent,
-      right: buildCompiledBinary(KEY_B),
+      right,
     })
 
     const packaged = packageTarget({
