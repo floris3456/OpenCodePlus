@@ -19,11 +19,12 @@
  *
  * For accepted security residuals and open findings that cannot be closed from an in-process unit
  * seat:
- *   - Owner-accepted residuals (repository-local git filters and remote transport execution) are
- *     documented under "Known Security Residuals" in `packages/plus/docs/releases/contracts.md`.
- *   - Open, unaccepted findings barring publication (PTY allocation routing, host-plane executable
- *     plugin loading, and attribute-selected merge drivers) are documented separately under
- *     "Open Security Findings" in `packages/plus/docs/releases/contracts.md`.
+ *   - Owner-accepted residuals (repository-local git filters, remote transport execution, and
+ *     attribute-selected merge drivers) are documented under "Known Security Residuals" in
+ *     `packages/plus/docs/releases/contracts.md`.
+ *   - Open, unaccepted findings barring publication (PTY allocation routing and host-plane
+ *     executable plugin loading) are documented separately under "Open Security Findings" in
+ *     `packages/plus/docs/releases/contracts.md`.
  * That document serves as the single source of truth for documented residuals, open findings,
  * owner decisions, and evidence, rather than duplicating or restating them here where they could
  * drift.
