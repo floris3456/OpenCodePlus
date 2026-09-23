@@ -63,16 +63,41 @@ A `ReleaseAcceptanceReceipt` emits `verdict: "pass"` only when all required chec
 
 ## Rebuild Equivalence Contract (D3-B Standard)
 
-This section documents the reproducibility contract for OpenCode Plus compiled binary artifacts, its structural canonicalizer, empirical verification evidence, and known operational limits.
+This section documents the D3-B rebuild-equivalence contract for OpenCode Plus compiled binary artifacts, its per-target scope, structural canonicalizer, empirical verification evidence, and known operational limits.
 
 ### Standard Definition and Honest Weakening
 
 OpenCode Plus release packages achieve raw byte equality for release archives: two independent packaging runs over identical inputs yield byte-identical archives (`packages/plus/test/release/reproducibility.test.ts:20`). However, standalone executables compiled via `bun build --compile` (using ESM, bytecode compilation, and code splitting) are measurably **not raw-byte reproducible**. The Bun bundler generates a random 64-bit unsigned integer per build and embeds it across compiled chunk tokens.
 
-To verify binary reproducibility without making false assertions of raw byte identity, the release pipeline adopts the **D3-B rebuild equivalence** standard:
+To evaluate binary rebuild equivalence without making false assertions of raw byte identity, the release pipeline adopts the **D3-B rebuild equivalence** standard:
 1. **Deliberately Weaker than Raw Byte Equality**: Two independent rebuilds of the exact same source tree are compared only after normalizing a strictly bounded, structurally identified class of bytes. Equivalence under this standard is strictly weaker than raw binary reproducibility.
 2. **Explicit Declaration in Verification Reports**: The verification report (`RebuildEquivalenceReport` in `packages/plus/script/release/verify.ts:41-58`) explicitly sets `weakerThanRawReproducibility: true`. It records both raw SHA-256 digests (`leftRawSha256` and `rightRawSha256`), reports `rawIdentical: false` whenever raw bytes differ, and provides the derived `canonicalSha256` digest solely as an internal equivalence receipt.
 3. **Manifest Boundary Invariant**: The canonical digest **never** enters the release manifest (`ReleaseManifest`) or artifact identity (`ArtifactIdentity.binarySha256`). Publication, distribution, installer verification (`verifyReleaseDirectory` in `packages/plus/script/release/verify.ts:120`), and client update checks verify exact raw byte equality against recorded artifacts. This invariant is directly enforced by unit tests in `packages/plus/test/release/reproducibility.test.ts:278` (`"the canonical digest never replaces the raw binary identity in the manifest"`).
+
+### Per-Target Scope and Boundary Decision
+
+Rebuild equivalence under D3-B is scoped strictly per target. OpenCode Plus does not claim unqualified binary reproducibility: the status is two targets proven (linux-arm64 and linux-x64) and two targets uncertifiable (darwin-arm64 and darwin-x64), and the document reflects this without qualification.
+
+The workspace owner has decided, by explicit decision, that darwin rebuild equivalence is a **scope boundary, not a prerequisite**. The reasoning must be recorded, because it is what makes this a boundary rather than an excuse:
+
+> `LC_CODE_SIGNATURE` covers the signed file including the payload bytes that carry the per-build random bundler key. The signature therefore necessarily differs between two independent builds of identical source. Requiring darwin raw-reproducibility would require `bun build --compile` to stop randomizing that key — upstream behaviour outside our control. A prerequisite that cannot be satisfied by working harder is a scope boundary.
+
+This follows the precedent already in the document for Windows: **explicitly unqualified, never silently mapped.**
+
+The per-target status of rebuild equivalence under D3-B is:
+
+| target | rebuild equivalence under D3-B |
+| --- | --- |
+| linux-arm64 | proven on the real release artifact (206,752,040 bytes), non-vacuously |
+| linux-x64 | proven on the real release artifact (211,035,616 bytes), non-vacuously |
+| darwin-arm64 | uncertifiable — `LC_CODE_SIGNATURE` covers the per-build bundler key |
+| darwin-x64 | uncertifiable — same mechanism |
+
+Three things this decision explicitly does NOT relax:
+
+1. **Raw hash equality still binds published → downloaded → installed → running on every target, including darwin.** D3-B never substituted for it. Darwin artifacts remain integrity-bound end to end; it is *rebuild* equivalence that is uncertifiable, not artifact integrity.
+2. **All four targets still ship** and still pass their native cold-runtime gates. Nothing is dropped from the release.
+3. **Fail-closed stands.** The gate refuses darwin pairs rather than passing them — a false refusal, never a false accept.
 
 ### Normalized Bytes and Structural Anchoring
 
@@ -148,16 +173,31 @@ The canonicalizer specification and parser arithmetic are strictly pinned to Bun
 
 ### Measured Verification Evidence
 
-Empirical rebuild equivalence was measured on production-like release binaries at source commit `274013bd899c09b2d22cbda21e732e8ff9261ca9`. Two independent local rebuilds of the release binary produced:
+Empirical rebuild equivalence was measured on real product binaries for both qualified Linux targets:
 
-```
-equivalent true, container elf, rawIdentical false
-recordsParsed 189, recordsRewritten 189, rawDifferingBytes 3401
-bundler keys 0cf5d472ba4a2d96 and 0f6ec238c7a0a049
-canonicalSha256 634d042c11502b7af91f1d0bd232111c20fe06bf86633e93a2038539c14eefa3
-```
+1. **`linux-arm64` (206,752,040 bytes)** at source commit `274013bd899c09b2d22cbda21e732e8ff9261ca9`:
+   ```
+   equivalent true, container elf, rawIdentical false
+   recordsParsed 189, recordsRewritten 189, rawDifferingBytes 3401
+   bundler keys 0cf5d472ba4a2d96 and 0f6ec238c7a0a049
+   canonicalSha256 634d042c11502b7af91f1d0bd232111c20fe06bf86633e93a2038539c14eefa3
+   ```
+   Every one of the 3,401 raw differing bytes fell strictly within the 189 rewritten token records (16 key bytes plus 4 hash word bytes per record); zero differences existed outside those spans.
 
-Every one of the 3,401 raw differing bytes fell strictly within the 189 rewritten token records (16 key bytes plus 4 hash word bytes per record); zero differences existed outside those spans.
+2. **`linux-x64` (211,035,616 bytes)** at source commit `c485c658d1945ac2cba8c5018a6f5bdcc1290c80`:
+   ```
+   target      linux-x64, SOURCE_SHA c485c658d1945ac2cba8c5018a6f5bdcc1290c80
+   builds      A 04f8ffb4b66fb3952b70c946ac112b2fd28e9b7defd3d9d47a51aa185e9f50a2
+               B 408b6da65180d862fded5d13168b8d032b55d22cad59479a8d4e390de64d41ca
+               both 211,035,616 bytes; source tree fingerprint identical before and after both builds
+   header      e_machine 62 (EM_X86_64), e_type 2 (ET_EXEC) — measured on a real product build
+   verdict     equivalent: true, 189 records parsed / 189 rewritten, 3,211 raw differing bytes
+   keys        0aee78fdb955908d / 0cedd6a79cbcacb9
+   canonical   bc29950fa72a072fdce928dc5e857d2fa0dadf918c773be9f31fb68c7d14256c
+   controls    identically-edited ET_REL pair → rejected; e_machine = 0 pair → rejected;
+               A vs A → equivalent
+   ```
+   Every one of the 3,211 raw differing bytes fell strictly within the 189 rewritten token records; zero differences existed outside those spans.
 
 The gate was proven non-vacuous through active tamper rejection tests:
 - A single byte flipped in module bytecode is rejected with `residual-difference` reporting the exact byte offset (`test/release/canonicalize.test.ts:1428`).
@@ -168,9 +208,9 @@ The gate was proven non-vacuous through active tamper rejection tests:
 - An announced string table that aliases the graph tail is rejected, never normalized: a structurally exact one-entry table written over a real 44-byte `--compile-exec-argv` string is refused with `string-table-locator-malformed`, for the bytecode locator and for the module-info locator (`test/release/canonicalize.test.ts`, `adversarial: announced string tables may not alias the graph tail`).
 - Mach-O container provenance is enforced against the real Darwin fixture: an inflated segment section count that reaches past its load command (with a forged `__BUN,__bun` header planted in the escaped slot), a section whose enclosing segment declares no file range, a section declared inside a segment not named `__BUN`, and a segment whose file range escapes the file are each refused with `executable-structure-malformed` (`test/release/canonicalize.test.ts`, `Mach-O container structure rejection (executable-structure-malformed)`).
 - An ELF `PT_LOAD` segment whose file range escapes the file is refused with `executable-structure-malformed`, so an out-of-file range can no longer satisfy `.bun` containment trivially (`test/release/canonicalize.test.ts`, `rejects a PT_LOAD segment whose file range escapes the file`).
-- An ELF image whose `e_type` is not `ET_EXEC` is refused with `executable-structure-malformed`, measured against every real ELF fixture the suite builds (all `ET_EXEC`, including a cross-built `linux-x64` fixture, so the pin is evidenced for both qualified ELF architectures and not only for this arm64 host) and including the pair case where both sides are edited identically to `ET_REL` (`test/release/canonicalize.test.ts`, `ELF file type (e_type)`).
-- An ELF image whose header or load segments violate the validated ELF64 invariants — an `e_machine` outside the qualified set (`EM_X86_64` 62, `EM_AARCH64` 183), an `e_version` other than `EV_CURRENT`, an `e_ehsize` other than 64, an unaligned program or section header table offset, or a `PT_LOAD` whose `p_memsz` is smaller than its `p_filesz` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real ELF fixture the suite builds (`linux-arm64` and the cross-built qualified `linux-x64` target, the latter with `e_machine` 62) satisfies the same invariants (`test/release/canonicalize.test.ts:560-724`, `ELF header and load-segment invariants (executable-structure-malformed)`).
-- A Mach-O image whose header or segments violate the validated Mach-O64 invariants — a `cputype` outside the qualified set, a `cpusubtype` that is not valid for its `cputype` (including the arm64 subtype on an x64 image and vice versa), a load command whose size is not 8-byte aligned, or an `LC_SEGMENT_64` whose file range escapes the file or whose `vmsize` is smaller than its `filesize` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real Mach-O fixture the suite builds (`darwin-arm64` and the cross-built qualified `darwin-x64` target, the latter with `cputype` `0x01000007` and `cpusubtype` `0x80000003`) satisfies the same invariants (`test/release/canonicalize.test.ts:926-1122`, `Mach-O header and segment invariants (executable-structure-malformed)`).
+- An ELF image whose `e_type` is not `ET_EXEC` is refused with `executable-structure-malformed`, measured against real product builds on both qualified ELF targets (`linux-arm64` and `linux-x64`, both declaring `ET_EXEC`) as well as every real ELF fixture the suite builds, and including the pair case where both sides are edited identically to `ET_REL` (`test/release/canonicalize.test.ts`, `ELF file type (e_type)`).
+- An ELF image whose header or load segments violate the validated ELF64 invariants — an `e_machine` outside the qualified set (`EM_X86_64` 62, `EM_AARCH64` 183), an `e_version` other than `EV_CURRENT`, an `e_ehsize` other than 64, an unaligned program or section header table offset, or a `PT_LOAD` whose `p_memsz` is smaller than its `p_filesz` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real ELF product build and test fixture (`linux-arm64` with `e_machine` 183 and `linux-x64` with `e_machine` 62) satisfies the same invariants (`test/release/canonicalize.test.ts:560-724`, `ELF header and load-segment invariants (executable-structure-malformed)`). This measurement on real product binaries for `linux-x64` retires the prior parser residual that native builds from a different Bun distribution variant might diverge on ELF `e_machine` or `e_type`.
+- A Mach-O image whose header or segments violate the validated Mach-O64 invariants — a `cputype` outside the qualified set, a `cpusubtype` that is not valid for its `cputype` (including the arm64 subtype on an x64 image and vice versa), a load command whose size is not 8-byte aligned, or an `LC_SEGMENT_64` whose file range escapes the file or whose `vmsize` is smaller than its `filesize` — is refused with `executable-structure-malformed`, both single-sided and as an identically edited pair where both members receive the same corruption. Every real Mach-O fixture the suite builds (`darwin-arm64` and the cross-built qualified `darwin-x64` target, the latter with `cputype` `0x01000007` and `cpusubtype` `0x80000003`) satisfies the same invariants (`test/release/canonicalize.test.ts:926-1122`, `Mach-O header and segment invariants (executable-structure-malformed)`). With the ELF targets now evidenced by real product builds, the cross-built-fixture limitation narrows strictly to Darwin: the darwin `cputype`/`cpusubtype` pairs remain evidenced solely by test fixtures and have not been measured on real product rebuilds.
 - The Mach-O header `flags` word is enforced as an enumerated opaque field rather than a pin: a divergent value is a `residual-difference` with its offset, while an edited value is accepted by the parser (`test/release/canonicalize.test.ts`, `Mach-O header and segment invariants (executable-structure-malformed)`).
 
 ### Known Equivalence Limitations
@@ -200,9 +240,14 @@ This section documents five structural limitations of the D3-B canonicalizer imp
 
 #### L5 — Mach-O Code Signature Bytes Are Not Normalized
 
-1. **Exact Mechanism**: The `LC_CODE_SIGNATURE` blob inside `__LINKEDIT` is not part of the normalized set and is not recomputed. It covers the signed file, including the payload bytes that carry the per-build bundler key, so two independent `bun build --compile` outputs for the same Darwin target can still differ inside the signature after canonicalization. Measured on two independent cross-built `darwin-arm64` fixtures of the same source: 48 raw differing bytes in that run (the count varies with the random key), of which 16 were the key bytes in the shared bytecode string table that canonicalization rewrites to zero, leaving 32 bytes that still differed; all 32 lay inside the `LC_CODE_SIGNATURE` data range (file offsets 61,744,416–62,226,930 of a 62,226,930-byte image) and the pair was refused with `residual-difference`.
-2. **Reachability**: Any comparison of two independently built Darwin artifacts — the gate's normal use — reaches this; the ELF path is unaffected.
-3. **Risk Direction**: The failure direction is a **false refusal, never a false accept**: signature bytes are preserved and compared and can never be normalized away, so a pair that differs there fails closed. The limitation is that rebuild equivalence cannot currently certify two independently rebuilt Darwin binaries as equivalent even though their only legitimate payload difference is the bundler key; the empirical equivalence measurement in this document is ELF-only. The native macOS signing path was not measured here, but it also signs the final binary for the same reason, so this entry records the gap rather than letting it surface as a surprise in a Darwin release.
+1. **Exact Mechanism**: The `LC_CODE_SIGNATURE` blob inside `__LINKEDIT` is not part of the normalized set and is not recomputed. It covers the signed file, including the payload bytes that carry the per-build random bundler key. The signature therefore necessarily differs between two independent builds of identical source.
+2. **Reproducible Measurement Procedure and Invariant Outcome**:
+   - **Reproducible Procedure**: Build the same source twice with the pinned toolchain for a darwin target (`darwin-arm64` or `darwin-x64`), canonicalize both outputs with `canonicalizeBuildOutput`, and compare them using `compareRebuild`.
+   - **Invariant Outcome**: Every residual difference falls inside the `LC_CODE_SIGNATURE` region, and the pair is refused with `residual-difference`.
+   - **Run Variation**: The exact byte count and offsets vary between runs because the signature covers the per-build random key. They are therefore reported as an example observation rather than a fixed property; a reader cannot reconcile two run-specific numbers and should not be asked to.
+   - **Illustrative Observation (One Run)**: For illustration, in one observed test run on cross-built `darwin-arm64` fixtures of identical source, 48 raw differing bytes occurred, of which 16 were the key bytes in the shared bytecode string table that canonicalization rewrites to zero, leaving 32 residual differing bytes; all 32 lay within the `LC_CODE_SIGNATURE` data range (file offsets 61,744,416–62,226,930 of a 62,226,930-byte image), and the pair was refused with `residual-difference`.
+3. **Reachability**: Any comparison of two independently built Darwin artifacts — the gate's normal use — reaches this; the ELF path is unaffected.
+4. **Risk Direction and Owner Disposition**: The failure direction is a **false refusal, never a false accept**: signature bytes are preserved and compared and can never be normalized away, so a pair that differs there fails closed. Rebuild equivalence cannot currently certify two independently rebuilt Darwin binaries as equivalent under D3-B; as dispositioned by the workspace owner, darwin rebuild equivalence is a scope boundary rather than an unfulfilled prerequisite (see [Per-Target Scope and Boundary Decision](#per-target-scope-and-boundary-decision)). The empirical equivalence measurement in this document is ELF-only. The native macOS signing path also signs the final binary for the same reason, so this entry records the structural boundary rather than letting it surface as an unexpected failure.
 
 ## Known Security Residuals
 
