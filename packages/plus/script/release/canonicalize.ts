@@ -643,7 +643,6 @@ function readPayloadHeader(
   if (sectionSize < 8 + OFFSETS_BYTES + TRAILER.length) return malformedExecutable("Bun payload section is too small to hold a graph, offsets and trailer")
   const length = readUint64(bytes, sectionOffset)
   if (length !== sectionSize - 8) return malformedExecutable(`Bun payload length prefix is ${length}, section holds ${sectionSize - 8}`)
-  if (length < OFFSETS_BYTES + TRAILER.length) return malformedExecutable("Bun payload is too small to hold offsets and trailer")
   return { ok: true, payload: { container, start: sectionOffset + 8, length } }
 }
 
