@@ -862,6 +862,139 @@ describe("ELF container structure rejection (executable-structure-malformed)", (
 })
 
 // ---------------------------------------------------------------------------
+// `sh_name` is a selector: the parser reads it on every section header to find
+// '.bun'. Bounds-testing it only to decide whether to look further is not
+// validation. A header whose name could not be read used to be skipped, so the
+// same unreadable name in both members of an accepted pair was skipped on both
+// sides and the pair still compared equivalent. Every occurrence is now held to
+// one predicate (a NUL-terminated string inside the section name table) and
+// fails closed; the pair regressions are that counterexample on real builds.
+// ---------------------------------------------------------------------------
+
+/** A named section that is neither '.bun', the null header, nor the name table. */
+function ordinaryElfSection(bytes: Buffer): ElfSection {
+  const nameTableIndex = bytes.readUInt16LE(0x3e)
+  const section = elfSections(bytes).find(
+    (item, index) => index !== 0 && index !== nameTableIndex && item.name !== "" && item.name !== ".bun",
+  )
+  if (!section) throw new Error("fixture has no ordinary named section")
+  return section
+}
+
+describe("ELF section names are validated on every header, not only the selected one", () => {
+  test("every real ELF fixture names every section with a terminated string inside the name table", () => {
+    const fixtures: [name: string, bytes: Buffer][] = [
+      ["left", builds.left],
+      ["right", builds.right],
+      ["manyLeft", builds.manyLeft],
+      ["manyRight", builds.manyRight],
+      ["argv", builds.argv],
+      ["argvLong", builds.argvLong],
+      ["builtinLeft", builds.builtinLeft],
+      ["builtinRight", builds.builtinRight],
+      ["mixedLeft", builds.mixedLeft],
+      ["mixedRight", builds.mixedRight],
+      ["noBytecode", builds.noBytecode],
+      ["linuxX64", builds.linuxX64],
+    ]
+    const observed = fixtures.map(([name, bytes]) => {
+      const names = requireElfSection(bytes, ".shstrtab")
+      return {
+        name,
+        readable: elfSections(bytes).every(
+          (section) =>
+            section.nameOffset < names.size &&
+            bytes.subarray(names.offset + section.nameOffset, names.offset + names.size).indexOf(0) !== -1,
+        ),
+      }
+    })
+    expect(observed).toEqual(fixtures.map(([name]) => ({ name, readable: true })))
+  })
+
+  test("rejects a section whose name offset is outside the section name table", () => {
+    const binary = Buffer.from(builds.left)
+    const names = requireElfSection(binary, ".shstrtab")
+    binary.writeUInt32LE(names.size, ordinaryElfSection(binary).header)
+    expectMalformedElf(binary, `name offset ${names.size} is outside the ${names.size}-byte section name table`)
+  })
+
+  test("rejects an identically edited out-of-range sh_name pair instead of accepting it", () => {
+    // The pair must be accepted as built, so the edit is the only reason the
+    // outcome can change.
+    expect(compareRebuild({ bunVersion: BUN, left: builds.left, right: builds.right }).equivalent).toBe(true)
+
+    // The same ordinary non-'.bun' section in both members gets sh_name equal
+    // to the name table's size, one past the last valid index. '.bun' and the
+    // name table locator are untouched.
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.right)
+    const leftSection = ordinaryElfSection(left)
+    const rightSection = ordinaryElfSection(right)
+    expect(rightSection.header).toBe(leftSection.header)
+    left.writeUInt32LE(requireElfSection(left, ".shstrtab").size, leftSection.header)
+    right.writeUInt32LE(requireElfSection(right, ".shstrtab").size, rightSection.header)
+
+    const leftOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const rightOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: right })
+    if (leftOutcome.ok || rightOutcome.ok) {
+      throw new Error("FALSE ACCEPT: a section whose name cannot be read was skipped instead of rejected")
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically edited out-of-range sh_name binaries compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("is outside the")
+  })
+
+  test("rejects a section name that is not NUL-terminated inside the section name table", () => {
+    const binary = Buffer.from(builds.left)
+    const names = requireElfSection(binary, ".shstrtab")
+    // The table's last byte terminates its last string. Overwriting it must
+    // not truncate that name at the table end and read it as if terminated.
+    expect(binary[names.offset + names.size - 1]).toBe(0)
+    binary[names.offset + names.size - 1] = 0x78
+    expectMalformedElf(binary, "is not NUL-terminated inside the section name table")
+  })
+
+  test("rejects an identically unterminated section name pair instead of accepting it", () => {
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.right)
+    for (const binary of [left, right]) {
+      const names = requireElfSection(binary, ".shstrtab")
+      expect(binary[names.offset + names.size - 1]).toBe(0)
+      binary[names.offset + names.size - 1] = 0x78
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically unterminated section names compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("is not NUL-terminated inside the section name table")
+  })
+
+  test("a readable name other than '.bun' leaves its header unselected and opaque", () => {
+    // Selection, not rejection, governs readable names: pointing an ordinary
+    // header at another readable string (offset 0, the empty name) in both
+    // members changes no validated relation, so the pair stays equivalent. A
+    // one-sided edit is still a residual difference.
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.right)
+    const header = ordinaryElfSection(left).header
+    left.writeUInt32LE(0, header)
+    right.writeUInt32LE(0, header)
+    expect(compareRebuild({ bunVersion: BUN, left, right }).equivalent).toBe(true)
+
+    const oneSided = compareRebuild({ bunVersion: BUN, left, right: builds.right })
+    if (oneSided.equivalent) throw new Error("FALSE ACCEPT: a one-sided sh_name edit compared equivalent")
+    expect(oneSided.rejection.code).toBe("residual-difference")
+    expect(oneSided.rejection.offset).toBe(header)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The Mach-O container checks read a section's `segname` from the section
 // header, which is self-asserted, and bounded the section array against the
 // whole buffer rather than the load command that owns it. The corruptions

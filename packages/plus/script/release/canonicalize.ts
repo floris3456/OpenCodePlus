@@ -33,11 +33,14 @@
  *      `.bun` section, or Mach-O64-LE with filetype `MH_EXECUTE`, a
  *      `cputype`/`cpusubtype` pair of a qualified Darwin target, and a
  *      `__BUN,__bun` section.
- *      The section is bounds-checked and must lie inside a loadable segment
- *      that validates as one: an ELF `PT_LOAD` whose file range fits the file
- *      and whose memory size is at least its file size, or a Mach-O `__BUN`
- *      segment whose own name says so, whose file range fits the file and
- *      contains the section, and whose virtual size is at least its file size.
+ *      Every ELF section header's name must be a NUL-terminated string inside
+ *      the section name table; a name that cannot be read is a rejection, not
+ *      a skipped header. The section is bounds-checked and must lie inside a
+ *      loadable segment that validates as one: an ELF `PT_LOAD` whose file
+ *      range fits the file and whose memory size is at least its file size, or
+ *      a Mach-O `__BUN` segment whose own name says so, whose file range fits
+ *      the file and contains the section, and whose virtual size is at least
+ *      its file size.
  *   2. The payload is `[u64 length][graph bytes][Offsets][trailer]`. The graph
  *      length, trailer, offsets struct and module table are parsed and
  *      bounds-checked against the section.
@@ -628,9 +631,25 @@ function locateElfBunPayload(bytes: Uint8Array): Located {
   let bunSection: { offset: number; size: number } | null = null
   for (let index = 0; index < sectionHeaderCount; index += 1) {
     const header = sectionHeaderOffset + index * sectionHeaderSize
+    // `sh_name` selects the '.bun' header, so it is interpreted on every header
+    // and every occurrence is held to one predicate: a NUL-terminated string
+    // inside the section name table. A name the parser cannot read is a
+    // rejection, never a reason to skip the header; skipping would let an
+    // identical corruption of this field in both members compare equivalent.
+    // Only a readable name other than '.bun' leaves a header unselected, and
+    // an unselected header is opaque.
     const nameOffset = readUint32LE(bytes, header + ELF64_SECTION_NAME_OFFSET)
-    if (nameOffset >= namesLength) continue
-    const name = cstringAt(bytes, namesStart + nameOffset, namesLength - nameOffset)
+    if (nameOffset >= namesLength) {
+      return malformedExecutable(
+        `ELF section ${index} name offset ${nameOffset} is outside the ${namesLength}-byte section name table`,
+      )
+    }
+    const name = terminatedStringAt(bytes, namesStart + nameOffset, namesStart + namesLength)
+    if (name === null) {
+      return malformedExecutable(
+        `ELF section ${index} name at offset ${nameOffset} is not NUL-terminated inside the section name table`,
+      )
+    }
     if (name !== ".bun") continue
     if (bunSection !== null) return malformedExecutable("ELF contains more than one '.bun' section")
     const type = readUint32LE(bytes, header + ELF64_SECTION_TYPE_OFFSET)
@@ -1198,11 +1217,11 @@ function utf16At(bytes: Uint8Array, offset: number, codeUnits: number): string {
   return Buffer.from(bytes.subarray(offset, offset + codeUnits * 2)).toString("utf16le")
 }
 
-function cstringAt(bytes: Uint8Array, offset: number, limit: number): string {
-  let end = offset
-  const stop = Math.min(offset + limit, bytes.byteLength)
-  while (end < stop && bytes[end] !== 0) end += 1
-  return textAt(bytes, offset, end - offset)
+/** The NUL-terminated string at `offset`, or null when no terminator lies before `end`. */
+function terminatedStringAt(bytes: Uint8Array, offset: number, end: number): string | null {
+  const length = bytes.subarray(offset, end).indexOf(0)
+  if (length === -1) return null
+  return textAt(bytes, offset, length)
 }
 
 function fixedCstringAt(bytes: Uint8Array, offset: number, width: number): string {
