@@ -26,6 +26,7 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Permission } from "@opencode/core/permission"
 import { Reference } from "@opencode/core/reference"
+import { ReleaseRequestStore } from "@opencode/core/release/request"
 import { Rpc } from "@opencode/core/rpc"
 import { Skill } from "@opencode/core/skill"
 import { SkillDiscovery } from "@opencode/core/skill/discovery"
@@ -77,6 +78,9 @@ export const PluginTestLayer = AppNodeBuilder.build(
     InstructionDiscovery.node,
     LayerNodePlatform.httpClient,
     Plugin.node,
+    // The durable release store is a hard requirement of the plugin host, so the
+    // fixture exposes it here instead of letting a host come up without one.
+    ReleaseRequestStore.node,
     Agent.node,
     AISDK.node,
     Catalog.node,
