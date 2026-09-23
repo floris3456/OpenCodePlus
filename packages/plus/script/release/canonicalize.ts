@@ -24,10 +24,17 @@
  *      length, trailer, offsets struct and module table are parsed and
  *      bounds-checked against the section.
  *   3. The module table (52-byte `CompiledModuleGraphFile` records) yields the
- *      subranges owned by each module. The trailing records after the table
- *      announce the shared bytecode string table's offset and length inside the
- *      graph; that region must be in bounds and disjoint from every module
- *      subrange.
+ *      subranges owned by each module. The trailing records after the table are
+ *      the pinned Bun 1.4.2 tail: one `u32` content hash per module, an
+ *      embedded builtin-bytecode record (a `u32` count and that many 12-byte
+ *      `{id, offset, length}` entries), an optional bytecode-string-table
+ *      {offset, length}, the startup module count, an optional
+ *      module-info-string-table {offset, length}, and the
+ *      `--compile-exec-argv` string with its NUL terminator as the last byte of
+ *      the graph. The argv string and the builtin ranges are located from the
+ *      parsed bytes, so every tail byte is accounted for. The announced string
+ *      tables must be in bounds and disjoint from every module subrange, the
+ *      module table, the builtin ranges and each other.
  *   4. Only entries of that parsed string table are eligible. Every entry is
  *      re-derived from its own bytes: reserved hash bits must be zero, the
  *      stored hash must equal `rapidhash(string) & 0xffffff`, padding must be
@@ -70,17 +77,26 @@ const OFFSETS_BYTES = 32
 const MODULE_RECORD_BYTES = 52
 const MODULE_POINTER_COUNT = 6
 const MAX_MODULE_COUNT = 1_000_000
+const BUILTIN_ENTRY_BYTES = 12
+const MAX_BUILTIN_COUNT = 100_000
 
 /**
- * Tail shapes measured on Bun 1.4.2, as bytes remaining after the per-module
- * value array and the sentinel word: startup module count u32, optional
- * bytecode-string-table {offset, length}, optional module-info-table
- * {offset, length}, and one trailing zero byte. Anything else is a refusal,
- * not a guess.
+ * Tail shapes measured on Bun 1.4.2 (the pinned release toolchain). Directly
+ * after the module table come one `u32` source hash per module (`rapidhash(
+ * contents) & 0xffffff`), then the embedded builtin-bytecode record: a `u32`
+ * count followed by `count` 12-byte `{u32 builtinId, u32 bytecodeOffset, u32
+ * bytecodeLength}` entries. A build that imports no `node:`/`bun:` builtins
+ * has count 0, which is the four-byte zero word this module previously treated
+ * as a sentinel. Then come an optional bytecode string-table {offset, length},
+ * the startup module count, an optional module-info string-table {offset,
+ * length}, and finally the `--compile-exec-argv` string with its NUL
+ * terminator as the graph's last byte. The fixed part is therefore 20 bytes
+ * with both tables and 12 with only the bytecode table, plus argv. Anything
+ * else is a refusal, not a guess.
  */
-const TAIL_AFTER_SENTINEL_NO_TABLES = 4 + 1
-const TAIL_AFTER_SENTINEL_BYTECODE_TABLE = 4 + 4 + 4 + 1
-const TAIL_AFTER_SENTINEL_BOTH_TABLES = 4 + 4 + 4 + 4 + 4 + 1
+const TAIL_FIXED_BYTES_NO_BYTECODE_TABLE = 4
+const TAIL_FIXED_BYTES_BYTECODE_TABLE = 8 + 4
+const TAIL_FIXED_BYTES_BOTH_TABLES = 8 + 4 + 8
 
 const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46] as const
 const ELFCLASS64 = 2
@@ -169,6 +185,7 @@ export interface BuildStructure {
   readonly payloadLength: number
   readonly graphLength: number
   readonly moduleCount: number
+  readonly builtinBytecodeCount: number
   readonly modulesStart: number
   readonly modulesLength: number
   readonly moduleRanges: readonly { readonly start: number; readonly end: number }[]
@@ -666,29 +683,75 @@ function parseGraph(
 
   const tailStart = payload.start + modules.offset + modules.length
   const tailLength = byteCount - (modules.offset + modules.length)
-  if (tailLength < moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_NO_TABLES) {
-    return locatorMalformed(tailStart, `trailing records hold ${tailLength} bytes; at least ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_NO_TABLES} are required for ${moduleCount} modules`)
+  if (tailLength < moduleCount * 4 + 4 + TAIL_FIXED_BYTES_NO_BYTECODE_TABLE + argv.length + 1) {
+    return locatorMalformed(tailStart, `trailing records hold ${tailLength} bytes; at least ${moduleCount * 4 + 4 + TAIL_FIXED_BYTES_NO_BYTECODE_TABLE + argv.length + 1} are required for ${moduleCount} modules and ${argv.length} argv byte(s)`)
+  }
+
+  // The writer appends the compile argv string last, so its NUL terminator is
+  // the final byte of the graph and the string itself ends one byte earlier.
+  // That anchors the tail's end independently of the fixed fields below.
+  if (argv.offset + argv.length + 1 !== byteCount) {
+    return locatorMalformed(
+      offsetsStart + 20,
+      `compile argv (${argv.offset} + ${argv.length}) does not end at the last byte of the ${byteCount}-byte graph`,
+    )
+  }
+  if (bytes[payload.start + byteCount - 1] !== 0) {
+    return locatorMalformed(payload.start + byteCount - 1, "compile argv NUL terminator is not zero")
   }
 
   let cursor = tailStart + moduleCount * 4
   let remaining = tailLength - moduleCount * 4
-  if (readUint32LE(bytes, cursor) !== 0) {
-    return locatorMalformed(cursor, "trailing record sentinel is not zero; the graph tail is not the pinned Bun 1.4.2 layout")
+
+  // Embedded builtin bytecode: `u32 count` plus `count` 12-byte entries. A
+  // build without node:/bun: builtins writes count 0, so this word is present
+  // in every pinned tail.
+  const builtinBytecodeCount = readUint32LE(bytes, cursor)
+  if (builtinBytecodeCount > MAX_BUILTIN_COUNT) {
+    return locatorMalformed(cursor, `embedded builtin bytecode count ${builtinBytecodeCount} is implausible`)
   }
   cursor += 4
   remaining -= 4
+  if (builtinBytecodeCount * BUILTIN_ENTRY_BYTES > remaining) {
+    return locatorMalformed(
+      cursor,
+      `embedded builtin bytecode record (${builtinBytecodeCount} entries) does not fit the ${remaining} remaining tail bytes`,
+    )
+  }
+  const builtinRanges: { start: number; end: number }[] = []
+  for (let index = 0; index < builtinBytecodeCount; index += 1) {
+    const offset = readUint32LE(bytes, cursor + 4)
+    const length = readUint32LE(bytes, cursor + 8)
+    if (!fitsGraph(offset, length, byteCount)) {
+      return locatorMalformed(
+        cursor + 4,
+        `embedded builtin bytecode ${index} (${offset} + ${length}) is outside the ${byteCount}-byte graph`,
+      )
+    }
+    if (offset + length > modules.offset) {
+      return locatorMalformed(
+        cursor + 4,
+        `embedded builtin bytecode ${index} (${offset} + ${length}) is not in the data region before the module table at ${modules.offset}`,
+      )
+    }
+    if (length > 0) builtinRanges.push({ start: payload.start + offset, end: payload.start + offset + length })
+    cursor += BUILTIN_ENTRY_BYTES
+    remaining -= BUILTIN_ENTRY_BYTES
+  }
 
+  let fixed = remaining - argv.length - 1
   let bytecodeTable: { offset: number; length: number } | null = null
   let moduleInfoTable: { offset: number; length: number } | null = null
-  if (
-    remaining === TAIL_AFTER_SENTINEL_BYTECODE_TABLE ||
-    remaining === TAIL_AFTER_SENTINEL_BOTH_TABLES
-  ) {
+  if (fixed === TAIL_FIXED_BYTES_BYTECODE_TABLE || fixed === TAIL_FIXED_BYTES_BOTH_TABLES) {
     bytecodeTable = { offset: readUint32LE(bytes, cursor), length: readUint32LE(bytes, cursor + 4) }
     cursor += 8
     remaining -= 8
-  } else if (remaining !== TAIL_AFTER_SENTINEL_NO_TABLES) {
-    return locatorMalformed(tailStart, `trailing records are ${tailLength} bytes for ${moduleCount} modules; the pinned Bun 1.4.2 tail shapes are ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_NO_TABLES}, ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_BYTECODE_TABLE} or ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_BOTH_TABLES}`)
+    fixed -= 8
+  } else if (fixed !== TAIL_FIXED_BYTES_NO_BYTECODE_TABLE) {
+    return locatorMalformed(
+      tailStart,
+      `trailing records are ${tailLength} bytes for ${moduleCount} module(s) and ${argv.length} argv byte(s); the pinned Bun 1.4.2 tails are ${moduleCount * 4 + 4 + TAIL_FIXED_BYTES_NO_BYTECODE_TABLE + argv.length + 1}, ${moduleCount * 4 + 4 + TAIL_FIXED_BYTES_BYTECODE_TABLE + argv.length + 1} or ${moduleCount * 4 + 4 + TAIL_FIXED_BYTES_BOTH_TABLES + argv.length + 1} bytes`,
+    )
   }
 
   const startupModuleCount = readUint32LE(bytes, cursor)
@@ -697,16 +760,32 @@ function parseGraph(
   }
   cursor += 4
   remaining -= 4
+  fixed -= 4
 
-  if (remaining === 8 + 1) {
+  if (fixed === 8) {
     moduleInfoTable = { offset: readUint32LE(bytes, cursor), length: readUint32LE(bytes, cursor + 4) }
     cursor += 8
     remaining -= 8
+    fixed -= 8
   }
-  if (remaining !== 1) {
-    return locatorMalformed(cursor, `trailing records leave ${remaining} bytes unaccounted for after the pinned fields`)
+  if (fixed !== 0) {
+    return locatorMalformed(cursor, `trailing records leave ${fixed} bytes unaccounted for after the pinned fields`)
   }
-  if (bytes[cursor] !== 0) return locatorMalformed(cursor, "trailing record pad byte is not zero")
+  if (remaining !== argv.length + 1) {
+    return locatorMalformed(cursor, `trailing records leave ${remaining} bytes; the compile argv string and its terminator are ${argv.length + 1}`)
+  }
+  if (cursor !== payload.start + argv.offset) {
+    return locatorMalformed(cursor, `the pinned tail ends at ${cursor - payload.start}, but the compile argv string starts at ${argv.offset}`)
+  }
+  const argvStart = payload.start + argv.offset
+  const argvEnd = argvStart + argv.length
+  const overlapsModule = moduleRanges.some((range) => argvStart < range.end && range.start < argvEnd)
+  if (overlapsModule) return locatorMalformed(argvStart, "compile argv bytes overlap a module subrange")
+  if (argvStart < modulesStart + modules.length && modulesStart < argvEnd) {
+    return locatorMalformed(argvStart, "compile argv bytes overlap the module table")
+  }
+  const overlapsBuiltin = builtinRanges.some((range) => argvStart < range.end && range.start < argvEnd)
+  if (overlapsBuiltin) return locatorMalformed(argvStart, "compile argv bytes overlap embedded builtin bytecode")
   if (bytecodeTable === null) {
     return {
       ok: false,
@@ -729,6 +808,8 @@ function parseGraph(
     if (overlapsModule) return locatorMalformed(start, "announced string table region overlaps a module subrange")
     const overlapsModules = start < modulesStart + modules.length && modulesStart < end
     if (overlapsModules) return locatorMalformed(start, "announced string table region overlaps the module table")
+    const overlapsBuiltin = builtinRanges.some((range) => start < range.end && range.start < end)
+    if (overlapsBuiltin) return locatorMalformed(start, "announced string table region overlaps embedded builtin bytecode")
   }
   if (
     bytecodeTable !== null &&
@@ -755,6 +836,7 @@ function parseGraph(
       payloadLength: payload.length,
       graphLength: byteCount,
       moduleCount,
+      builtinBytecodeCount,
       modulesStart,
       modulesLength: modules.length,
       moduleRanges,
