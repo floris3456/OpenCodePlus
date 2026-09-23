@@ -11,9 +11,14 @@ on:
         description: "Release tag name (e.g. v0.0.1-plus.1)"
         required: true
         type: string
+      run_id:
+        description: "Numeric id of the ocp-build run that produced the release bundle for this tag (from .../actions/runs/<run_id>)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   publish:
@@ -29,11 +34,82 @@ jobs:
             exit 1
           fi
 
+      - name: Verify build run identity for tag
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          BUILD_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${BUILD_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error::run_id '${BUILD_RUN_ID}' is not a numeric workflow run id. Copy the id from the ocp-build run URL for ${RELEASE_TAG} (.../actions/runs/<run_id>)."
+            exit 1
+          fi
+
+          tag_sha=$(gh api "repos/${REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha) || {
+            echo "::error::Cannot resolve tag '${RELEASE_TAG}' to a commit in ${REPOSITORY}. Check that the tag exists and is spelled exactly as dispatched."
+            exit 1
+          }
+          if [ -z "${tag_sha}" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' resolved to no commit in ${REPOSITORY}. Check that the tag exists and points at a commit."
+            exit 1
+          fi
+
+          run=$(gh api "repos/${REPOSITORY}/actions/runs/${BUILD_RUN_ID}" \
+            --jq '.repository.full_name, .name, .path, .conclusion, .head_sha, .head_branch, .event, .html_url') || {
+            echo "::error::Cannot read workflow run ${BUILD_RUN_ID} in ${REPOSITORY}. Check that the run id belongs to this repository and that the workflow token can read Actions."
+            exit 1
+          }
+          mapfile -t run_fields <<< "${run}"
+          run_repository="${run_fields[0]}"
+          workflow="${run_fields[1]}"
+          workflow_path="${run_fields[2]}"
+          conclusion="${run_fields[3]}"
+          head_sha="${run_fields[4]}"
+          head_branch="${run_fields[5]}"
+          event="${run_fields[6]}"
+          run_url="${run_fields[7]}"
+
+          if [ "${run_repository}" != "${REPOSITORY}" ]; then
+            echo "::error::Run ${BUILD_RUN_ID} belongs to '${run_repository}', not '${REPOSITORY}'. Check that the run id was copied from this repository's ocp-build run for ${RELEASE_TAG}."
+            exit 1
+          fi
+
+          if [ "${workflow}" != "ocp-build" ] || [ "${workflow_path}" != ".github/workflows/ocp-build.yml" ]; then
+            echo "::error::Run ${BUILD_RUN_ID} is workflow '${workflow}' (${workflow_path}), not ocp-build. Check that the run id is from the ocp-build run for ${RELEASE_TAG}."
+            exit 1
+          fi
+
+          if [ "${conclusion}" != "success" ]; then
+            echo "::error::Run ${BUILD_RUN_ID} concluded '${conclusion}', not 'success'. Wait for the ocp-build run for ${RELEASE_TAG} to succeed, then dispatch with that successful run id."
+            exit 1
+          fi
+
+          if [ "${event}" != "push" ] || [ "${head_branch}" != "${RELEASE_TAG}" ]; then
+            echo "::error::Run ${BUILD_RUN_ID} was triggered by '${event}' on '${head_branch}', not by pushing tag '${RELEASE_TAG}'. Use the run produced by pushing the tag; a branch build of the same commit carries a different version."
+            exit 1
+          fi
+
+          if [ "${head_sha}" != "${tag_sha}" ]; then
+            echo "::error::Run ${BUILD_RUN_ID} built commit ${head_sha}, but tag ${RELEASE_TAG} points at ${tag_sha}. Check that the build run and the tag describe the same source commit."
+            exit 1
+          fi
+
+          echo "Verified build run ${BUILD_RUN_ID} (${run_url}) succeeded on tag ${RELEASE_TAG} at commit ${tag_sha}"
+
+      # download-artifact defaults run-id to this run when it is unset, and this
+      # workflow builds nothing. The bundle therefore has to come from the named
+      # ocp-build run that the guard above accepted.
       - name: Download recorded release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ocp-release-assets
           path: assets
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Verify checksums before publication
         working-directory: assets
