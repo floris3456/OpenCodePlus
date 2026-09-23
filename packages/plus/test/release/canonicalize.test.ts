@@ -47,6 +47,8 @@ const OUT_MANY_RIGHT = join(scratch, "many-right")
 const OUT_ARGV = join(scratch, "argv")
 const OUT_BUILTIN_LEFT = join(scratch, "builtin-left")
 const OUT_BUILTIN_RIGHT = join(scratch, "builtin-right")
+const OUT_MIXED_LEFT = join(scratch, "mixed-left")
+const OUT_MIXED_RIGHT = join(scratch, "mixed-right")
 
 const MANY_MODULES = 384
 
@@ -59,6 +61,8 @@ interface RealBuilds {
   readonly argv: Buffer
   readonly builtinLeft: Buffer
   readonly builtinRight: Buffer
+  readonly mixedLeft: Buffer
+  readonly mixedRight: Buffer
 }
 
 let builds: RealBuilds
@@ -109,6 +113,22 @@ beforeAll(() => {
     "import { readFileSync } from 'node:fs'\nimport { join } from 'node:path'\nimport { createHash } from 'node:crypto'\nimport { platform, release } from 'node:os'\nimport process from 'node:process'\nasync function main() {\n  const [alpha, beta] = await Promise.all([import('./alpha.ts'), import('./beta.ts')])\n  console.log(typeof readFileSync, join('a', 'b'), typeof createHash, platform(), release(), process.pid, alpha.alpha, beta.beta)\n}\nmain()\n",
   )
 
+  // A source whose string literals are not latin1. This is the mixed-width
+  // neighbourhood measured in the real release binary: the six-character ASCII
+  // spellings JSC records for U+2028/U+2029, the separator characters
+  // themselves (one UTF-16 code unit each), CJK text, and an emoji, which is a
+  // surrogate pair and so a two-code-unit UTF-16 entry. The ordinary strings of
+  // the graph stay 8-bit, so one table holds both widths.
+  const mixedEntry = join(SOURCE_DIR, "mixed-entry.ts")
+  writeFileSync(
+    join(SOURCE_DIR, "mixed.ts"),
+    "export const spelled = '\\\\u2028\\\\u2029'\nexport const separators = '\u2028\u2029'\nexport const wide = '\u65e5\u672c\u8a9e'\nexport const emoji = '\ud83d\ude80'\nexport const narrow = 'plain ascii'\n",
+  )
+  writeFileSync(
+    mixedEntry,
+    "async function main() {\n  const [alpha, beta, mixed] = await Promise.all([import('./alpha.ts'), import('./beta.ts'), import('./mixed.ts')])\n  console.log(alpha.alpha, beta.beta, mixed.spelled, mixed.separators, mixed.wide, mixed.emoji, mixed.narrow)\n}\nmain()\n",
+  )
+
   // Both rebuilds use the same output basename so the only difference Bun is
   // allowed to introduce is the per-build bundler key.
   builds = {
@@ -120,6 +140,8 @@ beforeAll(() => {
     argv: compile(OUT_ARGV, { extra: ["--compile-exec-argv", "--smol"] }),
     builtinLeft: compile(OUT_BUILTIN_LEFT, { entry: builtinEntry }),
     builtinRight: compile(OUT_BUILTIN_RIGHT, { entry: builtinEntry }),
+    mixedLeft: compile(OUT_MIXED_LEFT, { entry: mixedEntry }),
+    mixedRight: compile(OUT_MIXED_RIGHT, { entry: mixedEntry }),
   }
 
   const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.left })
@@ -165,6 +187,7 @@ function compile(
 function normalizedSpans(structure: BuildStructure): Set<number> {
   const spans = new Set<number>()
   for (const entry of structure.entries) {
+    if (!entry.is8Bit) continue
     if (entry.length !== 25) continue
     if (!/^[0-9a-f]{16}[ACSH][0-9]{8}$/.test(entry.text)) continue
     if (entry.text.startsWith(FILLER_3)) continue
@@ -172,6 +195,67 @@ function normalizedSpans(structure: BuildStructure): Set<number> {
     for (let index = 0; index < 4; index += 1) spans.add(entry.offset + 4 + index)
   }
   return spans
+}
+
+const WIDE_TOKEN = "0123456789abcdefA00000000"
+const WIDE_TOKEN_CHANGED = "1123456789abcdefA00000000"
+
+function pad4(value: number): number {
+  return (value + 3) & ~3
+}
+
+/** The tail field holding the bytecode string table's length. */
+function bytecodeTableLengthField(structure: BuildStructure): number {
+  return (
+    structure.modulesStart +
+    structure.modulesLength +
+    structure.moduleCount * 4 +
+    4 +
+    structure.builtinBytecodeCount * 12 +
+    4
+  )
+}
+
+/**
+ * Rewrite the shared string table of `binary` in place as a valid two-entry
+ * mixed-width table: one ordinary 8-bit record bearing KEY_A, and one UTF-16
+ * entry whose decoded characters spell a well-formed chunk token. The UTF-16
+ * entry is structurally exact (contiguous, hash over its raw bytes, zero
+ * padding, region consumed exactly), so it must parse while never being
+ * eligible as a record. Returns the prefix offset of the UTF-16 entry.
+ */
+function craftWideTokenTable(binary: Buffer, wideToken: string): number {
+  const tableStart = leftStructure.stringTableStart
+  const narrowBytes = Buffer.from(`${KEY_A}C00000000`, "latin1")
+  const wideBytes = Buffer.from(wideToken, "utf16le")
+  const narrowSize = pad4(8 + narrowBytes.length)
+  const wideSize = pad4(8 + wideBytes.length)
+  const tableBytes = 4 + 8 + narrowSize + wideSize
+  if (tableBytes > leftStructure.stringTableLength) {
+    throw new Error(
+      `fixture string table holds ${leftStructure.stringTableLength} bytes; the crafted table needs ${tableBytes}`,
+    )
+  }
+
+  binary.writeUInt32LE(2, tableStart)
+  binary.writeUInt32LE(12, tableStart + 4)
+  binary.writeUInt32LE(12 + narrowSize, tableStart + 8)
+
+  const narrowStart = tableStart + 12
+  binary.writeUInt32LE((0x80000000 | narrowBytes.length) >>> 0, narrowStart)
+  binary.writeUInt32LE(Number(Bun.hash.rapidhash(narrowBytes) & 0xffffffn), narrowStart + 4)
+  narrowBytes.copy(binary, narrowStart + 8)
+  binary.fill(0, narrowStart + 8 + narrowBytes.length, narrowStart + narrowSize)
+
+  const wideStart = narrowStart + narrowSize
+  // Flag clear: the count is UTF-16 code units, not bytes.
+  binary.writeUInt32LE(wideToken.length, wideStart)
+  binary.writeUInt32LE(Number(Bun.hash.rapidhash(wideBytes) & 0xffffffn), wideStart + 4)
+  wideBytes.copy(binary, wideStart + 8)
+  binary.fill(0, wideStart + 8 + wideBytes.length, wideStart + wideSize)
+
+  binary.writeUInt32LE(tableBytes, bytecodeTableLengthField(leftStructure))
+  return wideStart
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +375,162 @@ describe("container anchoring", () => {
     expect(comparison.container).toBe("macho")
     expect(comparison.rawIdentical).toBe(true)
     expect(comparison.rawDifferingBytes).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Entry widths: bit 31 of the length word is JSC's `is8Bit` flag, not a
+// required marker. The mixed fixture's non-latin1 literals put both widths in
+// one table; the crafted tables below put a token-shaped UTF-16 entry into a
+// real build to prove it parses and validates but is never a record.
+// ---------------------------------------------------------------------------
+
+describe("string-table entry widths (JSC is8Bit flag)", () => {
+  test("a build with non-latin1 literals carries both widths in one table", () => {
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.mixedLeft })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    const entries = parsed.structure.entries
+
+    expect(entries.filter((entry) => entry.is8Bit).length).toBeGreaterThan(0)
+    expect(entries.filter((entry) => !entry.is8Bit).length).toBeGreaterThan(0)
+
+    // Every entry, either width, is re-derived over its own bytes, and a wide
+    // entry's byte length is twice its code-unit count.
+    for (const entry of entries) {
+      expect(entry.byteLength).toBe(entry.is8Bit ? entry.length : entry.length * 2)
+      const raw = builds.mixedLeft.subarray(entry.offset + 8, entry.offset + 8 + entry.byteLength)
+      expect(entry.storedHash).toBe(Number(Bun.hash.rapidhash(raw) & 0xffffffn))
+    }
+
+    const spelled = entries.find((entry) => entry.is8Bit && entry.text === "\\u2028\\u2029")
+    const separators = entries.find((entry) => !entry.is8Bit && entry.text === "\u2028\u2029")
+    const cjk = entries.find((entry) => !entry.is8Bit && entry.text === "\u65e5\u672c\u8a9e")
+    const emoji = entries.find((entry) => !entry.is8Bit && entry.text === "\ud83d\ude80")
+    if (!spelled || !separators || !cjk || !emoji) {
+      throw new Error("the fixture did not put every non-latin1 literal in the shared string table")
+    }
+    expect(spelled.length).toBe(12)
+    expect(spelled.byteLength).toBe(12)
+    expect(separators.length).toBe(2)
+    expect(separators.byteLength).toBe(4)
+    expect(cjk.length).toBe(3)
+    expect(cjk.byteLength).toBe(6)
+    // An emoji is a surrogate pair: two UTF-16 code units, four bytes.
+    expect(emoji.length).toBe(2)
+    expect(emoji.byteLength).toBe(4)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: builds.mixedLeft })
+    if (!outcome.ok) throw new Error(`unexpected rejection: ${outcome.rejection.detail}`)
+    for (const record of outcome.records) {
+      const entry = entries.find((item) => item.offset === record.offset)
+      if (!entry) throw new Error(`record ${record.token} is not a parsed string-table entry`)
+      expect(entry.is8Bit).toBe(true)
+    }
+    for (const entry of entries) {
+      if (entry.is8Bit) continue
+      expect(outcome.records.some((record) => record.offset === entry.offset)).toBe(false)
+    }
+  })
+
+  test("two independent mixed-width rebuilds are equivalent and move only keyed 8-bit records", () => {
+    const left = builds.mixedLeft
+    const right = builds.mixedRight
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (!comparison.equivalent) throw new Error(`unexpected rejection: ${comparison.rejection.detail}`)
+    expect(comparison.container).toBe("elf")
+    expect(comparison.recordsRewritten).toBeGreaterThanOrEqual(1)
+    expect(comparison.rawDifferingBytes).toBeLessThanOrEqual(comparison.recordsRewritten * 20)
+
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: left })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    expect(parsed.structure.entries.some((entry) => !entry.is8Bit)).toBe(true)
+
+    // No byte of a UTF-16 entry can ever be inside a normalized span.
+    const spans = normalizedSpans(parsed.structure)
+    for (const entry of parsed.structure.entries) {
+      if (entry.is8Bit) continue
+      for (let index = 0; index < entry.byteLength; index += 1) {
+        expect(spans.has(entry.offset + 8 + index)).toBe(false)
+      }
+    }
+    if (comparison.rawIdentical) return
+    for (let index = 0; index < left.byteLength; index += 1) {
+      if (left[index] !== right[index]) expect(spans.has(index)).toBe(true)
+    }
+  })
+
+  test("a UTF-16 entry spelling a well-formed token is parsed but never eligible", () => {
+    const crafted = Buffer.from(builds.left)
+    const wideEntryOffset = craftWideTokenTable(crafted, WIDE_TOKEN)
+
+    const parsed = parseBuildStructure({ bunVersion: BUN, bytes: crafted })
+    if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+    const entry = parsed.structure.entries.find((item) => item.offset === wideEntryOffset)
+    if (!entry) throw new Error("the crafted UTF-16 entry was not parsed")
+    expect(entry.is8Bit).toBe(false)
+    expect(entry.text).toBe(WIDE_TOKEN)
+    expect(entry.length).toBe(25)
+    expect(entry.byteLength).toBe(50)
+    expect(/^[0-9a-f]{16}[ACSH][0-9]{8}$/.test(entry.text)).toBe(true)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: crafted })
+    if (!outcome.ok) throw new Error(`unexpected rejection: ${outcome.rejection.detail}`)
+    expect(outcome.records.some((record) => record.offset === wideEntryOffset)).toBe(false)
+    expect(outcome.records.some((record) => record.token === WIDE_TOKEN)).toBe(false)
+    // The canonical image leaves the UTF-16 entry's bytes exactly as they were.
+    expect(
+      outcome.canonical
+        .subarray(wideEntryOffset + 8, wideEntryOffset + 58)
+        .equals(Buffer.from(WIDE_TOKEN, "utf16le")),
+    ).toBe(true)
+  })
+
+  test("a difference inside a UTF-16 token-shaped entry is a residual difference", () => {
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.left)
+    const wideEntryOffset = craftWideTokenTable(left, WIDE_TOKEN)
+    craftWideTokenTable(right, WIDE_TOKEN_CHANGED)
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) throw new Error("expected a residual-difference rejection")
+    expect(comparison.rejection.code).toBe("residual-difference")
+    expect(comparison.rejection.offset).toBeGreaterThanOrEqual(wideEntryOffset)
+    expect(comparison.rejection.offset).toBeLessThan(wideEntryOffset + 58)
+  })
+
+  test("a UTF-16 entry whose stored hash does not derive is rejected", () => {
+    const crafted = Buffer.from(builds.left)
+    const wideEntryOffset = craftWideTokenTable(crafted, WIDE_TOKEN)
+    crafted.writeUInt32LE(crafted.readUInt32LE(wideEntryOffset + 4) ^ 0x01, wideEntryOffset + 4)
+
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: crafted })
+    if (outcome.ok) throw new Error("expected a record-hash-underived rejection")
+    expect(outcome.rejection.code).toBe("record-hash-underived")
+    expect(outcome.rejection.offset).toBe(wideEntryOffset)
+  })
+
+  test("a UTF-16 entry whose length * 2 overruns the region is rejected", () => {
+    const absurd = Buffer.from(builds.left)
+    const absurdOffset = craftWideTokenTable(absurd, WIDE_TOKEN)
+    // Flag clear, 0x7fffffff code units: 4 GiB of data in a 108-byte region.
+    absurd.writeUInt32LE(0x7fffffff, absurdOffset)
+
+    const absurdOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: absurd })
+    if (absurdOutcome.ok) throw new Error("expected a string-table-malformed rejection")
+    expect(absurdOutcome.rejection.code).toBe("string-table-malformed")
+    expect(absurdOutcome.rejection.offset).toBe(absurdOffset)
+
+    // A count a byte-oriented reader would accept: 30 as bytes would fit the
+    // 52-byte remainder, but 30 code units (60 bytes) does not.
+    const subtle = Buffer.from(builds.left)
+    const subtleOffset = craftWideTokenTable(subtle, WIDE_TOKEN)
+    subtle.writeUInt32LE(30, subtleOffset)
+
+    const subtleOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: subtle })
+    if (subtleOutcome.ok) throw new Error("expected a string-table-malformed rejection")
+    expect(subtleOutcome.rejection.code).toBe("string-table-malformed")
+    expect(subtleOutcome.rejection.offset).toBe(subtleOffset)
   })
 })
 

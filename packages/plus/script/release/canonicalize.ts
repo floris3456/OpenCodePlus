@@ -8,10 +8,20 @@
  * that table also stores a 24-bit hash derived from the token, so a new key
  * moves those bytes too.
  *
- *     [u32 LE: 0x80000000 | length]   length word, flag set
+ *     [u32 LE: length word]           bit 31 is JavaScriptCore's `is8Bit` flag,
+ *                                     bits 0..30 are the count
  *     [u32 LE: hash]                  low 24 bits used, top 8 bits always zero
- *     [length bytes: string]          a token is {key:16 hex}{KIND:1 upper}{index:08 digits}
+ *     [count-based data bytes]        8-bit (latin1) entry: the count is a byte
+ *                                     count; UTF-16 entry (flag clear): the count
+ *                                     is a code-unit count, so count * 2 bytes
  *     [padding to 4 bytes]
+ *
+ * Bit 31 is not a required marker; it records the string width, and the real
+ * table holds both widths. The stored hash is `rapidhash(raw entry bytes) &
+ * 0xffffff` over the byte length in both cases. A chunk token is ASCII by
+ * construction, so only 8-bit entries are ever eligible as records: a UTF-16
+ * entry is parsed and validated but never normalized, and a difference inside
+ * one surfaces as a residual difference like any other underivable byte.
  *
  * This module proves that difference set for a concrete pair of outputs rather
  * than assuming it. Eligibility is anchored in parsed structure, never in a
@@ -35,11 +45,13 @@
  *      parsed bytes, so every tail byte is accounted for. The announced string
  *      tables must be in bounds and disjoint from every module subrange, the
  *      module table, the builtin ranges and each other.
- *   4. Only entries of that parsed string table are eligible. Every entry is
- *      re-derived from its own bytes: reserved hash bits must be zero, the
- *      stored hash must equal `rapidhash(string) & 0xffffff`, padding must be
- *      zero, and the index/entry layout must be exact. A candidate token-shaped
- *      string outside the table is rejected, not normalized.
+ *   4. Only entries of that parsed string table are eligible, and only 8-bit
+ *      ones: every entry is re-derived from its own bytes, reserved hash bits
+ *      must be zero, the stored hash must equal `rapidhash(raw entry bytes) &
+ *      0xffffff` over its byte length, padding must be zero, and the
+ *      index/entry layout must be exact. A candidate token-shaped string
+ *      outside the table is rejected, not normalized, and so is a UTF-16 entry
+ *      whose decoded text happens to spell a token.
  *   5. The key is rewritten to zeros, every hash is recomputed from the
  *      canonical token, and then every remaining byte must be equal. Any byte
  *      the canonicalizer cannot explain is a rejection carrying its offset.
@@ -63,7 +75,7 @@ export const CANONICALIZER = {
 } as const
 
 const TOKEN_BYTES = 25
-const RECORD_LENGTH_FLAG = 0x80000000
+const ENTRY_IS_8BIT_FLAG = 0x80000000
 const HASH_WORD_OFFSET = 4
 const HASH_WORD_BYTES = 4
 const TOKEN_OFFSET = 8
@@ -196,7 +208,15 @@ export interface BuildStructure {
 
 export interface StringTableEntry {
   readonly offset: number
+  /**
+   * The count stored in the length word: bytes for an 8-bit entry, UTF-16 code
+   * units otherwise.
+   */
   readonly length: number
+  /** Bytes the entry's data occupies: `length`, or `length * 2` for UTF-16. */
+  readonly byteLength: number
+  /** JSC's `is8Bit` flag: latin1 data when set, UTF-16 code units when clear. */
+  readonly is8Bit: boolean
   readonly text: string
   readonly storedHash: number
 }
@@ -233,12 +253,24 @@ export type RebuildEquivalence =
   | { readonly equivalent: false; readonly rejection: Rejection }
 
 /**
- * The frozen derivation, measured against real Bun 1.4.2 output. A WTF/SuperFastHash
- * hypothesis was tested and rejected before this one was adopted. Every entry of
- * the parsed shared bytecode string table must satisfy it.
+ * The frozen derivation for the ASCII token path, measured against real Bun
+ * 1.4.2 output. A WTF/SuperFastHash hypothesis was tested and rejected before
+ * this one was adopted. Every parsed entry is checked against
+ * `deriveEntryHash` over its raw bytes; for an 8-bit entry this function is the
+ * same rule spelled as its latin1 text.
  */
 export function deriveRecordHash(token: string): number {
   return Number(Bun.hash.rapidhash(Buffer.from(token, "latin1")) & HASH_MASK)
+}
+
+/**
+ * The same frozen derivation over an entry's raw bytes. 8-bit entries hash
+ * `length` bytes; UTF-16 entries hash `length * 2`. Deriving from the bytes
+ * rather than a re-encoded string is what makes a UTF-16 entry checkable at
+ * all, since only its own bytes round-trip.
+ */
+function deriveEntryHash(bytes: Uint8Array, offset: number, byteLength: number): number {
+  return Number(Bun.hash.rapidhash(bytes.subarray(offset, offset + byteLength)) & HASH_MASK)
 }
 
 /**
@@ -281,6 +313,9 @@ export function canonicalizeBuildOutput(options: {
   const structure = parsed.structure
   const records: ChunkTokenRecord[] = []
   for (const entry of structure.entries) {
+    // A chunk token is ASCII by construction, so only an 8-bit entry can ever
+    // be one. A UTF-16 entry is parsed and hash-checked but never eligible.
+    if (!entry.is8Bit) continue
     if (entry.length !== TOKEN_BYTES) continue
     if (!TOKEN_PATTERN.test(entry.text)) continue
     records.push({
@@ -849,8 +884,11 @@ function parseGraph(
 
 /**
  * The shared bytecode string table is `[u32 count][u32 offsets[count]]` followed
- * by `count` entries at those table-relative offsets. Every entry is re-derived
- * from its own bytes and the table must consume its region exactly.
+ * by `count` entries at those table-relative offsets. Bit 31 of an entry's
+ * length word is JSC's `is8Bit` flag, so an entry is either `length` latin1
+ * bytes or `length` UTF-16 code units; the stored hash is derived over the raw
+ * bytes either way. Every entry is re-derived from its own bytes and the table
+ * must consume its region exactly.
  */
 function parseStringTable(
   bytes: Uint8Array,
@@ -873,10 +911,17 @@ function parseStringTable(
     }
     if (!fits(bytes, entryStart, 8)) return stringTableMalformed(entryStart, `string table entry ${index} length word is out of bounds`)
     const lengthWord = readUint32LE(bytes, entryStart)
-    if ((lengthWord & RECORD_LENGTH_FLAG) === 0) return stringTableMalformed(entryStart, `string table entry ${index} length word ${formatWord(lengthWord)} has no flag bit`)
+    // Bit 31 is JSC's `is8Bit` flag, not a required marker: it selects the
+    // width, so the count is bytes for an 8-bit entry and UTF-16 code units
+    // (count * 2 bytes) otherwise.
+    const is8Bit = (lengthWord & ENTRY_IS_8BIT_FLAG) !== 0
     const length = lengthWord & 0x7fffffff
-    if (length === 0 || length > end - entryStart - 8) {
-      return stringTableMalformed(entryStart, `string table entry ${index} declares ${length} bytes, which does not fit the table`)
+    const byteLength = is8Bit ? length : length * 2
+    if (byteLength === 0 || byteLength > end - entryStart - 8) {
+      return stringTableMalformed(
+        entryStart,
+        `string table entry ${index} declares ${length} ${is8Bit ? "byte(s)" : "UTF-16 code unit(s)"}, which does not fit the table`,
+      )
     }
     const storedHash = readUint32LE(bytes, entryStart + HASH_WORD_OFFSET)
     if (storedHash >>> 24 !== 0) {
@@ -889,24 +934,27 @@ function parseStringTable(
         },
       }
     }
-    const text = textAt(bytes, entryStart + TOKEN_OFFSET, length)
-    const derived = deriveRecordHash(text)
+    const dataStart = entryStart + TOKEN_OFFSET
+    const text = is8Bit
+      ? textAt(bytes, dataStart, byteLength)
+      : utf16At(bytes, dataStart, length)
+    const derived = deriveEntryHash(bytes, dataStart, byteLength)
     if (storedHash !== derived) {
       return {
         ok: false,
         rejection: {
           code: "record-hash-underived",
           offset: entryStart,
-          detail: `string table entry at ${entryStart} stores hash ${formatWord(storedHash)} but '${text}' derives ${formatWord(derived)}`,
+          detail: `string table entry at ${entryStart} stores hash ${formatWord(storedHash)} but its ${is8Bit ? "8-bit" : "UTF-16"} data (${byteLength} byte(s)) derives ${formatWord(derived)}`,
         },
       }
     }
-    const unpadded = entryStart + TOKEN_OFFSET + length
+    const unpadded = dataStart + byteLength
     expected = start + align4(unpadded - start)
     for (let pad = unpadded; pad < expected; pad += 1) {
       if (bytes[pad] !== 0) return stringTableMalformed(pad, `string table entry ${index} padding byte is ${formatByte(bytes[pad])}, expected 0x00`)
     }
-    entries.push({ offset: entryStart, length, text, storedHash })
+    entries.push({ offset: entryStart, length, byteLength, is8Bit, text, storedHash })
   }
 
   if (expected !== end) return stringTableMalformed(expected, `string table entries end at ${expected - start}, table region ends at ${end - start}`)
@@ -977,6 +1025,10 @@ function readUint64(bytes: Uint8Array, offset: number): number {
 
 function textAt(bytes: Uint8Array, offset: number, length: number): string {
   return Buffer.from(bytes.subarray(offset, offset + length)).toString("latin1")
+}
+
+function utf16At(bytes: Uint8Array, offset: number, codeUnits: number): string {
+  return Buffer.from(bytes.subarray(offset, offset + codeUnits * 2)).toString("utf16le")
 }
 
 function cstringAt(bytes: Uint8Array, offset: number, limit: number): string {
