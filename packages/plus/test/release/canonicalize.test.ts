@@ -45,12 +45,20 @@ const OUT_DARWIN = join(scratch, "darwin")
 const OUT_MANY_LEFT = join(scratch, "many-left")
 const OUT_MANY_RIGHT = join(scratch, "many-right")
 const OUT_ARGV = join(scratch, "argv")
+const OUT_ARGV_LONG = join(scratch, "argv-long")
 const OUT_BUILTIN_LEFT = join(scratch, "builtin-left")
 const OUT_BUILTIN_RIGHT = join(scratch, "builtin-right")
 const OUT_MIXED_LEFT = join(scratch, "mixed-left")
 const OUT_MIXED_RIGHT = join(scratch, "mixed-right")
 
 const MANY_MODULES = 384
+
+/**
+ * A 44-byte `--compile-exec-argv` string: exactly the size of the one-entry
+ * string table the alias regression below needs (`u32 count` + `u32 offset` +
+ * one 36-byte 8-bit record).
+ */
+const ARGV_44 = "--smol --no-warnings --max-semi-space-size=1"
 
 interface RealBuilds {
   readonly left: Buffer
@@ -59,6 +67,7 @@ interface RealBuilds {
   readonly manyLeft: Buffer
   readonly manyRight: Buffer
   readonly argv: Buffer
+  readonly argvLong: Buffer
   readonly builtinLeft: Buffer
   readonly builtinRight: Buffer
   readonly mixedLeft: Buffer
@@ -138,6 +147,7 @@ beforeAll(() => {
     manyLeft: compile(OUT_MANY_LEFT, { entry: manyEntry }),
     manyRight: compile(OUT_MANY_RIGHT, { entry: manyEntry }),
     argv: compile(OUT_ARGV, { extra: ["--compile-exec-argv", "--smol"] }),
+    argvLong: compile(OUT_ARGV_LONG, { extra: ["--compile-exec-argv", ARGV_44] }),
     builtinLeft: compile(OUT_BUILTIN_LEFT, { entry: builtinEntry }),
     builtinRight: compile(OUT_BUILTIN_RIGHT, { entry: builtinEntry }),
     mixedLeft: compile(OUT_MIXED_LEFT, { entry: mixedEntry }),
@@ -401,6 +411,15 @@ function expectMalformedElf(bytes: Uint8Array, detail: string): void {
   expect(outcome.rejection.detail).toContain(detail)
 }
 
+/** The Mach-O analogue of `expectMalformedElf`. */
+function expectMalformedMachO(bytes: Uint8Array, detail: string): void {
+  const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes })
+  if (outcome.ok) throw new Error(`expected executable-structure-malformed: ${detail}`)
+  expect(outcome.rejection.code).toBe("executable-structure-malformed")
+  expect(outcome.rejection.offset).toBeNull()
+  expect(outcome.rejection.detail).toContain(detail)
+}
+
 /** Assert the buffer fails container identification before any structure is read. */
 function expectUnsupportedFormat(bytes: Uint8Array, detail: string): void {
   const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes })
@@ -544,6 +563,23 @@ describe("ELF container structure rejection (executable-structure-malformed)", (
     expectMalformedElf(binary, "'.bun' section is not contained in any PT_LOAD segment")
   })
 
+  test("rejects a PT_LOAD segment whose file range escapes the file", () => {
+    const binary = Buffer.from(builds.left)
+    const bun = requireElfSection(binary, ".bun")
+    const load = elfProgramHeaders(binary).find(
+      (header) =>
+        header.type === 1 &&
+        header.offset <= bun.offset &&
+        bun.offset + bun.size <= header.offset + header.fileSize,
+    )
+    if (!load) throw new Error("fixture has no PT_LOAD segment containing the '.bun' section")
+    // An out-of-file range contains the section trivially; without a file bound
+    // on the segment it satisfies the containment check while describing no
+    // bytes the file actually has.
+    binary.writeBigUInt64LE(BigInt(binary.byteLength) * 2n, load.header + 0x20)
+    expectMalformedElf(binary, "PT_LOAD segment file range is out of bounds")
+  })
+
   test("rejects a '.bun' section too small for a graph, offsets and trailer", () => {
     const binary = Buffer.from(builds.left)
     const bun = requireElfSection(binary, ".bun")
@@ -556,6 +592,54 @@ describe("ELF container structure rejection (executable-structure-malformed)", (
     const bun = requireElfSection(binary, ".bun")
     binary.writeBigUInt64LE(binary.readBigUInt64LE(bun.offset) + 8n, bun.offset)
     expectMalformedElf(binary, "length prefix is")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The Mach-O container checks read a section's `segname` from the section
+// header, which is self-asserted, and bounded the section array against the
+// whole buffer rather than the load command that owns it. The corruptions
+// below exercise each gap on the real Darwin fixture: an inflated section
+// count that reaches outside its load command (with a forged
+// `__BUN,__bun` planted in the escaped slot), a zeroed enclosing-segment file
+// size, a renamed enclosing segment, and an out-of-file segment file range.
+// ---------------------------------------------------------------------------
+
+describe("Mach-O container structure rejection (executable-structure-malformed)", () => {
+  test("rejects a segment whose inflated section count reaches outside its load command", () => {
+    const binary = Buffer.from(builds.darwin)
+    const bun = machoBunSection(binary)
+    // Rename the genuine section, then forge the only candidate in a slot the
+    // inflated count places past the segment command, in bytes owned by no
+    // load command at all.
+    binary.write("__was", bun.header, 5, "latin1")
+    const forgedAt = plantEscapedMachoSection(binary, bun.command, bun.header)
+    const forged = machoSectionAt(binary, forgedAt)
+    expect(forged.sectionName).toBe("__bun")
+    expect(forged.segmentName).toBe("__BUN")
+
+    expectMalformedMachO(binary, "section records do not fit their load command")
+  })
+
+  test("rejects a '__BUN,__bun' section whose enclosing segment declares no file range", () => {
+    const binary = Buffer.from(builds.darwin)
+    const bun = machoBunSection(binary)
+    binary.writeBigUInt64LE(0n, bun.command.offset + MACHO_SEGMENT_64_FILESIZE)
+    expectMalformedMachO(binary, "not contained in its segment's file range")
+  })
+
+  test("rejects a '__BUN,__bun' section whose enclosing segment is not __BUN", () => {
+    const binary = Buffer.from(builds.darwin)
+    const bun = machoBunSection(binary)
+    binary.write("__NOT_BUN", bun.command.offset + MACHO_SEGMENT_64_SEGNAME, 9, "latin1")
+    expectMalformedMachO(binary, "not the '__BUN' segment")
+  })
+
+  test("rejects a segment whose file range escapes the file", () => {
+    const binary = Buffer.from(builds.darwin)
+    const bun = machoBunSection(binary)
+    binary.writeBigUInt64LE(BigInt(binary.byteLength) * 2n, bun.command.offset + MACHO_SEGMENT_64_FILESIZE)
+    expectMalformedMachO(binary, "segment file range is out of bounds")
   })
 })
 
@@ -1063,6 +1147,35 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
     expect(parsed.structure.entries.length).toBeGreaterThan(100)
   })
 
+  test("announced string tables sit in the data region before the module table", () => {
+    // Every byte after the module table is owned by the pinned trailing-record
+    // shape, so an announced table can only be a real table if it ends where
+    // the module table begins. Both real containers are checked, for the
+    // bytecode table and for the optional module-info table.
+    for (const fixture of [builds.left, builds.darwin, builds.builtinLeft]) {
+      const parsed = parseBuildStructure({ bunVersion: BUN, bytes: fixture })
+      if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
+      const structure = parsed.structure
+      const modulesOffset = structure.modulesStart - structure.payloadStart
+      expect(
+        structure.stringTableStart - structure.payloadStart + structure.stringTableLength,
+      ).toBeLessThanOrEqual(modulesOffset)
+
+      const moduleInfoLocator =
+        structure.modulesStart +
+        structure.modulesLength +
+        structure.moduleCount * 4 +
+        4 +
+        structure.builtinBytecodeCount * 12 +
+        8 +
+        4
+      const moduleInfoOffset = fixture.readUInt32LE(moduleInfoLocator)
+      const moduleInfoLength = fixture.readUInt32LE(moduleInfoLocator + 4)
+      expect(moduleInfoLength).toBeGreaterThan(0)
+      expect(moduleInfoOffset + moduleInfoLength).toBeLessThanOrEqual(modulesOffset)
+    }
+  })
+
   test("parses the multi-module build and anchors every record in its string table", () => {
     const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.manyLeft })
     if (!parsed.ok) throw new Error(`unexpected rejection: ${parsed.rejection.detail}`)
@@ -1161,6 +1274,95 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
     if (comparison.equivalent) throw new Error("expected a residual-difference rejection")
     expect(comparison.rejection.code).toBe("residual-difference")
     expect(comparison.rejection.offset).toBe(argvStart)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Adversarial: the announced-table checks never compared the string table
+// regions against the argv / trailing-record region. A one-entry table
+// (4 + 4 + 36 = 44 bytes) can therefore be announced over a 44-byte
+// `--compile-exec-argv` string and canonicalization will rewrite the argv bytes
+// as if they were a chunk-token record, masking a real difference between two
+// binaries. These bytes are exactly what the pinned toolchain writes for the
+// argv string, so the check is a false accept, not a hypothetical shape.
+// ---------------------------------------------------------------------------
+
+/**
+ * Overwrite the 44-byte argv string with a structurally exact one-entry string
+ * table and redirect one announced-table locator at it. The argv pointer and
+ * length, the final NUL terminator and every other byte stay unchanged, so the
+ * only thing wrong with the image is that one announced region aliases the
+ * tail. Both announced locators are exercised: the bytecode table (which the
+ * canonicalizer parses for records) and the module-info table (which it does
+ * not).
+ */
+function craftArgvAliasedTable(source: Buffer, key: string, target: "bytecode" | "moduleInfo"): Buffer {
+  const layout = readGraphLayout(source)
+  if (layout.argvLength !== ARGV_44.length) {
+    throw new Error(`argv fixture holds ${layout.argvLength} argv byte(s), expected ${ARGV_44.length}`)
+  }
+  const binary = Buffer.from(source)
+  const argvStart = layout.tailStart + layout.tailLength - layout.argvLength - 1
+  if (argvStart - layout.payloadStart !== layout.argvOffset) {
+    throw new Error("argv bytes are not where the offsets struct says they are")
+  }
+
+  const token = `${key}C00000000`
+  binary.writeUInt32LE(1, argvStart)
+  binary.writeUInt32LE(8, argvStart + 4)
+  binary.writeUInt32LE((0x80000000 | token.length) >>> 0, argvStart + 8)
+  binary.writeUInt32LE(deriveRecordHash(token), argvStart + 12)
+  binary.write(token, argvStart + 16, token.length, "latin1")
+  binary.fill(0, argvStart + 16 + token.length, argvStart + ARGV_44.length)
+
+  // Bytecode-table locator, or the module-info locator after the startup count.
+  const locator =
+    target === "bytecode"
+      ? layout.tailStart + layout.moduleCount * 4 + 4 + layout.builtinCount * 12
+      : layout.tailStart + layout.moduleCount * 4 + 4 + layout.builtinCount * 12 + 8 + 4
+  binary.writeUInt32LE(layout.argvOffset, locator)
+  binary.writeUInt32LE(layout.argvLength, locator + 4)
+  return binary
+}
+
+describe("adversarial: announced string tables may not alias the graph tail", () => {
+  test("a table announced over the argv bytes cannot mask an argv difference", () => {
+    const left = craftArgvAliasedTable(builds.argvLong, KEY_A, "bytecode")
+    const right = craftArgvAliasedTable(builds.argvLong, KEY_B, "bytecode")
+
+    const layout = readGraphLayout(builds.argvLong)
+    const argvStart = layout.tailStart + layout.tailLength - layout.argvLength - 1
+    // The two copies differ only inside the 44 argv bytes.
+    expect(left.equals(right)).toBe(false)
+    expect(left.subarray(0, argvStart).equals(right.subarray(0, argvStart))).toBe(true)
+    expect(left.subarray(argvStart + ARGV_44.length).equals(right.subarray(argvStart + ARGV_44.length))).toBe(true)
+
+    // Neither copy may be accepted, because the announced table is not a table,
+    // and the comparison may not call two different binaries equivalent.
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (outcome.ok || comparison.equivalent) {
+      const accepted = outcome.ok
+        ? `adopted the argv bytes as a ${outcome.records.length}-record string table`
+        : "rejected the aliased table"
+      const equivalent = comparison.equivalent
+        ? `two binaries with different argv bytes compared equivalent (rawDifferingBytes ${comparison.rawDifferingBytes})`
+        : "rejected the comparison"
+      throw new Error(`FALSE ACCEPT: ${accepted}; ${equivalent}`)
+    }
+    expect(outcome.rejection.code).toBe("string-table-locator-malformed")
+    expect(comparison.rejection.code).toBe("string-table-locator-malformed")
+    expect(comparison.rejection.offset).not.toBeNull()
+  })
+
+  test("a module-info table announced over the argv bytes is rejected too", () => {
+    const aliased = craftArgvAliasedTable(builds.argvLong, KEY_A, "moduleInfo")
+    const outcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: aliased })
+    if (outcome.ok) {
+      throw new Error(`FALSE ACCEPT: argv bytes were adopted as an announced module-info region (${outcome.entriesParsed} entries)`)
+    }
+    expect(outcome.rejection.code).toBe("string-table-locator-malformed")
+    expect(outcome.rejection.offset).not.toBeNull()
   })
 })
 
@@ -1326,6 +1528,129 @@ function requireElfSection(bytes: Buffer, name: string): ElfSection {
   const section = elfSections(bytes).find((item) => item.name === name)
   if (!section) throw new Error(`fixture has no ${name} section`)
   return section
+}
+
+interface ElfProgramHeader {
+  readonly header: number
+  readonly type: number
+  readonly offset: number
+  readonly fileSize: number
+}
+
+/** Read the program headers of a real ELF fixture the way the parser does. */
+function elfProgramHeaders(bytes: Buffer): ElfProgramHeader[] {
+  const tableOffset = Number(bytes.readBigUInt64LE(0x20))
+  const entrySize = bytes.readUInt16LE(0x36)
+  const count = bytes.readUInt16LE(0x38)
+  const headers: ElfProgramHeader[] = []
+  for (let index = 0; index < count; index += 1) {
+    const header = tableOffset + index * entrySize
+    headers.push({
+      header,
+      type: bytes.readUInt32LE(header),
+      offset: Number(bytes.readBigUInt64LE(header + 0x08)),
+      fileSize: Number(bytes.readBigUInt64LE(header + 0x20)),
+    })
+  }
+  return headers
+}
+
+const MACHO_LC_SEGMENT_64 = 0x19
+const MACHO_SEGMENT_64_SECTIONS = 0x48
+const MACHO_SECTION_64_BYTES = 80
+const MACHO_SEGMENT_64_NSECTS = 0x40
+const MACHO_SEGMENT_64_SEGNAME = 0x08
+const MACHO_SEGMENT_64_FILESIZE = 0x30
+const MACHO_SECTION_64_SEGNAME = 0x10
+const MACHO_SECTION_64_SIZE = 0x28
+const MACHO_SECTION_64_OFFSET = 0x30
+
+interface MachoCommand {
+  readonly offset: number
+  readonly cmd: number
+  readonly size: number
+  readonly sectionCount: number
+}
+
+interface MachoSection {
+  readonly header: number
+  readonly sectionName: string
+  readonly segmentName: string
+  readonly offset: number
+  readonly size: number
+}
+
+/** Read the load commands of a real Mach-O fixture the way the parser does. */
+function machoCommands(bytes: Buffer): MachoCommand[] {
+  const count = bytes.readUInt32LE(0x10)
+  const commandBytes = bytes.readUInt32LE(0x14)
+  const commands: MachoCommand[] = []
+  let cursor = 32
+  for (let index = 0; index < count; index += 1) {
+    const cmd = bytes.readUInt32LE(cursor)
+    const size = bytes.readUInt32LE(cursor + 4)
+    commands.push({
+      offset: cursor,
+      cmd,
+      size,
+      sectionCount: cmd === MACHO_LC_SEGMENT_64 ? bytes.readUInt32LE(cursor + MACHO_SEGMENT_64_NSECTS) : 0,
+    })
+    cursor += size
+  }
+  if (cursor !== 32 + commandBytes) throw new Error("fixture load commands do not fill sizeofcmds")
+  return commands
+}
+
+function machoCstring(bytes: Buffer, offset: number, width: number): string {
+  let end = offset + width
+  while (end > offset && bytes[end - 1] === 0) end -= 1
+  return bytes.toString("latin1", offset, end)
+}
+
+function machoSectionAt(bytes: Buffer, header: number): MachoSection {
+  return {
+    header,
+    sectionName: machoCstring(bytes, header, 16),
+    segmentName: machoCstring(bytes, header + MACHO_SECTION_64_SEGNAME, 16),
+    offset: bytes.readUInt32LE(header + MACHO_SECTION_64_OFFSET),
+    size: Number(bytes.readBigUInt64LE(header + MACHO_SECTION_64_SIZE)),
+  }
+}
+
+function machoBunSection(bytes: Buffer): { readonly header: number; readonly command: MachoCommand } {
+  for (const command of machoCommands(bytes)) {
+    if (command.cmd !== MACHO_LC_SEGMENT_64) continue
+    for (let index = 0; index < command.sectionCount; index += 1) {
+      const header = command.offset + MACHO_SEGMENT_64_SECTIONS + index * MACHO_SECTION_64_BYTES
+      const section = machoSectionAt(bytes, header)
+      if (section.sectionName !== "__bun" || section.segmentName !== "__BUN") continue
+      return { header, command }
+    }
+  }
+  throw new Error("fixture has no '__BUN,__bun' section")
+}
+
+/**
+ * Inflate a segment command's section count so its last slot starts past the
+ * load commands, write a forged `__BUN,__bun` header there (copying the real
+ * payload's size and offset), and return the forged header's offset. Nothing
+ * inside the declared load-command region changes.
+ */
+function plantEscapedMachoSection(binary: Buffer, command: MachoCommand, source: number): number {
+  const commandEnd = 32 + binary.readUInt32LE(0x14)
+  const sectionsStart = command.offset + MACHO_SEGMENT_64_SECTIONS
+  const escapedSlots = Math.ceil((commandEnd - sectionsStart) / MACHO_SECTION_64_BYTES)
+  const forgedAt = sectionsStart + escapedSlots * MACHO_SECTION_64_BYTES
+  if (forgedAt + MACHO_SECTION_64_BYTES > binary.byteLength) {
+    throw new Error("fixture has no room past its load commands for an escaped section")
+  }
+  binary.writeUInt32LE(escapedSlots + 1, command.offset + MACHO_SEGMENT_64_NSECTS)
+  binary.fill(0, forgedAt, forgedAt + MACHO_SECTION_64_BYTES)
+  binary.write("__bun", forgedAt, 5, "latin1")
+  binary.write("__BUN", forgedAt + MACHO_SECTION_64_SEGNAME, 5, "latin1")
+  binary.writeBigUInt64LE(binary.readBigUInt64LE(source + MACHO_SECTION_64_SIZE), forgedAt + MACHO_SECTION_64_SIZE)
+  binary.writeUInt32LE(binary.readUInt32LE(source + MACHO_SECTION_64_OFFSET), forgedAt + MACHO_SECTION_64_OFFSET)
+  return forgedAt
 }
 
 /**
