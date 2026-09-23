@@ -743,6 +743,17 @@ describe("graph tail model (measured against the pinned toolchain)", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Embedded builtin bytecode: the record the real release binary carries.
+//
+// The product binary's tail is 3296 bytes for 402 modules: 402*4 = 1608 bytes
+// of content hashes, a count word (132) and 132 twelve-byte entries (1584),
+// the bytecode table, startup count, module-info table (20), a 79-byte
+// `--compile-exec-argv` string and its NUL. The fixture below embeds node:
+// builtins, which produces the same shape with 40+ entries, so the model is
+// exercised on the structure that the small fixtures never reach.
+// ---------------------------------------------------------------------------
+
 describe("embedded builtin bytecode record (production-like graph)", () => {
   test("the builtin record is parsed, explains the tail, and its blobs are in the data region", () => {
     const layout = readGraphLayout(builds.builtinLeft)
