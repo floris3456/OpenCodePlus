@@ -15,9 +15,10 @@ import { startServer } from "./fixture/server"
 // The public HTTP surface of a running product must never be able to replace the
 // product. These tests read the real `Api` and talk to a real server process, so a
 // route that promotes, activates or installs a release cannot appear unnoticed, and
-// the bounded request/status routes that do exist are exercised end to end: a
+// the bounded request/status/settle routes that do exist are exercised end to end: a
 // request records intent, a permit is verified against the host's trusted issuers,
-// and every refusal is observed over the wire rather than in a unit double.
+// the authorized transition closes the real admission fence until the controller
+// settles it, and every refusal is observed over the wire rather than in a unit double.
 
 interface RouteFact {
   readonly group: string
@@ -142,6 +143,15 @@ const submit = (server: Server, request: Record<string, unknown>, permit?: strin
 const read = (server: Server, requestID: string) =>
   Effect.promise(() => fetch(new URL(`/api/release/request/${requestID}`, server.base), { headers: server.headers }))
 
+const settle = (server: Server, requestID: string, body: { token: string; outcome: string; detail?: string }) =>
+  Effect.promise(() =>
+    fetch(new URL(`/api/release/request/${requestID}/settle`, server.base), {
+      method: "POST",
+      headers: { ...server.headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  )
+
 /** Writes the operator-owned controller anchor this host will trust. */
 const anchor = (directory: string) =>
   Effect.promise(async () => {
@@ -167,15 +177,17 @@ test("the real API exposes no route that promotes or activates a release", () =>
   expect(releaseActivating).toEqual([])
 })
 
-test("the release group is exactly a request route and a status route", () => {
+test("the release group is exactly a request route, a status route and a settle route", () => {
   const found = routes()
 
   expect(found.filter((route) => route.group === "server.release")).toEqual([
     { group: "server.release", name: "release.request", method: "POST", path: "/api/release/request" },
     { group: "server.release", name: "release.status", method: "GET", path: "/api/release/request/:requestID" },
+    { group: "server.release", name: "release.settle", method: "POST", path: "/api/release/request/:requestID/settle" },
   ])
   // No other group may reach under /api/release either.
   expect(found.filter((route) => route.path.startsWith("/api/release")).map((route) => route.group)).toEqual([
+    "server.release",
     "server.release",
     "server.release",
   ])
@@ -315,6 +327,107 @@ it.live("spends a controller permit once: the replay is refused over HTTP", () =
   }),
 )
 
+it.live("settles an authorized request over HTTP and releases the admission fence", () =>
+  Effect.gen(function* () {
+    SessionAdmission.reset()
+    const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-release-settle-")))
+    yield* anchor(tmp.path)
+    const server = yield* startServer(tmp.path)
+
+    yield* submit(server, promotion())
+    const authorized = yield* submit(server, promotion(), issue(permitBody()))
+    expect(authorized.status).toBe(200)
+    // The route closed the real admission fence; it did not promote anything.
+    expect(SessionAdmission.current()).toEqual({
+      token: "permit_controller_1",
+      reason: "release promotion rel_req_1",
+    })
+
+    const completed = yield* settle(server, "rel_req_1", {
+      token: "permit_controller_1",
+      outcome: "completed",
+      detail: "generation 8 running",
+    })
+    expect(completed.status).toBe(200)
+    expect(yield* Effect.promise(() => completed.json())).toMatchObject({
+      requestID: "rel_req_1",
+      state: "completed",
+      generation: GENERATION,
+      detail: "generation 8 running",
+    })
+    expect(SessionAdmission.isEngaged()).toBe(false)
+
+    // Repeating the same reported outcome reconciles the recorded one; a different
+    // outcome from the same holder is a double settle and conflicts.
+    const repeated = yield* settle(server, "rel_req_1", { token: "permit_controller_1", outcome: "completed" })
+    expect(repeated.status).toBe(200)
+    const changed = yield* settle(server, "rel_req_1", { token: "permit_controller_1", outcome: "failed" })
+    expect(changed.status).toBe(409)
+    expect(yield* Effect.promise(() => changed.json())).toMatchObject({ _tag: "ConflictError" })
+
+    const status = yield* read(server, "rel_req_1")
+    expect(yield* Effect.promise(() => status.json())).toMatchObject({ state: "completed" })
+  }),
+)
+
+it.live("refuses a settle for an unknown release request", () =>
+  Effect.gen(function* () {
+    const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-release-settle-missing-")))
+    const server = yield* startServer(tmp.path)
+
+    const missing = yield* settle(server, "rel_req_missing", { token: "permit_controller_1", outcome: "completed" })
+    expect(missing.status).toBe(404)
+    expect(yield* Effect.promise(() => missing.json())).toMatchObject({
+      _tag: "ReleaseRequestNotFoundError",
+      requestID: "rel_req_missing",
+    })
+  }),
+)
+
+it.live("refuses a settle without the authorizing token and never reopens admission", () =>
+  Effect.gen(function* () {
+    SessionAdmission.reset()
+    const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-release-settle-token-")))
+    yield* anchor(tmp.path)
+    const server = yield* startServer(tmp.path)
+
+    yield* submit(server, promotion())
+    expect((yield* submit(server, promotion(), issue(permitBody()))).status).toBe(200)
+
+    const stranger = yield* settle(server, "rel_req_1", { token: "permit_other_9", outcome: "completed" })
+    expect(stranger.status).toBe(409)
+    expect(yield* Effect.promise(() => stranger.json())).toMatchObject({ _tag: "ConflictError" })
+
+    // The refused settle left both the recorded transition and the fence untouched.
+    expect(SessionAdmission.current()).toEqual({
+      token: "permit_controller_1",
+      reason: "release promotion rel_req_1",
+    })
+    const status = yield* read(server, "rel_req_1")
+    expect(yield* Effect.promise(() => status.json())).toMatchObject({ state: "running" })
+
+    // The holder can still report the real outcome, which reopens admission.
+    const holder = yield* settle(server, "rel_req_1", { token: "permit_controller_1", outcome: "failed" })
+    expect(holder.status).toBe(200)
+    expect(SessionAdmission.isEngaged()).toBe(false)
+  }),
+)
+
+it.live("refuses a settle for a request that was never authorized", () =>
+  Effect.gen(function* () {
+    const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-release-settle-unfenced-")))
+    const server = yield* startServer(tmp.path)
+
+    yield* submit(server, promotion())
+    const refused = yield* settle(server, "rel_req_1", { token: "permit_controller_1", outcome: "completed" })
+    expect(refused.status).toBe(403)
+    expect(yield* Effect.promise(() => refused.json())).toMatchObject({ _tag: "ForbiddenError" })
+
+    const status = yield* read(server, "rel_req_1")
+    expect(yield* Effect.promise(() => status.json())).toMatchObject({ state: "accepted" })
+  }),
+)
+
 it.live("every route on this surface is fenced by the real authorization middleware", () =>
   Effect.gen(function* () {
     const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-release-auth-")))
@@ -334,6 +447,15 @@ it.live("every route on this surface is fenced by the real authorization middlew
       fetch(new URL("/api/release/request/rel_req_1", server.base)),
     )
     expect(anonymousRead.status).toBe(401)
+
+    const anonymousSettle = yield* Effect.promise(() =>
+      fetch(new URL("/api/release/request/rel_req_1/settle", server.base), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: "permit_controller_1", outcome: "completed" }),
+      }),
+    )
+    expect(anonymousSettle.status).toBe(401)
 
     // An anonymous submission never reached the store.
     const authorized = yield* read(server, "rel_req_1")

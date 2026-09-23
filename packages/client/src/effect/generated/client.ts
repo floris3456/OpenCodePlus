@@ -254,6 +254,8 @@ import type {
   ReleaseRequestOutput,
   ReleaseStatusInput,
   ReleaseStatusOutput,
+  ReleaseSettleInput,
+  ReleaseSettleOutput,
   VcsGetInput,
   VcsGetOutput,
   VcsBaseInput,
@@ -1524,9 +1526,18 @@ const EndpointReleaseStatus = (raw: RawClient["server.release"]) => (input: Rele
     raw["release.status"]({ params: { requestID: input["requestID"] } }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointReleaseSettle = (raw: RawClient["server.release"]) => (input: ReleaseSettleInput) =>
+  preserveEffect<ReleaseSettleOutput>()(
+    raw["release.settle"]({
+      params: { requestID: input["requestID"] },
+      payload: { token: input["token"], outcome: input["outcome"], detail: input["detail"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const adaptGroupRelease = (raw: RawClient["server.release"]) => ({
   request: EndpointReleaseRequest(raw),
   status: EndpointReleaseStatus(raw),
+  settle: EndpointReleaseSettle(raw),
 })
 
 const EndpointVcsGet = (raw: RawClient["server.vcs"]) => (input?: VcsGetInput) =>

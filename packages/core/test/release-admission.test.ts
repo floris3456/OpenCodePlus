@@ -396,6 +396,127 @@ describe("durable release request store", () => {
     }),
   )
 
+  it.live("re-engages the fence for a running request when the store is rebuilt after a restart", () =>
+    Effect.gen(function* () {
+      SessionAdmission.reset()
+      const tmp = yield* tmpdirScoped("opencode-release-recover-")
+      yield* anchor(tmp.path, { "controller.release": controllerPem })
+
+      // The process that authorizes: it closes the fence and commits the running request.
+      yield* withStore(tmp.path, (store) =>
+        Effect.gen(function* () {
+          yield* store.submit({ request: promotion(), now: NOW })
+          const authorized = yield* store.authorize({ requestID: "rel_req_1", permit: issue(permitBody()), now: NOW })
+          expect(authorized.ok).toBe(true)
+        }),
+      )
+      expect(SessionAdmission.current()).toEqual({
+        token: "permit_controller_1",
+        reason: "release promotion rel_req_1",
+      })
+
+      // The promotion replaces the process, so the replacement starts with no fence at all.
+      SessionAdmission.reset()
+      expect(SessionAdmission.isEngaged()).toBe(false)
+
+      // Rebuilding the store over the same durable records re-engages the fence with the
+      // same token the original authorize used, before the replacement admits anything.
+      const settled = yield* withStore(tmp.path, (store) =>
+        Effect.gen(function* () {
+          expect(SessionAdmission.current()).toEqual({
+            token: "permit_controller_1",
+            reason: "release promotion rel_req_1",
+          })
+          const fenced = yield* SessionAdmission.check.pipe(Effect.exit)
+          expect(Exit.isFailure(fenced)).toBe(true)
+
+          const read = yield* store.status("rel_req_1")
+          expect(read.ok && read.status.state).toBe("running")
+
+          return yield* store.settle({
+            requestID: "rel_req_1",
+            token: "permit_controller_1",
+            outcome: "completed",
+            detail: "release completed",
+            now: NOW + 1_000,
+          })
+        }),
+      )
+      expect(settled.ok).toBe(true)
+      if (settled.ok) expect(settled.status).toMatchObject({ state: "completed", detail: "release completed" })
+      // The recovered hold is the same hold: the controller's settle released it.
+      expect(SessionAdmission.isEngaged()).toBe(false)
+      const admitted = yield* SessionAdmission.check.pipe(Effect.exit)
+      expect(Exit.isSuccess(admitted)).toBe(true)
+    }),
+  )
+
+  it.live("leaves admission open when a rebuilt store finds no running authorized request", () =>
+    Effect.gen(function* () {
+      SessionAdmission.reset()
+      const tmp = yield* tmpdirScoped("opencode-release-terminal-")
+      yield* anchor(tmp.path, { "controller.release": controllerPem })
+
+      yield* withStore(tmp.path, (store) =>
+        Effect.gen(function* () {
+          yield* store.submit({ request: promotion(), now: NOW })
+          const authorized = yield* store.authorize({ requestID: "rel_req_1", permit: issue(permitBody()), now: NOW })
+          expect(authorized.ok).toBe(true)
+          const settled = yield* store.settle({
+            requestID: "rel_req_1",
+            token: "permit_controller_1",
+            outcome: "rejected",
+            now: NOW + 1_000,
+          })
+          expect(settled.ok).toBe(true)
+          // A second request records intent but is never authorized.
+          yield* store.submit({ request: promotion({ requestID: "rel_req_2" }), now: NOW + 2_000 })
+        }),
+      )
+      SessionAdmission.reset()
+
+      const states = yield* withStore(tmp.path, (store) =>
+        Effect.gen(function* () {
+          const first = yield* store.status("rel_req_1")
+          const second = yield* store.status("rel_req_2")
+          return [first.ok ? first.status.state : "missing", second.ok ? second.status.state : "missing"]
+        }),
+      )
+      expect(states).toEqual(["rejected", "accepted"])
+      // Neither a settled request nor one that only recorded intent holds the fence.
+      expect(SessionAdmission.isEngaged()).toBe(false)
+      const admitted = yield* SessionAdmission.check.pipe(Effect.exit)
+      expect(Exit.isSuccess(admitted)).toBe(true)
+    }),
+  )
+
+  it.live("refuses to construct a store when a running request cannot re-engage its fence", () =>
+    Effect.gen(function* () {
+      SessionAdmission.reset()
+      const tmp = yield* tmpdirScoped("opencode-release-fail-closed-")
+      yield* anchor(tmp.path, { "controller.release": controllerPem })
+
+      yield* withStore(tmp.path, (store) =>
+        Effect.gen(function* () {
+          yield* store.submit({ request: promotion(), now: NOW })
+          const authorized = yield* store.authorize({ requestID: "rel_req_1", permit: issue(permitBody()), now: NOW })
+          expect(authorized.ok).toBe(true)
+        }),
+      )
+
+      // A restart finds the durable transition but the fence belongs to another live
+      // holder. Re-engaging would require two holders, so the rebuilt store refuses to
+      // construct rather than admit sessions that are still being replaced.
+      SessionAdmission.release("permit_controller_1")
+      SessionAdmission.engage({ token: "permit_other_9", reason: "another transition" })
+      const refused = yield* withStore(tmp.path, (store) => store.status("rel_req_1")).pipe(Effect.exit)
+      expect(Exit.isFailure(refused)).toBe(true)
+      expect(SessionAdmission.current()).toEqual({ token: "permit_other_9", reason: "another transition" })
+
+      SessionAdmission.release("permit_other_9")
+    }),
+  )
+
   it.live("still refuses a consumed permit after the store is rebuilt from durable state", () =>
     Effect.gen(function* () {
       SessionAdmission.reset()

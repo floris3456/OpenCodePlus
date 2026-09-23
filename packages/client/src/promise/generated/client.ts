@@ -250,6 +250,8 @@ import type {
   ReleaseRequestOutput,
   ReleaseStatusInput,
   ReleaseStatusOutput,
+  ReleaseSettleInput,
+  ReleaseSettleOutput,
   VcsGetInput,
   VcsGetOutput,
   VcsBaseInput,
@@ -2084,6 +2086,18 @@ export function make(options: ClientOptions) {
             path: `/api/release/request/${encodeURIComponent(input.requestID)}`,
             successStatus: 200,
             declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      settle: (input: ReleaseSettleInput, requestOptions?: RequestOptions) =>
+        request<ReleaseSettleOutput>(
+          {
+            method: "POST",
+            path: `/api/release/request/${encodeURIComponent(input.requestID)}/settle`,
+            body: { token: input["token"], outcome: input["outcome"], detail: input["detail"] },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 403, 404, 409],
             empty: false,
           },
           requestOptions,

@@ -43,6 +43,20 @@ export const ReleaseHandler = HttpApiBuilder.group(Api, "server.release", (handl
           })
         }),
       )
+      .handle("release.settle", (ctx) =>
+        Effect.gen(function* () {
+          // The token is the controller's material: the store compares it against the
+          // holder it recorded, so this handler neither inspects nor trusts it itself.
+          const settled = yield* store.settle({
+            requestID: ctx.params.requestID,
+            token: ctx.payload.token,
+            outcome: ctx.payload.outcome,
+            detail: ctx.payload.detail,
+          })
+          if (!settled.ok) return yield* Effect.fail(refused(settled, ctx.params.requestID))
+          return settled.status
+        }),
+      )
   }),
 )
 
