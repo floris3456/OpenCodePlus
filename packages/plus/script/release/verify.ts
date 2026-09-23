@@ -43,6 +43,8 @@ export interface RebuildEquivalenceReport {
   readonly weakerThanRawReproducibility: true
   readonly canonicalizerId: string
   readonly canonicalizerBunVersion: string
+  /** Executable container the anchored canonicalizer parsed, or null when rejected. */
+  readonly container: string | null
   readonly equivalent: boolean
   readonly rawIdentical: boolean
   readonly rejection: Rejection | null
@@ -81,6 +83,7 @@ export function verifyRebuildEquivalence(options: {
     return {
       ...identities,
       equivalent: false,
+      container: null,
       rawIdentical: identities.leftRawSha256 === identities.rightRawSha256,
       rejection: comparison.rejection,
       canonicalSha256: null,
@@ -94,6 +97,7 @@ export function verifyRebuildEquivalence(options: {
   return {
     ...identities,
     equivalent: true,
+    container: comparison.container,
     rawIdentical: comparison.rawIdentical,
     rejection: null,
     canonicalSha256: computeBufferSha256(comparison.canonical),

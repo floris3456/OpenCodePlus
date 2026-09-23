@@ -3,50 +3,121 @@
  *
  * `bun build --compile` (esm + bytecode + splitting) is not byte-reproducible:
  * the bundler draws a random u64 "unique key" per build and prints it as 16
- * lowercase hex characters at the head of every chunk token. Each token is
- * stored in a packed, 4-byte-aligned record that also carries a 24-bit hash
- * derived from the token, so a new key moves those bytes too.
+ * lowercase hex characters at the head of every chunk token. Each token is a
+ * string-table entry inside the executable's shared bytecode string table, and
+ * that table also stores a 24-bit hash derived from the token, so a new key
+ * moves those bytes too.
  *
- *     [u32 LE: 0x80000000 | 25]   length word, flag set, length always 25
- *     [u32 LE: hash]              low 24 bits used, top 8 bits always zero
- *     [25 bytes: token]           {key:16 hex}{KIND:1 upper}{index:08 digits}
- *     [3 bytes: padding]
+ *     [u32 LE: 0x80000000 | length]   length word, flag set
+ *     [u32 LE: hash]                  low 24 bits used, top 8 bits always zero
+ *     [length bytes: string]          a token is {key:16 hex}{KIND:1 upper}{index:08 digits}
+ *     [padding to 4 bytes]
  *
  * This module proves that difference set for a concrete pair of outputs rather
- * than assuming it. Every record is re-derived from its own bytes, the key is
- * rewritten to zeros, every hash is recomputed from the canonical token, and
- * then every remaining byte must be equal. Any byte it cannot explain is a
- * rejection carrying its offset.
+ * than assuming it. Eligibility is anchored in parsed structure, never in a
+ * pattern match over raw bytes:
+ *
+ *   1. The buffer must be an executable with a Bun standalone payload:
+ *      ELF64-LE with a `.bun` section, or Mach-O64-LE with `__BUN,__bun`.
+ *      The section is bounds-checked and must lie inside a loadable segment.
+ *   2. The payload is `[u64 length][graph bytes][Offsets][trailer]`. The graph
+ *      length, trailer, offsets struct and module table are parsed and
+ *      bounds-checked against the section.
+ *   3. The module table (52-byte `CompiledModuleGraphFile` records) yields the
+ *      subranges owned by each module. The trailing records after the table
+ *      announce the shared bytecode string table's offset and length inside the
+ *      graph; that region must be in bounds and disjoint from every module
+ *      subrange.
+ *   4. Only entries of that parsed string table are eligible. Every entry is
+ *      re-derived from its own bytes: reserved hash bits must be zero, the
+ *      stored hash must equal `rapidhash(string) & 0xffffff`, padding must be
+ *      zero, and the index/entry layout must be exact. A candidate token-shaped
+ *      string outside the table is rejected, not normalized.
+ *   5. The key is rewritten to zeros, every hash is recomputed from the
+ *      canonical token, and then every remaining byte must be equal. Any byte
+ *      the canonicalizer cannot explain is a rejection carrying its offset.
  *
  * Scope limit: this is valid ONLY for comparing two independently rebuilt
  * outputs. Publication, download, install and runtime integrity must keep using
  * exact raw equality against the recorded qualified artifact. Equivalence under
  * this canonicalizer is strictly weaker than raw binary reproducibility.
  *
- * Version pin: the record layout and the hash derivation below were measured on
- * Bun 1.4.2 output. An unrecognised toolchain is refused, not guessed at.
+ * Version pin: the record layout, graph tail and hash derivation below were
+ * measured on Bun 1.4.2 output. An unrecognised toolchain or container is
+ * refused, not guessed at.
  */
 
 export const CANONICALIZER = {
-  id: "bun-compile-chunk-token/v1",
+  id: "bun-compile-chunk-token/v2",
   bunVersion: "1.4.2",
   scope: "rebuild-equivalence-only",
   strength: "weaker-than-raw-binary-reproducibility",
+  containers: ["elf64-le:.bun", "macho64-le:__BUN,__bun"],
 } as const
 
 const TOKEN_BYTES = 25
 const RECORD_LENGTH_FLAG = 0x80000000
-const RECORD_HEADER_WORD = (RECORD_LENGTH_FLAG | TOKEN_BYTES) >>> 0
-const RECORD_HEADER_LEAD_BYTE = RECORD_HEADER_WORD & 0xff
 const HASH_WORD_OFFSET = 4
 const HASH_WORD_BYTES = 4
 const TOKEN_OFFSET = 8
-const RECORD_PADDING_BYTES = 3
-const RECORD_BYTES = TOKEN_OFFSET + TOKEN_BYTES + RECORD_PADDING_BYTES
 const RECORD_ALIGNMENT = 4
 const HASH_MASK = 0xffffffn
 const KEY_HEX_LENGTH = 16
-const TOKEN_PATTERN = /^[0-9a-f]{16}[A-Z][0-9]{8}$/
+const TOKEN_PATTERN = /^[0-9a-f]{16}[ACSH][0-9]{8}$/
+
+const TRAILER = "\n---- Bun! ----\n"
+const OFFSETS_BYTES = 32
+const MODULE_RECORD_BYTES = 52
+const MODULE_POINTER_COUNT = 6
+const MAX_MODULE_COUNT = 1_000_000
+
+/**
+ * Tail shapes measured on Bun 1.4.2, as bytes remaining after the per-module
+ * value array and the sentinel word: startup module count u32, optional
+ * bytecode-string-table {offset, length}, optional module-info-table
+ * {offset, length}, and one trailing zero byte. Anything else is a refusal,
+ * not a guess.
+ */
+const TAIL_AFTER_SENTINEL_NO_TABLES = 4 + 1
+const TAIL_AFTER_SENTINEL_BYTECODE_TABLE = 4 + 4 + 4 + 1
+const TAIL_AFTER_SENTINEL_BOTH_TABLES = 4 + 4 + 4 + 4 + 4 + 1
+
+const ELF_MAGIC = [0x7f, 0x45, 0x4c, 0x46] as const
+const ELFCLASS64 = 2
+const ELFDATA2LSB = 1
+const ELF_PROGBITS = 1
+const ELF_PT_LOAD = 1
+const ELF64_HEADER_BYTES = 64
+const ELF64_PROGRAM_HEADER_BYTES = 56
+const ELF64_SECTION_HEADER_BYTES = 64
+const ELF64_SECTION_NAME_OFFSET = 0x00
+const ELF64_SECTION_TYPE_OFFSET = 0x04
+const ELF64_SECTION_OFFSET = 0x18
+const ELF64_SECTION_SIZE_OFFSET = 0x20
+const ELF64_E_PHOFF = 0x20
+const ELF64_E_PHENTSIZE = 0x36
+const ELF64_E_PHNUM = 0x38
+const ELF64_E_SHOFF = 0x28
+const ELF64_E_SHENTSIZE = 0x3a
+const ELF64_E_SHNUM = 0x3c
+const ELF64_E_SHSTRNDX = 0x3e
+const ELF64_PH_TYPE = 0x00
+const ELF64_PH_OFFSET = 0x08
+const ELF64_PH_FILESZ = 0x20
+
+const MACHO64_MAGIC_LE = 0xfeedfacf
+const MACHO_HEADER_BYTES = 32
+const MACHO_LC_SEGMENT_64 = 0x19
+const MACHO_FILE_TYPE_EXECUTE = 2
+const MACHO_HEADER_NCMDS = 0x10
+const MACHO_HEADER_SIZEOFCMDS = 0x14
+const MACHO_SEGMENT_64_NSECTS = 0x40
+const MACHO_SEGMENT_64_SECTIONS = 0x48
+const MACHO_SECTION_64_BYTES = 80
+const MACHO_SECTION_64_NAME = 0x00
+const MACHO_SECTION_64_SEGNAME = 0x10
+const MACHO_SECTION_64_SIZE = 0x28
+const MACHO_SECTION_64_OFFSET = 0x30
 
 export const CANONICAL_BUNDLER_KEY = "0".repeat(KEY_HEX_LENGTH)
 
@@ -61,12 +132,19 @@ export const FILLER_BUNDLER_KEYS: ReadonlySet<string> = new Set([
 
 export type RejectionCode =
   | "unsupported-toolchain"
+  | "unsupported-executable-format"
+  | "executable-structure-malformed"
+  | "bun-payload-malformed"
+  | "module-graph-malformed"
+  | "string-table-locator-malformed"
+  | "string-table-malformed"
   | "record-hash-word-reserved-bits"
   | "record-hash-underived"
   | "bundler-key-missing"
   | "bundler-key-ambiguous"
   | "size-mismatch"
   | "record-set-mismatch"
+  | "container-mismatch"
   | "residual-difference"
 
 export interface Rejection {
@@ -85,19 +163,49 @@ export interface ChunkTokenRecord {
   readonly bearsBundlerKey: boolean
 }
 
+export interface BuildStructure {
+  readonly container: "elf" | "macho"
+  readonly payloadStart: number
+  readonly payloadLength: number
+  readonly graphLength: number
+  readonly moduleCount: number
+  readonly modulesStart: number
+  readonly modulesLength: number
+  readonly moduleRanges: readonly { readonly start: number; readonly end: number }[]
+  readonly stringTableStart: number
+  readonly stringTableLength: number
+  readonly entries: readonly StringTableEntry[]
+}
+
+export interface StringTableEntry {
+  readonly offset: number
+  readonly length: number
+  readonly text: string
+  readonly storedHash: number
+}
+
+export type BuildStructureOutcome =
+  | { readonly ok: true; readonly structure: BuildStructure }
+  | { readonly ok: false; readonly rejection: Rejection }
+
 export type CanonicalizationOutcome =
   | {
       readonly ok: true
+      readonly container: "elf" | "macho"
       readonly canonical: Buffer
       readonly records: readonly ChunkTokenRecord[]
       readonly bundlerKey: string
       readonly recordsRewritten: number
+      readonly stringTableStart: number
+      readonly stringTableLength: number
+      readonly entriesParsed: number
     }
   | { readonly ok: false; readonly rejection: Rejection }
 
 export type RebuildEquivalence =
   | {
       readonly equivalent: true
+      readonly container: "elf" | "macho"
       readonly canonical: Buffer
       readonly recordsParsed: number
       readonly recordsRewritten: number
@@ -108,18 +216,24 @@ export type RebuildEquivalence =
   | { readonly equivalent: false; readonly rejection: Rejection }
 
 /**
- * The frozen derivation, measured against real Bun 1.4.2 output on 376/376
- * records across two independent builds. A WTF/SuperFastHash hypothesis was
- * tested and rejected (0/184) before this one was adopted.
+ * The frozen derivation, measured against real Bun 1.4.2 output. A WTF/SuperFastHash
+ * hypothesis was tested and rejected before this one was adopted. Every entry of
+ * the parsed shared bytecode string table must satisfy it.
  */
 export function deriveRecordHash(token: string): number {
   return Number(Bun.hash.rapidhash(Buffer.from(token, "latin1")) & HASH_MASK)
 }
 
-export function canonicalizeBuildOutput(options: {
+/**
+ * Parse and validate the executable and Bun/JSC container structures, then the
+ * graph's module table, trailing records and shared bytecode string table.
+ * Exposed so callers can inspect where records are allowed to live; it performs
+ * no rewriting.
+ */
+export function parseBuildStructure(options: {
   readonly bunVersion: string
   readonly bytes: Uint8Array
-}): CanonicalizationOutcome {
+}): BuildStructureOutcome {
   if (options.bunVersion !== CANONICALIZER.bunVersion) {
     return {
       ok: false,
@@ -131,50 +245,35 @@ export function canonicalizeBuildOutput(options: {
     }
   }
 
-  const records: Omit<ChunkTokenRecord, "bearsBundlerKey">[] = []
-  const bytes = options.bytes
-  const limit = bytes.byteLength - RECORD_BYTES
+  const located = locateBunPayload(options.bytes)
+  if (!located.ok) return located
 
-  for (let offset = 0; offset <= limit; offset += RECORD_ALIGNMENT) {
-    if (bytes[offset] !== RECORD_HEADER_LEAD_BYTE) continue
-    if (readUint32LE(bytes, offset) !== RECORD_HEADER_WORD) continue
+  const parsed = parseGraph(options.bytes, located.payload)
+  if (!parsed.ok) return parsed
 
-    const token = Buffer.from(
-      bytes.subarray(offset + TOKEN_OFFSET, offset + TOKEN_OFFSET + TOKEN_BYTES),
-    ).toString("latin1")
-    if (!TOKEN_PATTERN.test(token)) continue
+  return { ok: true, structure: parsed.structure }
+}
 
-    const storedHash = readUint32LE(bytes, offset + HASH_WORD_OFFSET)
-    if (storedHash >>> 24 !== 0) {
-      return {
-        ok: false,
-        rejection: {
-          code: "record-hash-word-reserved-bits",
-          offset,
-          detail: `chunk record at ${offset} carries hash word ${formatWord(storedHash)}; the top 8 bits must be zero`,
-        },
-      }
-    }
+export function canonicalizeBuildOutput(options: {
+  readonly bunVersion: string
+  readonly bytes: Uint8Array
+}): CanonicalizationOutcome {
+  const parsed = parseBuildStructure(options)
+  if (!parsed.ok) return parsed
 
-    const derived = deriveRecordHash(token)
-    if (storedHash !== derived) {
-      return {
-        ok: false,
-        rejection: {
-          code: "record-hash-underived",
-          offset,
-          detail: `chunk record at ${offset} stores hash ${formatWord(storedHash)} but token '${token}' derives ${formatWord(derived)}`,
-        },
-      }
-    }
-
+  const structure = parsed.structure
+  const records: ChunkTokenRecord[] = []
+  for (const entry of structure.entries) {
+    if (entry.length !== TOKEN_BYTES) continue
+    if (!TOKEN_PATTERN.test(entry.text)) continue
     records.push({
-      offset,
-      token,
-      key: token.slice(0, KEY_HEX_LENGTH),
-      kind: token.slice(KEY_HEX_LENGTH, KEY_HEX_LENGTH + 1),
-      index: Number(token.slice(KEY_HEX_LENGTH + 1)),
-      storedHash,
+      offset: entry.offset,
+      token: entry.text,
+      key: entry.text.slice(0, KEY_HEX_LENGTH),
+      kind: entry.text.slice(KEY_HEX_LENGTH, KEY_HEX_LENGTH + 1),
+      index: Number(entry.text.slice(KEY_HEX_LENGTH + 1)),
+      storedHash: entry.storedHash,
+      bearsBundlerKey: false,
     })
   }
 
@@ -187,7 +286,7 @@ export function canonicalizeBuildOutput(options: {
       rejection: {
         code: "bundler-key-missing",
         offset: null,
-        detail: `no bundler unique key found across ${records.length} chunk record(s); this is not a structure ${CANONICALIZER.id} recognises`,
+        detail: `no bundler unique key found across ${records.length} token(s) in ${structure.entries.length} string-table entr(ies); this is not a structure ${CANONICALIZER.id} recognises`,
       },
     }
   }
@@ -203,11 +302,8 @@ export function canonicalizeBuildOutput(options: {
   }
 
   const bundlerKey = observedKeys[0]
-  const canonical = Buffer.from(bytes)
-  const keyed = records.map((record) => ({
-    ...record,
-    bearsBundlerKey: record.key === bundlerKey,
-  }))
+  const canonical = Buffer.from(options.bytes)
+  const keyed = records.map((record) => ({ ...record, bearsBundlerKey: record.key === bundlerKey }))
 
   for (const record of keyed) {
     if (!record.bearsBundlerKey) continue
@@ -218,10 +314,14 @@ export function canonicalizeBuildOutput(options: {
 
   return {
     ok: true,
+    container: structure.container,
     canonical,
     records: keyed,
     bundlerKey,
     recordsRewritten: keyed.filter((record) => record.bearsBundlerKey).length,
+    stringTableStart: structure.stringTableStart,
+    stringTableLength: structure.stringTableLength,
+    entriesParsed: structure.entries.length,
   }
 }
 
@@ -231,8 +331,8 @@ export function canonicalizeBuildOutput(options: {
  * other side, so a byte this canonicalizer cannot derive can never be masked.
  *
  * Because canonicalization only ever touches the key field and the hash word of
- * records bearing the single observed bundler key, canonical equality implies
- * that every raw differing byte lies inside one of those spans.
+ * table entries bearing the single observed bundler key, canonical equality
+ * implies that every raw differing byte lies inside one of those spans.
  */
 export function compareRebuild(options: {
   readonly bunVersion: string
@@ -266,6 +366,17 @@ export function compareRebuild(options: {
 
   const right = canonicalizeBuildOutput({ bunVersion: options.bunVersion, bytes: options.right })
   if (!right.ok) return { equivalent: false, rejection: labelSide(right.rejection, "right") }
+
+  if (left.container !== right.container) {
+    return {
+      equivalent: false,
+      rejection: {
+        code: "container-mismatch",
+        offset: null,
+        detail: `rebuild outputs are different containers: left ${left.container}, right ${right.container}`,
+      },
+    }
+  }
 
   if (left.records.length !== right.records.length) {
     return {
@@ -307,6 +418,7 @@ export function compareRebuild(options: {
   const rawIdentical = Buffer.compare(options.left, options.right) === 0
   return {
     equivalent: true,
+    container: left.container,
     canonical: left.canonical,
     recordsParsed: left.records.length,
     recordsRewritten: left.recordsRewritten,
@@ -316,8 +428,451 @@ export function compareRebuild(options: {
   }
 }
 
+interface ContainerPayload {
+  readonly container: "elf" | "macho"
+  readonly start: number
+  readonly length: number
+}
+
+type Located = { readonly ok: true; readonly payload: ContainerPayload } | { readonly ok: false; readonly rejection: Rejection }
+
+function locateBunPayload(bytes: Uint8Array): Located {
+  if (isElf64Le(bytes)) return locateElfBunPayload(bytes)
+  if (isMachO64Le(bytes)) return locateMachO64BunPayload(bytes)
+  return {
+    ok: false,
+    rejection: rejection(
+      "unsupported-executable-format",
+      null,
+      "buffer is not an ELF64-LE or Mach-O64-LE executable with a Bun standalone payload; the old unanchored scan accepted buffers like this and no longer does",
+    ),
+  }
+}
+
+function isElf64Le(bytes: Uint8Array): boolean {
+  return (
+    ELF_MAGIC.every((byte, index) => bytes[index] === byte) &&
+    bytes[4] === ELFCLASS64 &&
+    bytes[5] === ELFDATA2LSB
+  )
+}
+
+function isMachO64Le(bytes: Uint8Array): boolean {
+  return bytes.byteLength >= 4 && readUint32LE(bytes, 0) === MACHO64_MAGIC_LE
+}
+
+function locateElfBunPayload(bytes: Uint8Array): Located {
+  if (bytes.byteLength < ELF64_HEADER_BYTES) return malformedExecutable("ELF image is shorter than its header")
+  if (bytes[6] !== 1) return malformedExecutable("ELF identification version is not the pinned layout")
+
+  const programHeaderOffset = readUint64(bytes, ELF64_E_PHOFF)
+  const programHeaderSize = readUint16LE(bytes, ELF64_E_PHENTSIZE)
+  const programHeaderCount = readUint16LE(bytes, ELF64_E_PHNUM)
+  const sectionHeaderOffset = readUint64(bytes, ELF64_E_SHOFF)
+  const sectionHeaderSize = readUint16LE(bytes, ELF64_E_SHENTSIZE)
+  const sectionHeaderCount = readUint16LE(bytes, ELF64_E_SHNUM)
+  const sectionNameIndex = readUint16LE(bytes, ELF64_E_SHSTRNDX)
+
+  if (programHeaderSize !== ELF64_PROGRAM_HEADER_BYTES) return malformedExecutable(`ELF program header size is ${programHeaderSize}, expected ${ELF64_PROGRAM_HEADER_BYTES}`)
+  if (sectionHeaderSize !== ELF64_SECTION_HEADER_BYTES) return malformedExecutable(`ELF section header size is ${sectionHeaderSize}, expected ${ELF64_SECTION_HEADER_BYTES}`)
+  if (sectionHeaderCount === 0) return malformedExecutable("ELF has no section headers")
+  if (sectionNameIndex >= sectionHeaderCount) return malformedExecutable("ELF section name table index is out of range")
+  if (!fits(bytes, programHeaderOffset, programHeaderCount * programHeaderSize)) return malformedExecutable("ELF program header table is out of bounds")
+  if (!fits(bytes, sectionHeaderOffset, sectionHeaderCount * sectionHeaderSize)) return malformedExecutable("ELF section header table is out of bounds")
+
+  const nameHeader = sectionHeaderOffset + sectionNameIndex * sectionHeaderSize
+  const namesStart = readUint64(bytes, nameHeader + ELF64_SECTION_OFFSET)
+  const namesLength = readUint64(bytes, nameHeader + ELF64_SECTION_SIZE_OFFSET)
+  if (!fits(bytes, namesStart, namesLength)) return malformedExecutable("ELF section name table is out of bounds")
+
+  let bunSection: { offset: number; size: number } | null = null
+  for (let index = 0; index < sectionHeaderCount; index += 1) {
+    const header = sectionHeaderOffset + index * sectionHeaderSize
+    const nameOffset = readUint32LE(bytes, header + ELF64_SECTION_NAME_OFFSET)
+    if (nameOffset >= namesLength) continue
+    const name = cstringAt(bytes, namesStart + nameOffset, namesLength - nameOffset)
+    if (name !== ".bun") continue
+    if (bunSection !== null) return malformedExecutable("ELF contains more than one '.bun' section")
+    const type = readUint32LE(bytes, header + ELF64_SECTION_TYPE_OFFSET)
+    if (type !== ELF_PROGBITS) return malformedExecutable(`ELF '.bun' section has type ${type}, expected ${ELF_PROGBITS}`)
+    bunSection = {
+      offset: readUint64(bytes, header + ELF64_SECTION_OFFSET),
+      size: readUint64(bytes, header + ELF64_SECTION_SIZE_OFFSET),
+    }
+  }
+  if (bunSection === null) {
+    return {
+      ok: false,
+      rejection: rejection(
+        "unsupported-executable-format",
+        null,
+        "ELF image has no '.bun' section; it is not a Bun standalone executable",
+      ),
+    }
+  }
+  if (!fits(bytes, bunSection.offset, bunSection.size)) return malformedExecutable("ELF '.bun' section is out of bounds")
+
+  let loadable = false
+  for (let index = 0; index < programHeaderCount; index += 1) {
+    const header = programHeaderOffset + index * programHeaderSize
+    if (readUint32LE(bytes, header + ELF64_PH_TYPE) !== ELF_PT_LOAD) continue
+    const segmentOffset = readUint64(bytes, header + ELF64_PH_OFFSET)
+    const segmentSize = readUint64(bytes, header + ELF64_PH_FILESZ)
+    if (segmentOffset <= bunSection.offset && bunSection.offset + bunSection.size <= segmentOffset + segmentSize) {
+      loadable = true
+      break
+    }
+  }
+  if (!loadable) return malformedExecutable("ELF '.bun' section is not contained in any PT_LOAD segment")
+
+  return readPayloadHeader(bytes, "elf", bunSection.offset, bunSection.size)
+}
+
+function locateMachO64BunPayload(bytes: Uint8Array): Located {
+  if (bytes.byteLength < MACHO_HEADER_BYTES) return malformedExecutable("Mach-O image is shorter than its header")
+  const fileType = readUint32LE(bytes, 0x0c)
+  if (fileType !== MACHO_FILE_TYPE_EXECUTE) return malformedExecutable(`Mach-O file type is ${fileType}, expected ${MACHO_FILE_TYPE_EXECUTE}`)
+  const commandCount = readUint32LE(bytes, MACHO_HEADER_NCMDS)
+  const commandBytes = readUint32LE(bytes, MACHO_HEADER_SIZEOFCMDS)
+  if (commandCount > 4096) return malformedExecutable(`Mach-O load command count ${commandCount} is implausible`)
+  if (!fits(bytes, MACHO_HEADER_BYTES, commandBytes)) return malformedExecutable("Mach-O load commands are out of bounds")
+
+  let cursor = MACHO_HEADER_BYTES
+  const commandEnd = MACHO_HEADER_BYTES + commandBytes
+  let bunSection: { offset: number; size: number } | null = null
+  for (let index = 0; index < commandCount; index += 1) {
+    if (!fits(bytes, cursor, 8)) return malformedExecutable("Mach-O load command header is out of bounds")
+    const command = readUint32LE(bytes, cursor)
+    const commandSize = readUint32LE(bytes, cursor + 4)
+    if (commandSize < 8 || cursor + commandSize > commandEnd) return malformedExecutable("Mach-O load command size is invalid")
+    if (command === MACHO_LC_SEGMENT_64) {
+      if (commandSize < MACHO_SEGMENT_64_SECTIONS) return malformedExecutable("Mach-O segment command is too short")
+      const sectionCount = readUint32LE(bytes, cursor + MACHO_SEGMENT_64_NSECTS)
+      if (!fits(bytes, cursor + MACHO_SEGMENT_64_SECTIONS, sectionCount * MACHO_SECTION_64_BYTES)) return malformedExecutable("Mach-O segment sections are out of bounds")
+      for (let section = 0; section < sectionCount; section += 1) {
+        const header = cursor + MACHO_SEGMENT_64_SECTIONS + section * MACHO_SECTION_64_BYTES
+        const sectionName = fixedCstringAt(bytes, header + MACHO_SECTION_64_NAME, 16)
+        const segmentName = fixedCstringAt(bytes, header + MACHO_SECTION_64_SEGNAME, 16)
+        if (sectionName !== "__bun" || segmentName !== "__BUN") continue
+        if (bunSection !== null) return malformedExecutable("Mach-O contains more than one '__BUN,__bun' section")
+        bunSection = {
+          offset: readUint32LE(bytes, header + MACHO_SECTION_64_OFFSET),
+          size: readUint64(bytes, header + MACHO_SECTION_64_SIZE),
+        }
+      }
+    }
+    cursor += commandSize
+  }
+  if (cursor !== commandEnd) return malformedExecutable("Mach-O load commands do not fill the declared size")
+  if (bunSection === null) {
+    return {
+      ok: false,
+      rejection: rejection(
+        "unsupported-executable-format",
+        null,
+        "Mach-O image has no '__BUN,__bun' section; it is not a Bun standalone executable",
+      ),
+    }
+  }
+  if (!fits(bytes, bunSection.offset, bunSection.size)) return malformedExecutable("Mach-O '__BUN,__bun' section is out of bounds")
+  return readPayloadHeader(bytes, "macho", bunSection.offset, bunSection.size)
+}
+
+/**
+ * The Bun payload is `[u64 LE length][payload]` inside its section. The length
+ * must account for exactly the remaining section bytes.
+ */
+function readPayloadHeader(
+  bytes: Uint8Array,
+  container: "elf" | "macho",
+  sectionOffset: number,
+  sectionSize: number,
+): Located {
+  if (sectionSize < 8 + OFFSETS_BYTES + TRAILER.length) return malformedExecutable("Bun payload section is too small to hold a graph, offsets and trailer")
+  const length = readUint64(bytes, sectionOffset)
+  if (length !== sectionSize - 8) return malformedExecutable(`Bun payload length prefix is ${length}, section holds ${sectionSize - 8}`)
+  if (length < OFFSETS_BYTES + TRAILER.length) return malformedExecutable("Bun payload is too small to hold offsets and trailer")
+  return { ok: true, payload: { container, start: sectionOffset + 8, length } }
+}
+
+function parseGraph(
+  bytes: Uint8Array,
+  payload: ContainerPayload,
+): { readonly ok: true; readonly structure: BuildStructure } | { readonly ok: false; readonly rejection: Rejection } {
+  const payloadEnd = payload.start + payload.length
+  const trailerStart = payloadEnd - TRAILER.length
+  if (textAt(bytes, trailerStart, TRAILER.length) !== TRAILER) {
+    return payloadMalformed(trailerStart, "Bun payload does not end with the pinned '---- Bun! ----' trailer")
+  }
+  const offsetsStart = trailerStart - OFFSETS_BYTES
+  if (offsetsStart < payload.start) return payloadMalformed(null, "Bun payload is shorter than its offsets struct")
+
+  const byteCount = readUint64(bytes, offsetsStart)
+  if (byteCount === 0 || byteCount > payload.length) return payloadMalformed(offsetsStart, `graph byte count ${byteCount} does not fit the ${payload.length}-byte payload`)
+  if (offsetsStart - payload.start !== byteCount) {
+    return payloadMalformed(
+      offsetsStart,
+      `graph byte count ${byteCount} does not place the offsets struct at the end of the payload (payload holds ${payload.length} bytes)`,
+    )
+  }
+
+  const modules = {
+    offset: readUint32LE(bytes, offsetsStart + 8),
+    length: readUint32LE(bytes, offsetsStart + 12),
+  }
+  const entryPointId = readUint32LE(bytes, offsetsStart + 16)
+  const argv = {
+    offset: readUint32LE(bytes, offsetsStart + 20),
+    length: readUint32LE(bytes, offsetsStart + 24),
+  }
+
+  if (modules.length === 0 || modules.length % MODULE_RECORD_BYTES !== 0) {
+    return payloadMalformed(offsetsStart + 12, `module table length ${modules.length} is not a non-zero multiple of ${MODULE_RECORD_BYTES}`)
+  }
+  if (!fitsGraph(modules.offset, modules.length, byteCount)) {
+    return payloadMalformed(offsetsStart + 8, `module table (${modules.offset} + ${modules.length}) is outside the ${byteCount}-byte graph`)
+  }
+  if (!fitsGraph(argv.offset, argv.length, byteCount)) {
+    return payloadMalformed(offsetsStart + 20, `compile argv pointer (${argv.offset} + ${argv.length}) is outside the ${byteCount}-byte graph`)
+  }
+
+  const moduleCount = modules.length / MODULE_RECORD_BYTES
+  if (moduleCount > MAX_MODULE_COUNT) return payloadMalformed(offsetsStart + 12, `module count ${moduleCount} is implausible`)
+  if (entryPointId >= moduleCount) {
+    return payloadMalformed(offsetsStart + 16, `entry point id ${entryPointId} is not below the module count ${moduleCount}`)
+  }
+
+  const modulesStart = payload.start + modules.offset
+  const moduleRanges: { start: number; end: number }[] = []
+  for (let index = 0; index < moduleCount; index += 1) {
+    const base = modulesStart + index * MODULE_RECORD_BYTES
+    for (let pointer = 0; pointer < MODULE_POINTER_COUNT; pointer += 1) {
+      const offset = readUint32LE(bytes, base + pointer * 8)
+      const length = readUint32LE(bytes, base + pointer * 8 + 4)
+      if (!fitsGraph(offset, length, byteCount)) {
+        return graphMalformed(base + pointer * 8, `module ${index} pointer ${pointer} (${offset} + ${length}) is outside the ${byteCount}-byte graph`)
+      }
+      if (length > 0) moduleRanges.push({ start: payload.start + offset, end: payload.start + offset + length })
+    }
+    const encoding = bytes[base + 48]
+    const loader = bytes[base + 49]
+    const moduleFormat = bytes[base + 50]
+    const side = bytes[base + 51]
+    if (encoding > 2) return graphMalformed(base + 48, `module ${index} has unknown encoding ${encoding}`)
+    if (loader > 20) return graphMalformed(base + 49, `module ${index} has unknown loader ${loader}`)
+    if (moduleFormat > 2) return graphMalformed(base + 50, `module ${index} has unknown module format ${moduleFormat}`)
+    if (side > 1) return graphMalformed(base + 51, `module ${index} has unknown side ${side}`)
+  }
+
+  const tailStart = payload.start + modules.offset + modules.length
+  const tailLength = byteCount - (modules.offset + modules.length)
+  if (tailLength < moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_NO_TABLES) {
+    return locatorMalformed(tailStart, `trailing records hold ${tailLength} bytes; at least ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_NO_TABLES} are required for ${moduleCount} modules`)
+  }
+
+  let cursor = tailStart + moduleCount * 4
+  let remaining = tailLength - moduleCount * 4
+  if (readUint32LE(bytes, cursor) !== 0) {
+    return locatorMalformed(cursor, "trailing record sentinel is not zero; the graph tail is not the pinned Bun 1.4.2 layout")
+  }
+  cursor += 4
+  remaining -= 4
+
+  let bytecodeTable: { offset: number; length: number } | null = null
+  let moduleInfoTable: { offset: number; length: number } | null = null
+  if (
+    remaining === TAIL_AFTER_SENTINEL_BYTECODE_TABLE ||
+    remaining === TAIL_AFTER_SENTINEL_BOTH_TABLES
+  ) {
+    bytecodeTable = { offset: readUint32LE(bytes, cursor), length: readUint32LE(bytes, cursor + 4) }
+    cursor += 8
+    remaining -= 8
+  } else if (remaining !== TAIL_AFTER_SENTINEL_NO_TABLES) {
+    return locatorMalformed(tailStart, `trailing records are ${tailLength} bytes for ${moduleCount} modules; the pinned Bun 1.4.2 tail shapes are ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_NO_TABLES}, ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_BYTECODE_TABLE} or ${moduleCount * 4 + 4 + TAIL_AFTER_SENTINEL_BOTH_TABLES}`)
+  }
+
+  const startupModuleCount = readUint32LE(bytes, cursor)
+  if (startupModuleCount > moduleCount) {
+    return locatorMalformed(cursor, `startup module count ${startupModuleCount} exceeds module count ${moduleCount}`)
+  }
+  cursor += 4
+  remaining -= 4
+
+  if (remaining === 8 + 1) {
+    moduleInfoTable = { offset: readUint32LE(bytes, cursor), length: readUint32LE(bytes, cursor + 4) }
+    cursor += 8
+    remaining -= 8
+  }
+  if (remaining !== 1) {
+    return locatorMalformed(cursor, `trailing records leave ${remaining} bytes unaccounted for after the pinned fields`)
+  }
+  if (bytes[cursor] !== 0) return locatorMalformed(cursor, "trailing record pad byte is not zero")
+  if (bytecodeTable === null) {
+    return {
+      ok: false,
+      rejection: rejection(
+        "bundler-key-missing",
+        null,
+        "this Bun standalone payload carries no shared bytecode string table (it was not built with --bytecode), so it has no anchored place for chunk-token records",
+      ),
+    }
+  }
+  for (const table of [bytecodeTable, moduleInfoTable]) {
+    if (table === null) continue
+    if (table.length === 0) return locatorMalformed(tailStart, "announced string table region is empty")
+    if (!fitsGraph(table.offset, table.length, byteCount)) {
+      return locatorMalformed(tailStart, `announced string table (${table.offset} + ${table.length}) is outside the ${byteCount}-byte graph`)
+    }
+    const start = payload.start + table.offset
+    const end = start + table.length
+    const overlapsModule = moduleRanges.some((range) => start < range.end && range.start < end)
+    if (overlapsModule) return locatorMalformed(start, "announced string table region overlaps a module subrange")
+    const overlapsModules = start < modulesStart + modules.length && modulesStart < end
+    if (overlapsModules) return locatorMalformed(start, "announced string table region overlaps the module table")
+  }
+  if (
+    bytecodeTable !== null &&
+    moduleInfoTable !== null &&
+    bytecodeTable.offset < moduleInfoTable.offset + moduleInfoTable.length &&
+    moduleInfoTable.offset < bytecodeTable.offset + bytecodeTable.length
+  ) {
+    return locatorMalformed(
+      payload.start + bytecodeTable.offset,
+      "announced bytecode and module-info string tables overlap",
+    )
+  }
+
+  const stringTableStart = payload.start + bytecodeTable.offset
+  const stringTableEnd = stringTableStart + bytecodeTable.length
+  const entries = parseStringTable(bytes, stringTableStart, stringTableEnd)
+  if (!entries.ok) return entries
+
+  return {
+    ok: true,
+    structure: {
+      container: payload.container,
+      payloadStart: payload.start,
+      payloadLength: payload.length,
+      graphLength: byteCount,
+      moduleCount,
+      modulesStart,
+      modulesLength: modules.length,
+      moduleRanges,
+      stringTableStart,
+      stringTableLength: bytecodeTable.length,
+      entries: entries.entries,
+    },
+  }
+}
+
+/**
+ * The shared bytecode string table is `[u32 count][u32 offsets[count]]` followed
+ * by `count` entries at those table-relative offsets. Every entry is re-derived
+ * from its own bytes and the table must consume its region exactly.
+ */
+function parseStringTable(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): { readonly ok: true; readonly entries: readonly StringTableEntry[] } | { readonly ok: false; readonly rejection: Rejection } {
+  if (end - start < 8) return stringTableMalformed(start, "string table is too small for a count and one offset")
+  const count = readUint32LE(bytes, start)
+  if (count > (end - start - 4) / 4) return stringTableMalformed(start, `string table count ${count} does not fit the ${end - start}-byte region`)
+  const indexEnd = start + 4 + count * 4
+
+  const entries: StringTableEntry[] = []
+  let expected = indexEnd
+  for (let index = 0; index < count; index += 1) {
+    const relative = readUint32LE(bytes, start + 4 + index * 4)
+    if (relative % RECORD_ALIGNMENT !== 0) return stringTableMalformed(start + 4 + index * 4, `string table entry ${index} offset ${relative} is not ${RECORD_ALIGNMENT}-byte aligned`)
+    const entryStart = start + relative
+    if (entryStart !== expected) {
+      return stringTableMalformed(entryStart, `string table entry ${index} starts at ${relative}, expected ${expected - start}`)
+    }
+    if (!fits(bytes, entryStart, 8)) return stringTableMalformed(entryStart, `string table entry ${index} length word is out of bounds`)
+    const lengthWord = readUint32LE(bytes, entryStart)
+    if ((lengthWord & RECORD_LENGTH_FLAG) === 0) return stringTableMalformed(entryStart, `string table entry ${index} length word ${formatWord(lengthWord)} has no flag bit`)
+    const length = lengthWord & 0x7fffffff
+    if (length === 0 || length > end - entryStart - 8) {
+      return stringTableMalformed(entryStart, `string table entry ${index} declares ${length} bytes, which does not fit the table`)
+    }
+    const storedHash = readUint32LE(bytes, entryStart + HASH_WORD_OFFSET)
+    if (storedHash >>> 24 !== 0) {
+      return {
+        ok: false,
+        rejection: {
+          code: "record-hash-word-reserved-bits",
+          offset: entryStart,
+          detail: `string table entry at ${entryStart} carries hash word ${formatWord(storedHash)}; the top 8 bits must be zero`,
+        },
+      }
+    }
+    const text = textAt(bytes, entryStart + TOKEN_OFFSET, length)
+    const derived = deriveRecordHash(text)
+    if (storedHash !== derived) {
+      return {
+        ok: false,
+        rejection: {
+          code: "record-hash-underived",
+          offset: entryStart,
+          detail: `string table entry at ${entryStart} stores hash ${formatWord(storedHash)} but '${text}' derives ${formatWord(derived)}`,
+        },
+      }
+    }
+    const unpadded = entryStart + TOKEN_OFFSET + length
+    expected = start + align4(unpadded - start)
+    for (let pad = unpadded; pad < expected; pad += 1) {
+      if (bytes[pad] !== 0) return stringTableMalformed(pad, `string table entry ${index} padding byte is ${formatByte(bytes[pad])}, expected 0x00`)
+    }
+    entries.push({ offset: entryStart, length, text, storedHash })
+  }
+
+  if (expected !== end) return stringTableMalformed(expected, `string table entries end at ${expected - start}, table region ends at ${end - start}`)
+  return { ok: true, entries }
+}
+
+function rejection(code: RejectionCode, offset: number | null, detail: string): Rejection {
+  return { code, offset, detail }
+}
+
+function malformedExecutable(detail: string): Located {
+  return { ok: false, rejection: rejection("executable-structure-malformed", null, detail) }
+}
+
+function payloadMalformed(offset: number | null, detail: string): { readonly ok: false; readonly rejection: Rejection } {
+  return { ok: false, rejection: rejection("bun-payload-malformed", offset, detail) }
+}
+
+function graphMalformed(offset: number | null, detail: string): { readonly ok: false; readonly rejection: Rejection } {
+  return { ok: false, rejection: rejection("module-graph-malformed", offset, detail) }
+}
+
+function locatorMalformed(offset: number | null, detail: string): { readonly ok: false; readonly rejection: Rejection } {
+  return { ok: false, rejection: rejection("string-table-locator-malformed", offset, detail) }
+}
+
+function stringTableMalformed(offset: number | null, detail: string): { readonly ok: false; readonly rejection: Rejection } {
+  return { ok: false, rejection: rejection("string-table-malformed", offset, detail) }
+}
+
 function labelSide(rejection: Rejection, side: "left" | "right"): Rejection {
   return { ...rejection, detail: `${side}: ${rejection.detail}` }
+}
+
+function fits(bytes: Uint8Array, offset: number, length: number): boolean {
+  return offset >= 0 && length >= 0 && offset + length <= bytes.byteLength
+}
+
+function fitsGraph(offset: number, length: number, graphLength: number): boolean {
+  return offset >= 0 && length >= 0 && offset + length <= graphLength
+}
+
+function align4(value: number): number {
+  return (value + RECORD_ALIGNMENT - 1) & ~(RECORD_ALIGNMENT - 1)
+}
+
+function readUint16LE(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] | (bytes[offset + 1] << 8)
 }
 
 function readUint32LE(bytes: Uint8Array, offset: number): number {
@@ -328,6 +883,31 @@ function readUint32LE(bytes: Uint8Array, offset: number): number {
       (bytes[offset + 3] << 24)) >>>
     0
   )
+}
+
+function readUint64(bytes: Uint8Array, offset: number): number {
+  let value = 0n
+  for (let index = 7; index >= 0; index -= 1) value = (value << 8n) | BigInt(bytes[offset + index])
+  // A legitimate offset or length always fits a safe integer; anything larger is
+  // malformed and is clamped so every bounds check refuses it.
+  return value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(value)
+}
+
+function textAt(bytes: Uint8Array, offset: number, length: number): string {
+  return Buffer.from(bytes.subarray(offset, offset + length)).toString("latin1")
+}
+
+function cstringAt(bytes: Uint8Array, offset: number, limit: number): string {
+  let end = offset
+  const stop = Math.min(offset + limit, bytes.byteLength)
+  while (end < stop && bytes[end] !== 0) end += 1
+  return textAt(bytes, offset, end - offset)
+}
+
+function fixedCstringAt(bytes: Uint8Array, offset: number, width: number): string {
+  let end = offset + width
+  while (end > offset && bytes[end - 1] === 0) end -= 1
+  return textAt(bytes, offset, end - offset)
 }
 
 function firstDifference(left: Uint8Array, right: Uint8Array): number {
