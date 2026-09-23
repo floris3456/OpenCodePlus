@@ -63,7 +63,7 @@ A `ReleaseAcceptanceReceipt` emits `verdict: "pass"` only when all required chec
 
 ## Known Security Residuals
 
-This section records accepted, evidenced security residuals where host-plane isolation does not close an execution vector in this release. These are classified as accepted residuals per workspace owner decision (dated 2026-09-23), not as deferred mandatory gates or outstanding work. Exactly two vectors are covered by this acceptance: repository-local git filter execution and remote transport program execution.
+This section records accepted, evidenced security residuals where host-plane isolation does not close an execution vector in this release. These are classified as accepted residuals per workspace owner decision (dated 2026-09-23), not as deferred mandatory gates or outstanding work. Exactly three vectors are covered by this acceptance: repository-local git filter execution, remote transport program execution, and attribute-selected merge driver execution.
 
 ### Repository-Local Git Filter Execution (`filter.<driver>`)
 
@@ -86,9 +86,23 @@ A related repository-local execution vector exists for remote transport operatio
 
 In the standard team workflow, worktrees are created locally using `git worktree add` against local refs rather than cloning or fetching from executor-controlled remote repositories. Real-flow reachability in production is therefore narrower than in synthetic fixtures. However, this narrower reachability does not imply that the vector is closed: if host-plane operations perform a `fetch` or `clone` against a repository containing executor-controlled transport configuration, the named program executes on the host plane. Addressing this vector was likewise deferred under the 2026-09-23 workspace owner decision, and it is recorded here as an accepted security residual.
 
+### Attribute-Selected Merge Driver Execution (`merge.<driver>.driver`)
+
+1. **Exact Mechanism**: An attribute-selected `merge.<driver>.driver`, configured in repository-local git config and selected by a `.gitattributes` merge attribute (or `$GIT_DIR/info/attributes`), causes git to execute the named program on the host plane when a three-way file merge is required.
+
+2. **Reachability**: This vector is reachable on the integrate path's rebase step: specifically, the `gitRaw(tempDir, [...NO_REPOSITORY_PROGRAMS, "rebase", rebaseBase])` invocation at `packages/plus/src/teams/merge.ts:281` inside `process()`. When replaying child commits onto the parent HEAD (`rebaseBase`) in the temporary worktree (`tempDir`), git executes the configured driver command if and only if replay actually needs a three-way merge of the same file. It does not fire on every rebase: if child and parent commits touch disjoint files or replay resolves without requiring a three-way file merge, git never invokes the driver. However, this narrower reachability condition does not imply that the vector is closed.
+
+3. **Neutralization Boundary**: The host-plane git execution boundary defines `NO_REPOSITORY_PROGRAMS` (`packages/plus/src/teams/worktree.ts` and `packages/core/src/git.ts`), which injects `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, and `-c commit.gpgSign=false`. While this neutralization successfully disables git hooks, fsmonitor processes, and commit signing binaries, it does not disable or override a configured merge driver. Git provides no global command-line flag to disable merge driver execution during rebase.
+
+4. **Test Suite Coverage Gap in Canaries**: The integrate canaries in `packages/plus/test/release/canaries.test.ts` (specifically `integrateFixture` and `assertIntegrateNeutralizesHooks`) do not exercise this vector. In `integrateFixture`, the child worktree modifies `child.txt` while the parent worktree advances with changes to `parent.txt`. Because the parent and child modify disjoint files, the rebase never needs a three-way merge and the driver never fires. This is a real coverage gap in our own test suite: passing integrate canaries verify hook neutralization, but a future reader must not mistake the passing integrate canaries for coverage or neutralization of this vector.
+
+5. **Precondition**: Exploiting this vector requires an already-malicious implementer writing repository-local configuration (`merge.<driver>.driver`) into the shared `.git`. Like the filter vector, this is a real precondition and is stated plainly without being dressed up as a mitigation: team worktrees share a single common `.git` repository directory, so an implementer in an assigned worktree can reach and modify that shared repository configuration.
+
+6. **Owner Disposition**: By workspace owner decision dated 2026-09-23, this execution vector is dispositioned and classified as an **accepted residual, not a deferred mandatory gate** or outstanding work for this release.
+
 ## Open Security Findings (Unaccepted Vectors Barring Publication)
 
-Unlike the two owner-accepted residuals above, the following open findings have **not** been accepted by the workspace owner. They represent unaccepted boundary risks that currently bar release publication until formally addressed or scoped by an explicit owner decision:
+Unlike the three owner-accepted residuals above, the following open findings have **not** been accepted by the workspace owner. They represent unaccepted boundary risks that currently bar release publication until formally addressed or scoped by an explicit owner decision:
 
 ### PTY Allocation Routing and Host Environment Boundary
 
@@ -97,10 +111,4 @@ While canary assertions (`packages/plus/test/release/canaries.test.ts`) verify t
 ### Host-Plane Executable Plugin Loading
 
 While canary assertions (`packages/plus/test/release/canaries.test.ts`) verify that placed stdio MCP servers are refused by the workspace plane, plugin tools cannot execute without an authorizing permission service, and the plugin host cannot assemble without the durable release store, dynamic host-plane executable plugin loading remains an open finding. Executable plugins that run host-plane code without process isolation or sandboxing remain an unaccepted boundary risk barring release publication pending plugin sandboxing or a scoped owner decision.
-
-### Attribute-Selected Merge Driver Execution (`merge.<driver>.driver`)
-
-During an integrate rebase, git operations (`git rebase` and `git merge`) invoke custom merge drivers defined by repository-level `merge.<driver>.driver` configuration when selected by `.gitattributes` or `$GIT_DIR/info/attributes`. While `NO_REPOSITORY_PROGRAMS` suppresses hooks, fsmonitor, and commit signing (`core.hooksPath=/dev/null`, `core.fsmonitor=false`, `commit.gpgSign=false`), git provides no global command-line override to disable merge driver execution.
-
-This execution vector is **outside** the workspace owner's two-vector acceptance decision of 2026-09-23 (which covered only git filters and remote transports). Because merge drivers can execute arbitrary binaries on the host plane during merge or rebase operations on executor worktrees, this vector is not accepted and remains an open security finding awaiting a scoped decision.
 
