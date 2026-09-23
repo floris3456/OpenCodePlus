@@ -11,6 +11,7 @@ import { attemptTransition, isAttemptTerminal, isTerminal, loadRun, saveRun, tra
 import { StopInput, SupersedeInput } from "./schema.js"
 import { readJson } from "./store.js"
 import { setState } from "./tasks.js"
+import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
@@ -37,7 +38,9 @@ async function interruptSession(ctx: Context, sessionID: string | null): Promise
 }
 
 async function headInfo(record: RunRecord): Promise<{ hadUncommitted: boolean; head: string }> {
-  const statusOpt = await Effect.runPromise(Effect.option(io(() => gitRaw(record.directory, ["status", "--porcelain"]))))
+  const statusOpt = await Effect.runPromise(
+    Effect.option(io(() => gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain"]))),
+  )
   const status = Option.getOrUndefined(statusOpt)
   const hadUncommitted = status !== undefined && status.code === 0 && status.out.trim().length > 0
   const headOpt = await Effect.runPromise(Effect.option(io(() => gitRaw(record.directory, ["rev-parse", "HEAD"]))))
