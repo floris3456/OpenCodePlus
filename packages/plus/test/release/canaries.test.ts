@@ -32,7 +32,8 @@ import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Tool } from "@opencode/schema/tool"
+import { Tool } from "../../../core/src/tool.js"
+import type { Info } from "@opencode/schema/tool"
 import { Global } from "@opencode/util/global"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Cause, Context, Effect, Exit, Layer, Schema } from "effect"
@@ -53,7 +54,6 @@ import { make } from "../../../core/src/mcp/stdio.js"
 import { PluginHost } from "../../../core/src/plugin/host.js"
 import { ReleaseRequestStore } from "../../../core/src/release/request.js"
 import { Shell } from "../../../core/src/shell.js"
-import { assertToolPermission } from "../../../core/src/tool/permission-gate.js"
 import { Watcher } from "../../../core/src/filesystem/watcher.js"
 import { WellKnown } from "../../../core/src/wellknown.js"
 import { Workspace } from "../../../core/src/workspace.js"
@@ -628,27 +628,59 @@ describe("executable plugins, tools, and MCP: placement does not load host code"
 
   test("a plugin tool cannot execute without an authorizing permission service", async () => {
     const executed: string[] = []
-    const tool: Tool.Info = {
+    const controlTool: Info = {
+      name: "control_deploy",
+      description: "Deploy control",
+      input: Schema.Struct({}),
+      output: Schema.String,
+      options: { codemode: false },
+      origin: { type: "mcp", name: "canary" },
+      execute: () => Effect.sync(() => executed.push("control_deploy")).pipe(Effect.as({ output: "deployed" })),
+    }
+    const pluginTool: Info = {
       name: "deploy",
       description: "Deploy the service",
-      input: Schema.Void,
+      input: Schema.Struct({}),
       output: Schema.String,
       options: { codemode: false },
       origin: { type: "plugin", name: "canary" },
       execute: () => Effect.sync(() => executed.push("deploy")).pipe(Effect.as({ output: "deployed" })),
     }
-    const failure = await Effect.runPromise(
-      assertToolPermission(tool, "deploy", {
-        sessionID: Session.ID.make("ses_canary_gate"),
-        agent: Agent.ID.make("canary"),
-        messageID: SessionMessage.ID.make("msg_canary_gate"),
-        id: Tool.CallID.make("call_canary_gate"),
-        progress: () => Effect.void,
-      }).pipe(Effect.flip),
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const tools = yield* Tool.Service
+          yield* tools.transform((editor) => {
+            editor.add(controlTool)
+            editor.add(pluginTool)
+          })
+          const snapshot = yield* tools.snapshot()
+
+          // The control proves the real dispatch path executes when not blocked by the plugin gate.
+          const controlResult = yield* snapshot.execute({
+            sessionID: Session.ID.make("ses_canary_gate"),
+            agent: Agent.ID.make("canary"),
+            messageID: SessionMessage.ID.make("msg_canary_gate"),
+            call: { type: "tool-call", id: "call_canary_control", name: "control_deploy", input: {} },
+          })
+          expect(controlResult.content).toEqual([{ type: "text", text: "deployed" }])
+          expect(executed).toEqual(["control_deploy"])
+
+          // The product path: a plugin tool cannot execute without an authorizing permission service.
+          const failure = yield* snapshot.execute({
+            sessionID: Session.ID.make("ses_canary_gate"),
+            agent: Agent.ID.make("canary"),
+            messageID: SessionMessage.ID.make("msg_canary_gate"),
+            call: { type: "tool-call", id: "call_canary_gate", name: "deploy", input: {} },
+          }).pipe(Effect.flip)
+
+          expect(failure._tag).toBe("Tool.Error")
+          expect(failure.message).toContain("no permission service in this context")
+          expect(executed).toEqual(["control_deploy"])
+        }).pipe(Effect.provide(AppNodeBuilder.build(LayerNode.group([Tool.node])))),
+      ),
     )
-    expect(failure._tag).toBe("Tool.Error")
-    expect(failure.message).toContain("no permission service in this context")
-    expect(executed).toEqual([])
   })
 
   test("the plugin host cannot be assembled without the durable release store", async () => {
@@ -888,10 +920,24 @@ describe("git hooks: repository operations on an executor worktree", () => {
     })
   }
 
+  /**
+   * Canary: the check executor's repository inspection (`git status` and `git rev-parse`)
+   * must not execute repository-local hooks. The unneutralized raw status fires the planted
+   * post-index-change hook; the executor's neutralized call must run clean while still capturing
+   * HEAD, measured tree, and dirty status accurately.
+   */
   test("the check executor's own repository inspection runs no planted hook", async () => {
     const repo = join(scratch, "hooks-check-repo")
     const sentinel = join(scratch, `check-${SENTINEL_NAME}`)
     await initHostileRepo(repo, sentinel)
+    await plantHook(join(repo, ".git", "hooks"), "post-index-change", sentinel)
+    const head = await git(repo, ["rev-parse", "HEAD"])
+    const tree = await git(repo, ["rev-parse", "HEAD^{tree}"])
+
+    // The control: unneutralized status triggers the planted post-index-change hook.
+    await git(repo, ["status", "--porcelain", "-uall"])
+    expect(await Bun.file(sentinel).exists()).toBe(true)
+    await rm(sentinel, { force: true })
 
     const res = await execute(join(scratch, "check-state"), {
       runID: "w-ca9a9a9a9a9a9a9a",
@@ -899,7 +945,11 @@ describe("git hooks: repository operations on an executor worktree", () => {
       worktree: repo,
     })
 
+    // The inspection really ran: the receipt pins HEAD, the measured tree and clean status.
     expect(res.passed).toBe(true)
+    expect(res.head).toBe(head)
+    expect(res.tree).toBe(tree)
+    expect(res.dirty).toBe(false)
     expect(await Bun.file(sentinel).exists()).toBe(false)
   })
 

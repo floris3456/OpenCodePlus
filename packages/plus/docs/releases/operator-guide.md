@@ -114,30 +114,65 @@ Execute the following commands to determine the current system identity:
 
 ## 2. Rollback
 
-Outcome 9 mandates that rolling back to a previously installed release is **one operation and never a `git reset`**.
+Outcome 9 mandates that rolling back to a previously installed release is **one controlled transition and never a `git reset`**.
 
-Rollback repoints the activation pointer `<prefix>/bin/opencodeplus` to an already-installed, immutable release directory under `<prefix>/releases/<target-version>/`.
+However, on a live system running background services, rollback **cannot** be performed by an unfenced local symlink replacement and service restart. Performing an unfenced switch cuts off active sessions mid-execution, ignores controller generation invariants, and bypasses session admission fencing.
 
-### The Single Operation
+### Production Transition Requirements
 
-To activate a target version `<target-version>` (for example, `1.0.0`):
+A safe production rollback requires a coordinated five-phase transition:
 
-```bash
-# Atomic symlink replacement to the target immutable release
-ln -sfn "../releases/<target-version>/bin/opencodeplus" "<prefix>/bin/opencodeplus"
-```
+1. **Identity**: The target release directory `<prefix>/releases/<target-version>/` must exist in immutable local storage, with valid `metadata.json` and a matching binary SHA-256 hash.
+2. **Authorization**: An artifact-specific `ReleaseControllerPermit` must be issued and signed by a trusted issuer public key configured in the host's trust anchor (`<config>/release/controller.json`).
+3. **Quiescence and Fencing**: The permit is submitted to the controller authorization seam (`POST /api/release/authorize`), engaging Core session admission fencing (`SessionAdmission.engage`) to block new session requests and allowing in-flight session work to drain to an idle boundary.
+4. **Fenced Activation**: While the admission fence is held and active sessions are drained, the activation symlink `<prefix>/bin/opencodeplus` is atomically updated and the background daemon is restarted with the rolled-back binary.
+5. **Settlement**: After verifying that the new daemon is healthy and running the target version, the controller calls `POST /api/release/settle` with the authorization token to mark the request completed and release the session admission fence.
 
-*Note on atomic replacement:* If operating in environments requiring strict atomic link replacement across concurrent readers, use:
-```bash
-ln -sf "../releases/<target-version>/bin/opencodeplus" "<prefix>/bin/opencodeplus.tmp" && \
-mv -Tf "<prefix>/bin/opencodeplus.tmp" "<prefix>/bin/opencodeplus"
-```
+### Operational Status in This Source Repository
 
-After updating the pointer, restart the background service so the running server adopts the rolled-back binary:
-```bash
-opencodeplus service restart
-# (Equivalent to: opencodeplus service stop && opencodeplus service start)
-```
+**Direct Operator Rollback on a Live Service Is Unavailable**:
+This source repository (`repos/opencode`) does not contain an automated standalone local CLI command for operators to execute a fenced, drained transition directly against a live running server. Standalone unfenced symlink replacement (`ln -sfn`) combined with an uncoordinated service restart (`opencodeplus service restart`) on a live daemon is **unsafe and prohibited** by workspace standing rules.
+
+**Escalation**:
+Live rollback operations must be escalated to the **workspace controller operator**, who holds the controller signing keys and drives the authorized, fenced, and drained transition via workspace controller tooling (`bin/team`).
+
+### Cold Rollback Procedure (Service Confirmed Stopped Only)
+
+If and only if the daemon is completely stopped and confirmed idle (for example, disaster recovery or initial deployment repair where kernel state confirms no background process is running):
+
+1. **Verify daemon quiescence via kernel state**:
+   ```bash
+   REG="$HOME/.local/state/opencodeplus/service.json"
+   if [ -f "$REG" ]; then
+     PID=$(jq -r .pid "$REG" 2>/dev/null || true)
+     if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+       echo "ERROR: Service daemon is still running (PID $PID). Cold rollback is forbidden on a running system."
+       exit 1
+     fi
+   fi
+   # Verify port is closed
+   ss -tulpn | grep -q :49374 && { echo "ERROR: Port 49374 is still bound."; exit 1; }
+   ```
+
+2. **Verify target release integrity**:
+   ```bash
+   TARGET_DIR="$HOME/.opencodeplus/releases/<target-version>"
+   [ -x "$TARGET_DIR/bin/opencodeplus" ] || { echo "Target binary missing or non-executable"; exit 1; }
+   BIN_HASH=$(sha256sum "$TARGET_DIR/bin/opencodeplus" | awk '{print $1}')
+   META_HASH=$(jq -r .binarySha256 "$TARGET_DIR/metadata.json")
+   [ "$BIN_HASH" = "$META_HASH" ] || { echo "Binary hash mismatch"; exit 1; }
+   ```
+
+3. **Atomic symlink pointer update**:
+   ```bash
+   ln -sf "../releases/<target-version>/bin/opencodeplus" "$HOME/.opencodeplus/bin/opencodeplus.tmp" && \
+   mv -Tf "$HOME/.opencodeplus/bin/opencodeplus.tmp" "$HOME/.opencodeplus/bin/opencodeplus"
+   ```
+
+4. **Start the service cleanly**:
+   ```bash
+   opencodeplus service start
+   ```
 
 ### What Rollback Changes and What It Preserves
 
@@ -235,36 +270,105 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
 ### Scenario B: Registration Is Stale or Corrupt
 
 - **Diagnostic**:
-  1. Stale registration: The file `$HOME/.local/state/opencodeplus/service.json` exists, but the recorded PID is dead:
+  1. **Deriving process liveness and identity strictly from kernel state**:
+     The workspace standing rules (workspace `AGENTS.md` §C "Processes") strictly govern process interactions:
+     > Derive liveness from kernel state — `/proc/<pid>/{cwd,fd,maps,environ}` — never from a registration file, which can outlive the process it describes, and never kill by name. Stop only owned, confirmed-idle test or worker runtimes.
+
+     Do not rely on `kill -0 "$PID"` or the registration file to establish identity; operating systems recycle process IDs. If a previous daemon died and the OS assigned its PID to an unrelated user process, signaling that PID harms an innocent process.
+
+     Inspect the kernel state for the recorded PID:
      ```bash
-     PID=$(jq -r .pid "$HOME/.local/state/opencodeplus/service.json")
-     kill -0 "$PID" 2>/dev/null || echo "PID $PID is dead (stale registration)"
+     REG="$HOME/.local/state/opencodeplus/service.json"
+     PID=$(jq -r .pid "$REG" 2>/dev/null || true)
+
+     # 1. Check if the process exists in kernel state
+     if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+       echo "PID $PID does not exist: registration is stale."
+     else
+       # 2. Verify process ownership (must match current user UID)
+       OWNER_UID=$(stat -c %u "/proc/$PID" 2>/dev/null || echo -1)
+       if [ "$OWNER_UID" != "$(id -u)" ]; then
+         echo "PID $PID is owned by UID $OWNER_UID, not $(id -u): PID was recycled by an unrelated process."
+       fi
+
+       # 3. Verify executable path points to an opencodeplus binary
+       EXE_TARGET=$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)
+       echo "Executable for PID $PID: $EXE_TARGET"
+
+       # 4. Verify command line and environment
+       tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null; echo ""
+
+       # 5. Check if this process holds the service port
+       PORT=$(jq -r .url "$REG" 2>/dev/null | grep -oE '[0-9]+$' || echo "49374")
+       ss -tulpn 2>/dev/null | grep "$PID" | grep -q ":$PORT" && echo "PID $PID holds port $PORT"
+     fi
      ```
-  2. Corrupt registration: The file contains truncated or invalid JSON:
+
+  2. **Corrupt registration file**:
+     The registration file contains truncated or malformed JSON:
      ```bash
-     jq . "$HOME/.local/state/opencodeplus/service.json" 2>&1
+     jq . "$REG" 2>&1
      # "parse error: Invalid numeric literal..."
      ```
-  3. Ground truth behavior in code:
+
+  3. **Ground truth behavior in code**:
      - **Self-eviction on file corruption or deletion**: The running service daemon polls its registration file every 5 seconds (`packages/cli/src/services/service-registration.ts` lines 61–66). If the file is deleted or modified so `owns(found)` fails, the server logs a warning and initiates shutdown (`packages/cli/test/service.test.ts` lines 155–189: *"deleting a managed service registration stops its owner"* and *"corrupting a managed service registration stops its owner"*).
      - **Dead owner replacement**: When a new service starts and binds the port, `ServiceRegistration.register` automatically overwrites a stale registration belonging to a dead process (`packages/cli/test/service.test.ts` line 488: *"service registration replaces a stale owner with the bound address"*).
      - **No auto-replacement in Plus**: OpenCode Plus explicitly disables auto-killing unresponsive or unexpected peers (`packages/client/src/effect/service.ts` lines 56, 91, 113: `allowReplacement = false`). It fails with `ServiceRefusalError("timeout")` or `ServiceRefusalError("unexpected-peer")` to prevent rogue terminations.
+
 - **Remediation**:
-  1. If the PID is dead, remove the stale registration:
+  1. **Case 1: Process is confirmed dead (`/proc/$PID` does not exist)**:
+     Kernel state confirms the process no longer exists. The registration file is stale:
      ```bash
      rm -f "$HOME/.local/state/opencodeplus/service.json"
-     ```
-  2. If the PID is alive but wedged/unresponsive:
-     ```bash
-     kill -TERM "$PID"
-     sleep 2
-     kill -0 "$PID" 2>/dev/null && kill -KILL "$PID"
-     rm -f "$HOME/.local/state/opencodeplus/service.json"
-     ```
-  3. Start the service cleanly:
-     ```bash
      opencodeplus service start
      ```
+
+  2. **Case 2: Process exists but fails ownership or executable identity checks (PID recycled)**:
+     The process at `$PID` is NOT an owned OpenCode Plus process.
+     **Signaling or killing this PID is STRICTLY FORBIDDEN.**
+     Because kernel state proves the process at `$PID` is unrelated, the registration file is an orphaned artifact. Remove the registration file directly without touching the unrelated process:
+     ```bash
+     rm -f "$HOME/.local/state/opencodeplus/service.json"
+     opencodeplus service start
+     ```
+
+  3. **Case 3: Process is verified from kernel state as an owned OpenCode Plus daemon, but is unresponsive/wedged**:
+     - Attempt clean shutdown via CLI first:
+       ```bash
+       opencodeplus service stop
+       ```
+     - If the CLI fails to stop it and the process remains wedged, verify kernel ownership and executable identity immediately before sending any signal:
+       ```bash
+       EXE_TARGET=$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)
+       OWNER_UID=$(stat -c %u "/proc/$PID" 2>/dev/null || echo -1)
+       if [ "$OWNER_UID" = "$(id -u)" ] && [[ "$EXE_TARGET" == *"/opencodeplus"* ]]; then
+         # Send SIGTERM for graceful shutdown
+         kill -TERM "$PID"
+         # Poll kernel state up to 10 seconds for clean termination
+         for i in $(seq 1 10); do
+           [ ! -d "/proc/$PID" ] && break
+           sleep 1
+         done
+         # Only if kernel state confirms the process is still running after grace period,
+         # re-verify identity before SIGKILL (to protect against PID recycling during sleep)
+         if [ -d "/proc/$PID" ]; then
+           RECHECK_EXE=$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)
+           if [ "$RECHECK_EXE" = "$EXE_TARGET" ]; then
+             kill -KILL "$PID"
+           else
+             echo "ERROR: PID $PID identity changed during grace period; refusing to send SIGKILL."
+           fi
+         fi
+       else
+         echo "ERROR: Kernel ownership or executable verification failed; refusing to signal PID $PID."
+       fi
+       ```
+     - Remove the registration file only after `/proc/$PID` is verified absent:
+       ```bash
+       [ ! -d "/proc/$PID" ] && rm -f "$HOME/.local/state/opencodeplus/service.json"
+       opencodeplus service start
+       ```
 
 ### Scenario C: Port Is Occupied by an Unrelated Process
 
@@ -288,12 +392,42 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
     opencodeplus service start
     ```
     (Pinned by `packages/cli/test/service.test.ts` lines 290–315: *"configured managed service port overrides the channel default"*).
-  - **Option 2 (Terminate rogue occupant)**:
-    If the occupant is an orphaned process from a previous test run, terminate the specific PID:
-    ```bash
-    kill -TERM <occupant-pid>
-    opencodeplus service start
-    ```
+  - **Option 2 (Terminate confirmed-idle, owned orphaned occupant)**:
+    Before signaling any port occupant, the operator must verify from kernel state that the process is an owned, orphaned, idle OpenCode Plus test or worker runtime.
+    **Never terminate an unverified process or kill by executable name.**
+
+    1. **Derive identity and ownership from kernel state**:
+       ```bash
+       OCCUPANT_PID=<occupant-pid>
+       # Check ownership
+       [ "$(stat -c %u "/proc/$OCCUPANT_PID" 2>/dev/null)" = "$(id -u)" ] || {
+         echo "ERROR: Process $OCCUPANT_PID is not owned by current user. Termination is forbidden."
+         exit 1
+       }
+       # Check executable identity
+       OCCUPANT_EXE=$(readlink -f "/proc/$OCCUPANT_PID/exe" 2>/dev/null || true)
+       echo "Occupant executable: $OCCUPANT_EXE"
+       case "$OCCUPANT_EXE" in
+         *opencodeplus*|*bun*|*node*) ;;
+         *) echo "ERROR: Process $OCCUPANT_PID is not an OpenCode runtime. Termination is forbidden."; exit 1 ;;
+       esac
+       # Check command line and environment
+       tr '\0' ' ' < "/proc/$OCCUPANT_PID/cmdline" 2>/dev/null; echo ""
+       ```
+    2. **Unavailability / Prohibition**:
+       If the occupant is not an owned, confirmed-idle test/worker runtime (for example, another team member's active worker, a system daemon, or an unrelated developer tool), **terminating it is STRICTLY FORBIDDEN**.
+       The operator must use **Option 1 (Port Reconfiguration)** instead.
+    3. **Controlled termination of verified occupant**:
+       If ownership, idle status, and runtime identity are confirmed:
+       ```bash
+       kill -TERM "$OCCUPANT_PID"
+       for i in $(seq 1 10); do
+         [ ! -d "/proc/$OCCUPANT_PID" ] && break
+         sleep 1
+       done
+       [ ! -d "/proc/$OCCUPANT_PID" ] || { echo "Occupant failed to exit cleanly on SIGTERM."; exit 1; }
+       opencodeplus service start
+       ```
 
 ### Scenario D: Active Release Directory Is Damaged
 
@@ -307,16 +441,37 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
      cat "$(dirname "$TARGET_BIN")/../metadata.json" | jq -r .binarySha256
      ```
 - **Remediation**:
-  1. **Immediate rollback**: If an older valid release exists, switch the symlink pointer immediately:
-     ```bash
-     ln -sfn "../releases/<previous-version>/bin/opencodeplus" "$HOME/.opencodeplus/bin/opencodeplus"
-     opencodeplus service restart
-     ```
-  2. **Remove damaged release directory**: Release directories are read-only (`chmod a-w`). To delete the corrupted directory:
-     ```bash
-     chmod -R u+w "$HOME/.opencodeplus/releases/<damaged-version>"
-     rm -rf "$HOME/.opencodeplus/releases/<damaged-version>"
-     ```
+  1. **Rollback to a valid release**:
+     - *If the background service is running*: Manual symlink replacement combined with `service restart` is unsafe and prohibited because it performs an unfenced transition without session draining or admission fencing. Operators must escalate to the **workspace controller operator** to execute an authorized, fenced transition.
+     - *If the background service is stopped*: Follow the [Cold Rollback Procedure](#cold-rollback-procedure-service-confirmed-stopped-only): verify that the daemon is stopped via `/proc`, verify the target release integrity, update the symlink atomically using a temporary link (`mv -Tf`), and start the service.
+
+  2. **Remove damaged release directory (Live References Check Mandatory)**:
+     Release directories are locked read-only (`chmod a-w`). Removing a release directory while any process holds open references or while active symlinks point to it violates workspace rules and causes running processes to crash.
+
+     **Prerequisites before directory modification or removal**:
+     - **Active symlink check**: Verify the active binary symlink does not resolve to the directory being removed:
+       ```bash
+       DAMAGED_DIR="$HOME/.opencodeplus/releases/<damaged-version>"
+       ACTIVE_TARGET=$(readlink -f "$HOME/.opencodeplus/bin/opencodeplus" 2>/dev/null || true)
+       if [ "$ACTIVE_TARGET" = "$DAMAGED_DIR/bin/opencodeplus" ]; then
+         echo "ERROR: Active symlink still points to $DAMAGED_DIR. Must repoint or remove active symlink before deleting directory."
+         exit 1
+       fi
+       ```
+     - **Kernel live references check**: Verify that no process on the host holds open file descriptors, active working directories, or memory-mapped files inside the directory:
+       ```bash
+       # 1. Check for open file handles via lsof
+       lsof +D "$DAMAGED_DIR" 2>/dev/null
+       # 2. Check kernel memory maps across /proc
+       grep -l "$DAMAGED_DIR" /proc/[0-9]*/maps 2>/dev/null
+       ```
+     - **Unavailability**: If any process still holds open references, memory mappings, or working directory handles into `$DAMAGED_DIR`, directory removal is **UNAVAILABLE AND FORBIDDEN**. The operator must stop or restart the referencing processes cleanly before attempting deletion.
+     - **Destructive cleanup**: Only after proving zero active symlinks and zero live kernel references exist:
+       ```bash
+       chmod -R u+w "$DAMAGED_DIR"
+       rm -rf "$DAMAGED_DIR"
+       ```
+
   3. **Re-stage the release**:
      Reinstall the release using offline assets without touching the running incumbent:
      ```bash
@@ -332,17 +487,28 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
 - **Remediation**:
   1. Check if a partial directory was left during the final directory move:
      ```bash
-     if [ -d "$HOME/.opencodeplus/releases/<version>" ]; then
+     PARTIAL_DIR="$HOME/.opencodeplus/releases/<version>"
+     if [ -d "$PARTIAL_DIR" ]; then
        # Verify all four required contract members exist
        for f in bin/opencodeplus metadata.json LICENSE NOTICE; do
-         [ -f "$HOME/.opencodeplus/releases/<version>/$f" ] || echo "Missing $f"
+         [ -f "$PARTIAL_DIR/$f" ] || echo "Missing $f"
        done
      fi
      ```
-  2. If missing members or broken:
+  2. If missing members or broken, perform live-reference verification before cleanup:
      ```bash
-     chmod -R u+w "$HOME/.opencodeplus/releases/<version>"
-     rm -rf "$HOME/.opencodeplus/releases/<version>"
+     # Verify no active installer process is running
+     pgrep -f "install.sh" | while read -r p; do
+       [ "$(stat -c %u "/proc/$p" 2>/dev/null)" = "$(id -u)" ] && echo "Active installer process: $p"
+     done
+     # Verify zero open references in kernel state
+     lsof +D "$PARTIAL_DIR" 2>/dev/null
+     grep -l "$PARTIAL_DIR" /proc/[0-9]*/maps 2>/dev/null
+     ```
+     Only when confirmed that no installer is active, zero live references exist, and the active symlink does not point to `$PARTIAL_DIR`:
+     ```bash
+     chmod -R u+w "$PARTIAL_DIR"
+     rm -rf "$PARTIAL_DIR"
      ```
   3. Re-run `install.sh`:
      ```bash
