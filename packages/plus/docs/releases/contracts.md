@@ -61,6 +61,107 @@ Release acceptance requires executing the twelve baseline checks specified in `r
 
 A `ReleaseAcceptanceReceipt` emits `verdict: "pass"` only when all required checks succeed with exit code 0 on a clean git HEAD.
 
+## Rebuild Equivalence Contract (D3-B Standard)
+
+This section documents the reproducibility contract for OpenCode Plus compiled binary artifacts, its structural canonicalizer, empirical verification evidence, and known operational limits.
+
+### Standard Definition and Honest Weakening
+
+OpenCode Plus release packages achieve raw byte equality for release archives: two independent packaging runs over identical inputs yield byte-identical archives (`packages/plus/test/release/reproducibility.test.ts:20`). However, standalone executables compiled via `bun build --compile` (using ESM, bytecode compilation, and code splitting) are measurably **not raw-byte reproducible**. The Bun bundler generates a random 64-bit unsigned integer per build and embeds it across compiled chunk tokens.
+
+To verify binary reproducibility without making false assertions of raw byte identity, the release pipeline adopts the **D3-B rebuild equivalence** standard:
+1. **Deliberately Weaker than Raw Byte Equality**: Two independent rebuilds of the exact same source tree are compared only after normalizing a strictly bounded, structurally identified class of bytes. Equivalence under this standard is strictly weaker than raw binary reproducibility.
+2. **Explicit Declaration in Verification Reports**: The verification report (`RebuildEquivalenceReport` in `packages/plus/script/release/verify.ts:41-58`) explicitly sets `weakerThanRawReproducibility: true`. It records both raw SHA-256 digests (`leftRawSha256` and `rightRawSha256`), reports `rawIdentical: false` whenever raw bytes differ, and provides the derived `canonicalSha256` digest solely as an internal equivalence receipt.
+3. **Manifest Boundary Invariant**: The canonical digest **never** enters the release manifest (`ReleaseManifest`) or artifact identity (`ArtifactIdentity.binarySha256`). Publication, distribution, installer verification (`verifyReleaseDirectory` in `packages/plus/script/release/verify.ts:120`), and client update checks verify exact raw byte equality against recorded artifacts. This invariant is directly enforced by unit tests in `packages/plus/test/release/reproducibility.test.ts:278` (`"the canonical digest never replaces the raw binary identity in the manifest"`).
+
+### Normalized Bytes and Structural Anchoring
+
+Canonicalization (`canonicalizeBuildOutput` in `packages/plus/script/release/canonicalize.ts:306-378`) normalizes **only** the per-build bundler unique key and its derived hash word inside chunk-token records within JavaScriptCore's shared bytecode string table:
+
+1. **Token Layout**: A chunk token is a 25-byte ASCII string matching `^[0-9a-f]{16}[ACSH][0-9]{8}$`. The first 16 characters are the hexadecimal bundler unique key. The token is preceded by an 8-byte header:
+   - `[u32 LE: length word]`: Bit 31 is JavaScriptCore's `is8Bit` flag (`0x80000000`); bits 0..30 encode the length.
+   - `[u32 LE: hash word]`: Low 24 bits store `rapidhash(token) & 0xffffff`; top 8 bits are reserved and must be `0x00`.
+   - `[25 bytes]`: Chunk token character data.
+   - `[3 bytes]`: Zero padding to align the record to 4 bytes.
+2. **Normalization Operation**: The canonicalizer identifies the unique non-filler bundler key across all parsed tokens, rewrites the 16-hex-digit key prefix to canonical zeros (`0000000000000000`), and recomputes the 24-bit rapidhash hash word over the canonical token. Constant filler keys (`3333333333333333` and `7777777777777777`) emitted from unrelated data are excluded from detection.
+3. **Strict Structural Anchoring**: Normalization eligibility is anchored strictly in parsed, validated container and payload structure, never in an unanchored scan or regex match across raw binary bytes:
+   - *Container validation*: The binary must parse as a valid ELF64-LE executable containing a loadable `.bun` section in a `PT_LOAD` segment, or a Mach-O64-LE executable containing a `__BUN,__bun` section in a `__BUN` segment.
+   - *Payload validation*: The section must contain a valid Bun payload prefix (`[u64 length]`), the pinned trailer `\n---- Bun! ----\n`, and a valid 32-byte offsets structure.
+   - *Graph and Module validation*: The module table (52-byte `CompiledModuleGraphFile` records) is parsed to bound every module subrange.
+   - *String table validation*: The shared bytecode string table must be located via the graph tail, bounds-checked, confirmed disjoint from all module subranges and builtin bytecode ranges, and parsed entry-by-entry.
+4. **String-Table Width Rule (JSC `is8Bit` Flag)**: Only 8-bit (latin1) entries with bit 31 set in the length word are eligible chunk-token records. UTF-16 entries (bit 31 clear, length in code units, byte length `length * 2`) are parsed, bounds-checked, and hash-validated against their raw bytes, but are **never** normalized even if their decoded text matches the token pattern. Any difference in a UTF-16 entry remains unnormalized and is reported as a `residual-difference`.
+
+### Rejection Codes and Fail-Closed Policy
+
+The canonicalizer fails closed on any malformed structure, unexpected field, or underivable byte. Unknown or unparsed binary shapes are refused, never guessed or silently accepted. The complete set of 15 rejection codes defined in `packages/plus/script/release/canonicalize.ts:161-177` (`RejectionCode`) comprises:
+
+| Rejection Code | Trigger Condition |
+| --- | --- |
+| `unsupported-toolchain` | Binary built with a Bun version other than the pinned release toolchain (`1.4.2`). |
+| `unsupported-executable-format` | Buffer is not an ELF64-LE or Mach-O64-LE standalone Bun binary (e.g. PE/Win32 binary or raw filler data). |
+| `executable-structure-malformed` | ELF or Mach-O headers, segments, section tables, or payload container bounds are corrupt or inconsistent. |
+| `bun-payload-malformed` | Bun payload length prefix, `\n---- Bun! ----\n` trailer, or offsets struct is missing, invalid, or out of bounds. |
+| `module-graph-malformed` | Module table records, module formats, loaders, or module-owned bytecode subranges are invalid or out of bounds. |
+| `string-table-locator-malformed` | Graph tail fields, argv layout, builtin bytecode counts, or string table locators are inconsistent or overlap module data. |
+| `string-table-malformed` | Shared string table header, entry offsets, entry alignment, declared lengths, or padding bytes are corrupted. |
+| `record-hash-word-reserved-bits` | Upper 8 bits of a string table entry hash word are non-zero (must be `0x00`). |
+| `record-hash-underived` | Stored hash in a string table entry does not match `rapidhash(raw bytes) & 0xffffff`. |
+| `bundler-key-missing` | String table contains no chunk tokens bearing a bundler key (e.g. build compiled without `--bytecode`). |
+| `bundler-key-ambiguous` | String table contains multiple conflicting candidate bundler keys. |
+| `size-mismatch` | Two rebuild outputs differ in byte length. |
+| `record-set-mismatch` | Rebuild outputs have differing token counts or token record offsets. |
+| `container-mismatch` | Rebuild outputs use different container formats (e.g. comparing ELF against Mach-O). |
+| `residual-difference` | Any byte outside the normalized bundler key and hash word spans differs between rebuilds. |
+
+### Toolchain Pinning
+
+The canonicalizer specification and parser arithmetic are strictly pinned to Bun `1.4.2` (`CANONICALIZER.bunVersion = "1.4.2"` and `CANONICALIZER.id = "bun-compile-chunk-token/v2"` in `packages/plus/script/release/canonicalize.ts:69-75`). If either binary in a rebuild pair declares or was compiled with any other toolchain version, `compareRebuild` immediately refuses the comparison as `unsupported-toolchain` without attempting structural recovery.
+
+### Measured Verification Evidence
+
+Empirical rebuild equivalence was measured on production-like release binaries at source commit `274013bd899c09b2d22cbda21e732e8ff9261ca9`. Two independent local rebuilds of the release binary produced:
+
+```
+equivalent true, container elf, rawIdentical false
+recordsParsed 189, recordsRewritten 189, rawDifferingBytes 3401
+bundler keys 0cf5d472ba4a2d96 and 0f6ec238c7a0a049
+canonicalSha256 634d042c11502b7af91f1d0bd232111c20fe06bf86633e93a2038539c14eefa3
+```
+
+Every one of the 3,401 raw differing bytes fell strictly within the 189 rewritten token records (16 key bytes plus 4 hash word bytes per record); zero differences existed outside those spans.
+
+The gate was proven non-vacuous through active tamper rejection tests:
+- A single byte flipped in module bytecode is rejected with `residual-difference` reporting the exact byte offset (`test/release/canonicalize.test.ts:692`).
+- A corrupted or tampered ELF header is rejected with `unsupported-executable-format` or `executable-structure-malformed`.
+- A truncated or extended binary is rejected with `size-mismatch` (`test/release/canonicalize.test.ts:801`).
+- Building with a mismatched Bun version is rejected with `unsupported-toolchain` (`test/release/canonicalize.test.ts:293`).
+- A forged token hash or modified chunk index is rejected with `record-hash-underived` or `residual-difference` (`test/release/canonicalize.test.ts:705, 741`).
+
+### Known Equivalence Limitations
+
+This section documents four structural limitations of the D3-B canonicalizer implementation. Following the standard set in the security residuals sections, each entry records the exact mechanism, reachability, risk direction, and disposition.
+
+#### L1 — PE / Win32 Payloads Are Not Parsed
+
+1. **Exact Mechanism**: Container dispatch in `locateBunPayload` (`packages/plus/script/release/canonicalize.ts:491-502`) parses only ELF64-LE (using `isElf64Le`) and Mach-O64-LE (using `isMachO64Le`). Windows PE/COFF executable formats (`PE32+`) are not recognized and are rejected as `unsupported-executable-format`.
+2. **Scope and Target Qualification**: In `release/contract.json:11-21`, all four qualified release targets (`linux-arm64`, `linux-x64`, `darwin-arm64`, `darwin-x64`) produce ELF or Mach-O binaries and are fully supported. Windows targets (`win32-x64`, `win32-arm64`) are explicitly listed under `unqualifiedTargets` with `unqualifiedReason: "Windows is explicitly not qualified for OpenCode Plus releases."`
+3. **Risk Direction**: The limitation cannot cause a false acceptance. If a Windows binary is evaluated, the gate fails closed with `unsupported-executable-format`. If Windows targets are qualified in a future release, rebuild equivalence cannot be established for Windows binaries until a PE parser is implemented.
+
+#### L2 — Graph-Tail Field Order Is Measured, Not Derived
+
+1. **Exact Mechanism**: The trailing record layout following the module table (module content hashes, embedded builtin bytecode records, bytecode string table locators, startup module count, optional module-info string table locators, and `--compile-exec-argv` NUL-terminated string) was determined by empirical byte measurement against Bun 1.4.2 compilation output, rather than derived from published Bun compiler specifications or formal schemas (`packages/plus/script/release/canonicalize.ts:96-112`).
+2. **Risk Direction**: The risk is strictly a **false refusal, never a false accept**. Any divergence in field ordering, tail size, or padding introduced by compiler modifications causes `parseGraph` to fail closed with `string-table-locator-malformed`, `module-graph-malformed`, or `bun-payload-malformed`. This fail-closed guarantee is what makes reliance on empirical layout measurement safe for release verification.
+
+#### L3 — Module-Info Table Is Bounds- and Overlap-Checked but Not Otherwise Parsed
+
+1. **Exact Mechanism**: When an optional module-info string table locator is present in the graph tail, `parseGraph` (`packages/plus/script/release/canonicalize.ts:834-859`) verifies that the table fits within the graph, has non-zero length, and does not overlap module subranges, the module table, embedded builtin bytecode blobs, or the bytecode string table. However, individual string entries within the module-info table are not parsed or validated.
+2. **Risk Direction**: Chunk tokens are normalized solely from the shared bytecode string table. Because the module-info string table is not parsed for normalization, any differing bytes within it cannot be masked or normalized; they remain untouched and fail closed as `residual-difference`.
+
+#### L4 — Builtin Bytecode Blob Ranges Are Not Required Disjoint from Module Subranges
+
+1. **Exact Mechanism**: Embedded builtin bytecode records (a `u32` count followed by 12-byte `{builtinId, bytecodeOffset, bytecodeLength}` entries) are validated by `parseGraph` (`packages/plus/script/release/canonicalize.ts:756-775`) to ensure each blob lies within the graph, resides in the data region before the module table (`offset + length <= modules.offset`), and does not overlap the argv string or announced string tables. However, `parseGraph` does not programmatically check that builtin bytecode ranges are disjoint from individual module-owned subranges (`moduleRanges`).
+2. **Risk Direction**: Unit test coverage (`test/release/canonicalize.test.ts:1021-1023`) verifies that in real Bun 1.4.2 builds, builtin bytecode blobs and module subranges are mutually disjoint allocations. Furthermore, neither builtin bytecode blobs nor module subranges are eligible for chunk-token normalization. Any differing byte in either region is treated as non-derivable and rejected with `residual-difference`.
+
 ## Known Security Residuals
 
 This section records accepted, evidenced security residuals where host-plane isolation does not close an execution vector in this release. These are classified as accepted residuals per workspace owner decision (dated 2026-09-23), not as deferred mandatory gates or outstanding work. Exactly three vectors are covered by this acceptance: repository-local git filter execution, remote transport program execution, and attribute-selected merge driver execution.
