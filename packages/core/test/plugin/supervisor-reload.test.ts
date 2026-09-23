@@ -11,6 +11,7 @@ import { Global } from "@opencode/util/global"
 import { Npm } from "@opencode/util/npm"
 import { Bus } from "@opencode/core/bus"
 import { Command } from "@opencode/core/command"
+import { Config } from "@opencode/core/config"
 import { Database } from "@opencode/core/database/database"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Instance } from "@opencode/core/instance"
@@ -27,6 +28,8 @@ import { advance } from "../lib/clock"
 import { testEffect } from "../lib/effect"
 
 // Real Location boot with plugin-directory discovery, so local plugin files are loaded and reloaded.
+// Only host inputs may select executable plugin modules, so these fixtures keep plugin
+// declarations and plugin directories in the location's own host global config root.
 setDefaultTimeout(15_000)
 
 // Package resolution can be held open so overlapping activations become observable.
@@ -35,6 +38,23 @@ const npm = {
   gate: undefined as Deferred.Deferred<void> | undefined,
   inflight: 0,
   peak: 0,
+}
+
+// The global config root is a trusted plugin source; each location fixture owns its own.
+const globalConfig = (directory: string) => path.join(directory, "global/config")
+
+const globalLayer = (directory: string) => {
+  const root = path.join(directory, "global")
+  return Global.layerWith({
+    data: path.join(root, "data"),
+    cache: path.join(root, "cache"),
+    config: globalConfig(directory),
+    state: path.join(root, "state"),
+    tmp: path.join(root, "tmp"),
+    bin: path.join(root, "cache/bin"),
+    log: path.join(root, "data/log"),
+    repos: path.join(root, "data/repos"),
+  })
 }
 
 const npmLayer = Layer.succeed(
@@ -59,11 +79,11 @@ const instances = Layer.effect(
   LocationServiceMap.Service,
   Effect.gen(function* () {
     const watcher = yield* Watcher.Test
-    const map = yield* LayerMap.make((ref: Location.Ref) => Instance.layer(ref, { replacements: bindings }), {
+    const map = yield* LayerMap.make((ref: Location.Ref) => Instance.layer(ref, { replacements: bindings(ref) }), {
       idleTimeToLive: Duration.infinity,
     })
-    const bindings: LayerNode.Replacements = [
-      Global.node.replace(tempGlobalLayer),
+    const bindings = (ref: Location.Ref): LayerNode.Replacements => [
+      Global.node.replace(globalLayer(ref.directory)),
       offlineModels,
       Npm.node.replace(npmLayer),
       Watcher.node.replace(Layer.succeed(Watcher.Service, watcher)),
@@ -142,7 +162,10 @@ describe("PluginSupervisor reload", () => {
         yield* Effect.promise(async () => {
           await Bun.write(file, entry)
           await Bun.write(helper, source(1))
-          await Bun.write(path.join(directory.path, ".opencode/opencode.json"), JSON.stringify({ plugins: [root] }))
+          await Bun.write(
+            path.join(globalConfig(directory.path), "opencode.json"),
+            JSON.stringify({ plugins: [root] }),
+          )
         })
         const watcher = yield* Watcher.Test
         const locations = yield* LocationServiceMap.Service
@@ -195,16 +218,16 @@ describe("PluginSupervisor reload", () => {
     it.effect(`retains a ${mode} plugin change during initial activation`, () =>
       Effect.gen(function* () {
         const directory = yield* tmpdirScoped()
-        const file = path.join(
-          directory.path,
-          mode === "discovered" ? ".opencode/plugins/greeter.ts" : "external/greeter/index.ts",
-        )
+        const file =
+          mode === "discovered"
+            ? path.join(globalConfig(directory.path), "plugins/greeter.ts")
+            : path.join(directory.path, "external/greeter/index.ts")
         yield* Effect.promise(async () => {
           await Bun.write(file, greeter("greet-v1"))
           await fs.utimes(file, new Date(0), new Date(0))
           if (mode === "configured") {
             await Bun.write(
-              path.join(directory.path, ".opencode/opencode.json"),
+              path.join(globalConfig(directory.path), "opencode.json"),
               JSON.stringify({ plugins: [path.dirname(file)] }),
             )
           }
@@ -249,7 +272,7 @@ describe("PluginSupervisor reload", () => {
   it.live("keeps the running generation when an updated local plugin fails to import", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
-      const file = path.join(directory.path, ".opencode/plugins/greeter.ts")
+      const file = path.join(globalConfig(directory.path), "plugins/greeter.ts")
       // Local plugin revisions key on mtime, so give each rewrite a distinct timestamp.
       const write = (content: string, mtime: Date) =>
         Effect.promise(async () => {
@@ -300,7 +323,7 @@ describe("PluginSupervisor reload", () => {
       )
       yield* Effect.promise(() => Bun.write(path.join(npm.directory, "server.ts"), greeter("greet-pkg")))
       yield* Effect.promise(() =>
-        Bun.write(path.join(directory.path, ".opencode/opencode.json"), JSON.stringify({ plugins: ["fixture-pkg"] })),
+        Bun.write(path.join(globalConfig(directory.path), "opencode.json"), JSON.stringify({ plugins: ["fixture-pkg"] })),
       )
       const bus = yield* Bus.Service
       const locations = yield* LocationServiceMap.Service
@@ -330,6 +353,50 @@ describe("PluginSupervisor reload", () => {
         yield* plugins.awaitActivation
 
         expect(peak).toBe(1)
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
+      )
+    }),
+  )
+
+  // The boundary the fixtures above route around: a project-local document and a
+  // project-local plugin directory are executor-controlled and may not select a module.
+  it.effect("refuses project-local plugin selection", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const configured = path.join(directory.path, "external/greeter")
+      const projectPlugin = (id: string) => `export default {
+  id: "${id}",
+  async setup(ctx) {
+    await ctx.command.transform((editor) => editor.add({ name: "${id}", execute: async () => {} }))
+  },
+}`
+      yield* Effect.promise(async () => {
+        await Bun.write(path.join(configured, "index.ts"), projectPlugin("project-configured"))
+        await Bun.write(path.join(directory.path, ".opencode/plugins/local.ts"), projectPlugin("project-discovered"))
+        await Bun.write(
+          path.join(directory.path, ".opencode/opencode.json"),
+          JSON.stringify({ plugins: [configured] }),
+        )
+        // A trusted host source scanned alongside proves the refusals are a decision, not a pending activation.
+        await Bun.write(path.join(globalConfig(directory.path), "plugins/trusted.ts"), greeter("greet-trusted"))
+      })
+      const locations = yield* LocationServiceMap.Service
+      yield* Effect.gen(function* () {
+        const config = yield* Config.Service
+        const plugins = yield* Plugin.Service
+        const commands = yield* Command.Service
+        // The project document is loaded, so the refusal is selection policy, not a missing config.
+        expect(Config.latest(yield* config.entries(), "plugins")).toContain(configured)
+        yield* plugins.awaitActivation
+        expect(yield* commands.get("greet-trusted")).toBeDefined()
+        expect(yield* commands.get("project-configured")).toBeUndefined()
+        expect(yield* commands.get("project-discovered")).toBeUndefined()
+        const ids = (yield* plugins.list()).map((plugin) => String(plugin.id))
+        expect(ids).toContain("greeter")
+        expect(ids).not.toContain("project-configured")
+        expect(ids).not.toContain("project-discovered")
       }).pipe(
         Effect.scoped,
         Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
