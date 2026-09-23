@@ -56,6 +56,7 @@
         "test/release/model-pins.test.ts",
         "test/release/check-binding.test.ts",
         "test/release/placement.test.ts",
+        "test/release/canaries.test.ts",
         "test/release/requests.test.ts",
         "test/teams/checks.test.ts"
       ],
