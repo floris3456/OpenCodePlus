@@ -4,12 +4,14 @@ import { join } from "node:path"
 interface ActionStep {
   name?: string
   id?: string
+  if?: string
   uses?: string
   with?: Record<string, unknown>
   run?: string
   shell?: string
   env?: Record<string, string>
   "working-directory"?: string
+  "timeout-minutes"?: number
 }
 
 interface WorkflowJob {
@@ -123,6 +125,87 @@ describe("native build workflow (ocp-build.yml)", () => {
       const target = entry.target as string
       expect(expectedMapping[target]).toBeDefined()
       expect(entry.runner).toBe(expectedMapping[target])
+    }
+  })
+
+  test("gates every qualified target with a native cold-runtime step on that target's own runner", async () => {
+    const [doc, contract] = await Promise.all([
+      loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml"),
+      loadJson<ContractJson>("release/contract.json"),
+    ])
+
+    const buildJob = doc.jobs?.build
+    // The gate is a step of the matrix build job, so it necessarily executes on the
+    // runner selected for that matrix entry. A job pinned to a fixed label, or a gate
+    // placed in a separate job, would qualify a target from a foreign host.
+    expect(buildJob?.["runs-on"]).toBe("${{ matrix.runner }}")
+
+    const matrixInclude = buildJob?.strategy?.matrix?.include ?? []
+    expect(matrixInclude.map((entry) => entry.target).sort()).toEqual(contract.qualifiedTargets.slice().sort())
+
+    const steps = buildJob?.steps ?? []
+    const gateIndex = steps.findIndex((step) => step.name?.includes("cold-runtime gate"))
+    expect(gateIndex).toBeGreaterThan(-1)
+
+    const buildIndex = steps.findIndex((step) => step.name === "Build target binary")
+    const uploadIndex = steps.findIndex((step) => step.uses?.includes("upload-artifact"))
+    expect(buildIndex).toBeGreaterThan(-1)
+    expect(uploadIndex).toBeGreaterThan(-1)
+    expect(gateIndex).toBeGreaterThan(buildIndex)
+    expect(gateIndex).toBeLessThan(uploadIndex)
+
+    const gate = steps[gateIndex]
+    // No condition may let a target skip its own gate, the gate must be scoped to the
+    // matrix target, and a binary that hangs must fail the job rather than stall it.
+    expect(gate.if).toBeUndefined()
+    expect(gate.env?.TARGET).toBe("${{ matrix.target }}")
+    expect(gate["timeout-minutes"]).toBeGreaterThan(0)
+  })
+
+  test("cold-runtime gate executes the shipped binary and proves version, identity, and search-mcp stdio", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
+    const gate = doc.jobs?.build?.steps?.find((step) => step.name?.includes("cold-runtime gate"))
+    expect(gate).toBeDefined()
+
+    const run = gate?.run ?? ""
+
+    // Runs the packaged artifact rather than a source-tree entrypoint.
+    expect(run).toContain("tar -xzf")
+    expect(run).toContain("bin/opencodeplus")
+
+    expect(run).toContain("--version")
+    expect(run).toContain("OPENCODE_VERSION")
+
+    // build-info must carry this commit and must not report unmeasured fields.
+    expect(run).toContain("build-info --json")
+    expect(run).toContain("GITHUB_SHA")
+    expect(run).toMatch(/grep[^\n]*null/)
+
+    // JSON-RPC initialize over stdio, protocol on stdout, silence on stderr.
+    expect(run).toContain("search-mcp")
+    expect(run).toContain('"method":"initialize"')
+    expect(run).toContain("jsonrpc")
+
+    // Coldness is proven in the step, not assumed: the runner has Bun installed.
+    expect(run).toContain("env -i")
+    expect(run).toMatch(/command -v bun/)
+    expect(run).toMatch(/command -v node/)
+    expect(run).toContain("node_modules")
+    expect(run).toContain("HOME=")
+    expect(run).toContain("RUNNER_TEMP")
+  })
+
+  test("each qualified target builds and gates on a runner of its own operating system", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
+    const matrixInclude = doc.jobs?.build?.strategy?.matrix?.include ?? []
+    expect(matrixInclude.length).toBeGreaterThan(0)
+
+    // Cross-compilation is unacceptable, so a Darwin target may never be produced or
+    // qualified from a Linux host and vice versa.
+    for (const entry of matrixInclude) {
+      const runner = entry.runner ?? ""
+      const runnerOs = runner.startsWith("macos") ? "darwin" : runner.startsWith("ubuntu") ? "linux" : runner
+      expect(runnerOs).toBe((entry.target ?? "").split("-")[0])
     }
   })
 

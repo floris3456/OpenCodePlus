@@ -59,9 +59,57 @@ jobs:
           bun-version: "1.4.2"
           expected-sha256: ${{ matrix.bun_sha256 }}
 
+      - name: Resolve build identity
+        run: |
+          bun -e '
+            import { appendFile } from "node:fs/promises"
+            import { computeRecipeDigest, loadRecipeInputs } from "./packages/plus/script/release/recipe.js"
+            import { Release } from "./packages/plus/src/release/identity.js"
+
+            const version = process.env.OPENCODE_VERSION
+            const sourceSha = (await Bun.$`git rev-parse HEAD`.text()).trim()
+
+            const toolchainFile = Bun.file("release/toolchain.json")
+            const toolchain = (await toolchainFile.exists()) ? await toolchainFile.json() : {}
+
+            const recipeInputs = await loadRecipeInputs({ repoRoot: process.cwd(), version })
+
+            const lines = [
+              `OPENCODE_SOURCE_SHA=${sourceSha}`,
+              `OPENCODE_RECIPE_DIGEST=${computeRecipeDigest(recipeInputs)}`,
+              `OPENCODE_TOOLCHAIN_DIGEST=${Release.computeToolchainDigest(toolchain)}`,
+              `OPENCODE_TARGET=${process.env.TARGET}`,
+              "",
+            ]
+
+            await appendFile(process.env.GITHUB_ENV, lines.join("\n"))
+            console.log(lines.join("\n"))
+          '
+        env:
+          TARGET: ${{ matrix.target }}
+
       - name: Build target binary
         run: |
-          bun packages/cli/script/build.ts --target=opencode2-${{ matrix.target }}
+          set -euo pipefail
+
+          # --single restricts the build to this runner's own platform and architecture,
+          # so a target can only ever be produced on native hardware. The assertions below
+          # turn a non-native runner into a failed job instead of a cross-compiled artifact.
+          bun packages/cli/script/build-plus.ts --single
+
+          produced=$(ls -d packages/cli/dist/cli-* | wc -l | tr -d " ")
+          if [ "$produced" != "1" ]; then
+            echo "expected exactly one native build output, found ${produced}" >&2
+            ls -d packages/cli/dist/cli-* >&2
+            exit 1
+          fi
+          if [ ! -x "packages/cli/dist/cli-${TARGET}/bin/opencodeplus" ]; then
+            echo "runner produced no ${TARGET} binary; it is not native for this target" >&2
+            ls -d packages/cli/dist/cli-* >&2
+            exit 1
+          fi
+        env:
+          TARGET: ${{ matrix.target }}
 
       - name: Package target artifact
         run: |
@@ -74,7 +122,7 @@ jobs:
             const target = process.env.TARGET
             const version = process.env.OPENCODE_VERSION
             const sourceDateEpoch = Number(process.env.SOURCE_DATE_EPOCH) || 0
-            const binaryPath = `packages/cli/dist/cli-${target}/bin/opencode2`
+            const binaryPath = `packages/cli/dist/cli-${target}/bin/opencodeplus`
 
             const binaryContent = await readFile(binaryPath)
             const sourceSha = (await Bun.$`git rev-parse HEAD`.text()).trim()
@@ -117,6 +165,196 @@ jobs:
 
             console.log(`Packaged ${packaged.artifact.archiveName} (${packaged.artifact.bytes} bytes, sha256: ${packaged.artifact.archiveSha256})`)
           '
+        env:
+          TARGET: ${{ matrix.target }}
+
+      # A successful compile is not qualification. This step runs the packaged binary on
+      # the same native runner that produced it, so a target that builds but cannot start
+      # fails its own job instead of shipping green.
+      - name: Qualify target binary with native cold-runtime gate
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RUNNER_TEMP}" ]; then
+            echo "gate: RUNNER_TEMP is not set; refusing to pick a scratch directory" >&2
+            exit 1
+          fi
+
+          gate="${RUNNER_TEMP}/ocp-cold-gate"
+          rm -rf "$gate"
+          mkdir -p "$gate/root" "$gate/home" "$gate/cwd" "$gate/tmp" "$gate/out" "$gate/path"
+
+          case "$gate" in
+            "${GITHUB_WORKSPACE}"*)
+              echo "gate: refusing to qualify from inside the checkout (${gate})" >&2
+              exit 1
+              ;;
+          esac
+
+          probe="$gate/cwd"
+          while :; do
+            if [ -e "$probe/node_modules" ]; then
+              echo "gate: node_modules is reachable from the cold working directory (${probe}/node_modules)" >&2
+              exit 1
+            fi
+            if [ "$probe" = "/" ]; then break; fi
+            probe=$(dirname "$probe")
+          done
+
+          # setup-ocp puts Bun on PATH, so coldness has to be produced and proven rather
+          # than assumed: env -i drops the entire build environment, PATH points at an
+          # empty directory, HOME at an empty directory, and the cwd sits outside the tree.
+          cold() {
+            ( cd "$gate/cwd" && exec env -i PATH="$gate/path" HOME="$gate/home" TMPDIR="$gate/tmp" "$@" )
+          }
+
+          if cold /bin/sh -c "command -v bun" >/dev/null 2>&1; then
+            echo "gate: bun is still resolvable inside the cold environment" >&2
+            exit 1
+          fi
+          if cold /bin/sh -c "command -v node" >/dev/null 2>&1; then
+            echo "gate: node is still resolvable inside the cold environment" >&2
+            exit 1
+          fi
+          if [ -n "$(ls -A "$gate/path")" ]; then
+            echo "gate: the cold PATH directory is not empty" >&2
+            exit 1
+          fi
+          if [ -n "$(ls -A "$gate/home")" ]; then
+            echo "gate: the cold HOME is not empty" >&2
+            exit 1
+          fi
+          echo "gate: cold environment verified - no bun, no node, empty PATH, empty HOME, cwd ${gate}/cwd"
+
+          tar -xzf "dist/release/opencodeplus-${TARGET}.tar.gz" -C "$gate/root"
+          bin="$gate/root/bin/opencodeplus"
+          if [ ! -x "$bin" ]; then
+            echo "gate: packaged artifact has no executable bin/opencodeplus" >&2
+            exit 1
+          fi
+
+          run_cold() {
+            label="$1"
+            shift
+            set +e
+            cold "$bin" "$@" >"$gate/out/${label}.stdout" 2>"$gate/out/${label}.stderr"
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ]; then
+              echo "gate: ${label} exited ${status}" >&2
+              cat "$gate/out/${label}.stderr" >&2
+              exit 1
+            fi
+            sed "s/^/gate: ${label} stderr: /" "$gate/out/${label}.stderr"
+          }
+
+          # The repository already treats the version as a whitespace-separated token with
+          # an optional leading "v" (see packages/desktop/src/main/remote/cli.ts), so match
+          # a whole token rather than a substring of the line.
+          run_cold version --version
+          if ! awk -v want="$OPENCODE_VERSION" '{ for (i = 1; i <= NF; i++) if ($i == want || $i == ("v" want)) found = 1 } END { exit(found ? 0 : 1) }' "$gate/out/version.stdout"; then
+            echo "gate: --version does not report ${OPENCODE_VERSION}" >&2
+            cat "$gate/out/version.stdout" >&2
+            exit 1
+          fi
+          echo "gate: --version reports ${OPENCODE_VERSION}:"
+          cat "$gate/out/version.stdout"
+
+          run_cold build-info build-info --json
+          cat "$gate/out/build-info.stdout"
+
+          expect_field() {
+            if ! grep -Fq "\"$1\": \"$2\"" "$gate/out/build-info.stdout"; then
+              echo "gate: build-info $1 is not ${2}" >&2
+              exit 1
+            fi
+          }
+          expect_field product opencodeplus
+          expect_field channel plus
+          expect_field version "$OPENCODE_VERSION"
+          expect_field sourceSha "$GITHUB_SHA"
+          expect_field recipeDigest "$OPENCODE_RECIPE_DIGEST"
+          expect_field toolchainDigest "$OPENCODE_TOOLCHAIN_DIGEST"
+          expect_field target "$TARGET"
+          if grep -q null "$gate/out/build-info.stdout"; then
+            echo "gate: build-info claims an unmeasured field" >&2
+            exit 1
+          fi
+          echo "gate: build-info carries this commit (${GITHUB_SHA}) and no unmeasured field"
+
+          # The embedded MCP server must speak JSON-RPC on stdout and stay silent on
+          # stderr; any diagnostic on either stream corrupts a real client session.
+          mkfifo "$gate/mcp.in"
+          # Fd 9 keeps the write end open so the server can be fed and then given a real
+          # stdin EOF. It is closed in the child (9>&-), otherwise the child would inherit
+          # a writer of its own stdin and never see that EOF.
+          exec 9<>"$gate/mcp.in"
+          cold "$bin" search-mcp <"$gate/mcp.in" >"$gate/out/mcp.stdout" 2>"$gate/out/mcp.stderr" 9>&- &
+          mcp_pid=$!
+          printf "%s\n" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ocp-cold-gate","version":"1.0.0"}}}' >&9
+
+          waited=0
+          while [ "$waited" -lt 120 ]; do
+            if grep -q "serverInfo" "$gate/out/mcp.stdout" 2>/dev/null; then break; fi
+            if ! kill -0 "$mcp_pid" 2>/dev/null; then break; fi
+            sleep 1
+            waited=$((waited + 1))
+          done
+
+          exec 9>&-
+          waited=0
+          while [ "$waited" -lt 30 ] && kill -0 "$mcp_pid" 2>/dev/null; do
+            sleep 1
+            waited=$((waited + 1))
+          done
+          if kill -0 "$mcp_pid" 2>/dev/null; then
+            kill "$mcp_pid" 2>/dev/null || true
+            echo "gate: search-mcp did not exit after stdin EOF" >&2
+            exit 1
+          fi
+          if wait "$mcp_pid"; then mcp_status=0; else mcp_status=$?; fi
+          if [ "$mcp_status" -ne 0 ]; then
+            echo "gate: search-mcp exited ${mcp_status}" >&2
+            cat "$gate/out/mcp.stderr" >&2
+            exit 1
+          fi
+
+          if [ -s "$gate/out/mcp.stderr" ]; then
+            echo "gate: search-mcp wrote to stderr" >&2
+            cat "$gate/out/mcp.stderr" >&2
+            exit 1
+          fi
+          if [ ! -s "$gate/out/mcp.stdout" ]; then
+            echo "gate: search-mcp answered nothing on stdout" >&2
+            exit 1
+          fi
+
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in
+              "{"*) ;;
+              *)
+                echo "gate: non-protocol traffic on search-mcp stdout: ${line}" >&2
+                exit 1
+                ;;
+            esac
+            if ! printf "%s" "$line" | grep -Fq '"jsonrpc":"2.0"'; then
+              echo "gate: stdout line is not a JSON-RPC 2.0 message: ${line}" >&2
+              exit 1
+            fi
+          done <"$gate/out/mcp.stdout"
+
+          for expected in '"id":1' '"result"' '"protocolVersion"' '"name":"opencodeplus-search"'; do
+            if ! grep -Fq "$expected" "$gate/out/mcp.stdout"; then
+              echo "gate: initialize response is missing ${expected}" >&2
+              cat "$gate/out/mcp.stdout" >&2
+              exit 1
+            fi
+          done
+
+          cat "$gate/out/mcp.stdout"
+          echo "gate: ${TARGET} passed the native cold-runtime qualification gate on ${RUNNER_OS}"
         env:
           TARGET: ${{ matrix.target }}
 
