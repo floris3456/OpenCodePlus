@@ -22,9 +22,8 @@
  *   - Owner-accepted residuals (repository-local git filters, remote transport execution, and
  *     attribute-selected merge drivers) are documented under "Known Security Residuals" in
  *     `packages/plus/docs/releases/contracts.md`.
- *   - Open, unaccepted findings barring publication (PTY allocation routing and host-plane
- *     executable plugin loading) are documented separately under "Open Security Findings" in
- *     `packages/plus/docs/releases/contracts.md`.
+ *   - Open, unaccepted findings barring publication (PTY allocation routing) are documented
+ *     separately under "Open Security Findings" in `packages/plus/docs/releases/contracts.md`.
  * That document serves as the single source of truth for documented residuals, open findings,
  * owner decisions, and evidence, rather than duplicating or restating them here where they could
  * drift.
@@ -58,7 +57,10 @@ import { Instructions } from "../../../core/src/instructions/index.js"
 import { Location } from "../../../core/src/location.js"
 import { Mcp } from "../../../core/src/mcp/index.js"
 import { make } from "../../../core/src/mcp/stdio.js"
+import { ModelsDev } from "../../../core/src/models-dev.js"
+import { Plugin } from "../../../core/src/plugin.js"
 import { PluginHost } from "../../../core/src/plugin/host.js"
+import { PluginSupervisor } from "../../../core/src/plugin/supervisor.js"
 import { ReleaseRequestStore } from "../../../core/src/release/request.js"
 import { Shell } from "../../../core/src/shell.js"
 import { Watcher } from "../../../core/src/filesystem/watcher.js"
@@ -706,6 +708,126 @@ describe("executable plugins, tools, and MCP: placement does not load host code"
     const missing = await Effect.runPromise(Effect.exit(Effect.provide(eraseRequirements(host), withoutStore)))
     expect(Exit.isFailure(missing)).toBe(true)
     if (Exit.isFailure(missing)) expect(Cause.pretty(missing.cause)).toContain("ReleaseRequestStore")
+  })
+})
+
+/**
+ * Canary: plugin module code runs at module evaluation, before the tool-permission gate ever
+ * sees a call. A configuration document the executor controls — a repository-local
+ * `opencode.json` in its own worktree, or a document read from a placed workspace — must never
+ * name an executable plugin on the host plane. The control loads the same module through a
+ * host-injected document and proves the load-time sentinel really fires; the product path
+ * asserts it does not, while a host-selected plugin still loads so absence cannot be confused
+ * with plugin loading being broken.
+ */
+describe("executable plugins: executor-controlled configuration cannot load a module on the host", () => {
+  const sentinelPlugin = (id: string, sentinel: string) =>
+    `await Bun.write(${JSON.stringify(sentinel)}, ${JSON.stringify(id)})\n` +
+    `export default { id: ${JSON.stringify(id)}, async setup() {} }\n`
+
+  const plant = async (directory: string, id: string, sentinel: string): Promise<void> => {
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, "index.ts"), sentinelPlugin(id, sentinel))
+  }
+
+  // The real plugin supervisor over the real config plugin source: a config document either
+  // reaches module evaluation or it does not. Environment and Config precede the plugin graph
+  // so the location's config reads through its placement, as it does in the instance graph.
+  const pluginLayer = (ref: Location.Ref, connect: Workspace.Interface["connect"], options: Config.Options) =>
+    AppNodeBuilder.build(LayerNode.group([Environment.node, Config.node, Plugin.node, PluginSupervisor.node]), [
+      ...sharedReplacements(ref, connect),
+      Config.node.replace(Config.configured(options)),
+      Mcp.node.replace(emptyMcpLayer),
+      ModelsDev.node.replace(ModelsDev.configured({ fetch: false })),
+    ])
+
+  const activate = (ref: Location.Ref, connect: Workspace.Interface["connect"], options: Config.Options) =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const environment = yield* Environment.Service
+          const config = yield* Config.Service
+          const plugins = yield* Plugin.Service
+          yield* plugins.awaitActivation
+          return {
+            placement: environment.placement.kind,
+            documents: (yield* config.entries()).flatMap((entry) =>
+              entry.type === "document" && entry.path ? [entry.path] : [],
+            ),
+            inventory: yield* plugins.list(),
+          }
+        }).pipe(Effect.provide(pluginLayer(ref, connect, options))),
+      ),
+    )
+
+  const selected = (inventory: readonly Plugin.Info[], id: string) =>
+    inventory.some((plugin) => plugin.id === Plugin.ID.make(id))
+
+  test("a repository-local config document is refused while a host-injected document still loads", async () => {
+    const location = join(scratch, "plugin-config-repository")
+    const refused = join(scratch, "plugin-config-refused")
+    const allowed = join(scratch, "plugin-config-allowed")
+    const refusedSentinel = join(scratch, "plugin-config-refused.sentinel")
+    const allowedSentinel = join(scratch, "plugin-config-allowed.sentinel")
+    await mkdir(location, { recursive: true })
+    await plant(refused, "canary-refused", refusedSentinel)
+    await plant(allowed, "canary-allowed", allowedSentinel)
+    await writeFile(join(location, "opencode.json"), JSON.stringify({ plugins: [refused] }))
+
+    // Control: the same module selected by a host-injected document really writes the sentinel.
+    const control = await activate(hostRef(location), unreachable, {
+      global: false,
+      content: JSON.stringify({ plugins: [refused] }),
+    })
+    expect(selected(control.inventory, "canary-refused")).toBe(true)
+    expect(await Bun.file(refusedSentinel).exists()).toBe(true)
+    await rm(refusedSentinel, { force: true })
+
+    // Product path: the repository-local document is executor-controlled and must not load;
+    // the host-injected document still does, so absence is not "plugin loading is broken".
+    const product = await activate(hostRef(location), unreachable, {
+      global: false,
+      content: JSON.stringify({ plugins: [allowed] }),
+    })
+    // The refused document really was read: the canary would be vacuous if it were merely absent.
+    expect(product.documents).toContain(join(location, "opencode.json"))
+    expect(selected(product.inventory, "canary-refused")).toBe(false)
+    expect(selected(product.inventory, "canary-allowed")).toBe(true)
+    expect(await Bun.file(refusedSentinel).exists()).toBe(false)
+    expect(await Bun.file(allowedSentinel).exists()).toBe(true)
+  })
+
+  test("a placed workspace's config document is refused while a host-injected document still loads", async () => {
+    const location = join(scratch, "plugin-config-placed")
+    const refused = join(scratch, "plugin-config-placed-refused")
+    const allowed = join(scratch, "plugin-config-placed-allowed")
+    const refusedSentinel = join(scratch, "plugin-config-placed-refused.sentinel")
+    const allowedSentinel = join(scratch, "plugin-config-placed-allowed.sentinel")
+    await mkdir(location, { recursive: true })
+    await plant(refused, "canary-placed-refused", refusedSentinel)
+    await plant(allowed, "canary-placed-allowed", allowedSentinel)
+    const driver = Environment.makeMemoryDriver()
+    // The document exists only in the workspace: the host path it is discovered at has no file.
+    await Effect.runPromise(
+      Environment.makeFiles(driver).write(
+        join(location, "opencode.json"),
+        encoder.encode(JSON.stringify({ plugins: [refused] })),
+      ),
+    )
+    expect(await Bun.file(join(location, "opencode.json")).exists()).toBe(false)
+
+    const product = await activate(placedRef(location), reachable(driver), {
+      global: false,
+      content: JSON.stringify({ plugins: [allowed] }),
+    })
+    // The workspace really was bound and its document really was read: the refusal is not a
+    // side effect of a document that never reached the plugin source.
+    expect(product.placement).toBe("workspace")
+    expect(product.documents).toContain(join(location, "opencode.json"))
+    expect(selected(product.inventory, "canary-placed-refused")).toBe(false)
+    expect(selected(product.inventory, "canary-placed-allowed")).toBe(true)
+    expect(await Bun.file(refusedSentinel).exists()).toBe(false)
+    expect(await Bun.file(allowedSentinel).exists()).toBe(true)
   })
 })
 
