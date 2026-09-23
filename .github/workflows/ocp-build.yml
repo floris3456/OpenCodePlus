@@ -40,13 +40,30 @@ jobs:
             runner: macos-15-intel
             bun_sha256: null # TODO: measuredBy: build-seat
     runs-on: ${{ matrix.runner }}
-    env:
-      OPENCODE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0-{0}', github.sha) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+
+      # Tags carry the leading "v" (v0.0.0-plus-r4.1); versions do not
+      # (0.0.0-plus-r4.1). The binary, the inner metadata, release.json, and
+      # install.sh all compare against the unprefixed form, so the tag form is
+      # stripped here once instead of being carried into any artifact.
+      - name: Resolve release version
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-${GITHUB_SHA}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "cannot resolve OPENCODE_VERSION from ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          echo "OPENCODE_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Resolved OPENCODE_VERSION=${version} from ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}"
 
       - name: Pin SOURCE_DATE_EPOCH from source commit
         run: |
@@ -369,13 +386,28 @@ jobs:
     name: record release bundle
     needs: [build]
     runs-on: ubuntu-24.04
-    env:
-      OPENCODE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0-{0}', github.sha) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+
+      # Same convention as the build job: the git tag keeps its "v", the
+      # version recorded in release.json does not.
+      - name: Resolve release version
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-${GITHUB_SHA}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "cannot resolve OPENCODE_VERSION from ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          echo "OPENCODE_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Resolved OPENCODE_VERSION=${version} from ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}"
 
       - name: Pin SOURCE_DATE_EPOCH from source commit
         run: |

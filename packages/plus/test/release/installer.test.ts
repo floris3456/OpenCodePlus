@@ -335,6 +335,60 @@ describe("installer positive execution", () => {
     expect(res.exitCode).toBe(0)
     expect(await Bun.file(join(prefix, "releases/1.0.0/bin/opencodeplus")).exists()).toBe(true)
   })
+
+  test("release tag convention: v-prefixed tag installs under the unprefixed manifest version", async () => {
+    const tag = "v0.0.0-plus-r4.1"
+    const version = tag.replace(/^v/, "")
+    const assetDir = join(testDir, "assets-tag-convention")
+
+    // The build derives the manifest version from the git tag by stripping the
+    // leading "v", so tag v0.0.0-plus-r4.1 produces a manifest whose version is
+    // 0.0.0-plus-r4.1. install.sh has to accept both the tag spelling and the
+    // canonical version spelling.
+    await setupReleaseAssets(assetDir, { version })
+
+    const tagPrefix = join(testDir, "opt/tag-form")
+    const tagForm = await runInstaller([
+      "--offline",
+      "--asset-dir",
+      assetDir,
+      "--prefix",
+      tagPrefix,
+      "--no-modify-path",
+      "--version",
+      tag,
+    ])
+    expect(tagForm.exitCode).toBe(0)
+    expect(await Bun.file(join(tagPrefix, `releases/${version}/bin/opencodeplus`)).exists()).toBe(true)
+
+    const versionPrefix = join(testDir, "opt/version-form")
+    const versionForm = await runInstaller([
+      "--offline",
+      "--asset-dir",
+      assetDir,
+      "--prefix",
+      versionPrefix,
+      "--no-modify-path",
+      "--version",
+      version,
+    ])
+    expect(versionForm.exitCode).toBe(0)
+    expect(await Bun.file(join(versionPrefix, `releases/${version}/bin/opencodeplus`)).exists()).toBe(true)
+
+    // A request that does not match the manifest still fails closed.
+    const mismatch = await runInstaller([
+      "--offline",
+      "--asset-dir",
+      assetDir,
+      "--prefix",
+      join(testDir, "opt/mismatch"),
+      "--no-modify-path",
+      "--version",
+      "v9.9.9",
+    ])
+    expect(mismatch.exitCode).not.toBe(0)
+    expect(mismatch.stderr.includes("does not match manifest version")).toBe(true)
+  })
 })
 
 describe("installer negative execution and hostile archive protection", () => {
