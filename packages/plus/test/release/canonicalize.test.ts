@@ -72,6 +72,7 @@ interface RealBuilds {
   readonly builtinRight: Buffer
   readonly mixedLeft: Buffer
   readonly mixedRight: Buffer
+  readonly noBytecode: Buffer
 }
 
 let builds: RealBuilds
@@ -152,6 +153,7 @@ beforeAll(() => {
     builtinRight: compile(OUT_BUILTIN_RIGHT, { entry: builtinEntry }),
     mixedLeft: compile(OUT_MIXED_LEFT, { entry: mixedEntry }),
     mixedRight: compile(OUT_MIXED_RIGHT, { entry: mixedEntry }),
+    noBytecode: compile(join(scratch, "no-bytecode-pinned"), { bytecode: false }),
   }
 
   const parsed = parseBuildStructure({ bunVersion: BUN, bytes: builds.left })
@@ -454,6 +456,60 @@ describe("container identification bytes", () => {
     // Rename the only `.bun` header to the empty name at name-table offset 0.
     binary.writeUInt32LE(0, bun.header)
     expectUnsupportedFormat(binary, "has no '.bun' section")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ELF file type (`e_type`, offset 0x10). The Mach-O path already refuses any
+// file type other than MH_EXECUTE; the ELF path must do the same. A relocatable
+// object (ET_REL, 1) can carry a `.bun` section and parse like an executable, so
+// without this check two non-executable objects — edited identically on both
+// sides — compare equivalent.
+// ---------------------------------------------------------------------------
+
+describe("ELF file type (e_type)", () => {
+  test("every real ELF fixture the suite builds declares ET_EXEC", () => {
+    const fixtures: [name: string, bytes: Buffer][] = [
+      ["left", builds.left],
+      ["right", builds.right],
+      ["manyLeft", builds.manyLeft],
+      ["manyRight", builds.manyRight],
+      ["argv", builds.argv],
+      ["argvLong", builds.argvLong],
+      ["builtinLeft", builds.builtinLeft],
+      ["builtinRight", builds.builtinRight],
+      ["mixedLeft", builds.mixedLeft],
+      ["mixedRight", builds.mixedRight],
+      ["noBytecode", builds.noBytecode],
+    ]
+    const observed = fixtures.map(([name, bytes]) => ({ name, fileType: bytes.readUInt16LE(0x10) }))
+    expect(observed).toEqual(fixtures.map(([name]) => ({ name, fileType: 2 })))
+  })
+
+  test("rejects a real ELF build whose e_type is ET_REL", () => {
+    const binary = Buffer.from(builds.left)
+    binary.writeUInt16LE(1, 0x10)
+    expectMalformedElf(binary, "file type is 1, expected 2")
+  })
+
+  test("rejects an identically edited ET_REL pair instead of accepting it", () => {
+    const left = Buffer.from(builds.left)
+    const right = Buffer.from(builds.right)
+    left.writeUInt16LE(1, 0x10)
+    right.writeUInt16LE(1, 0x10)
+
+    const leftOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: left })
+    const rightOutcome = canonicalizeBuildOutput({ bunVersion: BUN, bytes: right })
+    if (leftOutcome.ok || rightOutcome.ok) {
+      throw new Error("FALSE ACCEPT: an ET_REL object was parsed as an executable")
+    }
+
+    const comparison = compareRebuild({ bunVersion: BUN, left, right })
+    if (comparison.equivalent) {
+      throw new Error("FALSE ACCEPT: two identically edited ET_REL objects compared equivalent")
+    }
+    expect(comparison.rejection.code).toBe("executable-structure-malformed")
+    expect(comparison.rejection.detail).toContain("file type is 1, expected 2")
   })
 })
 
