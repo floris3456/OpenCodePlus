@@ -482,6 +482,8 @@ describe("LocationServiceMap", () => {
           expect(blockedState.providers.some((provider) => provider.id === blockedID)).toBe(true)
           expect(blockedState.providers.some((provider) => provider.id === allowedID)).toBe(false)
           const blockedTools = blockedState.tools.map((tool) => tool.name)
+          // Plus installs its team tools in every instance (project mode off
+          // included), so a booted location carries them alongside core's tools.
           expect(blockedTools.filter((name) => name !== "execute").sort()).toEqual([
             "edit",
             "glob",
@@ -492,6 +494,14 @@ describe("LocationServiceMap", () => {
             "shell",
             "skill",
             "subagent",
+            "team_checkpoint",
+            "team_delegate",
+            "team_finish",
+            "team_followup",
+            "team_integrate",
+            "team_set_checks",
+            "team_stop",
+            "team_supersede",
             "webfetch",
             "websearch",
             "write",
@@ -511,6 +521,14 @@ describe("LocationServiceMap", () => {
             "shell",
             "skill",
             "subagent",
+            "team_checkpoint",
+            "team_delegate",
+            "team_finish",
+            "team_followup",
+            "team_integrate",
+            "team_set_checks",
+            "team_stop",
+            "team_supersede",
             "webfetch",
             "websearch",
             "write",
