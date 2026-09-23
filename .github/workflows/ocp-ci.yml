@@ -60,7 +60,7 @@ jobs:
       - name: core-contracts
         id: core-contracts
         working-directory: packages/core
-        run: bun run test test/tool-permission-gate.test.ts test/permission.test.ts test/mcp.test.ts test/environment-ssh.test.ts test/managed-execution.test.ts test/release-admission.test.ts test/environment.test.ts test/session-environment.test.ts test/workspace.test.ts
+        run: bun run test test/tool-permission-gate.test.ts test/permission.test.ts test/mcp.test.ts test/environment-ssh.test.ts test/managed-execution.test.ts test/release-admission.test.ts test/environment.test.ts test/session-environment.test.ts test/workspace.test.ts test/config/config.test.ts test/config/reload.test.ts test/location-layer.test.ts
 
       - name: product-roots
         id: product-roots
