@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 interface ActionStep {
@@ -89,6 +91,106 @@ async function loadYaml<T>(relPath: string): Promise<T> {
 async function loadJson<T>(relPath: string): Promise<T> {
   const filePath = join(repoRoot, relPath)
   return (await Bun.file(filePath).json()) as T
+}
+
+interface GuardScenario {
+  tagName: string
+  /** The refs/tags answer: null means GitHub reports the tag does not exist. */
+  tagRef: { ref: string; type: string; sha: string } | null
+  /** The /git/tags/{sha} answer used when the tag object must be peeled. */
+  tagObject?: { type: string; sha: string }
+  /** What the ambiguous /commits/{ref} endpoint would have answered. */
+  ambiguousRefSha: string
+  run: {
+    repository: string
+    name: string
+    path: string
+    conclusion: string
+    head_sha: string
+    head_branch: string
+    event: string
+  }
+}
+
+/**
+ * Runs the real guard script extracted from ocp-release.yml against a stub `gh`
+ * on PATH. The stub answers the paths the guard actually calls; the scenario
+ * also supplies what the ambiguous /commits/{ref} endpoint would answer, so a
+ * rejection can be shown to come from tag resolution alone rather than from a
+ * stub that fails everything.
+ */
+async function runVerificationGuard(
+  script: string,
+  scenario: GuardScenario,
+): Promise<{ exitCode: number; output: string; githubEnv: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "release-guard-"))
+  try {
+    const stubBin = join(dir, "bin")
+    await mkdir(stubBin, { recursive: true })
+
+    const tagRefCase = scenario.tagRef
+      ? `printf '%s\\n' ${JSON.stringify(scenario.tagRef.ref)} ${JSON.stringify(scenario.tagRef.type)} ${JSON.stringify(scenario.tagRef.sha)}`
+      : `echo "gh: Not Found (HTTP 404)" >&2; exit 1`
+    const tagObjectCase = scenario.tagObject
+      ? `printf '%s\\n' ${JSON.stringify(scenario.tagObject.type)} ${JSON.stringify(scenario.tagObject.sha)}`
+      : `echo "gh: Not Found (HTTP 404)" >&2; exit 1`
+    const runCase = [
+      scenario.run.repository,
+      scenario.run.name,
+      scenario.run.path,
+      scenario.run.conclusion,
+      scenario.run.head_sha,
+      scenario.run.head_branch,
+      scenario.run.event,
+      "https://github.com/acme/opencodeplus/actions/runs/1",
+    ]
+      .map((field) => JSON.stringify(field))
+      .join(" ")
+
+    const stub = [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'case "$2" in',
+      `  */git/ref/tags/*) ${tagRefCase} ;;`,
+      `  */git/tags/*) ${tagObjectCase} ;;`,
+      `  */commits/*) printf '%s\\n' ${JSON.stringify(scenario.ambiguousRefSha)} ;;`,
+      `  */actions/runs/*) printf '%s\\n' ${runCase} ;;`,
+      '  *) echo "unexpected gh api path: $2" >&2; exit 1 ;;',
+      "esac",
+      "",
+    ].join("\n")
+    await writeFile(join(stubBin, "gh"), stub, { mode: 0o755 })
+
+    const scriptPath = join(dir, "guard.sh")
+    await writeFile(scriptPath, script)
+    const githubEnvPath = join(dir, "github-env")
+    await writeFile(githubEnvPath, "")
+
+    const proc = Bun.spawn(["bash", scriptPath], {
+      cwd: dir,
+      env: {
+        PATH: `${stubBin}:${process.env.PATH ?? ""}`,
+        REPOSITORY: "acme/opencodeplus",
+        RELEASE_TAG: scenario.tagName,
+        BUILD_RUN_ID: "35800607403",
+        GITHUB_ENV: githubEnvPath,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    return {
+      exitCode,
+      output: `${stdout}${stderr}`,
+      githubEnv: await Bun.file(githubEnvPath).text(),
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 }
 
 describe("native build workflow (ocp-build.yml)", () => {
@@ -266,12 +368,52 @@ describe("native build workflow (ocp-build.yml)", () => {
     expect(doc.env?.BUN_COMPILE_RELEASE).toBe("bun-v1.4.2")
 
     const buildJob = doc.jobs?.build
-    expect(buildJob?.env?.OPENCODE_VERSION).toBeDefined()
+    // The version is supplied by the "Resolve release version" step instead of a
+    // job-level env, because a job-level env can only copy github.ref_name and
+    // that is the v-prefixed tag form install.sh cannot match.
+    expect(buildJob?.env?.OPENCODE_VERSION).toBeUndefined()
+    expect(buildJob?.steps?.find((s) => s.name === "Resolve release version")).toBeDefined()
 
     const epochStep = buildJob?.steps?.find((s) => s.name?.includes("SOURCE_DATE_EPOCH"))
     expect(epochStep).toBeDefined()
     expect(epochStep?.run).toContain("git log -1 --pretty=%ct")
     expect(epochStep?.run).toContain("SOURCE_DATE_EPOCH=")
+  })
+
+  test("derives the manifest version from the tag with the leading v stripped in every identity job", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
+
+    for (const jobName of ["build", "record-release"]) {
+      const job = doc.jobs?.[jobName]
+      expect(job).toBeDefined()
+
+      // The tag keeps its "v" (v0.0.0-plus-r4.1); the version does not
+      // (0.0.0-plus-r4.1). No job-level env may reintroduce the tag form.
+      expect(job?.env?.OPENCODE_VERSION).toBeUndefined()
+
+      const steps = job?.steps ?? []
+      const versionIndex = steps.findIndex((step) => step.name === "Resolve release version")
+      expect(versionIndex).toBeGreaterThan(-1)
+
+      const run = steps[versionIndex].run ?? ""
+      expect(run).toContain('"${GITHUB_REF_TYPE}" = "tag"')
+      expect(run).toContain("${GITHUB_REF_NAME#v}")
+      expect(run).toContain("0.0.0-${GITHUB_SHA}")
+      expect(run).toContain('echo "OPENCODE_VERSION=${version}" >> "$GITHUB_ENV"')
+
+      // Every step that consumes the version must run after the strip.
+      const consumers = steps
+        .map((step, index) => ({ step, index }))
+        .filter(({ step }) => step.name !== "Resolve release version" && step.run?.includes("OPENCODE_VERSION"))
+      expect(consumers.length).toBeGreaterThan(0)
+      for (const consumer of consumers) expect(consumer.index).toBeGreaterThan(versionIndex)
+    }
+
+    // The cold-runtime gate compares the packaged binary against the resolved
+    // (unprefixed) version and still accepts a printed leading "v" token.
+    const gateRun = doc.jobs?.build?.steps?.find((step) => step.name?.includes("cold-runtime gate"))?.run ?? ""
+    expect(gateRun).toContain('awk -v want="$OPENCODE_VERSION"')
+    expect(gateRun).toContain('$i == ("v" want)')
   })
 
   test("builds never publish and reference no publication or model secrets", async () => {
@@ -429,6 +571,9 @@ describe("release publication workflow (ocp-release.yml)", () => {
     expect(publishStep).toBeDefined()
     expect(publishStep?.run).toContain("--prerelease")
     expect(publishStep?.run).toContain("--latest=false")
+    // Publication cannot invent a tag: --verify-tag aborts unless the tag
+    // already exists in the remote repository.
+    expect(publishStep?.run).toContain("--verify-tag")
 
     // Must not recompile, recompress, or re-sign
     for (const step of steps) {
@@ -485,10 +630,14 @@ describe("release publication workflow (ocp-release.yml)", () => {
 
     const run = guard.run ?? ""
 
-    // The tag's commit is resolved from the repository rather than trusted from
-    // the dispatch input, so the run cannot be checked against the wrong commit.
+    // The tag's commit is resolved from refs/tags only, rather than trusted
+    // from the dispatch input or resolved through the ambiguous `commits/{ref}`
+    // endpoint that also answers for branches and raw SHAs.
     expect(run).toContain("gh api")
-    expect(run).toContain("commits/${RELEASE_TAG}")
+    expect(run).toContain("git/ref/tags/${RELEASE_TAG}")
+    expect(run).not.toContain("commits/${RELEASE_TAG}")
+    expect(run).toContain(".ref")
+    expect(run).toContain("git/tags/${tag_sha}")
     expect(run).toContain("tag_sha")
 
     // The named run is queried and checked for repository, workflow, conclusion,
@@ -506,6 +655,99 @@ describe("release publication workflow (ocp-release.yml)", () => {
     const errorAnnotations = run.match(/::error::/g) ?? []
     expect(errorAnnotations.length).toBeGreaterThanOrEqual(5)
     expect(run).toContain("exit 1")
+  })
+
+  test("refuses a dispatch naming a branch that has a successful ocp-build push run", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const guard = doc.jobs?.publish?.steps?.find((step) => step.name === "Verify build run identity for tag")
+    expect(guard?.run).toBeDefined()
+    const run = guard?.run ?? ""
+
+    // The endpoint that made the spoof possible must be gone; this assertion
+    // fails against the pre-fix guard, which resolved `commits/${RELEASE_TAG}`.
+    expect(run).toContain("git/ref/tags/${RELEASE_TAG}")
+    expect(run).not.toContain("commits/${RELEASE_TAG}")
+
+    // The dispatcher names the v2 branch. Its successful ocp-build push run
+    // satisfies repository, workflow, conclusion, event, head_branch and
+    // head_sha, and the old endpoint resolved the branch to the same commit; the
+    // only thing missing is refs/tags/v2. The guard must therefore refuse.
+    const branchSha = "b".repeat(40)
+    const result = await runVerificationGuard(run, {
+      tagName: "v2",
+      tagRef: null,
+      ambiguousRefSha: branchSha,
+      run: {
+        repository: "acme/opencodeplus",
+        name: "ocp-build",
+        path: ".github/workflows/ocp-build.yml",
+        conclusion: "success",
+        head_sha: branchSha,
+        head_branch: "v2",
+        event: "push",
+      },
+    })
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain("does not exist as a tag")
+  })
+
+  test("accepts a push run for an annotated tag and records the peeled tag identity", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const guard = doc.jobs?.publish?.steps?.find((step) => step.name === "Verify build run identity for tag")
+    const run = guard?.run ?? ""
+
+    // An annotated tag points at a tag object, not at a commit: the guard has to
+    // peel it before comparing with the run's head_sha.
+    const tagObjectSha = "1".repeat(40)
+    const commitSha = "2".repeat(40)
+    const result = await runVerificationGuard(run, {
+      tagName: "v0.0.0-plus-r4.1",
+      tagRef: { ref: "refs/tags/v0.0.0-plus-r4.1", type: "tag", sha: tagObjectSha },
+      tagObject: { type: "commit", sha: commitSha },
+      ambiguousRefSha: commitSha,
+      run: {
+        repository: "acme/opencodeplus",
+        name: "ocp-build",
+        path: ".github/workflows/ocp-build.yml",
+        conclusion: "success",
+        head_sha: commitSha,
+        head_branch: "v0.0.0-plus-r4.1",
+        event: "push",
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    // The tag-derived version and the tag's commit are what the downloaded
+    // release.json is later checked against.
+    expect(result.githubEnv).toContain("EXPECTED_VERSION=0.0.0-plus-r4.1")
+    expect(result.githubEnv).toContain(`EXPECTED_TAG_SHA=${commitSha}`)
+  })
+
+  test("binds the downloaded bundle to the tag-derived version and commit before publishing", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const steps = doc.jobs?.publish?.steps ?? []
+
+    const checksumIndex = steps.findIndex((step) => step.name?.includes("Verify checksums"))
+    const identityIndex = steps.findIndex((step) => step.name === "Verify recorded release matches tag identity")
+    const publishIndex = steps.findIndex((step) => step.name?.includes("Publish immutable prerelease"))
+    expect(checksumIndex).toBeGreaterThan(-1)
+    expect(identityIndex).toBeGreaterThan(checksumIndex)
+    expect(identityIndex).toBeLessThan(publishIndex)
+
+    // The run object carries no ref type, so the guard cannot by itself separate
+    // a tag push from a branch push of the same name. The bundle can: only a
+    // tag-triggered build embeds the tag-derived version and hashes the tag's
+    // commit, and that is asserted here after the checksums were verified.
+    const identity = steps[identityIndex]
+    expect(identity.run).toContain(".release.version")
+    expect(identity.run).toContain(".release.sourceSha")
+    expect(identity.run).toContain("EXPECTED_VERSION")
+    expect(identity.run).toContain("EXPECTED_TAG_SHA")
+    expect(identity.run).toContain("exit 1")
+
+    const publish = steps[publishIndex]
+    expect(publish.run).toContain("--verify-tag")
   })
 
   test("grants contents: write and actions: read, and no other permission", async () => {

@@ -49,12 +49,58 @@ jobs:
             exit 1
           fi
 
-          tag_sha=$(gh api "repos/${REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha) || {
-            echo "::error::Cannot resolve tag '${RELEASE_TAG}' to a commit in ${REPOSITORY}. Check that the tag exists and is spelled exactly as dispatched."
+          # Resolve the dispatched name as a tag and nothing else. `commits/{ref}`
+          # resolves branches, tags, and raw SHAs alike, so a successful branch
+          # build can satisfy it; `git/ref/tags/{ref}` can only answer for a ref
+          # under refs/tags, and the returned `.ref` must match the dispatched tag
+          # exactly, so a branch name can never be substituted for a tag.
+          tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+            --jq '.ref, .object.type, .object.sha') || {
+            echo "::error::'${RELEASE_TAG}' does not exist as a tag in ${REPOSITORY} (refs/tags/${RELEASE_TAG} did not resolve). A branch build cannot be published as a tag release."
             exit 1
           }
-          if [ -z "${tag_sha}" ]; then
-            echo "::error::Tag '${RELEASE_TAG}' resolved to no commit in ${REPOSITORY}. Check that the tag exists and points at a commit."
+          mapfile -t tag_ref_fields <<< "${tag_ref}"
+          if [ "${#tag_ref_fields[@]}" -ne 3 ]; then
+            echo "::error::Tag lookup for '${RELEASE_TAG}' in ${REPOSITORY} returned an unexpected response."
+            exit 1
+          fi
+          tag_ref_name="${tag_ref_fields[0]}"
+          tag_object_type="${tag_ref_fields[1]}"
+          tag_sha="${tag_ref_fields[2]}"
+
+          if [ "${tag_ref_name}" != "refs/tags/${RELEASE_TAG}" ]; then
+            echo "::error::Tag lookup for '${RELEASE_TAG}' returned ref '${tag_ref_name}', not 'refs/tags/${RELEASE_TAG}'. Check that the dispatched name is spelled exactly as the tag."
+            exit 1
+          fi
+
+          # An annotated tag points at a tag object rather than at a commit, so it
+          # has to be peeled before its SHA can be compared with the run's
+          # head_sha. The loop is bounded, rejects non-tag/non-commit objects, and
+          # only accepts a final 40-character commit SHA; anything else fails
+          # closed instead of mis-comparing.
+          peels=0
+          while [ "${tag_object_type}" != "commit" ]; do
+            if [ "${tag_object_type}" != "tag" ] || [ "${peels}" -ge 4 ] || [[ ! "${tag_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Tag '${RELEASE_TAG}' does not resolve to a commit (object type '${tag_object_type}')."
+              exit 1
+            fi
+            peeled=$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" \
+              --jq '.object.type, .object.sha') || {
+              echo "::error::Cannot read tag object ${tag_sha} for tag '${RELEASE_TAG}' in ${REPOSITORY}."
+              exit 1
+            }
+            mapfile -t peeled_fields <<< "${peeled}"
+            if [ "${#peeled_fields[@]}" -ne 2 ]; then
+              echo "::error::Tag object ${tag_sha} for '${RELEASE_TAG}' returned an unexpected response."
+              exit 1
+            fi
+            tag_object_type="${peeled_fields[0]}"
+            tag_sha="${peeled_fields[1]}"
+            peels=$((peels + 1))
+          done
+
+          if [[ ! "${tag_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Tag '${RELEASE_TAG}' resolved to '${tag_sha}', which is not a 40-character commit SHA."
             exit 1
           fi
 
@@ -98,6 +144,18 @@ jobs:
             exit 1
           fi
 
+          # Positive evidence that the selected bundle is the tag build: the build
+          # embeds OPENCODE_VERSION derived from the tag (with the leading "v"
+          # stripped) and records the source commit it built. Record both so the
+          # downloaded release.json can be checked before anything is published.
+          expected_version="${RELEASE_TAG#v}"
+          if [ -z "${expected_version}" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' carries no version after its leading 'v'."
+            exit 1
+          fi
+          echo "EXPECTED_VERSION=${expected_version}" >> "${GITHUB_ENV}"
+          echo "EXPECTED_TAG_SHA=${tag_sha}" >> "${GITHUB_ENV}"
+
           echo "Verified build run ${BUILD_RUN_ID} (${run_url}) succeeded on tag ${RELEASE_TAG} at commit ${tag_sha}"
 
       # download-artifact defaults run-id to this run when it is unset, and this
@@ -121,6 +179,29 @@ jobs:
           fi
           sha256sum -c SHA256SUMS
 
+      # The run object itself cannot say whether it was triggered by a branch or
+      # by a tag ref of the same name, so the bundle is bound to the tag here:
+      # only a tag-triggered build embeds the tag-derived version and hashes the
+      # tag's own commit.
+      - name: Verify recorded release matches tag identity
+        working-directory: assets
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          manifest_version=$(jq -r '.release.version // empty' release.json)
+          manifest_source_sha=$(jq -r '.release.sourceSha // empty' release.json)
+          if [ "${manifest_version}" != "${EXPECTED_VERSION}" ]; then
+            echo "::error::release.json records version '${manifest_version}', but tag ${RELEASE_TAG} requires '${EXPECTED_VERSION}'. A branch build embeds 0.0.0-<sha> and cannot be published as this tag."
+            exit 1
+          fi
+          if [ "${manifest_source_sha}" != "${EXPECTED_TAG_SHA}" ]; then
+            echo "::error::release.json was built from ${manifest_source_sha}, but tag ${RELEASE_TAG} points at ${EXPECTED_TAG_SHA}. Use the ocp-build run for the tag."
+            exit 1
+          fi
+          echo "release.json records version ${manifest_version} built from ${manifest_source_sha} for tag ${RELEASE_TAG}"
+
       - name: Publish immutable prerelease to GitHub Releases
         working-directory: assets
         shell: bash
@@ -131,6 +212,7 @@ jobs:
             --title "${{ inputs.tag }}" \
             --prerelease \
             --latest=false \
+            --verify-tag \
             --notes "OpenCode Plus immutable prerelease ${{ inputs.tag }}" \
             opencodeplus-linux-arm64.tar.gz \
             opencodeplus-linux-x64.tar.gz \
