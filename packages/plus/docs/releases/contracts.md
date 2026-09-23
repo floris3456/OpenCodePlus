@@ -132,7 +132,7 @@ Every one of the 3,401 raw differing bytes fell strictly within the 189 rewritte
 
 The gate was proven non-vacuous through active tamper rejection tests:
 - A single byte flipped in module bytecode is rejected with `residual-difference` reporting the exact byte offset (`test/release/canonicalize.test.ts:692`).
-- A corrupted or tampered ELF header is rejected with `unsupported-executable-format` or `executable-structure-malformed`.
+- A corrupted or tampered ELF container is rejected before any record is considered. A corrupted identification byte (magic, 64-bit class, or little-endian data byte) or an ELF64-LE image with no `.bun` section is rejected with `unsupported-executable-format` (`test/release/canonicalize.test.ts:413-439`); a corrupted ELF identification version, program or section header table, section name table, or `.bun` section header is rejected with `executable-structure-malformed` (`test/release/canonicalize.test.ts:441-560`). The payload-size floor check at `packages/plus/script/release/canonicalize.ts:646` remains unproven because it is unreachable: the section-size floor at line 643 and the exact-length check at line 645 already guarantee the length that check rejects.
 - A truncated or extended binary is rejected with `size-mismatch` (`test/release/canonicalize.test.ts:801`).
 - Building with a mismatched Bun version is rejected with `unsupported-toolchain` (`test/release/canonicalize.test.ts:293`).
 - A forged token hash or modified chunk index is rejected with `record-hash-underived` or `residual-difference` (`test/release/canonicalize.test.ts:705, 741`).
