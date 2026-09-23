@@ -1345,15 +1345,3 @@ describe("instructions reachability: reviewed instructions still reach a placed 
     expect(result.initial).toContain(`Instructions from: ${path}`)
   })
 })
-
-
-
-    
-
-    
-
-    
-
-    
-
-    
