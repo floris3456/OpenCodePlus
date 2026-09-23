@@ -25,6 +25,7 @@ import { Session } from "../session.js"
 import { PersistentPty } from "../persistent-pty.js"
 import { Provider } from "../provider.js"
 import { Reference } from "../reference.js"
+import { ReleaseRequestStore } from "../release/request.js"
 import { Rpc } from "../rpc.js"
 import { AbsolutePath, type DeepMutable } from "../schema.js"
 import { Skill } from "../skill.js"
@@ -73,6 +74,10 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const mcp = yield* Mcp.Service
   const location = yield* Location.Service
   const reference = yield* Reference.Service
+  // Resolved optionally on purpose: the plugin layer's dependency list provides
+  // the durable store in every assembled graph, while code that constructs a
+  // plugin host directly (tests and fixtures) keeps its own environment.
+  const release = yield* Effect.serviceOption(ReleaseRequestStore.Service).pipe(Effect.map(Option.getOrUndefined))
   const rpc = yield* Rpc.Service
   const skill = yield* Skill.Service
   const tools = yield* Tool.Service
@@ -485,6 +490,17 @@ export const make = Effect.fn("PluginHost.make")(function* (
           })
         }),
     },
+    // The in-process seam is exactly the store's bounded read/submit surface.
+    // `authorize` and `settle` stay on the host store: a plugin cannot present a
+    // permit or change the admission fence through the plugin context.
+    ...(release === undefined
+      ? {}
+      : {
+          release: {
+            submit: (input) => release.submit(input),
+            status: (requestID) => release.status(requestID),
+          },
+        }),
     skill: {
       list: () => response(skill.list()),
       reload: skill.reload,
@@ -619,6 +635,7 @@ export const requirements = LayerNode.group([
   Mcp.node,
   Location.node,
   Reference.node,
+  ReleaseRequestStore.node,
   Rpc.node,
   Skill.node,
   Tool.node,
