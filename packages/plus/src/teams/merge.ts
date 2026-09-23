@@ -6,6 +6,7 @@ import { git, gitRaw } from "./git.js"
 import { execute } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
+import { NO_REPOSITORY_HOOKS } from "./worktree.js"
 import { toolError } from "./schema.js"
 import type { Check, MergeState } from "./schema.js"
 import { errCode, io } from "./io.js"
@@ -272,17 +273,17 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
       let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso() }
       yield* io(() => saveEntry(root, cur))
       const tempDir = tempDirFor(ctx, entry.parentRun, entry.id)
-      yield* io(() => withRepoLock(root, ctx, () => git(ctx.repoRoot, ["worktree", "add", "--detach", tempDir, entry.childHead])))
+      yield* io(() => withRepoLock(root, ctx, () => git(ctx.repoRoot, [...NO_REPOSITORY_HOOKS, "worktree", "add", "--detach", tempDir, entry.childHead])))
       const inner = Effect.gen(function* () {
         // 1. rebasing
-        const rb = yield* io(() => gitRaw(tempDir, ["rebase", rebaseBase]))
+        const rb = yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_HOOKS, "rebase", rebaseBase]))
         if (rb.code !== 0) {
           const diff = yield* io(() => gitRaw(tempDir, ["diff", "--name-only", "--diff-filter=U"]))
           const conflictFiles = diff.out
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s !== "")
-          yield* io(() => gitRaw(tempDir, ["rebase", "--abort"]).then(() => undefined))
+          yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_HOOKS, "rebase", "--abort"]).then(() => undefined))
           const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, conflictFiles, ctx.checks))
           cur = conflictEntry(cur, conflictFiles, reworkId)
           yield* io(() => saveEntry(root, cur))
@@ -319,7 +320,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
               staleHead = current
               return
             }
-            await git(ctx.parentWorktree, ["merge", "--ff-only", rebasedTip])
+            await git(ctx.parentWorktree, [...NO_REPOSITORY_HOOKS, "merge", "--ff-only", rebasedTip])
             landedHead = await getHead(ctx.parentWorktree)
           }),
         )
