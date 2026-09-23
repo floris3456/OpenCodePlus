@@ -40,7 +40,7 @@ jobs:
       - name: release-unit
         id: release-unit
         working-directory: packages/plus
-        run: bun test test/release/identity.test.ts test/release/metadata.test.ts test/release/reproducibility.test.ts test/release/installer.test.ts test/release/acceptance.test.ts test/release/preactivation.test.ts test/release/workflows.test.ts test/search/register.test.ts test/search/mcp.test.ts
+        run: bun test test/release/identity.test.ts test/release/metadata.test.ts test/release/reproducibility.test.ts test/release/installer.test.ts test/release/acceptance.test.ts test/release/preactivation.test.ts test/release/workflows.test.ts test/release/canonicalize.test.ts test/release/upstream-inventory.test.ts test/search/register.test.ts test/search/mcp.test.ts
 
       - name: release-bindings
         id: release-bindings
