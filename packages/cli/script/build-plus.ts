@@ -2,6 +2,8 @@
 
 import { build, resolveBuildConfig, type ResolvedBuildConfig } from "./build"
 
+const BINARY = "opencodeplus"
+
 export interface PlusBuildOptions {
   version?: string
   sourceSha?: string | null
@@ -47,15 +49,12 @@ export function resolvePlusBuildConfig(options: PlusBuildOptions = {}): Resolved
         process.env.OPENCODE_TOOLCHAIN_DIGEST ??
         null)
 
-  const target =
-    options.target !== undefined
-      ? options.target
-      : (process.argv.find((arg) => arg.startsWith("--target="))?.slice("--target=".length) ??
-        process.env.OPENCODE_TARGET ??
-        null)
+  const target = platformTarget(
+    options.target !== undefined ? options.target : (argvTarget() ?? process.env.OPENCODE_TARGET ?? null),
+  )
 
   return resolveBuildConfig({
-    binary: "opencodeplus",
+    binary: BINARY,
     channel: "plus",
     version,
     entrypoints: ["./src/plus.ts"],
@@ -74,6 +73,10 @@ export function resolvePlusBuildConfig(options: PlusBuildOptions = {}): Resolved
 
 export async function buildPlus(options: PlusBuildOptions = {}) {
   const config = resolvePlusBuildConfig(options)
+  // Only an explicit request (option or --target=) selects what to build. The
+  // environment's OPENCODE_TARGET labels identity alone, so CI's --single still
+  // confines a runner to producing its own native target.
+  const requested = options.target !== undefined ? options.target : argvTarget()
   return await build({
     binary: config.binary,
     channel: config.channel,
@@ -83,11 +86,23 @@ export async function buildPlus(options: PlusBuildOptions = {}) {
     outdir: options.outdir,
     single: options.single,
     baseline: options.baseline,
-    target: options.target ?? undefined,
+    target: requested ? `${BINARY}-${platformTarget(requested)}` : undefined,
     skipInstall: options.skipInstall,
     skipWebUi: options.skipWebUi,
     define: options.define,
   })
+}
+
+function argvTarget() {
+  return process.argv.find((arg) => arg.startsWith("--target="))?.slice("--target=".length)
+}
+
+// build.ts names a build target "<binary>-<platform>" (opencodeplus-linux-x64),
+// while the identity records the platform alone (linux-x64), as the native CI
+// build does. Either spelling selects the same build and records the platform,
+// so a cross-build can carry exactly the identity its native build carries.
+function platformTarget(target: string | null) {
+  return target?.startsWith(`${BINARY}-`) ? target.slice(BINARY.length + 1) : target
 }
 
 if (import.meta.main) {

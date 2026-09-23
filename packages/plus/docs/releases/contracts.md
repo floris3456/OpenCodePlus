@@ -99,6 +99,22 @@ Three things this decision explicitly does NOT relax:
 2. **All four targets still ship** and still pass their native cold-runtime gates. Nothing is dropped from the release.
 3. **Fail-closed stands.** The gate refuses darwin pairs rather than passing them — a false refusal, never a false accept.
 
+### Fixed Build Path
+
+`bun build --compile` embeds absolute source paths in the executable: bundled CommonJS modules keep their build-time `__dirname` and `__filename`, so paths under the checkout's `node_modules` land in module bytes, the shared bytecode string table and the per-module content hashes. Measured on linux-arm64: the same commit built from two different directories of equal length produced equally sized binaries that `compareRebuild` refused with 1,328 residual bytes in exactly those three regions. Two directories of different length would not even produce equally sized binaries. A local rebuild can therefore only be compared with the CI binary when both ran in the same directory.
+
+Every Linux release build therefore runs at the single directory pinned as `fixedBuildPath` in `release/toolchain.json` (`/build/opencodeplus`), through one script used by CI and by any local rebuild alike:
+
+```sh
+OPENCODE_VERSION=<version> bun packages/plus/script/release/fixed-path-build.ts --target linux-arm64 --out <dir>
+```
+
+- **What it does**: checks the checkout's committed `HEAD` out as a git worktree at the fixed path, installs with the frozen lockfile, builds there, copies `cli-<target>` to `--out`, and removes the worktree. It refuses to start if the fixed path already exists, so no build runs on top of an earlier tree, and it refuses to finish if installing or building changed a tracked or untracked source file.
+- **Identity**: the version, source SHA, `SOURCE_DATE_EPOCH`, recipe and toolchain digests and target are derived from that commit. A value already in the environment (CI sets them in earlier steps) must agree, or the build is refused rather than overridden. The channel (`plus`), compile template (`BUN_COMPILE_RELEASE`), `TZ` and `LC_ALL` are pinned from `release/toolchain.json` for the build, whatever the calling shell has.
+- **Native only unless asked**: a target other than the host's requires `--cross`. CI never passes it, so a runner still produces only its own native target. A local x64 rebuild on an arm64 host is `--target linux-x64 --cross`. `build-plus.ts` records the platform (`linux-x64`) as the identity target for either spelling of `--target`, as the native build does.
+- **Prerequisite, once per machine**: the parent of the fixed path (`/build`) must exist and be writable by the building user. CI does `sudo install -d -o "$(id -u)" -g "$(id -g)" /build`; the workspace container image creates it owned by the workspace user.
+- **Darwin**: macOS runners cannot create `/build` (the system volume is read-only), and darwin rebuild equivalence is out of scope (L5), so darwin targets keep building in the checkout. Their integrity binding is unchanged.
+
 ### Normalized Bytes and Structural Anchoring
 
 Canonicalization (`canonicalizeBuildOutput` in `packages/plus/script/release/canonicalize.ts:369-451`) normalizes **only** the per-build bundler unique key and its derived hash word inside chunk-token records within JavaScriptCore's shared bytecode string table:

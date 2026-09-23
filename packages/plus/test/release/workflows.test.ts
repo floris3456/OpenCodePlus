@@ -488,6 +488,27 @@ describe("native build workflow (ocp-build.yml)", () => {
     expect(gateRun).toContain('$i == ("v" want)')
   })
 
+  test("Linux targets build natively at the fixed build path pinned in release/toolchain.json", async () => {
+    const [doc, toolchain] = await Promise.all([
+      loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml"),
+      loadJson<{ fixedBuildPath: string }>("release/toolchain.json"),
+    ])
+    const run = doc.jobs?.build?.steps?.find((step) => step.name === "Build target binary")?.run ?? ""
+    const [linux, other] = run.split(/^\s*else\s*$/m)
+
+    // The compiler embeds absolute source paths, so a local rebuild can only be
+    // compared with the CI binary when both ran at the same pinned directory.
+    expect(toolchain.fixedBuildPath).toBe("/build/opencodeplus")
+    expect(linux).toContain('if [ "${RUNNER_OS}" = "Linux" ]; then')
+    expect(linux).toContain('Bun.file("release/toolchain.json").json()).fixedBuildPath')
+    expect(linux).toContain('sudo install -d -o "$(id -u)" -g "$(id -g)" "$(dirname "$fixed")"')
+    expect(linux).toContain('bun packages/plus/script/release/fixed-path-build.ts --target "$TARGET" --out packages/cli/dist')
+    // CI never cross-builds: without --cross the script refuses a non-host target.
+    const commands = run.split("\n").filter((line) => !line.trim().startsWith("#"))
+    expect(commands.filter((line) => line.includes("--cross"))).toEqual([])
+    expect(other).toContain("bun packages/cli/script/build-plus.ts --single")
+  })
+
   test("builds never publish and reference no publication or model secrets", async () => {
     const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
     const yamlText = await Bun.file(join(repoRoot, ".github/workflows/ocp-build.yml")).text()

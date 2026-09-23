@@ -15,6 +15,62 @@ import {
   parseBuildStructure,
 } from "../../script/release/canonicalize.js"
 import { verifyRebuildEquivalence } from "../../script/release/verify.js"
+import {
+  agreeingIdentity,
+  checkBuildLocation,
+  checkTarget,
+  fixedBuildPathOf,
+} from "../../script/release/fixed-path-build.js"
+
+// The compiler embeds absolute source paths, so a rebuild is comparable with the
+// CI binary only when both ran at the path pinned in release/toolchain.json.
+describe("release builds run at the fixed build path", () => {
+  test("the pinned path must be absolute and normalized", () => {
+    expect(fixedBuildPathOf({ fixedBuildPath: "/build/opencodeplus" })).toBe("/build/opencodeplus")
+    for (const bad of ["build/opencodeplus", "/build/../opencodeplus", "/build/opencodeplus/", "/", undefined, 7]) {
+      expect(() => fixedBuildPathOf({ fixedBuildPath: bad })).toThrow(/absolute, normalized/)
+    }
+  })
+
+  test("the fixed path must be free and its parent a writable directory", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ocp-fixed-path-"))
+    try {
+      const fixed = join(parent, "opencodeplus")
+      await checkBuildLocation(fixed)
+      mkdirSync(fixed)
+      await expect(checkBuildLocation(fixed)).rejects.toThrow(/already exists/)
+      await expect(checkBuildLocation(join(parent, "missing", "opencodeplus"))).rejects.toThrow(/does not exist/)
+      // Root bypasses permission bits, so the unwritable case is only observable unprivileged.
+      if (process.getuid?.() !== 0) {
+        const locked = join(parent, "locked")
+        mkdirSync(locked, { mode: 0o500 })
+        await expect(checkBuildLocation(join(locked, "opencodeplus"))).rejects.toThrow(/not writable/)
+      }
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  test("a target must be qualified, and native unless a cross build is explicit", () => {
+    const qualified = ["linux-arm64", "linux-x64", "darwin-arm64", "darwin-x64"]
+    expect(() => checkTarget({ target: "linux-x64", host: "linux-x64", cross: false, qualified })).not.toThrow()
+    expect(() => checkTarget({ target: "linux-x64", host: "linux-arm64", cross: false, qualified })).toThrow(
+      /pass --cross/,
+    )
+    expect(() => checkTarget({ target: "linux-x64", host: "linux-arm64", cross: true, qualified })).not.toThrow()
+    expect(() => checkTarget({ target: "win32-x64", host: "win32-x64", cross: false, qualified })).toThrow(
+      /not a qualified target/,
+    )
+  })
+
+  test("an identity value already in the environment must agree with the derived one", () => {
+    const derived = { OPENCODE_TARGET: "linux-x64", OPENCODE_VERSION: "0.0.0-plus-r4.1" }
+    expect(agreeingIdentity({ OPENCODE_TARGET: "linux-x64" }, derived)).toEqual(derived)
+    expect(() =>
+      agreeingIdentity({ OPENCODE_SOURCE_SHA: "a".repeat(40) }, { OPENCODE_SOURCE_SHA: "b".repeat(40) }),
+    ).toThrow(/disagrees/)
+  })
+})
 
 describe("release reproducibility and normalisation", () => {
   test("archive determinism is raw byte equality: two packaging runs produce byte-identical archives", () => {

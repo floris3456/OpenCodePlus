@@ -65,6 +65,14 @@ describe("plus build configuration", () => {
     expect(config.define.OPENCODE_TARGET).toBe(JSON.stringify(target))
   })
 
+  test("a build-target spelling records the platform alone as the identity target", () => {
+    // build.ts names the cross-build target opencodeplus-linux-x64; the native CI
+    // build of the same target embeds linux-x64, so the identity must too.
+    const config = resolvePlusBuildConfig({ version: "1.0.0", target: "opencodeplus-linux-x64" })
+    expect(config.identity.target).toBe("linux-x64")
+    expect(config.define.OPENCODE_TARGET).toBe(JSON.stringify("linux-x64"))
+  })
+
   test("unsupplied identity values are null", () => {
     const config = resolvePlusBuildConfig({
       version: "1.0.0",

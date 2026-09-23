@@ -113,10 +113,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # --single restricts the build to this runner's own platform and architecture,
-          # so a target can only ever be produced on native hardware. The assertions below
-          # turn a non-native runner into a failed job instead of a cross-compiled artifact.
-          bun packages/cli/script/build-plus.ts --single
+          # Both paths build only this runner's own platform and architecture (--single, and
+          # fixed-path-build.ts refuses a non-host target without --cross, which is never
+          # passed here), so a target can only ever be produced on native hardware. The
+          # assertions below turn a non-native runner into a failed job instead of a
+          # cross-compiled artifact.
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            # The compiler embeds absolute source paths, so Linux release builds run at the
+            # fixed build path pinned in release/toolchain.json, where any local rebuild of
+            # the same commit runs too; built anywhere else the binaries cannot be compared.
+            # Darwin keeps the checkout: its rebuild equivalence is out of scope (L5).
+            fixed=$(bun -e 'console.log((await Bun.file("release/toolchain.json").json()).fixedBuildPath)')
+            sudo install -d -o "$(id -u)" -g "$(id -g)" "$(dirname "$fixed")"
+            bun packages/plus/script/release/fixed-path-build.ts --target "$TARGET" --out packages/cli/dist
+          else
+            bun packages/cli/script/build-plus.ts --single
+          fi
 
           produced=$(ls -d packages/cli/dist/cli-* | wc -l | tr -d " ")
           if [ "$produced" != "1" ]; then
