@@ -317,7 +317,9 @@ elif [ "$offline" = "true" ]; then
         exit 1
     fi
 else
-    archive_url="$base_url/v$requested_version/$expected_archive_name"
+    # The manifest version: equal to any requested version (checked above), and
+    # still defined when --manifest supplied the manifest without --version.
+    archive_url="$base_url/v$version/$expected_archive_name"
     verify_url_origin "$archive_url"
     resolved_archive="$tmp_dir/$expected_archive_name"
     curl -fsSL "$archive_url" -o "$resolved_archive" || {

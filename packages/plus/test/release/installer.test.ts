@@ -430,16 +430,33 @@ describe("installer download location and shell", () => {
     expect(await Bun.file(join(testDir, `opt/opencodeplus/releases/${version}/bin/opencodeplus`)).exists()).toBe(true)
   })
 
+  test("a supplied manifest without --version downloads the archive under the manifest's own version", async () => {
+    const assetDir = join(testDir, "assets")
+    const log = join(testDir, "curl.log")
+    const version = "0.0.0-plus-r4.1"
+    const { archiveName } = await setupReleaseAssets(assetDir, { version })
+    const bin = await stubCurl(assetDir, log)
+    const res = await runInstaller(
+      ["--manifest", join(assetDir, "release.json"), "--prefix", join(testDir, "opt/manifest"), "--no-modify-path"],
+      { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, OPENCODE_RELEASE_BASE_URL: "" } },
+    )
+    expect(res.exitCode).toBe(0)
+    expect((await Bun.file(log).text()).trim()).toBe(
+      `https://github.com/floris3456/OpenCodePlus/releases/download/v${version}/${archiveName}`,
+    )
+  })
+
   test("a download without a version is refused instead of guessing a latest release", async () => {
     const res = await runInstaller(["--prefix", join(testDir, "opt/none"), "--no-modify-path"])
     expect(res.exitCode).not.toBe(0)
     expect(res.stderr).toContain("a download needs a release version")
   })
 
-  test("run by a non-bash sh it stops with instructions before any bash construct", async () => {
-    const posixSh = Bun.which("dash")
-    if (!posixSh) throw new Error("this check needs dash, the /bin/sh of Debian")
-    const proc = Bun.spawn([posixSh, join(repoRoot, "install.sh"), "--version", "v1.0.0"], {
+  // dash is /bin/sh on Debian and Ubuntu, where `curl ... | sh` meets it and where CI
+  // runs this suite; a machine without dash has no non-bash sh to demonstrate with.
+  const dash = Bun.which("dash")
+  test.skipIf(!dash)("run by a non-bash sh it stops with instructions before any bash construct", async () => {
+    const proc = Bun.spawn([dash ?? "dash", join(repoRoot, "install.sh"), "--version", "v1.0.0"], {
       cwd: testDir,
       stdout: "pipe",
       stderr: "pipe",
