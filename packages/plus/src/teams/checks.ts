@@ -1,4 +1,4 @@
-import { mkdir, readdir, realpath, writeFile } from "node:fs/promises"
+import { mkdir, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { join } from "node:path"
@@ -233,7 +233,13 @@ async function provisionDependencies(
   const result = await spawnAndWait(INSTALL_ARGV, worktree, env, timeoutMs)
   const log = `$ ${INSTALL_ARGV.join(" ")}\n${combineOutput(result.stdout, result.stderr)}`
   const header = log.endsWith("\n") ? log : `${log}\n`
-  if (result.exitCode !== 0 || result.timedOut) return { log: header, failure: result }
+  if (result.exitCode !== 0 || result.timedOut) {
+    // node_modules did not exist before this install, so a partial one is this
+    // install's own leftover; removing it makes the next check try again instead of
+    // trusting a half-installed tree.
+    await rm(join(worktree, "node_modules"), { recursive: true, force: true })
+    return { log: header, failure: result }
+  }
   const after = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   if (after !== before) return { log: header, mutated: `git status was "${before}", now "${after}"` }
   return { log: header }
@@ -275,7 +281,7 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       // the failed install is this check's outcome, recorded like any other failure.
       const proc = provisioned.failure ?? (await spawnAndWait(opts.check.argv, cwd, env, timeoutMs))
 
-      let full = provisioned.log + combineOutput(proc.stdout, proc.stderr)
+      let full = provisioned.failure ? provisioned.log : provisioned.log + combineOutput(proc.stdout, proc.stderr)
       const exitCode: number | null = proc.exitCode
       let code: string | undefined
       let message: string | undefined

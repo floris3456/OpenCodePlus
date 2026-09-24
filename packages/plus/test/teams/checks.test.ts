@@ -337,8 +337,10 @@ describe("check dependency provisioning", () => {
     expect(res.passed).toBe(false)
     expect(res.code).toBe("E_CHECK_DEPENDENCIES")
     const log = await readFile(res.outputPath, "utf8")
-    expect(log).toContain("$ bun install --frozen-lockfile --ignore-scripts")
+    expect(log.split("$ bun install --frozen-lockfile --ignore-scripts").length).toBe(2)
     expect(log).not.toContain("CHECK RAN")
+    // The failed install leaves no node_modules behind, so the next check retries it.
+    expect(await stat(join(dir, "node_modules")).then(() => true, () => false)).toBe(false)
   })
 
   test("a worktree without a Bun lockfile runs its check with no install", async () => {
