@@ -329,6 +329,12 @@ describe("native build workflow (ocp-build.yml)", () => {
     expect(run).toContain('"method":"initialize"')
     expect(run).toContain("jsonrpc")
 
+    // stdin is an ordinary pipe, as a spawning MCP client provides. On macOS Bun never
+    // sees a named pipe's EOF (oven-sh/bun#40099), so a FIFO fails the gate there for a
+    // reason no real client meets.
+    expect(run).not.toContain("mkfifo")
+    expect(run).toMatch(/mcp_client \| cold "\$bin" search-mcp/)
+
     // Coldness is proven in the step, not assumed: the runner has Bun installed.
     expect(run).toContain("env -i")
     expect(run).toMatch(/command -v bun/)

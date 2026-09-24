@@ -73,6 +73,15 @@ describe("plus build configuration", () => {
     expect(config.define.OPENCODE_TARGET).toBe(JSON.stringify("linux-x64"))
   })
 
+  test("the web app build runs vite under Bun even where Node is installed", async () => {
+    // vite embeds helpers through Function.prototype.toString, which Node and Bun render
+    // differently; without --bun, `bun run` hands vite's node-shebang bin to Node when
+    // Node is installed, and a builder with Node produced different web assets.
+    const source = await Bun.file(path.resolve(import.meta.dirname, "../script/app-assets.ts")).text()
+    expect(source).toContain("await $`bun run --bun build`")
+    expect(source).not.toContain("await $`bun run build`")
+  })
+
   test("unsupplied identity values are null", () => {
     const config = resolvePlusBuildConfig({
       version: "1.0.0",

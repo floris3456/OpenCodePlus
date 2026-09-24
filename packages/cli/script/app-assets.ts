@@ -6,7 +6,12 @@ import { collectFiles } from "./files"
 export async function buildAppArchive(channel: string, options?: { skipBuild?: boolean }) {
   if (options?.skipBuild) return compress({})
   const root = path.resolve(import.meta.dirname, "../../app")
-  await $`bun run build`
+  // vite's bin is a node-shebang script, which `bun run` hands to Node whenever Node is
+  // installed. vite embeds helper code into the bundle through Function.prototype.toString,
+  // and Node and Bun render that source differently, so the same commit produced different
+  // web assets (and so a different executable) on a host with Node than on one without.
+  // --bun runs it under Bun on every host.
+  await $`bun run --bun build`
     .cwd(root)
     .env({ ...process.env, OPENCODE_CHANNEL: channel, VITE_OPENCODE_SERVER_MODE: "origin" })
   const assets = Object.fromEntries(

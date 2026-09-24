@@ -318,26 +318,24 @@ jobs:
 
           # The embedded MCP server must speak JSON-RPC on stdout and stay silent on
           # stderr; any diagnostic on either stream corrupts a real client session.
-          mkfifo "$gate/mcp.in"
-          # Fd 9 keeps the write end open so the server can be fed and then given a real
-          # stdin EOF. It is closed in the child (9>&-), otherwise the child would inherit
-          # a writer of its own stdin and never see that EOF.
-          exec 9<>"$gate/mcp.in"
-          cold "$bin" search-mcp <"$gate/mcp.in" >"$gate/out/mcp.stdout" 2>"$gate/out/mcp.stderr" 9>&- &
+          # Its stdin is an ordinary pipe, as an MCP client that spawns it provides: the
+          # writer sends initialize, holds the pipe open until the answer arrives (or 120s
+          # pass), then exits, and that close is the server's stdin EOF. A named pipe would
+          # not do: on macOS Bun never sees a FIFO's EOF (oven-sh/bun#40099).
+          mcp_client() {
+            printf "%s\n" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ocp-cold-gate","version":"1.0.0"}}}'
+            waited=0
+            while [ "$waited" -lt 120 ]; do
+              if grep -q "serverInfo" "$gate/out/mcp.stdout" 2>/dev/null; then break; fi
+              sleep 1
+              waited=$((waited + 1))
+            done
+          }
+          mcp_client | cold "$bin" search-mcp >"$gate/out/mcp.stdout" 2>"$gate/out/mcp.stderr" &
           mcp_pid=$!
-          printf "%s\n" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ocp-cold-gate","version":"1.0.0"}}}' >&9
 
           waited=0
-          while [ "$waited" -lt 120 ]; do
-            if grep -q "serverInfo" "$gate/out/mcp.stdout" 2>/dev/null; then break; fi
-            if ! kill -0 "$mcp_pid" 2>/dev/null; then break; fi
-            sleep 1
-            waited=$((waited + 1))
-          done
-
-          exec 9>&-
-          waited=0
-          while [ "$waited" -lt 30 ] && kill -0 "$mcp_pid" 2>/dev/null; do
+          while [ "$waited" -lt 150 ] && kill -0 "$mcp_pid" 2>/dev/null; do
             sleep 1
             waited=$((waited + 1))
           done

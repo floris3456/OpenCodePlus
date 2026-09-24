@@ -145,7 +145,6 @@ export async function build(options: BuildOptions = {}) {
   const skipInstall = options.skipInstall ?? process.argv.includes("--skip-install")
   const skipWebUi = options.skipWebUi ?? process.argv.includes("--skip-web-ui")
   const solidPlugin = createSolidTransformPlugin()
-  const releaseAssets = new Map<string, Promise<Map<string, string>>>()
 
   const targets =
     requestedTarget !== undefined
@@ -216,7 +215,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
     }
     const target = targetName(item, config.binary)
     const name = target.replace(config.binary, "cli")
-    const executablePath = await compileExecutable(item, outdir, releaseAssets)
+    const executablePath = await compileExecutable(item, outdir)
     console.log(`building ${name}`)
     const result = await Bun.build({
       entrypoints: config.entrypoints,
@@ -277,11 +276,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
   }
 }
 
-async function compileExecutable(
-  item: (typeof allTargets)[number],
-  outdir: string,
-  releaseAssets: Map<string, Promise<Map<string, string>>>,
-) {
+async function compileExecutable(item: (typeof allTargets)[number], outdir: string) {
   const release = process.env.BUN_COMPILE_RELEASE
   if (!release) return
 
@@ -301,13 +296,10 @@ async function compileExecutable(
 
   await mkdir(cache, { recursive: true })
   const archive = path.join(cache, `${name}.zip`)
-  const assets = await compileReleaseAssets(release, releaseAssets)
-  const url = assets.get(`${name}.zip`)
-  if (!url) throw new Error(`Bun release ${release} does not include ${name}.zip`)
-  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
-  const response = await fetch(url, {
-    headers: { Accept: "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-  })
+  // The release's public download URL, not the REST API: unauthenticated API calls share a
+  // per-IP rate limit that hosted runners exhaust (HTTP 403), and downloads are not limited.
+  const url = `https://github.com/oven-sh/bun/releases/download/${release}/${name}.zip`
+  const response = await fetch(url)
   if (!response.ok) throw new Error(`Failed to download ${name} from Bun release ${release}: ${response.status}`)
   // Stream to disk instead of `Bun.write(archive, response)`: passing the Response object
   // hangs forever if it gets GC'd mid-download (https://github.com/oven-sh/bun/issues/40278).
@@ -317,38 +309,6 @@ async function compileExecutable(
   await $`unzip -oq ${archive} -d ${cache}`
   await rm(archive)
   return executable
-}
-
-function compileReleaseAssets(release: string, releaseAssets: Map<string, Promise<Map<string, string>>>) {
-  const existing = releaseAssets.get(release)
-  if (existing) return existing
-  const pending = fetch(`https://api.github.com/repos/oven-sh/bun/releases/tags/${release}?cache=${Date.now()}`)
-    .then(async (response) => {
-      if (!response.ok) throw new Error(`Failed to resolve Bun release ${release}: ${response.status}`)
-      const data: unknown = await response.json()
-      if (typeof data !== "object" || data === null || !("assets" in data) || !Array.isArray(data.assets)) {
-        throw new Error(`Bun release ${release} returned invalid metadata`)
-      }
-      return new Map(
-        data.assets
-          .filter(
-            (asset): asset is { name: string; url: string } =>
-              typeof asset === "object" &&
-              asset !== null &&
-              "name" in asset &&
-              typeof asset.name === "string" &&
-              "url" in asset &&
-              typeof asset.url === "string",
-          )
-          .map((asset) => [asset.name, asset.url]),
-      )
-    })
-    .catch((error) => {
-      releaseAssets.delete(release)
-      throw error
-    })
-  releaseAssets.set(release, pending)
-  return pending
 }
 
 if (import.meta.main) {
