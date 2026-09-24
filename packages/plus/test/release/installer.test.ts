@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -333,6 +333,18 @@ describe("installer positive execution", () => {
 
     expect(res.exitCode).toBe(0)
     expect(res.stdout).toContain("read-only")
+    expect(await Bun.file(bashrc).text()).toBe("# read-only bashrc\n")
+
+    // A symlinked profile is judged by the file it points to, not by the link's own mode.
+    const linkedHome = join(testDir, "root-linked-home")
+    await mkdir(linkedHome, { recursive: true })
+    await symlink(bashrc, join(linkedHome, ".bashrc"))
+    const linkedPrefix = join(testDir, "opt/root-linked")
+    const linked = await runInstaller(["--offline", "--asset-dir", assetDir, "--prefix", linkedPrefix], {
+      env: { HOME: linkedHome },
+    })
+    expect(linked.exitCode).toBe(0)
+    expect(linked.stdout).toContain("read-only")
     expect(await Bun.file(bashrc).text()).toBe("# read-only bashrc\n")
     await chmod(bashrc, 0o644)
   })
