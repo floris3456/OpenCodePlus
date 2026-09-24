@@ -222,6 +222,11 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       tsconfig: "./tsconfig.json",
       plugins: [appAssetsPlugin, solidPlugin, parcelWatcherPlugin, opencodePtyPlugin, simulationGraphPlugin],
       external: ["node-gyp"],
+      // One loader for every .wasm. Core imports tree-sitter.wasm `with { type: "file" }`
+      // while another reference uses the default .wasm loader, and the bundler records
+      // whichever parse finishes first, so the same source produced executables that
+      // differed in that module's loader byte.
+      loader: { ".wasm": "file" },
       format: "esm",
       minify: true,
       bytecode: true,

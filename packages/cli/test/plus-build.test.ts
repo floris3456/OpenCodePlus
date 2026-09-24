@@ -82,6 +82,14 @@ describe("plus build configuration", () => {
     expect(source).not.toContain("await $`bun run build`")
   })
 
+  test("every .wasm module is bundled with the file loader", async () => {
+    // tree-sitter.wasm is imported `with { type: "file" }` and also reached through the
+    // default .wasm loader; without one configured loader the bundler records whichever
+    // reference it parses first, so two builds of one commit could differ.
+    const source = await Bun.file(path.resolve(import.meta.dirname, "../script/build.ts")).text()
+    expect(source).toContain(`loader: { ".wasm": "file" },`)
+  })
+
   test("unsupplied identity values are null", () => {
     const config = resolvePlusBuildConfig({
       version: "1.0.0",
