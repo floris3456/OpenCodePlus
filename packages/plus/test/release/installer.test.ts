@@ -315,6 +315,28 @@ describe("installer positive execution", () => {
     await chmod(bashrc, 0o644)
   })
 
+  // Root passes `[ -w file ]` for any file, so the installer also checks the owner's write
+  // bit. Only a root run can show it; the fresh-container install proof runs as root.
+  test.skipIf(process.getuid?.() !== 0)("read-only profile stays unedited when installing as root", async () => {
+    const assetDir = join(testDir, "assets")
+    const prefix = join(testDir, "opt/root-profile")
+    const fakeHome = join(testDir, "root-home")
+    await mkdir(fakeHome, { recursive: true })
+    const bashrc = join(fakeHome, ".bashrc")
+    await writeFile(bashrc, "# read-only bashrc\n")
+    await chmod(bashrc, 0o444)
+    await setupReleaseAssets(assetDir, { version: "1.0.0" })
+
+    const res = await runInstaller(["--offline", "--asset-dir", assetDir, "--prefix", prefix], {
+      env: { HOME: fakeHome },
+    })
+
+    expect(res.exitCode).toBe(0)
+    expect(res.stdout).toContain("read-only")
+    expect(await Bun.file(bashrc).text()).toBe("# read-only bashrc\n")
+    await chmod(bashrc, 0o644)
+  })
+
   test("offline assets: succeeds with offline flag and no network", async () => {
     const assetDir = join(testDir, "assets")
     const prefix = join(testDir, "opt/opencodeplus")

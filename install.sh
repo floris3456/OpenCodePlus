@@ -522,7 +522,9 @@ if [[ ":$PATH:" == *":$bin_dir:"* ]]; then
     exit 0
 fi
 
-if [ ! -w "$profile_file" ]; then
+# A profile whose owner has no write permission was made read-only on purpose. Root passes
+# the -w test for any file, so the owner's write bit is checked as well.
+if [ ! -w "$profile_file" ] || [ -z "$(find "$profile_file" -prune -perm -200 2>/dev/null)" ]; then
     echo "Could not write to $profile_file (file is read-only)."
     echo "Manually add the directory to your PATH:"
     echo "  $path_command"

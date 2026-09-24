@@ -46,7 +46,7 @@ The installation filesystem follows this structure:
         └── ...
 ```
 
-The immutable record for any version is the `<prefix>/releases/<version>` directory itself. During installation, `install.sh` locks this directory with `chmod -R a-w` (`chmod 755` on the binary). Existing releases are immutable; reinstalling an existing version exits immediately without rewriting disk contents (`install.sh` lines 448–459).
+The immutable record for any version is the `<prefix>/releases/<version>` directory itself. During installation, `install.sh` locks this directory with `chmod -R a-w` (`chmod 755` on the binary). Existing releases are immutable; reinstalling an existing version exits immediately without rewriting disk contents (`install.sh` lines 450–461).
 
 ### Identification Commands
 
