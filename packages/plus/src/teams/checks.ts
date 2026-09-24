@@ -199,6 +199,46 @@ function mutationMessage(
   return `Check "${id}" mutated the worktree: ${parts.join("; ")}.`
 }
 
+const INSTALL_ARGV = ["bun", "install", "--frozen-lockfile", "--ignore-scripts"] as const
+
+interface Provisioned {
+  /** What the install printed, prefixed to the check's own log. */
+  readonly log: string
+  /** Set when the install failed; the check does not run. */
+  readonly failure?: SpawnResult
+  /** Set when the install changed the tree git tracks; the receipt fails closed. */
+  readonly mutated?: string
+}
+
+// A team worktree is a fresh `git worktree add`, so a repository whose checks need
+// installed packages (a Bun lockfile at the worktree root and no node_modules yet)
+// gets them before its first check: a frozen install, lifecycle scripts off, the same
+// preparation the workspace's frozen team ran. Later checks find node_modules and
+// skip this. node_modules is ignored by git, so a clean tree stays clean; an install
+// that nevertheless changes the tracked tree is reported, never hidden.
+async function provisionDependencies(
+  worktree: string,
+  env: Record<string, string>,
+  timeoutMs: number,
+): Promise<Provisioned> {
+  if (!(await Bun.file(join(worktree, "bun.lock")).exists())) return { log: "" }
+  const present = await Effect.runPromise(
+    io(() => readdir(join(worktree, "node_modules"))).pipe(
+      Effect.as(true),
+      Effect.catchIf(() => true, () => Effect.succeed(false)),
+    ),
+  )
+  if (present) return { log: "" }
+  const before = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
+  const result = await spawnAndWait(INSTALL_ARGV, worktree, env, timeoutMs)
+  const log = `$ ${INSTALL_ARGV.join(" ")}\n${combineOutput(result.stdout, result.stderr)}`
+  const header = log.endsWith("\n") ? log : `${log}\n`
+  if (result.exitCode !== 0 || result.timedOut) return { log: header, failure: result }
+  const after = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
+  if (after !== before) return { log: header, mutated: `git status was "${before}", now "${after}"` }
+  return { log: header }
+}
+
 function resolveWorktreeKey(worktree: string): Promise<string> {
   return Effect.runPromise(
     io(() => realpath(worktree)).pipe(Effect.catchIf((error) => errCode(error) === "ENOENT", () => Effect.succeed(worktree))),
@@ -216,6 +256,10 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
     key,
     async () => {
       const started = Date.now()
+      const env: Record<string, string> = { PATH: systemPath() }
+      if (process.env.HOME !== undefined) env.HOME = process.env.HOME
+      if (process.env.BUN_INSTALL_CACHE_DIR !== undefined) env.BUN_INSTALL_CACHE_DIR = process.env.BUN_INSTALL_CACHE_DIR
+      const provisioned = await provisionDependencies(opts.worktree, env, timeoutMs)
       const headBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       const statusBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
       // Provenance for the measured tree: the committed HEAD tree plus
@@ -227,16 +271,19 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       const tree = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"])
       const dirty = parsePorcelain(statusBefore).length > 0
       const cwd = opts.check.cwd ? join(opts.worktree, opts.check.cwd) : opts.worktree
-      const env: Record<string, string> = { PATH: systemPath() }
-      if (process.env.HOME !== undefined) env.HOME = process.env.HOME
-      if (process.env.BUN_INSTALL_CACHE_DIR !== undefined) env.BUN_INSTALL_CACHE_DIR = process.env.BUN_INSTALL_CACHE_DIR
-      const proc = await spawnAndWait(opts.check.argv, cwd, env, timeoutMs)
+      // A worktree whose dependencies could not be installed never runs the check:
+      // the failed install is this check's outcome, recorded like any other failure.
+      const proc = provisioned.failure ?? (await spawnAndWait(opts.check.argv, cwd, env, timeoutMs))
 
-      let full = combineOutput(proc.stdout, proc.stderr)
+      let full = provisioned.log + combineOutput(proc.stdout, proc.stderr)
       const exitCode: number | null = proc.exitCode
       let code: string | undefined
       let message: string | undefined
-      if (proc.timedOut) {
+      if (provisioned.failure !== undefined) {
+        code = "E_CHECK_DEPENDENCIES"
+        message = `Check "${opts.check.id}" did not run: installing the worktree's dependencies failed.`
+        full += (full === "" || full.endsWith("\n") ? "" : "\n") + message + "\n"
+      } else if (proc.timedOut) {
         code = "E_CHECK_TIMEOUT"
         message = `Check "${opts.check.id}" timed out after ${timeoutMs}ms; the process group was killed.`
         full += (full === "" || full.endsWith("\n") ? "" : "\n") + message + "\n"
@@ -248,6 +295,11 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         // Post-condition failure overrides even a zero exit code.
         code = "E_CHECK_MUTATED"
         message = mutationMessage(opts.check.id, headBefore, headAfter, statusBefore, statusAfter)
+      } else if (provisioned.mutated !== undefined) {
+        // Installing changed the committed tree (for example a rewritten manifest): the
+        // check then measured a tree the commit does not hold.
+        code = "E_CHECK_MUTATED"
+        message = `Check "${opts.check.id}": installing dependencies changed the worktree: ${provisioned.mutated}.`
       }
 
       const passed = exitCode === 0 && !proc.timedOut && code === undefined

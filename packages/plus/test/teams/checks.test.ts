@@ -284,6 +284,74 @@ describe("check executor receipts", () => {
   })
 })
 
+// A delegated worktree is a fresh `git worktree add` with no node_modules, so checks in a
+// repository that installs its packages from a Bun lockfile could not import anything.
+// The fixtures here are workspace-only, so the frozen install runs offline.
+describe("check dependency provisioning", () => {
+  async function initWorkspaceRepo(dir: string, lock?: string): Promise<void> {
+    await initRepo(dir)
+    await mkdir(join(dir, "pkg-a"), { recursive: true })
+    await writeFile(join(dir, "package.json"), `{"name":"fixture","private":true,"workspaces":["pkg-a"]}\n`)
+    await writeFile(join(dir, "pkg-a", "package.json"), `{"name":"pkg-a","version":"1.0.0"}\n`)
+    await writeFile(join(dir, ".gitignore"), "node_modules\n")
+    await writeFile(join(dir, "pass.ts"), `console.log("CHECK RAN");\n`)
+    if (lock === undefined) {
+      const install = Bun.spawnSync(["bun", "install"], { cwd: dir, stdout: "pipe", stderr: "pipe" })
+      if (install.exitCode !== 0) throw new Error(`fixture install failed: ${install.stderr.toString()}`)
+      await rm(join(dir, "node_modules"), { recursive: true, force: true })
+    } else {
+      await writeFile(join(dir, "bun.lock"), lock)
+    }
+    await git(dir, ["add", "-A"])
+    await git(dir, ["commit", "-m", "chore: workspace fixture"])
+  }
+
+  test("a worktree with a Bun lockfile and no node_modules is installed before its first check", async () => {
+    const dir = join(scratch, "repoDeps")
+    await initWorkspaceRepo(dir)
+    const check = { id: "pass", argv: ["bun", "run", "pass.ts"] }
+
+    const first = await execute(stateDir, { runID: "w-1111222233334444", check, worktree: dir })
+    expect(first.passed).toBe(true)
+    expect(first.dirty).toBe(false)
+    expect(first.code).toBeUndefined()
+    const log = await readFile(first.outputPath, "utf8")
+    expect(log.startsWith("$ bun install --frozen-lockfile --ignore-scripts\n")).toBe(true)
+    expect(log).toContain("CHECK RAN")
+    expect((await stat(join(dir, "node_modules"))).isDirectory()).toBe(true)
+
+    // Installed once: a later check in the same worktree does not reinstall.
+    const second = await execute(stateDir, { runID: "w-1111222233334444", check, worktree: dir })
+    expect(second.passed).toBe(true)
+    expect(await readFile(second.outputPath, "utf8")).not.toContain("bun install")
+  })
+
+  test("a failed install fails the check without running it", async () => {
+    const dir = join(scratch, "repoBadLock")
+    await initWorkspaceRepo(dir, "not a lockfile {")
+    const res = await execute(stateDir, {
+      runID: "w-5555666677778888",
+      check: { id: "pass", argv: ["bun", "run", "pass.ts"] },
+      worktree: dir,
+    })
+    expect(res.passed).toBe(false)
+    expect(res.code).toBe("E_CHECK_DEPENDENCIES")
+    const log = await readFile(res.outputPath, "utf8")
+    expect(log).toContain("$ bun install --frozen-lockfile --ignore-scripts")
+    expect(log).not.toContain("CHECK RAN")
+  })
+
+  test("a worktree without a Bun lockfile runs its check with no install", async () => {
+    const res = await execute(stateDir, {
+      runID: "w-9999aaaabbbbcccc",
+      check: { id: "ok", argv: ["bun", "run", "ok.ts"] },
+      worktree: repoA,
+    })
+    expect(res.passed).toBe(true)
+    expect(await readFile(res.outputPath, "utf8")).not.toContain("bun install")
+  })
+})
+
 describe("check tool entry point", () => {
   test("run() with an unknown id throws E_UNKNOWN_CHECK", async () => {
     const assigned = [
