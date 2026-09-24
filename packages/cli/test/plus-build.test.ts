@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { realpath } from "node:fs/promises"
 import path from "path"
 import { Script } from "@opencode/script"
 import { resolveBuildConfig } from "../script/build"
@@ -82,12 +83,36 @@ describe("plus build configuration", () => {
     expect(source).not.toContain("await $`bun run build`")
   })
 
-  test("every .wasm module is bundled with the file loader", async () => {
-    // tree-sitter.wasm is imported `with { type: "file" }` and also reached through the
-    // default .wasm loader; without one configured loader the bundler records whichever
-    // reference it parses first, so two builds of one commit could differ.
-    const source = await Bun.file(path.resolve(import.meta.dirname, "../script/build.ts")).text()
-    expect(source).toContain(`loader: { ".wasm": "file" },`)
+  test("every import of one .wasm file in the bundle asks for the same loader", async () => {
+    // The bundler records one loader per embedded file and takes whichever import it
+    // parses first. Product code importing tree-sitter.wasm `with { type: "file" }` while
+    // @opentui/core imports it `with { type: "wasm" }` made two builds of one commit
+    // differ in that module's loader byte, so the release rebuild comparison refused them.
+    const packages = path.resolve(import.meta.dirname, "../..")
+    const opentui = await realpath(path.resolve(import.meta.dirname, "../node_modules/@opentui/core"))
+    const files = [
+      ...(await Array.fromAsync(new Bun.Glob("*/src/**/*.{ts,tsx}").scan({ cwd: packages, absolute: true }))),
+      ...(await Array.fromAsync(new Bun.Glob("*.js").scan({ cwd: opentui, absolute: true }))),
+    ]
+    const imports = (
+      await Promise.all(
+        files.map(async (file) =>
+          [
+            ...(await Bun.file(file).text()).matchAll(
+              /(?:from\s+"([^"]+\.wasm)"\s+with\s*\{\s*type:\s*"(\w+)"\s*\}|import\(\s*"([^"]+\.wasm)"\s*,\s*\{\s*with:\s*\{\s*type:\s*"(\w+)"\s*\}\s*\}\s*\))/g,
+            ),
+          ].map((match) => ({ file, specifier: match[1] ?? match[3], type: match[2] ?? match[4] })),
+        ),
+      )
+    ).flat()
+    const typesBySpecifier = Map.groupBy(imports, (entry) => entry.specifier)
+    const conflicting = [...typesBySpecifier].filter(([, entries]) => new Set(entries.map((e) => e.type)).size > 1)
+
+    expect(conflicting).toEqual([])
+    // Not vacuous: both the product and the dependency import the shared runtime file.
+    const shared = typesBySpecifier.get("web-tree-sitter/tree-sitter.wasm") ?? []
+    expect(shared.some((entry) => entry.file.startsWith(packages))).toBe(true)
+    expect(shared.some((entry) => entry.file.startsWith(opentui))).toBe(true)
   })
 
   test("unsupplied identity values are null", () => {
