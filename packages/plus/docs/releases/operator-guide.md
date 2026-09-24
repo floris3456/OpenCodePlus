@@ -8,6 +8,8 @@ For formal data structures, cryptographic hashing invariants, and gate definitio
 
 ## 1. Identify the Current Release
 
+Current release: `v0.0.0-plus-r4.5`, the first release built from source that an installed release (`v0.0.0-plus-r4.4`) produced through its own team; `v0.0.0-plus-r4.4` stays installed for rollback.
+
 An operator inspecting a live system must distinguish between three distinct application states:
 
 | State | Definition | Where It Lives |
