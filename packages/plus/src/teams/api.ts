@@ -21,6 +21,9 @@ import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { reconcile } from "./lifecycle.js"
+import { requireWorktree } from "./availability.js"
+import { isScopePath, runScope, scopeRefusal } from "./scope.js"
+import { sessionTokens } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
@@ -154,7 +157,7 @@ async function guarded(work: () => Promise<TeamApiResult>): Promise<TeamApiResul
 
 export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
   return {
-    delegate: (input, caller) => guarded(() => delegateHandler(ctx, state, input, caller)),
+    delegate: (input, caller) => guarded(() => lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => delegateHandler(ctx, state, input, caller))),
     finish: (input, caller) => guarded(() => finishHandler(input, caller, state.permissions)),
     followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
@@ -162,11 +165,11 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
     supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller, state.permissions)),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
-    status: (input, caller) => guarded(() => statusHandler(input, caller, state.permissions)),
+    status: (input, caller) => guarded(() => statusHandler(ctx, input, caller, state.permissions)),
     wait: (input, caller) => guarded(() => waitHandler(ctx, input, caller, state.permissions)),
     diff: (input, caller) => guarded(() => diffHandler(input, caller, state.permissions)),
     list: (input, caller) => guarded(() => listHandler(input, caller, state.permissions)),
-    get_context: (input, caller) => guarded(() => getContextHandler(input, caller, state.permissions)),
+    get_context: (input, caller) => guarded(() => getContextHandler(ctx, input, caller, state.permissions)),
     check: (input, caller) => guarded(() => checkHandler(input, caller, state.permissions)),
   }
 }
@@ -202,6 +205,17 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     return fail("E_ROLE", `"${brief.role}" is not a member of an enabled team. ${acceptedLine}`, acceptedRole)
   if (!mayDelegate(table, agent, brief.role))
     return fail("E_ROLE", `${agent} may not delegate to "${brief.role}". ${acceptedLine}`, acceptedRole)
+  const signature = signatureOf(brief)
+  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(brief.requestID)}.json`)
+  const replay = await readJson<{ signature?: string; output?: Record<string, unknown>; run?: string }>(requestPath)
+  if (replay?.signature !== undefined) {
+    if (replay.signature !== signature)
+      return fail("E_REQUEST_ID", `requestID "${brief.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
+    if (replay.output !== undefined) {
+      const current = replay.run === undefined ? undefined : await loadRun(root, replay.run)
+      return succeeded({ ...replay.output, state: current?.state ?? null, replayed: true, receipt: replay.output, current: current === undefined ? null : { state: current.state, attempt: current.attempts.at(-1)?.n ?? 0, worktree: current.worktree } })
+    }
+  }
   const maxDepth = bound(table, agent, "delegate", "limits.depth")
   if (maxDepth !== undefined && (await depthOf(root, parent)) >= maxDepth)
     return fail(
@@ -237,7 +251,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   }
 
   const paths = brief.scope.paths
-  for (const candidate of paths) {
+  for (const candidate of [...paths, ...brief.scope.forbidden]) {
     if (!isScopePath(candidate)) return fail("E_PATHS", PATHS_MESSAGE, PATHS_ACCEPTED)
   }
   const refused = briefRefusal(table, brief)
@@ -276,19 +290,6 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       `Live team runs limit ${membersLimit} reached (${all.join(", ")}). Wait for a run to settle (tools.team.wait) first.`,
       "call wait first",
     )
-  }
-
-  const signature = signatureOf(brief)
-  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(brief.requestID)}.json`)
-  const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
-  if (replay?.signature !== undefined) {
-    if (replay.signature !== signature)
-      return fail(
-        "E_REQUEST_ID",
-        `requestID "${brief.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`,
-        "pick a new requestID",
-      )
-    if (replay.output !== undefined) return succeeded(replay.output)
   }
 
   const ifaceChars = brief.context.interfaces.reduce((n, item) => n + item.path.length + (item.symbol?.length ?? 0) + item.note.length, 0)
@@ -346,6 +347,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // no session id yet, so this record is found by directory (run.byDirectory)
   // and names the project directory it inherits.
   const now = new Date().toISOString()
+  const gitCommonDir = await realpath(await git(repo.root, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--path-format=absolute", "--git-common-dir"]))
   const { created, value: streaming } = await provision(
     root,
     {
@@ -364,6 +366,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
           kind: "w",
           repo: repo.key,
           repoKey: repo.key,
+          gitCommonDir,
           directory: worktree.dir,
           paths: [...paths],
           branch: worktree.branch,
@@ -560,8 +563,10 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   if (last === undefined) return fail("E_INTERNAL", `Run ${stored.id} has no attempts to finish.`, stored.id)
   const n = last.n
   const recorded = await readJson<unknown>(path.join(root, "runs", stored.id, `report-${n}.json`))
-  if (recorded !== undefined || isAttemptTerminal(last.state))
+  if (recorded !== undefined)
     return fail("E_FINISH_TWICE", `Report already recorded for attempt ${n}. Corrections arrive as a new attempt; just stop.`, "stop")
+  if (isAttemptTerminal(last.state))
+    return fail("E_ATTEMPT_ENDED", `Attempt ${n} ended ${last.state} without a report. Continue the Session to open a new attempt.`, "continue the Session")
 
   const worktree = stored.directory
   const assigned = await readChecks(root, stored.id)
@@ -673,13 +678,15 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
+  await requireWorktree(record)
+  const scope = await runScope(root, record)
   const key = await realpath(record.directory).catch(() => record.directory)
   return lock(root, "wt", key, async () => {
     const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
     if (head !== args.expectedHead) return fail("E_STALE_HEAD", `HEAD is ${head}, not ${args.expectedHead}.`)
     for (const file of args.files) {
-      if (!inScope(record.paths, file))
-        return fail("E_SCOPE", `"${file}" is outside your scope.paths [${record.paths.join(", ")}]. Report it in needs=[{kind:"path"...}].`)
+      const refusal = scopeRefusal(scope, file)
+      if (refusal !== undefined) return fail("E_SCOPE", refusal)
     }
     if (args.message.length === 0 || args.message.length > 300 || !COMMIT_MESSAGE_RE.test(args.message))
       return fail(
@@ -727,7 +734,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
   })
 }
 
-async function statusHandler(args: StatusInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
+async function statusHandler(ctx: Context, args: StatusInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const self = stored ?? caller.run
@@ -740,7 +747,7 @@ async function statusHandler(args: StatusInput, caller: TeamCaller, table: Permi
       return fail("E_NOT_VISIBLE", `Run ${id} is outside what team_status may read for ${caller.agent} (Permissions → Runs).`, self.id)
   }
   const entries = []
-  for (const id of ids) entries.push(await statusOf(root, id))
+  for (const id of ids) entries.push(await statusOf(ctx, root, id))
   return succeeded(entries)
 }
 
@@ -760,7 +767,7 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller, ta
       return fail("E_NOT_VISIBLE", `Run ${id} is outside what team_wait may wait on for ${caller.agent} (Permissions → Runs).`, self.id)
   }
   const settledNow = await settledIds(root, args.runs, until)
-  if (settledNow.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settledNow, until, ack))
+  if (settledNow.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, settledNow, until, ack))
   // Race the host's session.wait per listed run against the timeout; no
   // polling loop by the model.
   const sessions = ctx.session
@@ -803,7 +810,7 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller, ta
       }
     }
     const settled = await settledIds(root, args.runs, until)
-    if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until, ack))
+    if (settled.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, settled, until, ack))
     let pauseTimer: ReturnType<typeof setTimeout> | undefined
     try {
       await new Promise((resolve) => {
@@ -814,20 +821,20 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller, ta
     }
   }
   const settled = await settledIds(root, args.runs, until)
-  if (settled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settled, until, ack))
+  if (settled.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, settled, until, ack))
   await Effect.runPromise(Effect.promise(() => reconcile(ctx, root)).pipe(Effect.ignore))
   const resettled = await settledIds(root, args.runs, until)
-  if (resettled.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, resettled, until, ack))
+  if (resettled.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, resettled, until, ack))
   return succeeded({
     settled: [],
     acknowledged: [],
     timedOut: true,
     stillOpen: [...args.runs],
-    overBudget: await overBudgetIds(root, args.runs),
+    overBudget: await overBudgetIds(ctx, root, args.runs),
   })
 }
 
-async function getContextHandler(_args: GetContextInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
+async function getContextHandler(ctx: Context, _args: GetContextInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
@@ -888,7 +895,7 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller, tab
       turns: record.budget.turns ?? null,
       tokens: record.budget.tokens ?? null,
       wallMs: record.budget.wallMs ?? null,
-      used: { turns: record.attempts.length },
+      used: { attemptsUsed: record.attempts.length, tokensUsed: await sessionTokens(ctx, record) ?? null, usageBasis: "Session-cumulative" },
     },
     inbox: pending.map((item) => ({ id: item.id, from: item.from, kind: item.kind, text: item.text })),
   })
@@ -911,22 +918,24 @@ async function diffHandler(args: DiffInput, caller: TeamCaller, table: Permissio
   const from = await diffFrom(root, target, args.from)
   const maxBytes = args.maxBytes === undefined || args.maxBytes <= 0 ? DIFF_MAX_BYTES : Math.trunc(args.maxBytes)
   const paths = args.paths ?? []
+  const directory = target.worktree === "removed" ? await historicalRepository(root, target) : target.directory
   // A generated patch is the one diff output that runs a program named by
   // repository config (`diff.external`) or a `.gitattributes` diff driver
   // (`command`/`textconv`), so both opt-outs travel with this call.
-  const result = await gitRaw(target.directory, [
+  const result = await gitRaw(directory, [
     ...NO_REPOSITORY_PROGRAMS,
     "diff",
     "--no-ext-diff",
     "--no-textconv",
     from,
+    ...(target.worktree === "removed" ? [target.head] : []),
     ...(paths.length === 0 ? [] : ["--", ...paths]),
   ])
   if (result.code !== 0)
     return fail("E_INTERNAL", `git diff ${from} failed in ${target.directory}: ${result.err || result.out || "unknown error"}`)
   const bytes = Buffer.byteLength(result.out, "utf8")
   const truncated = bytes > maxBytes
-  const head = await git(target.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]).catch(() => target.head)
+  const head = target.worktree === "removed" ? target.head : await git(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   return succeeded({
     run: target.id,
     from,
@@ -945,10 +954,29 @@ async function diffFrom(root: string, target: RunRecord, from: DiffInput["from"]
   return parent?.head ?? target.base
 }
 
+async function historicalRepository(root: string, target: RunRecord): Promise<string> {
+  const records = await listRuns(root)
+  for (const record of records.filter((run) => run.repoKey === target.repoKey && run.worktree !== "removed")) {
+    const common = await gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => undefined)
+    if (common?.code !== 0) continue
+    if (target.gitCommonDir !== undefined && await realpath(common.out) !== target.gitCommonDir) continue
+    // Older records have no common-directory identity: their retained branch
+    // must still identify the exact saved head, not merely a same-named repo.
+    if (target.gitCommonDir === undefined) {
+      const branch = await gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--verify", `refs/heads/${target.branch}`])
+      if (branch.code !== 0 || branch.out !== target.head) continue
+    }
+    const commits = await Promise.all([target.base, target.head].map((sha) => gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "cat-file", "-e", `${sha}^{commit}`])))
+    if (commits.every((result) => result.code === 0)) return record.directory
+  }
+  throw toolError("E_HISTORY_UNAVAILABLE", `No surviving repository holds the retained history for ${target.id}.`, "retain the repository and child branch")
+}
+
 async function checkHandler(args: CheckInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
+  await requireWorktree(record)
   const assigned = await readChecks(root, record.id)
   // Checks it may run (Permissions of team_check): a test-file check or a
   // package-script check this member's rows turned off is refused before it
@@ -1010,16 +1038,6 @@ async function resolveBase(repoRoot: string, base: string | undefined, defaultHe
   return verify.out
 }
 
-function isScopePath(candidate: string): boolean {
-  if (candidate.endsWith("/*")) {
-    const base = candidate.slice(0, -2)
-    return base.length > 0 && isScopePath(base)
-  }
-  if (candidate === "" || candidate.startsWith("/") || candidate.endsWith("/")) return false
-  if (candidate.split("/").includes("..")) return false
-  return !/(^|\/)(\.git|\.cairn|\.beads)(\/|$)/.test(candidate)
-}
-
 // What the member a brief names accepts: its own "Briefs it accepts" and
 // "Brief limits" rows (Permissions of team_get_context), read for the target,
 // never for the caller. Undefined when the brief passes them all.
@@ -1052,17 +1070,6 @@ function briefRefusal(table: PermissionTable | undefined, brief: Brief): TeamApi
 // A team row's refusal text as the model reads it.
 function messageOf(table: PermissionTable | undefined, agent: string, tool: TeamTool, id: string): string {
   return row(table, agent, tool, id)?.item.message ?? `is refused by its ${tool} row ${id}`
-}
-
-function inScope(scopePaths: readonly string[], file: string): boolean {
-  if (file === "" || file.startsWith("/") || file.endsWith("/") || file.split("/").includes("..")) return false
-  for (const pattern of scopePaths) {
-    if (pattern.endsWith("/*")) {
-      const base = pattern.slice(0, -2)
-      if (file === base || file.startsWith(`${base}/`)) return true
-    } else if (file === pattern) return true
-  }
-  return false
 }
 
 function stable(value: unknown): string {
@@ -1193,7 +1200,7 @@ async function siblingsOf(root: string, taskID: string): Promise<Array<{ task: s
   return []
 }
 
-async function statusOf(root: string, id: string) {
+async function statusOf(ctx: Context, root: string, id: string) {
   const record = await loadRun(root, id)
   if (record === undefined) throw toolError("E_UNKNOWN_RUN", `Run ${id} not found in this namespace.`, "a run id from list{}")
   const last = record.attempts[record.attempts.length - 1]
@@ -1212,7 +1219,8 @@ async function statusOf(root: string, id: string) {
   }
   const stored = await latestReport(root, id)
   const taskState = record.task === null ? null : await taskStateOf(root, record.task)
-  const exhaustion = budgetExhaustion(record)
+  const tokensUsed = await sessionTokens(ctx, record)
+  const exhaustion = budgetExhaustion(record, { tokensUsed })
   return {
     run: record.id,
     role: record.role,
@@ -1242,9 +1250,11 @@ async function statusOf(root: string, id: string) {
     parent: record.parent,
     acked: await ackedAt(root, id),
     budget: {
-      turnsUsed: record.attempts.length,
+      attemptsUsed: record.attempts.length,
+      turnsUsed: record.attempts.length, // compatibility alias: attempts, never model calls
       turns: record.budget.turns ?? 0,
-      tokensUsed: 0,
+      tokensUsed: tokensUsed ?? null,
+      usageBasis: "Session-cumulative",
       tokens: record.budget.tokens ?? 0,
       overBy: exhaustion.overBy,
       exhausted: exhaustion.exhausted,
@@ -1276,16 +1286,17 @@ async function waitReport(root: string, runID: string, attempt: number): Promise
   return { status: data.status, summary: data.summary, path: jsonPath }
 }
 
-async function overBudgetIds(root: string, ids: readonly string[]): Promise<string[]> {
+async function overBudgetIds(ctx: Context, root: string, ids: readonly string[]): Promise<string[]> {
   const out: string[] = []
   for (const id of ids) {
     const record = await loadRun(root, id)
-    if (record !== undefined && budgetExhaustion(record).exhausted) out.push(id)
+    if (record !== undefined && budgetExhaustion(record, { tokensUsed: await sessionTokens(ctx, record) }).exhausted) out.push(id)
   }
   return out
 }
 
 async function waitResult(
+  ctx: Context,
   root: string,
   callerID: string,
   runs: readonly string[],
@@ -1318,7 +1329,7 @@ async function waitResult(
     acknowledged,
     timedOut: false,
     stillOpen: runs.filter((id) => !done.has(id)),
-    overBudget: await overBudgetIds(root, runs),
+    overBudget: await overBudgetIds(ctx, root, runs),
   }
 }
 

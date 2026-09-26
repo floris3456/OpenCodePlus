@@ -97,6 +97,7 @@ function recordSession() {
   const prompted: Array<{ sessionID: string; text: string }> = []
   let seq = 0
   const domain = {
+    get: () => Effect.succeed({ id: "ses_child_1" }),
     create: (input: unknown) => {
       created.push(input)
       seq += 1
@@ -467,7 +468,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       const scopeRow = scopeRows.rows.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
       expect(scopeRow).toBeDefined()
       expect(scopeRow?.text).toContain("docs/note.md")
-      expect(scopeRow?.text).toContain("never editable")
+      expect(scopeRow?.text).toContain("remain protected")
       // `text` is the resolved row; `patterns` is only on the show surface, so
       // the walkthrough needs both calls to state the whole rule.
       const scopeShown = await runOk<{ tool: string; rule: string; patterns: string[]; enabled: boolean; source: string }>(
@@ -478,7 +479,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       call("instructions_show", { id: scopeRow?.id }, scopeShown)
       expect(scopeShown.tool).toBe("edit")
       expect(scopeShown.rule).toBe(`run:${childRun}`)
-      expect(scopeShown.patterns).toEqual(["*", "docs/note.md", ".git/**", ".opencodeplus/**"])
+      expect(scopeShown.patterns).toEqual(["docs/note.md"])
       expect(scopeShown.enabled).toBe(true)
 
       const child = toolContext(delegated.session, "gemini-implementer")
@@ -572,6 +573,37 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
     }
   })
 }, 120000)
+
+test("continued root admits after notification and saves its first report without weakening duplicate protection", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await enable(repo.dir)
+      const sessions = recordSession()
+      const fixture = pluginContext(repo.dir, sessions.domain)
+      await enableShippedTeam(await registerAll(fixture.ctx))
+      const caller = toolContext("ses_continued_root", "sol-orchestrator")
+      const boot = await runOk<{ run: string }>(need(fixture.tools, "team_get_context"), {}, caller)
+      await onSessionEvent(fixture.ctx, root, { type: "session.execution.succeeded", data: { sessionID: caller.sessionID } })
+      const child = baseRun({ id: "w-notification", parent: boot.run, state: "working", sessionID: "ses_notification_child", attempts: [{ n: 1, state: "streaming", trigger: "delegate", startedAt: new Date().toISOString() }] })
+      await saveRun(root, child)
+      await onSessionEvent(fixture.ctx, root, { type: "session.execution.succeeded", data: { sessionID: child.sessionID } })
+      await onSessionEvent(fixture.ctx, root, { type: "session.execution.started", data: { sessionID: caller.sessionID } })
+      expect((await loadRun(root, boot.run))?.attempts).toHaveLength(2)
+      await onSessionEvent(fixture.ctx, root, { type: "session.execution.succeeded", data: { sessionID: caller.sessionID } })
+      const prior = (await loadRun(root, boot.run))?.attempts
+      await onSessionEvent(fixture.ctx, root, { type: "session.execution.started", data: { sessionID: caller.sessionID } })
+      const report = { status: "done", summary: "Verified the bounded fixture and saved the continued lead report.", concerns: [], needs: [], findings: [], deferred: [] }
+      const saved = await runOk<{ attempt: number; reportPath: string }>(need(fixture.tools, "team_finish"), report, caller)
+      expect(saved.attempt).toBe(3)
+      expect(await Bun.file(saved.reportPath).exists()).toBe(true)
+      expect((await loadRun(root, boot.run))?.attempts.slice(0, 2)).toEqual(prior)
+      expect(await runMessage(need(fixture.tools, "team_finish"), report, caller)).toContain("E_FINISH_TWICE")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
 
 test("[20e] a turn that ends without finish is idle / no_report", async () => {
   await withIsolatedTeamsRoot(async (root) => {

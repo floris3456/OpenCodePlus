@@ -34,6 +34,7 @@ function recordSession() {
   const waited: unknown[] = []
   let seq = 0
   const domain = {
+    get: () => Effect.succeed({ id: Session.ID.make("ses_child_001") }),
     create: (input: unknown) => {
       created.push(input)
       seq += 1
@@ -54,6 +55,7 @@ function recordSession() {
 function recordRejectingSession(message = "prompt blew up") {
   const prompted: Array<{ sessionID: unknown; text: unknown }> = []
   const domain = {
+    get: () => Effect.succeed({ id: Session.ID.make("ses_child_001") }),
     prompt: (input: { sessionID: unknown; text: unknown }) => {
       prompted.push({ sessionID: input.sessionID, text: input.text })
       return Effect.fail(new Error(message))
@@ -70,7 +72,7 @@ function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
-    directory: "/tmp/wt-team-followup",
+    directory: process.cwd(),
     paths: [],
     branch: "team/implementer/test",
     base: "0123456789abcdef0123456789abcdef01234567",
@@ -348,7 +350,7 @@ test("same requestID twice is idempotent, different args fail E_REQUEST_ID", asy
     const second = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
     )
-    expect(second).toEqual(first)
+    expect(second).toMatchObject({ ...first, replayed: true, receipt: first, current: { state: "working", attempt: 2 } })
     expect(await peek(root, child.id)).toHaveLength(1)
     const error = rejected(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "A different followup text entirely here." }), callerFor(parent)),
@@ -374,6 +376,47 @@ test("budget in the call replaces the child budget outright", async () => {
     )
     expect(value).toEqual({ attempt: 2, state: "admitted" })
     expect((await loadRun(root, child.id))?.budget).toEqual({ turns: 10 })
+  })
+})
+
+test("a stopped child resumes once, consumes stop intent, and replays after settlement", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", { state: "stopped", stopRequested: true })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const api = createTeamApi(ctx, teamState())
+    const input = followupInput()
+    expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "admitted" })
+    expect((await loadRun(root, child.id))?.stopRequested).toBeUndefined()
+    await onSessionEvent(ctx, root, { type: "session.execution.started", data: { sessionID: child.sessionID } })
+    await onSessionEvent(ctx, root, { type: "session.execution.succeeded", data: { sessionID: child.sessionID } })
+    const settled = await loadRun(root, child.id)
+    expect(settled?.state).toBe("idle")
+    expect(settled?.attempts).toHaveLength(2)
+    expect(settled?.attempts[0]).toEqual(child.attempts[0])
+    expect(required(await api.followup(input, callerFor(parent)))).toMatchObject({ replayed: true, current: { state: "idle", attempt: 2 } })
+    expect(sessions.prompted).toHaveLength(1)
+    expect(await peek(root, child.id)).toEqual([])
+  })
+})
+
+test("unavailable targets refuse before inbox, budget or request receipt changes", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    for (const overrides of [{ worktree: "removed" as const }, { sessionID: null }, { state: "dead" as const }]) {
+      const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", overrides)
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      const before = await loadRun(root, child.id)
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
+      expect((await api.followup(followupInput({ budget: { tokens: 1 } }), callerFor(parent))).ok).toBe(false)
+      expect(await loadRun(root, child.id)).toEqual(before)
+      expect(await peek(root, child.id)).toEqual([])
+      expect(await fs.readdir(path.join(root, "requests")).catch(() => [])).toEqual([])
+      expect(sessions.prompted).toHaveLength(0)
+    }
   })
 })
 

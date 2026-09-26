@@ -3,7 +3,10 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { setChecksHandler } from "../../src/teams/api-git-ops.js"
-import type { TeamCaller } from "../../src/teams/api.js"
+import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
+import { git } from "../../src/teams/git.js"
+import { context } from "../harness.js"
+import { teamState } from "./preset-table.js"
 import { saveRun, type RunRecord } from "../../src/teams/run.js"
 import type { Check } from "../../src/teams/schema.js"
 import { atomicJson, readJson } from "../../src/teams/store.js"
@@ -88,6 +91,37 @@ test("valid checks are written to the caller checks.json and output in input ord
     const value = required(await setChecksHandler({ checks }, callerFor(caller))) as { checks: string[] }
     expect(value).toEqual({ checks: ["unit", "lint"] })
     expect(await readJson<Check[]>(path.join(root, "runs", caller.id, "checks.json"))).toEqual(checks)
+  })
+})
+
+test("forbidden checkpoint refuses before file/index changes, allowed checkpoint still works", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const directory = path.join(root, "fixture")
+    await fs.mkdir(path.join(directory, "src"), { recursive: true })
+    await git(directory, ["init", "-b", "fixture"])
+    await git(directory, ["config", "user.name", "fixture"])
+    await git(directory, ["config", "user.email", "fixture@local"])
+    await fs.writeFile(path.join(directory, "src/allowed.ts"), "initial\n")
+    await fs.writeFile(path.join(directory, "src/forbidden.ts"), "initial\n")
+    await git(directory, ["add", "."])
+    await git(directory, ["commit", "-m", "test: fixture"])
+    const head = await git(directory, ["rev-parse", "HEAD"])
+    const run = baseRun({ id: "w-checkpoint-scope", directory, paths: ["src/*"], parent: "main-owned", base: head, head })
+    await saveRun(root, run)
+    await atomicJson(path.join(root, "runs", run.id, "brief.json"), { scope: { paths: run.paths, forbidden: ["src/forbidden.ts"] } })
+    await fs.writeFile(path.join(directory, "src/forbidden.ts"), "uncommitted fixture change\n")
+    const index = await Bun.file(path.join(directory, ".git/index")).bytes()
+    const content = await Bun.file(path.join(directory, "src/forbidden.ts")).text()
+    const api = createTeamApi(context(), teamState())
+    const denied = await api.checkpoint({ files: ["src/forbidden.ts"], message: "fix: forbidden", expectedHead: head }, callerFor(run))
+    expect(rejected(denied).code).toBe("E_SCOPE")
+    expect(await Bun.file(path.join(directory, ".git/index")).bytes()).toEqual(index)
+    expect(await Bun.file(path.join(directory, "src/forbidden.ts")).text()).toBe(content)
+    await fs.writeFile(path.join(directory, "src/allowed.ts"), "allowed change\n")
+    expect(required(await api.checkpoint({ files: ["src/allowed.ts"], message: "fix: allowed", expectedHead: head }, callerFor(run)))).toMatchObject({ committed: true })
+    await saveRun(root, { ...run, worktree: "removed" })
+    expect(rejected(await api.check({ id: "unit" }, callerFor(run))).code).toBe("E_WORKTREE_REMOVED")
+    expect(rejected(await api.checkpoint({ files: ["src/allowed.ts"], message: "fix: refused", expectedHead: head }, callerFor(run))).code).toBe("E_WORKTREE_REMOVED")
   })
 })
 

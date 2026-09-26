@@ -242,15 +242,22 @@ reason and exactly one check and takes at most 5 paths.
 Every agent also has `team_delegate` bounds that ship on — 4 children working
 at once, depth 3, briefs of up to 6000 characters, 12 live team runs; in a
 delegated run, which nobody watches, questions and approvals are refused
-rather than left waiting. While a run is live, that run's `scope.paths` become
-a `perm:edit:run:<runID>` row on the child, allowing the scope, denying
-everything else, and never allowing `.git/**` or `.opencodeplus/**`. A rule
-belongs to an agent and not to a session, so when one member has several live
-runs the rows state the **union** of their `scope.paths` — each run keeps its
-own listable row (`instructions_list where:"run:<id>"`) and its text names the
-shared union, rather than the last run silently taking the others' scope away.
+rather than left waiting. Each delegated Session's edits and checkpoints are
+limited to its saved brief's `scope.paths`; `scope.forbidden` wins. Same-role
+runs do not share scope. These boundaries only narrow existing permissions,
+never override denial or approval, and protect Git, paused-tool and Plus state.
+The listable `perm:edit:run:<runID>` row describes the individual boundary;
+editing that display row does not widen the admitted brief.
 Landing on a protected branch (`main`, `master`, `v2`, `ocp-main`, `release*`)
 is allowed until you turn that `team_integrate` row off.
+
+Status reports `attemptsUsed`, not a count of model calls. `turnsUsed` remains
+a compatibility alias for attempts, and the existing `turns` budget likewise
+counts attempts. `tokensUsed` is the public Session's cumulative total (input,
+output, reasoning and cache), or `null` if unavailable, not per-attempt usage.
+Status and wait use the same totals for advisory budgets; no hard interrupt is
+implied. Replayed admissions label the original `receipt` and expose a fresh
+`current` observation without submitting the work again.
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →

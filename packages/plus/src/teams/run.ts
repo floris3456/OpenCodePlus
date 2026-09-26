@@ -49,6 +49,8 @@ export interface RunRecord {
   kind: RunKind
   repo: string
   repoKey: string
+  /** Canonical shared Git directory, retained for historical reads after removal. */
+  gitCommonDir?: string
   directory: string
   paths: string[]
   branch: string

@@ -3,8 +3,12 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { listHandler } from "../../src/teams/api-query.js"
-import { shippedTable } from "./preset-table.js"
-import type { TeamCaller } from "../../src/teams/api.js"
+import { shippedTable, teamState } from "./preset-table.js"
+import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
+import { context } from "../harness.js"
+import { Effect } from "effect"
+import type { SessionDomain } from "@opencode/plugin/effect/session"
+import { TokenUsage } from "@opencode/schema/token-usage"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
@@ -161,6 +165,49 @@ test("an orchestrator sees its own run plus direct children only", async () => {
     } finally {
       await removeRepo(repo.dir)
     }
+  })
+})
+
+test("status and wait use Session-cumulative tokens and honestly count attempts", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const family = await seedFamily(root, repo.dir)
+      const run = { ...family.childA, state: "idle" as const, budget: { tokens: 1 }, attempts: [{ n: 1, state: "no_report" as const, trigger: "delegate", startedAt: new Date().toISOString() }] }
+      await saveRun(root, run)
+      const tokens = { input: 101, output: 7, reasoning: 9, cache: { read: 11, write: 13 } }
+      const ctx = context({ session: { ...context().session, get: () => Effect.succeed({ tokens }) } as unknown as SessionDomain })
+      const api = createTeamApi(ctx, teamState())
+      const status = required(await api.status({ runs: [run.id] }, callerFor(family.parent))) as Array<{ budget: Record<string, unknown> }>
+      expect(status[0]?.budget).toMatchObject({ attemptsUsed: 1, turnsUsed: 1, tokensUsed: TokenUsage.total(tokens), usageBasis: "Session-cumulative", exhausted: true })
+      expect(required(await api.wait({ runs: [run.id], timeoutMs: 10000, ack: false }, callerFor(family.parent)))).toMatchObject({ overBudget: [run.id] })
+      const unavailable = createTeamApi(context(), teamState())
+      expect(required(await unavailable.status({ runs: [run.id] }, callerFor(family.parent)))).toMatchObject([{ budget: { tokensUsed: null, exhausted: false } }])
+    } finally { await removeRepo(repo.dir) }
+  })
+})
+
+test("removed worktree diff uses retained commits, not the surviving parent's dirty tree", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await git(repo.dir, ["branch", "retained-child"])
+      const parent = baseRun({ id: "main-history", role: "opus-orchestrator", directory: repo.dir, kind: "main" })
+      await fs.writeFile(path.join(repo.dir, "README.md"), "committed child change\n")
+      await git(repo.dir, ["add", "README.md"])
+      await git(repo.dir, ["commit", "-m", "fix: child change"])
+      const head = await git(repo.dir, ["rev-parse", "HEAD"])
+      const child = baseRun({ id: "w-history", parent: parent.id, worktree: "removed", directory: path.join(root, "removed"), branch: "retained-child", base: repo.head, head, gitCommonDir: await fs.realpath(await git(repo.dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"])) })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      await fs.writeFile(path.join(repo.dir, "README.md"), "unrelated parent dirt\n")
+      const api = createTeamApi(context(), teamState())
+      const diff = required(await api.diff({ run: child.id }, callerFor(parent))) as { patch: string; head: string }
+      expect(diff.head).toBe(head)
+      expect(diff.patch).toContain("+committed child change")
+      expect(diff.patch).not.toContain("parent dirt")
+      expect(required(await api.diff({ run: child.id, maxBytes: 10 }, callerFor(parent)))).toMatchObject({ truncated: true })
+    } finally { await removeRepo(repo.dir) }
   })
 })
 

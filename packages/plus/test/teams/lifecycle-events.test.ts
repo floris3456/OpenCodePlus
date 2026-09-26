@@ -33,6 +33,7 @@ async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promi
 function recordSession() {
   const prompted: Array<{ sessionID: string; text: string }> = []
   const domain = {
+    get: () => Effect.succeed({ id: "ses_child_010" }),
     prompt: (input: { sessionID: unknown; text: unknown }) => {
       prompted.push({ sessionID: String(input.sessionID), text: String(input.text) })
       return Effect.succeed(undefined as never)
@@ -49,7 +50,7 @@ function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
-    directory: "/tmp/wt-team-events",
+    directory: process.cwd(),
     paths: [],
     branch: "team/implementer/test",
     base: "0123456789abcdef0123456789abcdef01234567",
@@ -439,6 +440,8 @@ test("session.execution.started moves an idle run to working", async () => {
     expect(loaded?.state).toBe("working")
     expect(loaded?.history[loaded.history.length - 1]?.from).toBe("idle")
     expect(loaded?.history[loaded.history.length - 1]?.to).toBe("working")
+    expect(loaded?.attempts).toHaveLength(1)
+    expect(loaded?.attempts[0]?.state).toBe("admitted")
   })
 })
 
@@ -580,13 +583,14 @@ test("a resumed stopped run consumes the stop intent its stop already satisfied"
     expect(stored?.state).toBe("idle")
     expect(stored?.stopRequested).toBeUndefined()
     expect(stored?.attempts[0]?.state).toBe("interrupted")
-    expect(stored?.attempts[0]?.notified).toBe(true)
+    expect(stored?.attempts[0]).toEqual(child.attempts[0])
+    expect(stored?.attempts[1]?.notified).toBe(true)
 
     const items = await peek(root, parent.id)
     expect(items).toHaveLength(1)
     expect(items[0]?.kind).toBe("child.settled")
     expect(items[0]?.from).toBe(child.id)
-    expect(items[0]?.text).toContain("attempt 1 interrupted")
+    expect(items[0]?.text).toContain("attempt 2 no_report")
 
     // A repeated success neither re-stops the run nor notifies the parent twice.
     await onSessionEvent(ctx, root, succeededEvent("ses_intent_001"))
@@ -628,8 +632,8 @@ test("a resumed run stays usable: its queued followup starts the next attempt af
     const settled = await onSessionEvent(ctx, root, succeededEvent("ses_intent_003"))
     expect(settled?.state).toBe("working")
     expect(settled?.stopRequested).toBeUndefined()
-    expect(settled?.attempts).toHaveLength(2)
-    expect(settled?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
+    expect(settled?.attempts).toHaveLength(3)
+    expect(settled?.attempts[2]).toMatchObject({ n: 3, state: "admitted", trigger: "followup" })
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.sessionID).toBe("ses_intent_003")
     expect(sessions.prompted[0]?.text).toBe("Continue with the second half.")
@@ -638,7 +642,7 @@ test("a resumed run stays usable: its queued followup starts the next attempt af
     const done = await onSessionEvent(ctx, root, succeededEvent("ses_intent_003"))
     expect(done?.state).toBe("idle")
     expect(done?.stopRequested).toBeUndefined()
-    expect(done?.attempts[1]?.state).toBe("no_report")
+    expect(done?.attempts[2]?.state).toBe("no_report")
   })
 })
 
@@ -705,9 +709,10 @@ test("deliverInbox cannot resurrect a worktree another writer removed before sav
 
     const stored = await loadRun(root, child.id)
     expect(stored?.worktree).toBe("removed")
-    expect(stored?.state).toBe("working")
-    expect(stored?.attempts).toHaveLength(2)
-    expect(stored?.attempts[1]?.state).toBe("admitted")
+    expect(stored?.state).toBe("idle")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(sessions.prompted).toHaveLength(0)
+    expect(await peek(root, child.id)).toHaveLength(1)
   })
 })
 
@@ -745,4 +750,3 @@ test("deliverInbox prompt error path cannot resurrect a worktree removed while i
     expect(stored?.attempts).toHaveLength(1)
   })
 })
-

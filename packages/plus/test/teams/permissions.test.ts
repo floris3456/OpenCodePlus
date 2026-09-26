@@ -178,10 +178,10 @@ test("a project-level record on a preset row overrides the shipped answer", asyn
   expect(tools.find((plan) => plan.tool === "question")?.enabled).toBe(false)
 })
 
-test("a live run contributes an edit-scope row that allows scope.paths and denies everything else", async () => {
+test("a live run describes its scope without adding agent-wide allows", async () => {
   await saveRun(dir, makeRun())
   const runs = await liveRunScopes(dir)
-  expect(runs).toEqual([{ id: "w-0000000000000001", role: "muse-implementer", paths: ["packages/plus/src/*"] }])
+  expect(runs).toEqual([{ id: "w-0000000000000001", role: "muse-implementer", paths: ["packages/plus/src/*"], forbidden: [] }])
   const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), runs)
   const row = items.find((item) => item.id === "perm:edit:run:w-0000000000000001")
   expect(row).toBeDefined()
@@ -189,12 +189,8 @@ test("a live run contributes an edit-scope row that allows scope.paths and denie
   expect(row?.text).toContain("packages/plus/src/*")
   const permissions = await permissionsAfterApply("muse-implementer", items)
   const editRules = permissions.filter((rule) => rule.action === "edit")
-  expect(editRules).toEqual([
-    { action: "edit", resource: "*", effect: "deny", message: OUTSIDE_SCOPE },
-    { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
-    { action: "edit", resource: ".git/**", effect: "deny", message: forbiddenState(".git/**") },
-    { action: "edit", resource: ".opencodeplus/**", effect: "deny", message: forbiddenState(".opencodeplus/**") },
-  ])
+  expect(editRules).toEqual([])
+  expect(row?.text).toContain("Session-aware enforcement")
 })
 
 // The refusals the round-1 permission hook sent are the rules' own words now,
@@ -214,8 +210,7 @@ test("the rules a denial comes from carry the message the model reads", async ()
   const { evaluate } = await import("../../../core/src/permission.js")
 
   // Edit scope: the two round-1 texts, verbatim but for the quoted subject.
-  expect(evaluate("edit", "outside/other.ts", permissions).message).toBe(OUTSIDE_SCOPE)
-  expect(evaluate("edit", ".git/HEAD", permissions).message).toBe(forbiddenState(".git/**"))
+  expect(permissions.filter((rule) => rule.action === "edit")).toEqual([])
   expect(evaluate("edit", "packages/plus/src/index.ts", permissions).message).toBeUndefined()
 
   // A preset's secret rows deny with their own words.
@@ -227,7 +222,7 @@ test("the rules a denial comes from carry the message the model reads", async ()
 
 // A permission rule belongs to an agent, so two live runs of one role cannot
 // hold separate scopes: what they must NOT do is take each other's away.
-test("two live runs of one role resolve to the union of their scope.paths", async () => {
+test("two live runs of one role describe individual scopes, not an agent-wide union", async () => {
   await saveRun(dir, makeRun({ id: "w-0000000000000003", paths: ["a.ts"] }))
   await saveRun(dir, makeRun({ id: "w-0000000000000004", paths: ["b.ts"] }))
   const runs = await liveRunScopes(dir)
@@ -236,39 +231,13 @@ test("two live runs of one role resolve to the union of their scope.paths", asyn
   for (const id of ["w-0000000000000003", "w-0000000000000004"]) {
     const row = items.find((item) => item.id === `perm:edit:run:${id}`)
     expect(row?.runID).toBe(id)
-    expect(row?.text).toContain("share one edit scope")
-    expect(row?.text).toContain("[a.ts, b.ts]")
+    expect(row?.text).toContain("Same-role runs do not share scope")
+    expect(row?.text).not.toContain("[a.ts, b.ts]")
   }
   const permissions = await permissionsAfterApply("muse-implementer", items)
   // A rule belongs to the agent, so the messages name the union too: what the
   // rules really allow is what the agent is told.
-  expect(permissions.filter((rule) => rule.action === "edit")).toEqual([
-    {
-      action: "edit",
-      resource: "*",
-      effect: "deny",
-      message: `"*" is outside your scope.paths [a.ts, b.ts]. Report it in needs=[{kind:"path"...}].`,
-    },
-    { action: "edit", resource: "a.ts", effect: "allow" },
-    { action: "edit", resource: "b.ts", effect: "allow" },
-    {
-      action: "edit",
-      resource: ".git/**",
-      effect: "deny",
-      message: `".git/**" is version-control or paused-tool state and is never editable, even inside scope.paths [a.ts, b.ts]. Report it in needs=[{kind:"path"...}].`,
-    },
-    {
-      action: "edit",
-      resource: ".opencodeplus/**",
-      effect: "deny",
-      message: `".opencodeplus/**" is version-control or paused-tool state and is never editable, even inside scope.paths [a.ts, b.ts]. Report it in needs=[{kind:"path"...}].`,
-    },
-  ])
-  const { evaluate } = await import("../../../core/src/permission.js")
-  expect(evaluate("edit", "a.ts", permissions).effect).toBe("allow")
-  expect(evaluate("edit", "b.ts", permissions).effect).toBe("allow")
-  expect(evaluate("edit", ".git/config", permissions).effect).toBe("deny")
-  expect(evaluate("edit", "elsewhere.ts", permissions).effect).toBe("deny")
+  expect(permissions.filter((rule) => rule.action === "edit")).toEqual([])
 })
 
 test("a superseded run contributes no edit-scope row", async () => {
@@ -352,18 +321,13 @@ test("a rule keeps its message across the snapshot boundary, and a rule without 
     message: `${member} delegates only within its own team`,
   })
   // The per-run edit scope, whose deny rules carry the round-1 texts.
-  expect(policyOf(`perm:edit:run:${run.id}`)?.on).toEqual([
-    { action: "edit", resource: "*", effect: "deny", message: OUTSIDE_SCOPE },
-    { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
-    { action: "edit", resource: ".git/**", effect: "deny", message: forbiddenState(".git/**") },
-    { action: "edit", resource: ".opencodeplus/**", effect: "deny", message: forbiddenState(".opencodeplus/**") },
-  ])
+  expect(policyOf(`perm:edit:run:${run.id}`)?.on).toEqual([])
 
   // A rule with no message crosses exactly as it did before the field existed:
   // the key is absent, never an encoded `undefined`.
   const scope = policyOf(`perm:edit:run:${run.id}`)?.on ?? []
-  expect(scope.filter((rule) => "message" in rule)).toHaveLength(3)
-  expect(scope.filter((rule) => !("message" in rule))).toEqual([{ action: "edit", resource: "packages/plus/src/*", effect: "allow" }])
+  expect(scope).toEqual([])
+  expect(crossed.find((item) => item.runID === run.id)?.text).toContain("Same-role runs do not share scope")
 })
 
 const showContext: Tool.Context = {
@@ -417,12 +381,7 @@ test("instructions_show on a run edit-scope row reports the rules and the messag
   const scope = await showPolicy(registry.tools, `item:defaults:${member}:perm:edit:run:${run.id}`)
   expect(scope.tool).toBe("edit")
   expect(scope.policy).toEqual({
-    on: [
-      { action: "edit", resource: "*", effect: "deny", message: OUTSIDE_SCOPE },
-      { action: "edit", resource: "packages/plus/src/*", effect: "allow" },
-      { action: "edit", resource: ".git/**", effect: "deny", message: forbiddenState(".git/**") },
-      { action: "edit", resource: ".opencodeplus/**", effect: "deny", message: forbiddenState(".opencodeplus/**") },
-    ],
+    on: [],
     off: [],
   })
 })
@@ -437,11 +396,8 @@ test("a delegated run's edit-scope row carries edit rules only, whoever the memb
   const childRow = items.find((item) => item.id === "perm:edit:run:w-0000000000000002")
   expect(childRow?.policy?.on.every((rule) => rule.action === "edit")).toBe(true)
   // With no scope.paths the delegated run may edit nothing.
-  expect(childRow?.policy?.on.map((rule) => [rule.resource, rule.effect])).toEqual([
-    ["*", "deny"],
-    [".git/**", "deny"],
-    [".opencodeplus/**", "deny"],
-  ])
+  expect(childRow?.policy?.on).toEqual([])
+  expect(childRow?.text).toContain("scope.paths []")
   const planner = presetInput({ members: [linked("fable-planner", "planner")] })
   expect(resolvedStates(planner, "fable-planner")["perm:team_delegate:access.delegated"]).toBe("off")
 })

@@ -125,13 +125,14 @@ export async function peek(root: string, runID: string): Promise<InboxItem[]> {
 }
 
 /** Returns pending items and moves each file into inbox/processed/ under the state lock. */
-export async function take(root: string, runID: string): Promise<InboxItem[]> {
+export async function take(root: string, runID: string, ids?: readonly string[]): Promise<InboxItem[]> {
   return lock(root, "state", runID, async () => {
     const entries = await readInboxEntries(root, runID)
     if (entries === undefined) return []
     const files = entries
       .filter(isInboxFile)
       .map((e) => e.name)
+      .filter((name) => ids === undefined || ids.includes(name.slice(0, -5)))
       .sort((a, b) => a.localeCompare(b))
     if (files.length === 0) return []
     await Effect.runPromise(io(() => mkdir(join(inboxDir(root, runID), "processed"), { recursive: true })))

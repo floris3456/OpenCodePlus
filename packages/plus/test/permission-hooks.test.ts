@@ -22,6 +22,12 @@ import { orderRules } from "../src/instructions/apply.js"
 import { fingerprint, type Item } from "../src/instructions/model.js"
 import { context } from "./harness.js"
 import { change, linked, presetTable } from "./teams/preset-table.js"
+import fs from "node:fs/promises"
+import path from "node:path"
+import os from "node:os"
+import { teamsDataDir } from "../src/instructions/paths.js"
+import { saveRun, type RunRecord } from "../src/teams/run.js"
+import { atomicJson } from "../src/teams/store.js"
 
 function toolRow(id: string, group: Item["group"] = "native"): Item {
   return { id: `tool:${id}`, kind: "tool", group, title: id, text: id, enabled: true, fingerprint: fingerprint(id) }
@@ -142,6 +148,47 @@ test("a member's own rows are recognised in Teams-catalogue ids, so targets.self
     agent: "lab-planner",
   })
   expect(decision.refuse).toContain("may not change its own rows")
+})
+
+test("session-aware edit permission isolates same-role runs and never upgrades allow/ask/deny", async () => {
+  const tmp = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-scope-hooks-"))
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = tmp
+  try {
+    const now = new Date().toISOString()
+    for (const name of ["a", "b"]) {
+      const run: RunRecord = { id: `w-${name}`, role: "maker", kind: "w", repo: "fixture", repoKey: "fixture", directory: `/workspace/${name}`, paths: [`src/${name}/*`], branch: name, base: "", head: "", state: "working", attempts: [], task: null, parent: "main-owned", children: [], briefSha: "", bundle: "fixture", budget: {}, createdAt: now, lastUsed: now, sessionID: `ses_${name}`, configDigest: null, history: [] }
+      await saveRun(teamsDataDir(), run)
+      await atomicJson(path.join(teamsDataDir(), "runs", run.id, "brief.json"), { scope: { paths: run.paths, forbidden: [`src/${name}/excluded.ts`] } })
+    }
+    const { recorded } = await installed(tableFor(["edit", "write", "patch"], {}, ["maker"]))
+    const evaluate = recorded.evaluate
+    if (evaluate === undefined) throw new Error("missing permission hook")
+    for (const name of ["a", "b"]) {
+      for (const effect of ["allow", "ask", "deny"]) {
+        const event = { sessionID: `ses_${name}`, action: "edit", resources: [`/workspace/${name}/src/${name}/own.ts`], effect }
+        await Effect.runPromise(evaluate(event))
+        expect(event.effect).toBe(effect)
+      }
+      for (const resources of [
+        [`/workspace/${name}/src/${name}/excluded.ts`],
+        [`/workspace/${name}/src/${name === "a" ? "b" : "a"}/other.ts`],
+        [`/workspace/${name}/.git/config`],
+        [`/workspace/${name}/src/${name}/own.ts`, `/workspace/${name}/outside.ts`],
+      ]) {
+        const event = { sessionID: `ses_${name}`, action: "edit", resources, effect: "allow" }
+        await Effect.runPromise(evaluate(event))
+        expect(event.effect).toBe("deny")
+      }
+    }
+    const ordinary = { sessionID: "ses_nonteam", action: "edit", resources: ["/workspace/ordinary.ts"], effect: "ask" }
+    await Effect.runPromise(evaluate(ordinary))
+    expect(ordinary.effect).toBe("ask")
+  } finally {
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+    await fs.rm(tmp, { recursive: true, force: true })
+  }
 })
 
 test("secrets are masked inside serialized config and diffs, and a key list is left alone", () => {

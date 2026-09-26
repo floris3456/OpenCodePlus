@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto"
+import { readdir } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { put } from "./inbox.js"
+import { requireSession, requireWorktree } from "./availability.js"
+import { consumeStopIntent, deliverInbox } from "./lifecycle.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { bound, mayReach, relationOf, row } from "./reach.js"
 import {
@@ -12,14 +15,16 @@ import {
   isAttemptTerminal,
   isTerminal,
   loadRun,
+  occupiesSlot,
   recordInboxDelivery,
   saveRun,
   startAttempt,
   transition,
+  updateRun,
   type RunRecord,
 } from "./run.js"
 import { FollowupInput, toolError } from "./schema.js"
-import { atomicJson, readJson, sanitizeLockKey } from "./store.js"
+import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
@@ -57,6 +62,12 @@ export async function followupHandler(
   caller: TeamCaller,
   table?: PermissionTable,
 ): Promise<TeamApiResult> {
+  // Serialize admissions/replays for this parent; the Session prompt is an
+  // admission call, not a wait for model execution.
+  return lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => followupLocked(ctx, args, caller, table))
+}
+
+async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
@@ -70,6 +81,14 @@ export async function followupHandler(
       `Run ${args.run} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
       parent.children,
     )
+  const signature = signatureOf(args)
+  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(args.requestID)}.json`)
+  const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
+  if (replay?.signature !== undefined) {
+    if (replay.signature !== signature)
+      return fail("E_REQUEST_ID", `requestID "${args.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
+    if (replay.output !== undefined) return succeeded({ ...replay.output, replayed: true, receipt: replay.output, current: { run: child.id, state: child.state, attempt: child.attempts.at(-1)?.n ?? 0, worktree: child.worktree } })
+  }
   const rounds = bound(table, caller.agent, "followup", "limits.rounds")
   if (rounds !== undefined && child.attempts.length > rounds)
     return fail(
@@ -94,17 +113,17 @@ export async function followupHandler(
       "delegate a fresh run",
     )
 
-  const signature = signatureOf(args)
-  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(args.requestID)}.json`)
-  const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
-  if (replay?.signature !== undefined) {
-    if (replay.signature !== signature)
-      return fail(
-        "E_REQUEST_ID",
-        `requestID "${args.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`,
-        "pick a new requestID",
-      )
-    if (replay.output !== undefined) return succeeded(replay.output)
+  await requireWorktree(child)
+  await requireSession(ctx, child)
+  if (!["idle", "working", "starting", "blocked_input", "stopped"].includes(child.state) || (child.stopRequested && child.state !== "stopped"))
+    return fail("E_UNRESUMABLE", `Run ${child.id} is ${child.state} or stopping; delegate fresh from current parent.`, "delegate fresh from current parent")
+  if (!occupiesSlot(child)) {
+    const records = await Promise.all((await readdir(path.join(root, "runs"))).filter((name) => !name.startsWith(".")).map((name) => loadRun(root, name)))
+    const live = records.filter((run): run is RunRecord => run !== undefined && occupiesSlot(run))
+    const inflight = bound(table, caller.agent, "delegate", "limits.inflight")
+    const members = bound(table, caller.agent, "delegate", "limits.members")
+    if ((inflight !== undefined && live.filter((run) => run.parent === parent.id).length >= inflight) || (members !== undefined && live.length >= members))
+      return fail("E_BOUNDS", "No capacity to resume this child; wait for an active run to settle first.", "call wait first")
   }
 
   const delivery = args.delivery ?? "queue"
@@ -137,14 +156,18 @@ async function followupQueue(
       `Run ${childID} is superseded/reaped; delegate a fresh run.`,
       "delegate a fresh run",
     )
-  if (current.state !== "idle") {
+  await requireWorktree(current)
+  if (current.state !== "idle" && current.state !== "stopped") {
     const record = budget === undefined ? current : { ...current, budget: { ...budget } }
-    if (budget !== undefined) await saveRun(root, record)
+    if (budget !== undefined) await updateRun(root, childID, (fresh) => ({ ...fresh, budget: { ...budget } }))
     await put(root, childID, { kind: "followup", from: parent.id, text })
     // The child's own session.idle drains this into a new attempt
     // (lifecycle.onSessionIdle); neither side acts again.
-    const last = record.attempts[record.attempts.length - 1]
-    const output = { attempt: last?.n ?? 0, state: "queued" }
+    // Settlement may have run between our read and put. Recheck through the
+    // same locked idle handoff so that correction is not stranded.
+    const delivered = await deliverInbox(ctx, root, record)
+    const last = delivered.attempts.at(-1)
+    const output = { attempt: last?.n ?? 0, state: delivered.attempts.length > record.attempts.length ? "admitted" : "queued" }
     await atomicJson(requestPath, { signature, output, run: childID })
     return succeeded(output)
   }
@@ -182,7 +205,8 @@ async function followupNow(
       "delegate a fresh run",
     )
   const last = current.attempts[current.attempts.length - 1]
-  if (current.state !== "idle")
+  await requireWorktree(current)
+  if (current.state !== "idle" && current.state !== "stopped")
     return fail(
       "E_BUSY",
       `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default) or wait first.`,
@@ -203,13 +227,14 @@ async function admitIdleChild(
   budget: FollowupBudgetInput,
   itemID?: string,
 ): Promise<RunRecord> {
-  const open = current.attempts[current.attempts.length - 1]
-  const started = open === undefined || isAttemptTerminal(open.state) ? startAttempt(current, { trigger: "followup", prompt: text }) : current
+  const resumed = current.state === "stopped" ? transition(consumeStopIntent(current), "starting", "followup") : current
+  const open = resumed.attempts.at(-1)
+  const started = open === undefined || isAttemptTerminal(open.state) ? startAttempt(resumed, { trigger: "followup", prompt: text }) : resumed
   const queued = started.attempts[started.attempts.length - 1]
   const admitted = queued !== undefined && queued.state === "queued" ? attemptTransition(started, "admitted", "admit") : started
   const delivered = itemID === undefined ? admitted : recordInboxDelivery(admitted, [itemID])
   const budgeted = budget === undefined ? delivered : { ...delivered, budget: { ...budget } }
-  const working = budgeted.state === "idle" ? transition(budgeted, "working", "prompt") : budgeted
+  const working = budgeted.state === "idle" || budgeted.state === "starting" ? transition(budgeted, "working", "prompt") : budgeted
   if (working.sessionID === null) throw toolError("E_INTERNAL", `Run ${working.id} has no session to prompt.`, working.id)
   const previous = current
   await saveRun(root, working)

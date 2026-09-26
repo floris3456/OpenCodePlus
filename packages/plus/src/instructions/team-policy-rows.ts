@@ -14,8 +14,9 @@
 // at project or global level like every other row.
 import { readdir } from "node:fs/promises"
 import path from "node:path"
-import { permItemId, fingerprint, type Item, type PolicyRule } from "./model.js"
+import { permItemId, fingerprint, type Item } from "./model.js"
 import { isTerminal, type RunRecord } from "../teams/run.js"
+import { runScope } from "../teams/scope.js"
 
 /** One member of an enabled team. */
 export interface PolicyMember {
@@ -29,6 +30,7 @@ export interface PolicyRun {
   readonly id: string
   readonly role: string
   readonly paths: readonly string[]
+  readonly forbidden?: readonly string[]
 }
 
 // Edit scope comes from the run record, not from the call that created it:
@@ -46,12 +48,13 @@ export async function liveRunScopes(root: string): Promise<PolicyRun[]> {
       .then((value: RunRecord) => value)
       .catch(() => undefined)
     if (record === undefined || typeof record.id !== "string") continue
-    if (isTerminal(record.state)) continue
+    if (isTerminal(record.state) || record.worktree === "removed") continue
     const paths = record.paths ?? []
     // A delegated run with no scope still gets its row: it may edit nothing.
     const delegated = record.kind === "w" || record.id.startsWith("w-")
     if (paths.length === 0 && !delegated) continue
-    out.push({ id: record.id, role: record.role, paths: [...paths] })
+    const scope = await runScope(root, record)
+    out.push({ id: record.id, role: record.role, paths: [...scope.paths], forbidden: [...scope.forbidden] })
   }
   return out.toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
 }
@@ -64,14 +67,12 @@ export function policyMembersOf(members: readonly (string | { readonly id: strin
   })
 }
 
-const editForbidden = [".git/**", ".opencodeplus/**"] as const
-
 export function teamPolicyItems(members: readonly PolicyMember[], runs: readonly PolicyRun[] = []): Item[] {
   const byRole = new Map(members.map((member) => [member.id, member] as const))
   const scoped = runs.filter((run) => byRole.has(run.role))
   return [
     ...members.flatMap((member) => delegateRows(member, members)),
-    ...scoped.map((run) => runScopeRow(run, scoped.filter((peer) => peer.role === run.role))),
+    ...scoped.map(runScopeRow),
   ]
 }
 
@@ -122,25 +123,13 @@ function delegateRow(input: { id: string; title: string; agent: string; order: n
   }
 }
 
-// Per-run edit scope. The run record is the source: the row exists while the
-// run does and carries the run's own `scope.paths`. A rule belongs to an AGENT
-// and not to a session, so a member's live runs cannot hold separate scopes —
-// `peers` (every live run of this member, in row order) is what the rows state
-// together: the member's first row denies `*`, each row allows its own paths,
-// and the member's last row denies the never-editable state so nothing inside
-// any scope can reach it (core evaluates last-match-wins).
-function runScopeRow(run: PolicyRun, peers: readonly PolicyRun[]): Item {
-  const allowed = [...new Set(peers.flatMap((peer) => peer.paths))].join(", ")
-  const editRules: PolicyRule[] = [
-    ...(peers[0]?.id === run.id ? [rule("edit", "*", "deny", outsideScopeMessage("*", allowed))] : []),
-    ...run.paths.map((path) => rule("edit", path, "allow")),
-    ...(peers[peers.length - 1]?.id === run.id
-      ? editForbidden.map((path) => rule("edit", path, "deny", forbiddenStateMessage(path, allowed)))
-      : []),
-  ]
+// Guidance only: agent-wide allow rules would union independent workers and
+// could override a prior denial. The session-aware hook and checkpoint boundary
+// enforce the saved brief, and can only narrow existing permissions.
+function runScopeRow(run: PolicyRun): Item {
   const title = `Edit scope for run ${run.id}`
-  const patterns = ["*", ...run.paths, ...editForbidden]
-  const text = [title, scopeGuidance(run, peers), ...patterns].join("\n")
+  const patterns = [...run.paths]
+  const text = `${title}\nOnly this run's scope.paths [${run.paths.join(", ")}] are eligible for edits/checkpoints; forbidden [${(run.forbidden ?? []).join(", ")}] wins. Same-role runs do not share scope. Session-aware enforcement never overrides existing permission denials or approval requirements. Version-control, paused-tool and .opencodeplus state remain protected. Changing this display row does not widen the saved brief. Report other paths in needs=[{kind:"path"...}].`
   return {
     id: `perm:edit:run:${run.id}`,
     kind: "perm",
@@ -155,44 +144,8 @@ function runScopeRow(run: PolicyRun, peers: readonly PolicyRun[]): Item {
     permAction: "edit",
     ruleId: `run:${run.id}`,
     patterns,
-    policy: { on: editRules, off: [] },
+    policy: { on: [], off: [] },
     category: "scopes",
     runID: run.id,
   }
-}
-
-// What the row's reader is told. With one live run that is its own
-// scope.paths; with more, the agent carries the union of every live run's
-// scope.paths, so the text says so instead of promising isolation the rules
-// cannot give.
-function scopeGuidance(run: PolicyRun, peers: readonly PolicyRun[]): string {
-  const own = run.paths.length > 0 ? `Only scope.paths [${run.paths.join(", ")}] are editable. ` : ""
-  const union = [...new Set(peers.flatMap((peer) => peer.paths))]
-  const shared =
-    peers.length > 1
-      ? `This member's live runs share one edit scope on this agent: the union [${union.join(", ")}] is allowed, so stay inside your own scope.paths. `
-      : ""
-  const forbidden = run.paths.length > 0 ? "never editable, even inside scope.paths" : "never editable"
-  return `${own}${shared}Version-control and paused-tool state is ${forbidden}. Report anything else in needs=[{kind:"path"...}].`
-}
-
-// The two refusals the round-1 permission hook sent, word for word, now carried
-// by the rules themselves (recovered from the R2 acceptance record in
-// docs/team-v2/acceptance/2026-09-18-live-rounds.md, hook commit c63cf4b4
-// "fix(plus): explain team scope denials to the agent"). The hook saw the file
-// the agent had asked for; a rule answers for a pattern, so the quoted subject
-// is the rule's own resource and every other word is unchanged. `allowed` is
-// the union of the member's live scopes, which is what the agent's rules really
-// permit.
-function outsideScopeMessage(resource: string, allowed: string): string {
-  return `"${resource}" is outside your scope.paths [${allowed}]. Report it in needs=[{kind:"path"...}].`
-}
-
-function forbiddenStateMessage(resource: string, allowed: string): string {
-  const scope = allowed.length > 0 ? `, even inside scope.paths [${allowed}]` : ""
-  return `"${resource}" is version-control or paused-tool state and is never editable${scope}. Report it in needs=[{kind:"path"...}].`
-}
-
-function rule(action: string, resource: string, effect: PolicyRule["effect"], message?: string): PolicyRule {
-  return { action, resource, effect, ...(message === undefined ? {} : { message }) }
 }

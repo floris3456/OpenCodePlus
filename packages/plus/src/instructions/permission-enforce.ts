@@ -31,6 +31,9 @@ import path from "node:path"
 import { applies, type Item } from "./model.js"
 import { catalogFor, categoryLabel, limitOf, valuesAt, wildcardMatch } from "./permission-catalog.js"
 import type { MemoInput } from "./resolve-memo.js"
+import { teamsDataDir } from "./paths.js"
+import { bySession } from "../teams/run.js"
+import { runScope, scopeRefusal } from "../teams/scope.js"
 
 export interface PermRow {
   readonly item: Item
@@ -882,6 +885,7 @@ export function tableNarrows(table: PermissionTable, agents: readonly string[]):
 // call a lookup, so a publish where nothing is refused, clamped, asked or
 // stripped installs none.
 export function tableActive(table: PermissionTable, agents: readonly string[]): boolean {
+  if (table.teamMembers.size > 0) return true
   return agents.some((agent) =>
     table.rows(agent).some((row) => {
       const kind = row.item.permKind
@@ -999,7 +1003,21 @@ export async function installEnforcement(
   )
   const evaluate = await hook(() =>
     ctx.permission.hook("evaluate", (event) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        if (event.action === "edit" && event.effect !== "deny") {
+          const refusal = yield* Effect.promise(async () => {
+            const run = await bySession(teamsDataDir(), String(event.sessionID))
+            if (run === undefined || run.parent === null) return undefined
+            if (run.worktree === "removed") return "This run's worktree was removed; delegate fresh from current parent."
+            const scope = await runScope(teamsDataDir(), run)
+            return event.resources.map((resource) => scopeRefusal(scope, path.relative(run.directory, path.resolve(directory, expandHome(resource))))).find((message) => message !== undefined)
+          }).pipe(Effect.catchCause(() => Effect.succeed("Cannot validate this run's edit scope; delegate fresh from current parent.")))
+          if (refusal !== undefined) {
+            event.effect = "deny"
+            event.message = refusal
+            return
+          }
+        }
         const source = event.source
         if (source?.type !== "tool") return
         const key = callKey(String(event.sessionID), String(source.messageID), String(source.id))

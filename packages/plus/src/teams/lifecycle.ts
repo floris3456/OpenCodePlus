@@ -3,7 +3,7 @@ import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
 import { Duration, Effect, Option, Schedule, Schema, type Scope } from "effect"
-import { batchNotify, partition, put, take, type InboxItem } from "./inbox.js"
+import { batchNotify, partition, peek, put, take, type InboxItem } from "./inbox.js"
 import { io } from "./io.js"
 import { gitRaw, parsePorcelain } from "./git.js"
 import type { MergeEntry } from "./merge.js"
@@ -175,7 +175,7 @@ export const SessionRunEvents: ReadonlySet<string> = new Set([
 // produced its stopped/dead state, but the record still carries the flag.
 // Resuming the session must not stop the next turn too. A run that has not
 // stopped yet (idle, starting) keeps its intent.
-function consumeStopIntent(run: RunRecord): RunRecord {
+export function consumeStopIntent(run: RunRecord): RunRecord {
   if (run.stopRequested !== true) return run
   const next: RunRecord = { ...run }
   delete next.stopRequested
@@ -201,7 +201,11 @@ export async function onSessionEvent(
       if (record.state !== "idle" && record.state !== "starting" && !resuming) return record
       const trigger = record.state === "idle" ? "prompt" : "resume"
       applied.changed = true
-      return transition(resuming ? consumeStopIntent(record) : record, "working", trigger)
+      const last = record.attempts.at(-1)
+      const admitted = last === undefined || isAttemptTerminal(last.state)
+        ? attemptTransition(startAttempt(record, { trigger }), "admitted", "admit")
+        : record
+      return transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger)
     })
     if (working === undefined || !applied.changed) return undefined
     return working
@@ -315,18 +319,19 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
 // being prompted again, so an immediately delivered followup is not repeated.
 export async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
   const sessionID = run.sessionID
-  if (run.state !== "idle" || sessionID === null || sessionID === undefined) return run
-  // startAttempt's precondition, checked before take so a run that cannot
-  // take a new attempt keeps its inbox pending instead of losing it.
-  if (run.attempts.some((attempt) => !isAttemptTerminal(attempt.state))) return run
-  const items = await take(root, run.id)
-  if (items.length === 0) return run
-  const delivered = new Set(run.attempts.flatMap((attempt) => attempt.inbox ?? []))
-  const fresh = items.filter((item) => !delivered.has(item.id))
-  const text = renderInbox(fresh)
-  if (text === "") return run
-  const working = await updateRun(root, run.id, (current) => {
-    if (isTerminal(current.state)) return current
+  if (sessionID === null || sessionID === undefined) return run
+  const delivery: { text: string; items: InboxItem[]; previous?: RunRecord } = { text: "", items: [] }
+  const working = await updateRun(root, run.id, async (current) => {
+    if (current.state !== "idle" || current.worktree === "removed") return current
+    if (current.attempts.some((attempt) => !isAttemptTerminal(attempt.state))) return current
+    const items = await peek(root, run.id)
+    const delivered = new Set(current.attempts.flatMap((attempt) => attempt.inbox ?? []))
+    const fresh = items.filter((item) => !delivered.has(item.id))
+    const text = renderInbox(fresh)
+    delivery.items = items
+    if (text === "") return current
+    delivery.text = text
+    delivery.previous = current
     const started = startAttempt(current, { trigger: "followup", prompt: text })
     const admitted = attemptTransition(started, "admitted", "admit")
     return recordInboxDelivery(
@@ -334,10 +339,14 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
       fresh.map((item) => item.id),
     )
   })
-  if (working === undefined || isTerminal(working.state)) return working ?? run
+  if (working === undefined || delivery.text === "") {
+    if (delivery.items.length > 0) await take(root, run.id, delivery.items.map((item) => item.id))
+    return working ?? run
+  }
+  const previous = delivery.previous ?? run
   await Effect.runPromise(
     ctx.session
-      .prompt({ sessionID: Session.ID.make(sessionID), text })
+      .prompt({ sessionID: Session.ID.make(sessionID), text: delivery.text })
       .pipe(
         Effect.onError(() =>
           Effect.ignore(
@@ -346,9 +355,9 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
                 if (isTerminal(current.state)) return current
                 return {
                   ...current,
-                  state: run.state,
-                  attempts: run.attempts,
-                  history: run.history,
+                   state: previous.state,
+                   attempts: previous.attempts,
+                   history: previous.history,
                 }
               }),
             ),
@@ -356,6 +365,7 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
         ),
       ),
   )
+  await take(root, run.id, delivery.items.map((item) => item.id))
   return working
 }
 
