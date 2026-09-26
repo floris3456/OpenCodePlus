@@ -3,7 +3,8 @@ import { RGBA } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
-import { createComponent } from "solid-js"
+import type { Agent } from "@opencode/schema/agent"
+import { createComponent, createSignal } from "solid-js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import type {
   AddMcpInput,
@@ -163,6 +164,7 @@ export interface TestFixture {
   readonly waitForFrame: (predicate: (frame: string) => boolean) => Promise<string>
   readonly emitChanged: (next?: Snapshot) => Promise<void>
   readonly emitProjectChanged: (status?: Partial<Status>) => Promise<void>
+  readonly emitAgents: (agents: readonly Agent.Info[] | undefined) => void
   readonly destroy: () => void
   readonly commands: () => readonly TestKeymapCommand[]
   readonly resize: (width: number, height: number) => void
@@ -180,6 +182,7 @@ export interface RenderFixtureOptions {
   /** RPC name → the error it throws (link.set, preset.delete, …). */
   readonly rpcErrors?: Readonly<Record<string, TestRpcError>>
   readonly models?: readonly { providerID: string; modelID: string; variant?: string; name: string }[]
+  readonly agents?: readonly Agent.Info[]
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -191,6 +194,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   })
 
   const queue: Snapshot[] = [...options.snapshots]
+  const [agents, setAgents] = createSignal<readonly Agent.Info[] | undefined>(options.agents)
   const fake: FakeRpc = {
     mutateInputs: [],
     agentCreates: [],
@@ -374,6 +378,10 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     },
     data: {
       location: {
+        agent: {
+          list: agents,
+          sync: async () => {},
+        },
         model: {
           list: () => [],
           sync: async () => {},
@@ -516,6 +524,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     waitForFrame: (predicate) => output.waitForFrame(predicate),
     emitChanged,
     emitProjectChanged,
+    emitAgents: (next) => setAgents(next),
     destroy,
     commands,
     resize,
@@ -535,6 +544,7 @@ export interface RenderRouteOptions {
   readonly mutateResult?: unknown
   readonly rpcErrors?: Readonly<Record<string, TestRpcError>>
   readonly models?: readonly { providerID: string; modelID: string; variant?: string; name: string }[]
+  readonly agents?: readonly Agent.Info[]
 }
 
 export async function renderInstructionsRoute(options: RenderRouteOptions): Promise<TestFixture> {
@@ -547,6 +557,7 @@ export async function renderInstructionsRoute(options: RenderRouteOptions): Prom
     mutateResult: options.mutateResult,
     ...(options.rpcErrors === undefined ? {} : { rpcErrors: options.rpcErrors }),
     ...(options.models === undefined ? {} : { models: options.models }),
+    ...(options.agents === undefined ? {} : { agents: options.agents }),
     render: (context) =>
       createComponent(InstructionsRoute, {
         context,

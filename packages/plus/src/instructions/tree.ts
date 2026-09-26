@@ -1361,9 +1361,7 @@ function withAgentControls(
     actions: {
       ...row.actions,
       toggle: control.actions.toggle,
-      // Member presets currently expose reset on their individual controls;
-      // ops.reset accepts other agent/member entities but not this entity kind.
-      reset: row.owner?.preset?.ref.kind !== "member" && controlIds.some((item) => canReset(memo.ctx.customizations, { ...address, item })),
+      reset: controlIds.some((item) => canReset(memo.ctx.customizations, { ...address, item })),
     },
     partial: () => {
       const hidden = controlItemFor(items, { ...address, item: "setting:hidden" })

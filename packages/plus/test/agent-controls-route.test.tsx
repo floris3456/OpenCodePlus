@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
-import { controlRecord, controlSnapshot } from "./agent-controls-fixture.js"
+import { Agent } from "@opencode/schema/agent"
+import { controlItems, controlRecord, controlSnapshot } from "./agent-controls-fixture.js"
 import { renderInstructionsRoute, type TestFixture } from "./tui.js"
+
+const build = Agent.Info.default(Agent.ID.make("build"))
 
 function dispatch(fixture: TestFixture, key: string): boolean {
   const command = fixture.commands().find((command) => command.bind === key)
@@ -102,6 +105,7 @@ test("Space toggles an agent and its Enabled row; Hidden stays distinct; ctrl+sp
   const enabled = "item:project:build:setting:enabled"
   const hidden = "item:project:build:setting:hidden"
   await using fixture = await renderInstructionsRoute({
+    agents: [build],
     snapshots: [
       controlSnapshot(),
       controlSnapshot([controlRecord("setting:enabled", { state: "off" })], { revision: 2 }),
@@ -117,20 +121,125 @@ test("Space toggles an agent and its Enabled row; Hidden stays distinct; ctrl+sp
   expect(fixture.fake.agentSelects).toEqual(["build"])
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("[off]"))
+  fixture.emitAgents([])
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "off" }))
   expect(dispatch(fixture, "ctrl+space")).toBe(false)
   await filterTo(fixture, enabled, "Enabled")
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("[on]"))
+  fixture.emitAgents([build])
   expect(fixture.fake.mutateInputs[1].records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "on" }))
   await filterTo(fixture, hidden, "Hidden")
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("[on]"))
+  fixture.emitAgents([{ ...build, hidden: true }])
   await filterTo(fixture, agent, "build")
   expect(selected(fixture.captureCharFrame())).toContain("[hidden]")
   expect(selected(fixture.captureCharFrame())).toContain("[on]")
   expect(dispatch(fixture, "ctrl+space")).toBe(false)
   expect(fixture.fake.agentSelects).toEqual(["build"])
+})
+
+for (const level of ["global", "defaults"] as const) {
+  for (const control of [
+    { item: "setting:enabled", blocked: { state: "off" as const }, restored: { state: "on" as const }, agents: [], badge: "[off]" },
+    { item: "setting:hidden", blocked: { state: "on" as const }, restored: { state: "off" as const }, agents: [{ ...build, hidden: true }], badge: "[hidden]" },
+    { item: "setting:mode", blocked: { text: "subagent" }, restored: { text: "primary" }, agents: [{ ...build, mode: "subagent" as const }], badge: "[subagent]" },
+  ]) {
+    test(`${level} selection follows the effective host catalogue when Project ${control.item} blocks it`, async () => {
+      const id = `agent:${level}:build`
+      await using fixture = await renderInstructionsRoute({
+        agents: control.agents,
+        snapshots: [controlSnapshot([controlRecord(control.item, control.blocked)])],
+        dialogs: { prompts: [`id:${id}`] },
+      })
+      await filterTo(fixture, id, "build")
+      expect(selected(fixture.captureCharFrame())).toContain("[on]")
+      expect(selected(fixture.captureCharFrame())).toContain("[primary]")
+      expect(selected(fixture.captureCharFrame())).not.toContain("[hidden]")
+      expect(fixture.commands().some((command) => command.bind === "space")).toBe(true)
+      expect(fixture.captureCharFrame()).not.toContain("ctrl+space select")
+      expect(dispatch(fixture, "ctrl+space")).toBe(false)
+      expect(fixture.fake.agentSelects).toEqual([])
+      expect(fixture.fake.mutateInputs).toEqual([])
+    })
+
+    test(`${level} selection follows the effective host catalogue when Project restores ${control.item}`, async () => {
+      const id = `agent:${level}:build`
+      await using fixture = await renderInstructionsRoute({
+        agents: [build],
+        snapshots: [controlSnapshot([
+          controlRecord(control.item, { level, ...control.blocked }),
+          controlRecord(control.item, control.restored),
+        ])],
+        dialogs: { prompts: [`id:${id}`] },
+      })
+      await filterTo(fixture, id, "build")
+      expect(selected(fixture.captureCharFrame())).toContain(control.badge)
+      expect(fixture.captureCharFrame()).toContain("ctrl+space select")
+      expect(dispatch(fixture, "ctrl+space")).toBe(true)
+      expect(fixture.fake.agentSelects).toEqual(["build"])
+      expect(fixture.fake.mutateInputs).toEqual([])
+    })
+  }
+}
+
+for (const level of ["project", "global", "defaults"]) {
+  for (const mode of ["primary", "all"] as const) {
+    test(`${mode} host agents can be selected from the ${level} row`, async () => {
+      const id = `agent:${level}:build`
+      await using fixture = await renderInstructionsRoute({
+        agents: [{ ...build, mode }],
+        snapshots: [controlSnapshot([controlRecord("setting:mode", { text: mode })])],
+        dialogs: { prompts: [`id:${id}`] },
+      })
+      await filterTo(fixture, id, "build")
+      expect(dispatch(fixture, "ctrl+space")).toBe(true)
+      expect(fixture.fake.agentSelects).toEqual(["build"])
+      expect(fixture.fake.mutateInputs).toEqual([])
+    })
+  }
+}
+
+for (const [id, agent, label] of [
+  ["agent:preset:build", "build", "Build"],
+  ["team:preset:starter:planner", "planner", "planner"],
+  ["agent:defaults:worker", "worker", "worker"],
+]) {
+  test(`a matching host agent does not make preset or entry ${id} selectable`, async () => {
+    await using fixture = await renderInstructionsRoute({
+      agents: [Agent.Info.default(Agent.ID.make(agent))],
+      snapshots: [controlSnapshot([], {
+        entries: [{ type: "entry", level: "defaults", catalogue: "agents", name: "worker", updated: "2026-09-26" }],
+      })],
+      dialogs: { prompts: [`id:${id}`] },
+    })
+    await filterTo(fixture, id, label)
+    expect(dispatch(fixture, "ctrl+space")).toBe(false)
+    expect(fixture.fake.agentSelects).toEqual([])
+  })
+}
+
+test("host catalogue updates recheck selection commands without changing tier badges or toggles", async () => {
+  const id = "agent:global:build"
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [controlSnapshot()],
+    dialogs: { prompts: [`id:${id}`] },
+  })
+  await filterTo(fixture, id, "build")
+  expect(dispatch(fixture, "ctrl+space")).toBe(false)
+  fixture.emitAgents([build])
+  await fixture.waitForFrame((frame) => frame.includes("ctrl+space select"))
+  const select = fixture.commands().find((command) => command.bind === "ctrl+space")
+  expect(select).toBeDefined()
+  fixture.emitAgents([])
+  await fixture.waitForFrame((frame) => !frame.includes("ctrl+space select"))
+  void select?.run()
+  expect(fixture.fake.agentSelects).toEqual([])
+  expect(selected(fixture.captureCharFrame())).toContain("[on]")
+  expect(dispatch(fixture, "space")).toBe(true)
+  await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
+  expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ level: "global", item: "setting:enabled", state: "off" }))
 })
 
 for (const [item, label, text] of [
@@ -214,6 +323,32 @@ test("r on an agent resets its scoped Settings and Compaction together, retainin
   expect(dispatch(fixture, "r")).toBe(true)
   await fixture.waitForFrame((frame) => frame.includes('Reset agent controls for "build"'))
   expect(fixture.fake.mutateInputs[0].records).toEqual([global])
+})
+
+test("r on a member-preset entity resets all nine scoped controls while retaining other preset records", async () => {
+  const id = "team:preset:starter:planner"
+  const retained = [
+    controlRecord("setting:description", { level: "preset", agent: "planner", text: "Agent preset" }),
+    controlRecord("setting:description", { level: "preset", agent: "planner", team: { level: "preset", team: "other" }, text: "Other member preset" }),
+  ]
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [
+      controlSnapshot([
+        ...retained,
+        ...controlItems().map((item) => controlRecord(item.id, {
+          level: "preset", agent: "planner", team: { level: "preset", team: "starter" },
+          ...(item.id === "setting:enabled" || item.id === "setting:hidden" ? { state: "off" } : { text: item.text }),
+        })),
+      ]),
+      controlSnapshot(retained, { revision: 2 }),
+    ],
+    dialogs: { prompts: [`id:${id}`], confirms: [true] },
+  })
+  await filterTo(fixture, id, "planner")
+  expect(dispatch(fixture, "r")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes('Reset agent controls for "planner"'))
+  expect(fixture.fake.mutateInputs[0].records).toEqual(retained)
+  expect(dispatch(fixture, "r")).toBe(false)
 })
 
 test("saving empty compaction instructions creates an explicit empty prompt instead of resetting", async () => {

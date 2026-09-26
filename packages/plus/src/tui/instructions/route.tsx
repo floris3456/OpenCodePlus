@@ -33,7 +33,6 @@ function canToggle(node: TreeNode | undefined): boolean {
 // Enabled item; older snapshots with no controls retain space-to-select.
 export function selectableAgentId(node: TreeNode | undefined): string | undefined {
   if (node?.kind !== "agent") return undefined
-  if (node.badges.state === "off" || node.badges.hidden === true || node.badges.mode === "subagent") return undefined
   // Presets (`agent:preset:…`) and Defaults entries are not agents.
   if (node.owner?.entry !== undefined) return undefined
   const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
@@ -229,6 +228,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function selectableAgent(node: TreeNode | undefined): string | undefined {
     const id = selectableAgentId(node)
     if (id === undefined) return undefined
+    // Row badges describe the edited tier. Selection follows the current
+    // location's host catalogue, where disabled agents are absent, just as the
+    // core picker does; an unloaded catalogue offers no selection yet.
+    const agent = props.context.data.location.agent.list(props.context.location)?.find((entry) => entry.id === id)
+    if (agent === undefined || agent.hidden || agent.mode === "subagent") return undefined
     const entry = state.snapshot()?.agents.find((candidate) => candidate.id === id)
     if (entry?.origin === "special") return undefined
     return id

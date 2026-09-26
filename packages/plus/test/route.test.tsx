@@ -1025,7 +1025,7 @@ test("key availability follows the selected row", async () => {
     agents: [projectAgent("Implementer")],
     items: [mcpItem()],
   })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], agents: [agentInfo("Implementer")], width: 120, height: 40 })
   try {
     // Root row: structural, no space/r/s; d produces status refusal. Goto gates the mount first.
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
@@ -3431,7 +3431,7 @@ test("ctrl+space selects an Agents-group agent through the core picker, never sp
     }),
     teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["mate"] }],
   }
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], agents: [agentInfo("alpha")], width: 120, height: 40 })
   try {
     await gotoAgent(fixture, "alpha")
     expect(binds(fixture)).toContain("ctrl+space")

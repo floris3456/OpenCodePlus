@@ -159,11 +159,14 @@ test("member-preset controls reset their team-scoped override without changing t
   const nodes = expandedTree(input)
   const member = row(nodes, "team:preset:starter:planner")
   const control = row(nodes, "item:preset:starter/:planner:setting:description")
-  expect(member.actions?.reset).toBe(false)
+  expect(member.actions?.reset).toBe(true)
   expect(control.actions?.reset).toBe(true)
   const result = reset(input, control.id)
   if ("refusal" in result) throw new Error(result.refusal)
   expect(result.records).toEqual([preset])
+  const entity = reset(input, member.id)
+  if ("refusal" in entity) throw new Error(entity.refusal)
+  expect(entity.records).toEqual([preset])
 })
 
 test("Remote disables local model/instructions actions without hiding values or their provenance; Local restores them", () => {
