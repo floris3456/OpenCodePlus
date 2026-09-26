@@ -192,3 +192,33 @@ with general sub-agents working in separate task worktrees.
   documented settings in the shipped teaching skill and the new
   `packages/plus/docs/agent-controls.md`, and kept the seed instruction within
   its existing 600-character budget. Teaching/query checks: **65 passed**.
+
+### Integrated TUI and final checks
+
+- Integrated `655378592`: Settings and Compaction for all owner kinds; Enter
+  cycles Mode/Strategy; Space toggles Enabled and Ctrl+Space selects; remote
+  local fields use disabled form-field tokens and reject stale edit/review
+  actions without dropping saved values. Tests render the production route at
+  80 and 120 columns.
+- Backend review fixes landed in `28f7afa0e`; the independent reviewer closed
+  all three findings after retesting inherited permissions, atomic mixed
+  aliases, team hidden reset, and live member-preset aliases.
+- Updated the team-role test to identify actual system-writing callbacks,
+  rather than assume the first registered transform is a writer. It retains
+  the exact per-pass identity and text assertions. This was a fixture assumption
+  exposed by this task's new read-only upstream observer, not a baseline product
+  failure. Backend/permissions/team regression selection: **172 passed,
+  1 existing skip**.
+- Final combined tree/TUI/query/presets/teaching selection: **256 passed,
+  1 existing skip** across 12 files. Real SDK tests now include live
+  Defaults/preset/project precedence: **4 passed, 138 assertions**.
+- Final core agent/config/compaction/transport selection: **120 passed** across
+  nine files. The eight new runner scenarios and schema checks also passed as
+  recorded above. The three unrelated baseline runner assertions remain a
+  separately recorded limitation.
+- Ten-package affected typechecks, SDK typecheck, Plus build, and generated
+  client byte-for-byte verification passed on the integrated source.
+- Independent UI review found one remaining selector issue: Ctrl+Space used
+  the edited Global/Defaults tier instead of current-location availability.
+  A focused follow-up is in progress; tier-specific editing must remain intact
+  while selection follows the effective host agent.
