@@ -226,36 +226,34 @@ test("one agent id at two scopes applies once with the project text", async () =
   await fs.mkdir(path.dirname(globalFile), { recursive: true })
   await Bun.write(globalFile, "global body\n")
   // The host registry is keyed by id, so it shows the project winner.
-  const listed = { current: 0 }
   const base = fullContext({ directory: project, agents: [agentInfo("alpha", "project body")] })
   // The counting wrapper observes every editor.update targeting "alpha" —
-  // roles, skill rules, and team installs each run through it — so the role
-  // pass is isolated by callback order (roles install first) and one entry is
-  // recorded per callback run: the agent harness rebuilds on every install,
-  // replaying installed callbacks, so the role callback itself runs again
-  // when the skill-rules transform installs.
+  // roles, skill rules, and controls each run through it. Identify role passes
+  // by a system write, not callback order: an upstream inventory observer now
+  // installs before any writers. Keep every update in a writing callback so
+  // duplicate identities in that pass are still detected, even if text agrees.
   const roleRuns: string[][] = []
   const ctx = {
     ...base,
     agent: {
       ...base.agent,
       transform: (callback: (editor: AgentEditor) => void) => {
-        const slot = listed.current++
-        // The publish installs its agent.transform callbacks in order — roles
-        // first, then skill rules. Only the first (role) callback is recorded.
-        if (slot !== 0) return base.agent.transform(callback)
         return base.agent.transform((editor) => {
           const seen: string[] = []
+          let changedSystem = false
           callback({
             ...editor,
             update: (id: string, update: (agent: Types.DeepMutable<Agent.Info>) => void) => {
               editor.update(id, (agent) => {
+                const before = agent.system
                 update(agent)
-                if (id === "alpha") seen.push(agent.system ?? "")
+                if (id !== "alpha") return
+                seen.push(agent.system ?? "")
+                changedSystem ||= before !== agent.system
               })
             },
           })
-          roleRuns.push(seen)
+          if (changedSystem) roleRuns.push(seen)
         })
       },
     },
