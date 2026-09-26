@@ -694,20 +694,27 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
         `Use "<type>(<scope>)?: <subject>" with type in feat|fix|docs|chore|refactor|test. accepted: "${MESSAGE_ACCEPTED}"`,
         MESSAGE_ACCEPTED,
       )
-    const stagedOut = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--name-only"])
-    const staged = stagedOut
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-    const wanted = new Set(args.files)
+    // Expand directories before staging: validating only "src" would otherwise
+    // let git add include a forbidden descendant. Disable pathspec magic and
+    // rename folding so every changed source and destination is checked.
+    const selected = await Promise.all([
+      git(record.directory, [...NO_REPOSITORY_PROGRAMS, "--literal-pathspecs", "diff", "HEAD", "--name-only", "--no-renames", "-z", "--", ...args.files]),
+      git(record.directory, [...NO_REPOSITORY_PROGRAMS, "--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--", ...args.files]),
+    ])
+    const files = [...new Set(selected.flatMap((output) => output.split("\0").filter(Boolean)))]
+    for (const file of files) {
+      const refusal = scopeRefusal(scope, file)
+      if (refusal !== undefined) return fail("E_SCOPE", refusal)
+    }
+    const staged = (await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--name-only", "--no-renames", "-z"])).split("\0").filter(Boolean)
+    const wanted = new Set(files)
     const offenders = staged.filter((line) => !wanted.has(line))
     if (offenders.length > 0)
       return fail("E_STAGED", `Index has staged changes [${offenders.join(", ")}] not in files[]; include them or unstage.`)
-    const status = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "--", ...args.files])
-    if (status.trim() === "") return succeeded({ head, committed: false })
+    if (files.length === 0) return succeeded({ head, committed: false })
     // Ref-writing git ops serialize per repository, like the reference.
     const committed = await lock(root, "repo", record.repoKey, async () => {
-      await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "add", "--", ...args.files])
+      await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "--literal-pathspecs", "add", "--", ...files])
       const cached = await gitRaw(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--quiet"])
       if (cached.code === 0) return false
       await git(record.directory, [

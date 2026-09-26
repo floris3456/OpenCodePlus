@@ -53,7 +53,10 @@ export async function liveRunScopes(root: string): Promise<PolicyRun[]> {
     // A delegated run with no scope still gets its row: it may edit nothing.
     const delegated = record.kind === "w" || record.id.startsWith("w-")
     if (paths.length === 0 && !delegated) continue
-    const scope = await runScope(root, record)
+    // Legacy invalid scopes must fail closed at execution, not prevent every
+    // team's Instructions inventory/publication from loading.
+    const scope = await runScope(root, record).catch(() => undefined)
+    if (scope === undefined) continue
     out.push({ id: record.id, role: record.role, paths: [...scope.paths], forbidden: [...scope.forbidden] })
   }
   return out.toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))

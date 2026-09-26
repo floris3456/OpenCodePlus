@@ -6,6 +6,7 @@ import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { put } from "./inbox.js"
+import { queue } from "./merge.js"
 import { requireSession, requireWorktree } from "./availability.js"
 import { consumeStopIntent, deliverInbox } from "./lifecycle.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
@@ -114,6 +115,8 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
     )
 
   await requireWorktree(child)
+  if (child.parent !== null && (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.state === "landed"))
+    return fail("E_ALREADY_LANDED", `Run ${child.id} is already landed; delegate fresh from current parent.`, "delegate fresh from current parent")
   await requireSession(ctx, child)
   if (!["idle", "working", "starting", "blocked_input", "stopped"].includes(child.state) || (child.stopRequested && child.state !== "stopped"))
     return fail("E_UNRESUMABLE", `Run ${child.id} is ${child.state} or stopping; delegate fresh from current parent.`, "delegate fresh from current parent")

@@ -213,6 +213,11 @@ async function retryCleanup(ctx: Context, root: string, parent: RunRecord, child
 
 async function cleanupLanded(root: string, run: string, head: string, repoRoot: string, repoKey: string): Promise<Cleanup> {
   const removal = await (async () => {
+    const current = await loadRun(root, run)
+    if (current === undefined || !current.directory) throw new Error("Child record/directory unavailable; cleanup not attempted.")
+    const tip = await gitRaw(current.directory, ["rev-parse", "HEAD"])
+    if (tip.code !== 0 || tip.out !== head)
+      throw { code: "E_CHILD_HEAD", message: "Child tip differs from its landed tip or cannot be read; retaining checkout and recorded head. Delegate fresh from current parent." }
     // Preserve the original child tip, not the possibly rebased parent tip,
     // before retiring the checkout needed for historical diff reads.
     const child = await updateRun(root, run, (fresh) => ({ ...fresh, head }))

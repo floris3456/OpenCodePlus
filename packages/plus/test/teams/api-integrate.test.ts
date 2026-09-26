@@ -331,6 +331,23 @@ test("git cleanup failure remains a landed result with a retained worktree", asy
   })
 })
 
+test("cleanup retry retains a post-landing child tip without overwriting history", async () => {
+  await withReadyChild(async ({ root, repo, parent, child, head }) => {
+    await git(repo.dir, ["worktree", "lock", child.directory])
+    expect(required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))).toMatchObject({ worktree: "retained" })
+    await git(repo.dir, ["worktree", "unlock", child.directory])
+    await fs.writeFile(path.join(child.directory, "child.txt"), "later correction\n")
+    await git(child.directory, ["add", "child.txt"])
+    await git(child.directory, ["commit", "-m", "fix: later correction"])
+    const later = await git(child.directory, ["rev-parse", "HEAD"])
+    await saveRun(root, { ...(await loadRun(root, child.id))!, head: later })
+    expect(required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))).toMatchObject({ state: "landed", head, worktree: "retained", cleanup: [{ code: "E_CHILD_HEAD" }] })
+    expect((await loadRun(root, child.id))?.head).toBe(later)
+    expect(await git(child.directory, ["rev-parse", "HEAD"])).toBe(later)
+    expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(head)
+  })
+})
+
 test("successful cleanup records the actual original child head for history", async () => {
   await withReadyChild(async ({ root, repo, parent, child, head }) => {
     const value = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))

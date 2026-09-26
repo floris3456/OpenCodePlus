@@ -163,6 +163,25 @@ async function writeBrief(root: string, child: RunRecord): Promise<void> {
   })
 }
 
+test("a retained landed child refuses corrections before any admission or receipt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const before = await loadRun(root, child.id)
+    await atomicJson(path.join(root, "runs", parent.id, "merge", "landed.json"), {
+      id: "landed", parentRun: parent.id, childRun: child.id, state: "landed", childHead: child.head,
+    })
+    const session = recordSession()
+    const result = await createTeamApi(context({ session: session.domain }), teamState()).followup(followupInput({ budget: { tokens: 1 } }), callerFor(parent))
+    expect(rejected(result).code).toBe("E_ALREADY_LANDED")
+    expect(await loadRun(root, child.id)).toEqual(before)
+    expect(await peek(root, child.id)).toEqual([])
+    expect(await fs.readdir(path.join(root, "requests")).catch(() => [])).toEqual([])
+    expect(session.prompted).toEqual([])
+  })
+})
+
 test("queued followup lands in the child inbox and get_context sees it", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa")

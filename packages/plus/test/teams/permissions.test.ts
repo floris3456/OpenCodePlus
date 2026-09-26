@@ -178,6 +178,13 @@ test("a project-level record on a preset row overrides the shipped answer", asyn
   expect(tools.find((plan) => plan.tool === "question")?.enabled).toBe(false)
 })
 
+test("invalid legacy scopes do not break the global guidance inventory", async () => {
+  await saveRun(dir, makeRun({ id: "w-legacy", role: "other-team", paths: ["packages/plus/**"] }))
+  await saveRun(dir, makeRun())
+  expect((await liveRunScopes(dir)).map((run) => run.id)).toEqual(["w-0000000000000001"])
+  expect(teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir)).some((item) => item.runID === "w-0000000000000001")).toBe(true)
+})
+
 test("a live run describes its scope without adding agent-wide allows", async () => {
   await saveRun(dir, makeRun())
   const runs = await liveRunScopes(dir)
