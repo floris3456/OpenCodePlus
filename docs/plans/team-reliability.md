@@ -1,8 +1,65 @@
 # Team reliability: small fixes, real acceptance tests
 
-Status: **planned; implementation and candidate live acceptance are not yet run**.
+Status: **implemented; final isolated candidate passed provider-backed acceptance on 2026-09-26**.
 Source baseline: `7c113a154f54bd5c333712c2e67ca7f61486dcc5`.
 Input: [field verification report](../reports/team-field-verification.md).
+
+## Execution outcome — 2026-09-26
+
+Implemented on task branch `team-reliability`, starting from the existing
+`c45226921` worktree without resetting it. All implementation and test changes
+are in `packages/plus`; Core, Server, Protocol, Client, CLI, workspace team
+scripts and agent definitions are unchanged. Existing `.opencodeplus/` is retained.
+
+- Commits: `eba7b41c6` (admission, per-run scope, usage), `26f685f3b`
+  (Instructions ownership/provenance and guidance), `426a140c1` (regressions),
+  `5a254f186` (guarded retention/removal), `6809e0873` (targeted review fixes).
+- Final candidate: `6809e087338bf613294c8ce85d9430a6e610bfad`, clean pinned
+  source worktree `worktrees/reliability-final/opencode`, matching public client,
+  Bun 1.4.2 standalone host. No promotion or shared-service/controller restart.
+- Focused checks: **378 pass, 1 existing skip, 0 fail** across 16 selected files;
+  the separately selected log tests add **14 pass, 0 fail**. Plus typecheck,
+  workspace structure check, team-index smoke check and diff whitespace check pass.
+- Actual provider messages: `cliproxyapi/gemini-3.8-flash-high` for configuration,
+  lead and initial workers. Core hides `patch` for Gemini, so the permitted
+  `cliproxyapi/gpt-5.6-luna` was explicitly selected through public Session model
+  switching for worker A's correction/patch probes. Neither ID was guessed; both
+  came from the candidate catalogue. No other model was used.
+- Final fresh lead/two-worker flow exercised all fourteen team tools. It saved
+  root `report-10.md` after real notifications and external continuations;
+  the second finish **in that same attempt** correctly refused `E_FINISH_TWICE`.
+  Stopped worker A resumed once, saved report 2, and replays preserved identity
+  while reporting current state. Original terminal report/attempt remained intact.
+- Same-role isolation, forbidden edit/write/checkpoint and atomic patch-move
+  refusals passed. Allowed changes/checks/checkpoints still worked. Fixture tests
+  and excluded files retained baseline hashes; no unintended file/index changes.
+- Both integrations passed focused checks and truthfully retained directories
+  held by owned idle MCPs. Ownership-checked public MCP disconnect, followed by
+  the same guarded integration retry, removed both. Historical diff, filters and
+  truncation still worked. Landed/removed followups refused before any receipt,
+  attempt, inbox or budget admission.
+- Instructions model-owner collision, addressable readback, activation effects,
+  separate provenance, and blind preset-only inheritance passed. Session usage
+  and team status agreed at a settled boundary (worker A: 1,414,406 tokens), and
+  wait agreed that its token-only advisory budget was exceeded.
+- One targeted review found and closed directory-checkpoint expansion, correction
+  admission after landing, and invalid legacy-scope publication failures. Cleanup
+  retries now retain a child whose tip diverges from its recorded landing instead
+  of overwriting that history. These have focused regressions; legacy invalid
+  scopes remain fail-closed at execution while no longer breaking global guidance.
+- Final state: all four candidate Sessions idle before shutdown; test teams
+  `tr-live` and `tr-other` disabled; three owned MCPs disconnected; owned host
+  stopped and all five tracked host/MCP PIDs absent in `/proc`. Both worker
+  worktrees removed through guarded product integration. Clean fixture and clean
+  candidate/implementation-support worktrees retained as evidence.
+
+Evidence: workspace-relative
+`run/team/team-reliability/runs/ses_f21ad377bffeKRh2JryilgQS5l/`;
+`checks/acceptance-assertions.json` records **23 passed, 0 failed** independent
+assertions against public tool responses, Session data, Git and durable reports.
+See [candidate acceptance report](../reports/team-reliability-acceptance.md) for
+identities, receipts and qualification of the claims. Private configuration and
+raw runtime data remain outside Git. The explicit deferrals below remain deferred.
 
 ## Goal and working rules
 
