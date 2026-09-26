@@ -433,6 +433,8 @@ export type WebSearchResult = { url: string; title?: string; content?: string; t
 
 export type ConfigWorktree = { directory: string }
 
+export type AgentCompaction = { strategy?: "auto" | "local" | "remote"; model?: ModelRef; system?: string }
+
 export type ProviderRequest = {
   settings: ProviderSettings
   headers: { [x: string]: string }
@@ -1874,6 +1876,7 @@ export type AgentInfo = {
   model?: ModelRef
   request: ProviderRequest
   system?: string
+  compaction?: AgentCompaction
   description?: string
   mode: "subagent" | "primary" | "all"
   hidden: boolean
@@ -1953,6 +1956,7 @@ export type ConfigEntry =
             model?: string | { providerID: string; model: string; variant?: string }
             request?: { headers?: { [x: string]: string }; body?: { [x: string]: JsonValue } }
             system?: string
+            compaction?: AgentCompaction
             description?: string
             mode?: "subagent" | "primary" | "all"
             hidden?: boolean

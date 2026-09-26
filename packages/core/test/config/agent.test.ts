@@ -61,6 +61,47 @@ test("keeps schema fields and name out of legacy agent options", () => {
 })
 
 describe("ConfigAgentPlugin.Plugin", () => {
+  it.effect("merges canonical per-agent compaction across config documents", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const model = Model.Ref.parse("example/summary#low")
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provide(
+          Config.testLayer([
+            new Document({
+              type: "document",
+              info: decode({
+                agents: { build: { compaction: { strategy: "local", model, system: "Global summary" } } },
+              }),
+            }),
+            new Document({
+              type: "document",
+              info: decode({ agents: { build: { compaction: { system: "Project summary" } } } }),
+            }),
+          ]),
+        ),
+      )
+      expect((yield* agents.get(Agent.defaultID))?.compaction).toEqual({
+        strategy: "local",
+        model,
+        system: "Project summary",
+      })
+    }),
+  )
+
+  it.live("loads canonical compaction from agent Markdown", () =>
+    Effect.gen(function* () {
+      const agent = yield* loadMarkdownAgent(
+        "compaction:\n  strategy: remote\n  model:\n    providerID: example\n    id: summary\n  system: Keep local settings",
+      )
+      expect(agent.compaction).toEqual({
+        strategy: "remote",
+        model: Model.Ref.parse("example/summary"),
+        system: "Keep local settings",
+      })
+    }),
+  )
+
   for (const item of [
     { name: "separate legacy variant", frontmatter: "model: example/chat\nvariant: high", model: "example/chat#high" },
     { name: "unqualified model", frontmatter: "model: example/chat", model: "example/chat" },

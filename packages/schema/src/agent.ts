@@ -19,6 +19,17 @@ export type Name = typeof Name.Type
 export const Color = Schema.String.annotate({ identifier: "Agent.Color" })
 export type Color = typeof Color.Type
 
+export interface Compaction extends Schema.Schema.Type<typeof Compaction> {}
+export const Compaction = Schema.Struct({
+  strategy: Schema.Literals(["auto", "local", "remote"]).pipe(optional),
+  model: Model.Ref.pipe(optional),
+  system: Schema.String.pipe(optional),
+}).annotate({
+  identifier: "Agent.Compaction",
+  description:
+    "Compaction policy. Auto follows the active model's policy. Local model and system overrides are ignored by remote compaction; omitted values inherit the maintenance compaction agent, then the active session model and instructions.",
+})
+
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 export const Info = Schema.Struct({
   id: ID,
@@ -26,6 +37,7 @@ export const Info = Schema.Struct({
   model: Model.Ref.pipe(optional),
   request: Provider.Request,
   system: Schema.String.pipe(optional),
+  compaction: Compaction.pipe(optional),
   description: Schema.String.pipe(optional),
   mode: Schema.Literals(["subagent", "primary", "all"]),
   hidden: Schema.Boolean,

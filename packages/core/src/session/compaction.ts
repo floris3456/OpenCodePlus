@@ -15,6 +15,8 @@ import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import { SessionError } from "@opencode/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Bus } from "../bus.js"
+import { Agent } from "../agent.js"
+import { Catalog } from "../catalog.js"
 import { Database } from "../database/database.js"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { llmClient } from "../effect/app-node-platform.js"
@@ -24,7 +26,7 @@ import { SessionHistory } from "./history.js"
 import type { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
 import { SessionProviderContext } from "./provider-context.js"
-import type { SessionRunnerModel } from "./runner/model.js"
+import { SessionRunnerModel } from "./runner/model.js"
 import { SessionRunnerRetry } from "./runner/retry.js"
 import { SessionSchema } from "./schema.js"
 import { toSessionError } from "./to-session-error.js"
@@ -378,6 +380,9 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
     const llm = yield* LLMClient.Service
     const db = (yield* Database.Service).db
+    const agents = yield* Agent.Service
+    const catalog = yield* Catalog.Service
+    const models = yield* SessionRunnerModel.Service
 
     const state = State.create<Settings, Editor>({
       name: "session-compaction",
@@ -471,10 +476,45 @@ export const layer = Layer.effect(
     }
     /** The durable transcript since the last local summary, re-expanding every native window. */
     const original = (sessionID: SessionSchema.ID) => SessionHistory.load(db, sessionID, "local").pipe(Effect.orDie)
-    const recoverLocally = (input: ExecuteInput) =>
-      original(input.context.session.id).pipe(
-        Effect.flatMap((messages) => execute({ ...input, context: { ...input.context, messages } })),
-      )
+    const executeLocal = Effect.fn("SessionCompaction.executeLocal")(
+      function* (input: ExecuteInput) {
+        const context = input.context
+        const fallback = yield* agents.get(Agent.ID.make("compaction"))
+        const config = context.agent.info.compaction
+        const ref = config?.model ?? fallback?.model
+        const model = ref
+          ? yield* models.resolve({ ...context.session, model: ref }, catalog.model.available)
+          : context.model
+        // Local summaries need the durable transcript, never an opaque provider replacement window.
+        const messages =
+          input.overflow || context.messages.some(SessionProviderContext.isCheckpoint)
+            ? yield* original(context.session.id)
+            : context.messages
+        return yield* execute({
+          ...input,
+          context: {
+            ...context,
+            model,
+            messages,
+            agent: {
+              ...context.agent,
+              info: { ...context.agent.info, system: config?.system ?? fallback?.system ?? context.agent.info.system },
+            },
+          },
+        })
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.catch((cause) =>
+            failed({
+              sessionID: input.context.session.id,
+              reason: input.reason,
+              inputID: input.inputID,
+              error: toSessionError(cause),
+            }),
+          ),
+        ),
+    )
     const executeProvider = Effect.fn("SessionCompaction.executeProvider")(function* (input: ExecuteInput) {
       const context = input.context
       const reject = (message: string) =>
@@ -485,11 +525,26 @@ export const layer = Layer.effect(
           error: { type: "provider.unsupported-operation", message },
         })
       const prepared = yield* compactionRequest(input, context.messages, "session")
+      const request = prepared.request
+      if (!LLMClient.canCompact(request, { mechanism: "trigger" }) && !LLMClient.canCompact(request))
+        return yield* failed({
+          sessionID: context.session.id,
+          reason: input.reason,
+          inputID: input.inputID,
+          error: toSessionError(
+            new SessionRunnerModel.UnsupportedCompactionError({
+              providerID: context.model.ref.providerID,
+              modelID: context.model.ref.id,
+              route: request.model.route.id,
+            }),
+          ),
+        })
       if (prepared.event.result) {
+        if (context.agent.info.compaction?.strategy === "remote")
+          return yield* reject("Remote compaction requires a provider checkpoint, not a hook-supplied local summary")
         yield* started(input, "")
         return yield* supplied(input, prepared.event.result, "")
       }
-      const request = prepared.request
       const provenance = SessionProviderContext.provenance(context.model)
       if (!provenance) return yield* reject("Provider compaction requires a stable, configured endpoint")
       // History is selected before request hooks. Until that interface can select on the final route,
@@ -522,14 +577,7 @@ export const layer = Layer.effect(
                   .pipe(transient)
                 return { replacement: [...retained, Message.assistant(result.checkpoint)], usage: result.usage }
               }
-              if (LLMClient.canCompact(request))
-                return yield* llm
-                  .compact(request, { mechanism: "endpoint", http: prepared.options.http })
-                  .pipe(transient)
-              // Model resolution admits provider policies only for routes with a compaction operation.
-              return yield* Effect.die(
-                new Error(`${request.model.provider}/${request.model.route.id} has no compaction operation`),
-              )
+              return yield* llm.compact(request, { mechanism: "endpoint", http: prepared.options.http }).pipe(transient)
             }),
           )
           const usage = result.usage ? SessionUsage.record(result.usage, context.model.cost) : undefined
@@ -555,8 +603,10 @@ export const layer = Layer.effect(
         Effect.catchTag(
           "AI.Error",
           (cause): Effect.Effect<Outcome> =>
-            input.reason === "auto" && isContextOverflowFailure(cause)
-              ? recoverLocally({ ...input, started: true }).pipe(
+            input.reason === "auto" &&
+            context.agent.info.compaction?.strategy !== "remote" &&
+            isContextOverflowFailure(cause)
+              ? executeLocal({ ...input, started: true, overflow: true }).pipe(
                   Effect.map((result) =>
                     result.status === "completed" ? { ...result, recoveredOverflow: true } : result,
                   ),
@@ -713,10 +763,26 @@ export const layer = Layer.effect(
     })
     const compact = Effect.fn("SessionCompaction.compact")(function* (input: AutoInput): Effect.fn.Return<Outcome> {
       const request = { ...input, reason: "auto" as const }
-      if (input.overflow) return yield* recoverLocally(request)
-      if (input.context.model.compaction?.mode !== "provider") return yield* execute(request)
-      return yield* executeProvider(request)
+      if (input.overflow) {
+        if (input.context.agent.info.compaction?.strategy === "remote")
+          return yield* failed({
+            sessionID: input.context.session.id,
+            reason: request.reason,
+            error: {
+              type: "provider.unsupported-operation",
+              message: "Remote compaction cannot recover an overflowing context; select auto or local compaction",
+            },
+          })
+        return yield* executeLocal(request)
+      }
+      return yield* dispatch(request)
     })
+    const dispatch = (input: ExecuteInput) => {
+      const strategy = input.context.agent.info.compaction?.strategy ?? "auto"
+      return strategy === "remote" || (strategy === "auto" && input.context.model.compaction?.mode === "provider")
+        ? executeProvider(input)
+        : executeLocal(input)
+    }
     const required = (input: RequiredInput) => {
       const config = state.get()
       if (!config.auto) return false
@@ -739,7 +805,9 @@ export const layer = Layer.effect(
       )
       const policy = input.resolved.compaction
       const threshold =
-        policy?.mode === "provider" && policy.threshold !== undefined
+        input.context.agent.info.compaction?.strategy !== "local" &&
+        policy?.mode === "provider" &&
+        policy.threshold !== undefined
           ? Math.min(policy.threshold, promptCeiling)
           : promptCeiling
       return estimateTokens(input) >= threshold
@@ -770,7 +838,7 @@ export const layer = Layer.effect(
               inputID: input.inputID,
               started: input.started,
             }
-            return context.model.compaction?.mode === "provider" ? executeProvider(request) : execute(request)
+            return dispatch(request)
           },
         }),
       )
@@ -789,5 +857,5 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, Database.node, llmClient],
+  deps: [Bus.node, Database.node, llmClient, Agent.node, Catalog.node, SessionRunnerModel.node],
 })

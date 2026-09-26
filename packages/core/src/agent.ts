@@ -19,6 +19,9 @@ export const defaultID = ID.make("build")
 
 export const Color = Agent.Color
 
+export const Compaction = Agent.Compaction
+export type Compaction = Agent.Compaction
+
 export const Info = Agent.Info
 export type Info = Agent.Info
 

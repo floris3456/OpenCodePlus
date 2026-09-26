@@ -221,6 +221,16 @@ it.effect("auto compaction estimates current content against the buffered prompt
     expect(compaction.required(native(99_999, inputLimited, 100_000))).toBe(false)
     expect(compaction.required(native(100_000, inputLimited, 100_000))).toBe(true)
     expect(compaction.required(native(252_000, inputLimited, 500_000))).toBe(true)
+    const local = native(100_000, inputLimited, 100_000)
+    expect(
+      compaction.required({
+        ...local,
+        context: {
+          ...local.context,
+          agent: { ...local.context.agent, info: { ...local.context.agent.info, compaction: { strategy: "local" } } },
+        },
+      }),
+    ).toBe(false)
     expect(compaction.required(native(1_000_000, { context: 0, input: undefined, output: 0 }, 100_000))).toBe(false)
 
     const contextLimited = { context: 100_000, output: 10_000 }
@@ -334,6 +344,48 @@ const loaded = (session: Session.Info, messages: readonly SessionMessage.Info[])
   instructionUpdate: "",
   tools: { definitions: [], execute: () => Effect.die("Compaction must not execute tools") },
 })
+
+it.effect("unavailable explicit local compaction models fail durably without falling back", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    const modelRequests = yield* SessionModelRequest.Service
+    const session = yield* insertSession(Session.ID.make("ses_missing_compaction_model"))
+    const messages = [
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this request",
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+    ]
+    const context = loaded(session, messages)
+    const result = yield* compaction.compactManual({
+      session,
+      messages,
+      inputID: SessionMessage.ID.create(),
+      prepare: modelRequests.compaction,
+      resolveContext: () =>
+        Effect.succeed({
+          ...context,
+          agent: {
+            ...context.agent,
+            info: {
+              ...context.agent.info,
+              compaction: { strategy: "local", model: Model.Ref.parse("missing/summary") },
+            },
+          },
+        }),
+    })
+    expect(result).toEqual({
+      status: "failed",
+      error: { type: "provider.no-route", message: "Model unavailable: missing/summary" },
+    })
+    expect(requests).toHaveLength(0)
+    const store = yield* SessionStore.Service
+    expect((yield* store.context(session.id)).at(-1)).toMatchObject(result)
+  }),
+)
 
 it.effect("manual compaction summarizes short context instead of no-op", () =>
   Effect.gen(function* () {

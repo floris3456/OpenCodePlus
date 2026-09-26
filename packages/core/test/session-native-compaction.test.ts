@@ -22,6 +22,7 @@ import { SessionProviderContext } from "@opencode/core/session/provider-context"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionStore } from "@opencode/core/session/store"
+import { Model } from "@opencode/schema/model"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { DateTime, Deferred, Effect, Fiber, Schema } from "effect"
 import { testEffect } from "./lib/effect"
@@ -45,7 +46,7 @@ const it = testEffect(
   ),
 )
 
-const setup = Effect.fnUntraced(function* (endpoint = false) {
+const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Compaction, policy = true) {
   const db = (yield* Database.Service).db
   const bus = yield* Bus.Service
   const inbox = yield* SessionInbox.Service
@@ -55,7 +56,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false) {
   const hooks = yield* PluginHooks.Service
   const blocked = Deferred.makeUnsafe<void>()
   const hanging = Promise.withResolvers<Response>()
-  const state = { failure: false, flaky: false, hang: false, overflow: false, localFailure: false, calls: 0 }
+  const state = { failure: false, flaky: false, hang: false, overflow: false, localFailure: false, calls: 0, config }
   const bodies: Record<string, unknown>[] = []
   const headers: Headers[] = []
   const server = yield* Effect.acquireRelease(
@@ -162,7 +163,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false) {
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
       cost: [],
       limit: { context: 200_000, output: 32_000 },
-      compaction: { mode: "provider" },
+      compaction: policy ? { mode: "provider" } : undefined,
     },
   )
   const sessionID = SessionSchema.ID.create()
@@ -216,7 +217,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false) {
       initial: history.initial,
       messages: history.messages,
       instructionUpdate: history.instructionUpdate,
-      agent: { id: Agent.defaultID, info: Agent.Info.default(Agent.defaultID) },
+      agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), compaction: state.config } },
       tools: {
         definitions: [
           ToolDefinition.make({ name: "read", description: "Read a file", inputSchema: { type: "object" } }),
@@ -264,6 +265,92 @@ const setup = Effect.fnUntraced(function* (endpoint = false) {
     model,
   }
 })
+
+for (const endpoint of [false, true]) {
+  it.live(
+    `explicit remote agent strategy uses ${endpoint ? "endpoint" : "trigger"} capability without provider policy or local overrides`,
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup(
+          endpoint,
+          {
+            strategy: "remote",
+            model: Model.Ref.parse("unavailable/local-model"),
+            system: "LOCAL CUSTOMIZATION MUST NOT BE SENT",
+          },
+          false,
+        )
+        yield* fixture.prompt("Original user")
+        expect(yield* fixture.compact).toEqual({ status: "completed" })
+        expect(yield* fixture.checkpoint).toHaveProperty("messages")
+        expect(fixture.bodies).toHaveLength(1)
+        expect(fixture.bodies[0].model).toBe("gpt-5.4-mini")
+      expect(JSON.stringify(fixture.bodies[0])).not.toContain("LOCAL CUSTOMIZATION")
+      expect(fixture.state.config).toEqual({
+          strategy: "remote",
+          model: Model.Ref.parse("unavailable/local-model"),
+        system: "LOCAL CUSTOMIZATION MUST NOT BE SENT",
+      })
+      yield* fixture.prompt("Continue with remote compaction")
+      expect(yield* fixture.automatic).toEqual({ status: "completed" })
+      expect(fixture.bodies).toHaveLength(2)
+      expect(fixture.bodies[1].model).toBe("gpt-5.4-mini")
+      expect(JSON.stringify(fixture.bodies[1])).not.toContain("LOCAL CUSTOMIZATION")
+      }),
+  )
+}
+
+it.live("forced local agent compaction bypasses remote and re-expands existing provider checkpoints", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup()
+    yield* fixture.prompt("Original durable request")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    yield* fixture.prompt("Recent request")
+    fixture.state.config = { strategy: "local", system: "Custom local instructions" }
+    fixture.state.overflow = true
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect(fixture.bodies).toHaveLength(2)
+    expect(JSON.stringify(fixture.bodies[1])).toContain("Original durable request")
+    expect(JSON.stringify(fixture.bodies[1])).toContain("Custom local instructions")
+    expect(JSON.stringify(fixture.bodies[1])).not.toContain("compaction_trigger")
+    expect(JSON.stringify(fixture.bodies[1])).not.toContain("encrypted_1")
+    expect((yield* fixture.load).messages.at(-1)).toMatchObject({
+      status: "completed",
+      summary: "## Objective\n- Recovered locally",
+    })
+  }),
+)
+
+it.live("explicit remote agent overflow fails without automatic local fallback", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup(false, { strategy: "remote" })
+    yield* fixture.prompt("Original durable request")
+    fixture.state.overflow = true
+    expect(yield* fixture.automatic).toMatchObject({ status: "failed", error: { type: "provider.invalid-request" } })
+    expect(fixture.bodies).toHaveLength(1)
+    expect(JSON.stringify(fixture.bodies[0])).toContain("compaction_trigger")
+    expect(
+      (yield* fixture.load).messages.some((message) => message.type === "compaction" && message.status === "completed"),
+    ).toBe(false)
+  }),
+)
+
+it.live("explicit remote agent strategy rejects hook-supplied local summaries", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup(false, { strategy: "remote" })
+    yield* fixture.prompt("Original user")
+    yield* fixture.hooks.register("session", "compaction", (event) =>
+      Effect.sync(() => {
+        event.result = { summary: "Local summary" }
+      }),
+    )
+    expect(yield* fixture.compact).toMatchObject({
+      status: "failed",
+      error: { type: "provider.unsupported-operation" },
+    })
+    expect(fixture.bodies).toHaveLength(0)
+  }),
+)
 
 it.live(
   "manual trigger persists and continues, retains earlier users repeatedly, and preserves context on failure/cancellation",

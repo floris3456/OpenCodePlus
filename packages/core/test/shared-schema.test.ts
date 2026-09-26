@@ -76,6 +76,7 @@ test("Core reuses the canonical shared schemas", async () => {
     [Agent.ID, schemaAgent.Agent.ID],
     [Agent.Name, schemaAgent.Agent.Name],
     [Agent.Color, schemaAgent.Agent.Color],
+    [Agent.Compaction, schemaAgent.Agent.Compaction],
     [Agent.Info, schemaAgent.Agent.Info],
     [coreCommand.Info, Command.Info],
     [coreConnection.CredentialInfo, Connection.CredentialInfo],

@@ -2398,6 +2398,148 @@ describe("SessionRunnerLLM", () => {
     })
   })
 
+  for (const reason of ["manual", "auto"] as const) {
+    scenario(`inherits the current session model for ${reason} agent compaction`, function* (s) {
+      const agents = yield* Agent.Service
+      yield* agents.transform((editor) =>
+        editor.update(Agent.defaultID, (agent) => {
+          agent.model = Model.Ref.parse("fake/agent-default")
+          agent.compaction = { strategy: "auto" }
+        }),
+      )
+      yield* s.llm.push(TestLLM.textWithUsage("Earlier answer", "inherited-history", 185_000))
+      yield* s.runPrompt("Earlier question")
+      yield* s.bus.publish(SessionEvent.ModelSelected, { sessionID, model: Model.Ref.parse("fake/replacement#low") })
+      yield* s.llm.push(TestLLM.text("## Objective\n- Active model summary", "inherited-summary"))
+      if (reason === "manual") {
+        yield* s.session.compact({ sessionID })
+        yield* s.resume
+      }
+      if (reason === "auto") {
+        yield* s.llm.push(TestLLM.text("Continued", "inherited-continued"))
+        yield* s.runPrompt("Continue")
+      }
+      expect(s.requests[1].model).toBe(replacementModel)
+      expect((yield* s.messages).find((message) => message.type === "compaction")).toMatchObject({
+        status: "completed",
+        reason,
+        model: Model.Ref.parse("fake/replacement#low"),
+      })
+    })
+
+    scenario(
+      `per-agent local model and instructions win over maintenance defaults during ${reason} compaction`,
+      function* (s) {
+        const agents = yield* Agent.Service
+        yield* agents.transform((editor) => {
+          editor.update(Agent.ID.make("compaction"), (agent) => {
+            agent.model = Model.Ref.parse("fake/maintenance")
+            agent.system = "Maintenance instructions"
+          })
+          editor.update(Agent.defaultID, (agent) => {
+            agent.system = "Primary instructions"
+            agent.compaction = {
+              strategy: "local",
+              model: Model.Ref.parse("fake/replacement#low"),
+              system: "Keep exact unresolved decisions",
+            }
+          })
+        })
+        yield* s.llm.push(TestLLM.textWithUsage("Earlier answer", "custom-history", 185_000))
+        yield* s.runPrompt("Earlier question")
+        yield* s.llm.push(TestLLM.text("## Objective\n- Custom summary", "custom-summary"))
+        if (reason === "manual") {
+          yield* s.session.compact({ sessionID })
+          yield* s.resume
+        }
+        if (reason === "auto") {
+          yield* s.llm.push(TestLLM.text("Continued", "custom-continued"))
+          yield* s.runPrompt("Continue")
+          expect(s.requests[2].model).toBe(model)
+          expect(s.requests[2].system[0].text).toBe("Primary instructions")
+        }
+        expect(s.requests[1].model).toBe(replacementModel)
+        expect(s.requests[1].system).toEqual([
+          SystemPart.make("Keep exact unresolved decisions"),
+          ...s.requests[0].system.slice(1),
+        ])
+        expect(userTexts(s.requests[1]).at(-1)).toBe(SessionCompaction.buildPrompt(false))
+        expect((yield* s.messages).find((message) => message.type === "compaction")).toMatchObject({
+          status: "completed",
+          reason,
+          model: Model.Ref.parse("fake/replacement#low"),
+        })
+        expect((yield* s.session.get(sessionID)).model).toBeUndefined()
+      },
+    )
+
+    scenario(`unsupported explicit remote agent compaction fails honestly during ${reason} compaction`, function* (s) {
+      yield* s.llm.push(TestLLM.textWithUsage("Earlier answer", "unsupported-history", 185_000))
+      yield* s.runPrompt("Earlier question")
+      const agents = yield* Agent.Service
+      yield* agents.transform((editor) =>
+        editor.update(Agent.defaultID, (agent) => {
+          agent.compaction = { strategy: "remote" }
+        }),
+      )
+      if (reason === "manual") {
+        yield* s.session.compact({ sessionID })
+        yield* s.resume
+      }
+      if (reason === "auto") {
+        yield* s.admit("Continue")
+        expect(yield* Effect.exit(s.resume)).toMatchObject({ _tag: "Failure" })
+      }
+      expect(s.requests).toHaveLength(1)
+      expect((yield* s.messages).find((message) => message.type === "compaction")).toMatchObject({
+        status: "failed",
+        reason,
+        error: {
+          type: "provider.unsupported-operation",
+          message: "Provider compaction is not supported by fake/fake-model (openai-chat)",
+        },
+      })
+    })
+  }
+
+  scenario("inherits maintenance compaction model and system when local fields are omitted", function* (s) {
+    const agents = yield* Agent.Service
+    yield* agents.transform((editor) =>
+      editor.update(Agent.ID.make("compaction"), (agent) => {
+        agent.model = Model.Ref.parse("fake/replacement")
+        agent.system = "Maintenance compaction instructions"
+      }),
+    )
+    yield* s.llm.push(TestLLM.text("Earlier answer", "fallback-history"))
+    yield* s.runPrompt("Earlier question")
+    yield* s.llm.push(TestLLM.text("## Objective\n- Fallback summary", "fallback-summary"))
+    yield* s.session.compact({ sessionID })
+    yield* s.resume
+    expect(s.requests[1].model).toBe(replacementModel)
+    expect(s.requests[1].system[0].text).toBe("Maintenance compaction instructions")
+  })
+
+  scenario("explicit remote strategy refuses local overflow recovery", function* (s) {
+    yield* setupOverflowRecovery(s)
+    const agents = yield* Agent.Service
+    yield* agents.transform((editor) =>
+      editor.update(Agent.defaultID, (agent) => {
+        agent.compaction = { strategy: "remote" }
+      }),
+    )
+    yield* s.llm.push([LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" })])
+    yield* s.admit("Continue")
+    expect((yield* s.resume.pipe(Effect.flip)).message).toBe("prompt too long")
+    expect(s.requests).toHaveLength(1)
+    expect((yield* s.messages).find((message) => message.type === "compaction")).toMatchObject({
+      status: "failed",
+      error: {
+        type: "provider.unsupported-operation",
+        message: expect.stringContaining("Remote compaction cannot recover"),
+      },
+    })
+  })
+
   for (const route of [OpenAIChat.route, OpenAIResponses.route, AnthropicMessages.route]) {
     for (const reason of ["manual", "auto"] as const) {
       scenario(`preserves the session request prefix during ${reason} compaction (${route.id})`, function* (s) {

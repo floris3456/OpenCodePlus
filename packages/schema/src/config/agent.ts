@@ -1,6 +1,7 @@
 export * as ConfigAgent from "./agent.js"
 
 import { Schema } from "effect"
+import { Agent } from "../agent.js"
 import { Permission } from "../permission.js"
 import { optional, PositiveInt } from "../schema.js"
 import { ConfigModel } from "./model.js"
@@ -12,6 +13,7 @@ export class Info extends Schema.Class<Info>("Config.Agent")({
   model: ConfigModel.Selection.pipe(optional),
   request: ConfigProvider.Request.pipe(optional),
   system: Schema.String.pipe(optional),
+  compaction: Agent.Compaction.pipe(optional),
   description: Schema.String.pipe(optional),
   mode: Schema.Literals(["subagent", "primary", "all"]).pipe(optional),
   hidden: Schema.Boolean.pipe(optional),
