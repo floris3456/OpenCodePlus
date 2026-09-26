@@ -25,7 +25,7 @@ import {
   type PermissionTable,
 } from "./permission-enforce.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
-import { booleanControl, controlItemFor, isControl, type Compaction } from "./agent-controls.js"
+import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -151,7 +151,7 @@ export async function applyAgentControls(ctx: Context, input: ApplyInput): Promi
       // manufacture an Agent.Info.default just to apply retained settings.
       if (!editor.get(plan.agent)) continue
       editor.update(plan.agent, (agent) => {
-        const compaction: Compaction = { ...(agent as Agent.Info & { compaction?: Compaction }).compaction }
+        const compaction = { ...agent.compaction }
         for (const row of plan.rows) {
           if (row.id === "setting:mode") agent.mode = row.text as Agent.Info["mode"]
           if (row.id === "setting:description") agent.description = row.text
@@ -164,14 +164,14 @@ export async function applyAgentControls(ctx: Context, input: ApplyInput): Promi
             if (row.text === "") delete agent.steps
             else agent.steps = Number(row.text) as Agent.Info["steps"]
           }
-          if (row.id === "compaction:strategy") compaction.strategy = row.text as Compaction["strategy"]
+          if (row.id === "compaction:strategy") compaction.strategy = row.text as Agent.Compaction["strategy"]
           if (row.id === "compaction:model") {
             if (row.text === "") delete compaction.model
             else compaction.model = Model.Ref.parse(row.text)
           }
           if (row.id === "compaction:instructions") compaction.system = row.text
         }
-        if (plan.rows.some((row) => row.id.startsWith("compaction:"))) Object.assign(agent, { compaction })
+        if (plan.rows.some((row) => row.id.startsWith("compaction:"))) agent.compaction = compaction
       })
     }
   })

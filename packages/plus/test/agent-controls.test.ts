@@ -9,7 +9,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { createPlusApi, createState, deactivate } from "../src/index.js"
 import { runRegistration } from "../src/instructions/apply.js"
-import { controlItems, controlItemFor, type Compaction } from "../src/instructions/agent-controls.js"
+import { controlItems, controlItemFor } from "../src/instructions/agent-controls.js"
 import { resolve, type Address, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { reset, saveText, setAgentMode, setEnabled } from "../src/instructions/ops.js"
 import { chainContext } from "../src/instructions/presets.js"
@@ -130,12 +130,13 @@ test("compaction inherits active model and global instructions, retains local ov
   const initial = await f.snapshot()
   expect(initial.items.find((item) => item.id === "compaction:model" && item.agents?.includes("build"))?.text).toBe("")
   expect(initial.items.find((item) => item.id === "compaction:instructions" && item.agents?.includes("build"))?.text).toBe("Global compaction instructions")
-  expect((f.agents.state.get("build") as Agent.Info & { compaction?: Compaction }).compaction).toBeUndefined()
+  expect(f.agents.state.has("build")).toBe(true)
+  expect(f.agents.state.get("build")?.compaction).toBeUndefined()
   await f.edit(saveText(memoInputOf(initial), "item:global:compaction:system:role", "Customized global compaction"))
   expect((await f.snapshot()).items.find((item) => item.id === "compaction:instructions" && item.agents?.includes("build"))?.text).toBe("Customized global compaction")
   for (const [item, text] of [["model", "test/summarizer#fast"], ["instructions", "Keep unresolved tasks"], ["strategy", "remote"]])
     await f.edit(saveText(memoInputOf(await f.snapshot()), `item:project:build:compaction:${item}`, text))
-  const current = () => (f.agents.state.get("build") as Agent.Info & { compaction?: Compaction }).compaction
+  const current = () => f.agents.state.get("build")?.compaction
   expect(current()).toEqual({ strategy: "remote", model: Model.Ref.parse("test/summarizer#fast"), system: "Keep unresolved tasks" })
   await f.edit(saveText(memoInputOf(await f.snapshot()), "item:project:build:compaction:strategy", "local"))
   expect(current()?.model).toEqual(Model.Ref.parse("test/summarizer#fast"))
@@ -143,6 +144,7 @@ test("compaction inherits active model and global instructions, retains local ov
   expect(current()?.model).toBeUndefined()
   expect(current()?.system).toBe("Keep unresolved tasks")
   await f.edit(reset(memoInputOf(await f.snapshot()), "agent:project:build"))
+  expect(f.agents.state.has("build")).toBe(true)
   expect(current()).toBeUndefined()
 })
 
@@ -160,13 +162,13 @@ test("published controls resolve preset and Defaults entries, shared defaults, a
   await f.edit(saveText(memoInputOf(await f.snapshot()), "item:defaults:b*:compaction:instructions", "Defaults entry guide"))
   await f.edit(saveText(memoInputOf(await f.snapshot()), "item:defaults::setting:steps", "9"))
   expect(f.agents.state.get("build")?.steps).toBe(9)
-  expect((f.agents.state.get("build") as Agent.Info & { compaction?: Compaction }).compaction).toEqual({ strategy: "local", system: "Defaults entry guide" })
+  expect(f.agents.state.get("build")?.compaction).toEqual({ strategy: "local", system: "Defaults entry guide" })
   await f.edit(saveText(memoInputOf(await f.snapshot()), "item:global:build:compaction:strategy", "remote"))
   await f.edit(saveText(memoInputOf(await f.snapshot()), "item:project:build:compaction:strategy", "auto"))
   await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:compaction:strategy"))
-  expect((f.agents.state.get("build") as Agent.Info & { compaction?: Compaction }).compaction?.strategy).toBe("remote")
+  expect(f.agents.state.get("build")?.compaction?.strategy).toBe("remote")
   await f.edit(reset(memoInputOf(await f.snapshot()), "item:global:build:compaction:strategy"))
-  expect((f.agents.state.get("build") as Agent.Info & { compaction?: Compaction }).compaction?.strategy).toBe("local")
+  expect(f.agents.state.get("build")?.compaction?.strategy).toBe("local")
 })
 
 test("mutation boundary rejects invalid controls through RPC records and preserves revision", async () => {

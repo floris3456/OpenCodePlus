@@ -1,5 +1,4 @@
 import type { Agent } from "@opencode/schema/agent"
-import type { Model } from "@opencode/schema/model"
 import { fingerprint, sameTeam, type Address, type CustomizationRecord, type Item } from "./model.js"
 
 // These are ordinary customization rows. Boolean settings use state; scalar
@@ -10,10 +9,9 @@ export const controlIds = [
   "compaction:strategy", "compaction:model", "compaction:instructions",
 ] as const
 export type ControlId = typeof controlIds[number]
-export type Compaction = { strategy?: "auto" | "local" | "remote"; model?: Model.Ref; system?: string }
 export type AgentControls = Partial<Pick<Agent.Info, "mode" | "description" | "hidden" | "color" | "steps">> & {
   readonly disabled?: boolean
-  readonly compaction?: Compaction
+  readonly compaction?: Agent.Compaction
 }
 
 export function isControl(id: string): id is ControlId {
