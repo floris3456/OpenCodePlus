@@ -1,10 +1,11 @@
-import { mkdir, realpath, stat } from "node:fs/promises"
+import { lstat, mkdir, realpath, stat } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Effect } from "effect"
 import { git, gitRaw } from "./git.js"
 import { toolError } from "./schema.js"
 import { lock } from "./store.js"
-import { io } from "./io.js"
+import { errCode, io } from "./io.js"
+import { directoryUse } from "./directory-use.js"
 
 // Team worktrees share one repository, so a task executor can write the
 // repository-local git config — hooks, `core.fsmonitor`, `commit.gpgSign` — and a
@@ -141,10 +142,9 @@ export interface RemoveOptions {
   force?: boolean
 }
 
-// A plain `git worktree remove`: the child carries no Plus-written file, so
-// there is nothing to delete first and nothing to special-case.
+// All child and orphan removal shares the same kernel-reference guard, even
+// when force is requested. Rejection means retain, never release resources.
 export async function remove(root: string, dir: string, opts: RemoveOptions): Promise<void> {
-  if (!(await exists(dir))) return
   await lock(root, "repo", opts.repoKey, () => removeLocked(dir, opts))
 }
 
@@ -152,9 +152,20 @@ export async function remove(root: string, dir: string, opts: RemoveOptions): Pr
 // holds that lock while it decides and removes, so taking it again there would
 // deadlock; every other caller goes through `remove`.
 export async function removeLocked(dir: string, opts: RemoveOptions): Promise<void> {
-  if (!(await exists(dir))) return
+  if (await absent(dir)) return
+  const use = await directoryUse(dir)
+  if (use !== undefined) throw toolError(use.code, use.reason)
   const extra = opts.force === true ? ["--force"] : []
-  await git(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "remove", ...extra, dir])
+  const result = await gitRaw(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "remove", ...extra, dir])
+  if (await absent(dir)) return
+  throw toolError("E_WT_REMOVE", `Worktree retained: ${result.err || result.out || "directory still exists after git worktree remove."}`)
+}
+
+async function absent(dir: string): Promise<boolean> {
+  return lstat(dir).then(() => false, (error: unknown) => {
+    if (errCode(error) === "ENOENT") return true
+    throw error
+  })
 }
 
 export interface WorktreeEntry {

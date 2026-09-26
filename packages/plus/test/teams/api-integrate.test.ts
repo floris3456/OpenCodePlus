@@ -166,6 +166,182 @@ function ctxFor() {
   return context({ session: recordSession().domain })
 }
 
+async function withReadyChild(fn: (fixture: {
+  root: string
+  repo: Awaited<ReturnType<typeof makeRepo>>
+  parent: RunRecord
+  child: RunRecord
+  head: string
+}) => Promise<void>) {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+        sessionID: "ses_parent_retention",
+        children: ["w-aaaaaaaaaaaaaaaa"],
+      })
+      const work = await makeChild(repo.scratch, repo.dir, "retention", repo.head, { "child.txt": "retained history\n" }, "feat: retained history")
+      // The record can lag an ordinary git commit; cleanup must save the tip it
+      // actually landed before removing the checkout used for historical reads.
+      const child = baseRun({
+        id: "w-aaaaaaaaaaaaaaaa",
+        directory: work.dir,
+        branch: work.branch,
+        base: repo.head,
+        head: repo.head,
+        parent: parent.id,
+        sessionID: "ses_child_retention",
+        worktree: "present",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      await writeReport(root, child.id, 1, "done")
+      await fn({ root, repo, parent, child, head: work.head })
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}
+
+test("a saved done report cannot land before the actual Session drains; waiting is bounded", async () => {
+  await withReadyChild(async ({ root, repo, parent, child }) => {
+    const calls: string[] = []
+    let waitReleased = false
+    const domain = {
+      wait: ({ sessionID }: { sessionID: string }) => {
+        calls.push(sessionID)
+        return Effect.never.pipe(Effect.ensuring(Effect.sync(() => { waitReleased = true })))
+      },
+    } as unknown as SessionDomain
+    const start = Date.now()
+    const error = rejected(await integrateHandler(context({ session: domain }), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(error.code).toBe("E_BUSY")
+    expect(error.message).toContain("1000ms")
+    expect(Date.now() - start).toBeLessThan(5000)
+    expect(calls).toEqual([String(child.sessionID)])
+    expect(waitReleased).toBe(true)
+    expect(await queue(root, parent.id)).toEqual([])
+    expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(repo.head)
+    expect((await loadRun(root, child.id))?.worktree).toBe("present")
+    expect(await fs.realpath(child.directory)).toBe(child.directory)
+  })
+})
+
+test("a missing or failed Session-idle check refuses before queue admission", async () => {
+  await withReadyChild(async ({ root, repo, parent, child }) => {
+    const failed = context({ session: { wait: () => Effect.fail(new Error("session unavailable")) } as unknown as SessionDomain })
+    expect(rejected(await integrateHandler(failed, { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable())).code).toBe("E_SESSION")
+    await saveRun(root, { ...child, sessionID: null })
+    expect(rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable())).code).toBe("E_NO_SESSION")
+    expect(await queue(root, parent.id)).toEqual([])
+    expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(repo.head)
+  })
+})
+
+test("integration reads the report after actual Session settlement", async () => {
+  await withReadyChild(async ({ root, repo, parent, child }) => {
+    const settled = context({ session: { wait: () => Effect.promise(() => writeReport(root, child.id, 2, "blocked")) } as unknown as SessionDomain })
+    const error = rejected(await integrateHandler(settled, { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(error.code).toBe("E_NOT_DONE")
+    expect(error.message).toContain("attempt 2")
+    expect(await queue(root, parent.id)).toEqual([])
+  })
+})
+
+test.skipIf(process.platform !== "linux")("landing succeeds with truthful cwd retention, then guarded removal succeeds after release", async () => {
+  await withReadyChild(async ({ root, repo, parent, child, head }) => {
+    const holder = Bun.spawn(["sh", "-c", "printf 'ready\\n'; read -r release"], {
+      cwd: child.directory,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const reader = holder.stdout.getReader()
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n")
+      expect(await fs.readlink(`/proc/${holder.pid}/cwd`)).toBe(child.directory)
+      const sessions = recordSession()
+      const value = required(await integrateHandler(context({ session: sessions.domain }), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+      expect(value).toMatchObject({
+        state: "landed",
+        head,
+        worktree: "retained",
+        reason: expect.stringContaining(`PID ${holder.pid}`),
+        cleanup: [{ run: child.id, worktree: "retained", code: "E_WT_IN_USE" }],
+      })
+      expect(sessions.waited).toEqual([{ sessionID: child.sessionID }])
+      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(head)
+      expect((await loadRun(root, child.id))?.worktree).toBe("present")
+      expect((await loadRun(root, child.id))?.head).toBe(head)
+      expect(await fs.realpath(child.directory)).toBe(child.directory)
+      expect(holder.exitCode).toBeNull()
+      const retry = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+      expect(retry).toMatchObject({ state: "landed", head, worktree: "retained", alreadyLanded: true, reason: expect.stringContaining(`PID ${holder.pid}`) })
+      expect(await queue(root, parent.id)).toHaveLength(1)
+      expect((await loadRun(root, child.id))?.worktree).toBe("present")
+    } finally {
+      reader.releaseLock()
+      holder.stdin.write("release\n")
+      holder.stdin.end()
+      expect(await holder.exited).toBe(0)
+    }
+    // Cleanup retry is the same product integrate path. Parent history, dirt and
+    // now-failing checks must not be consulted as if this were a new landing.
+    await fs.writeFile(path.join(repo.dir, "later.txt"), "parent moved on\n")
+    await git(repo.dir, ["add", "later.txt"])
+    await git(repo.dir, ["commit", "-m", "feat: later parent work"])
+    const later = await git(repo.dir, ["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo.dir, "later.txt"), "uncommitted parent work\n")
+    await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [{ id: "red", argv: ["bun", "test", "missing.test.ts"] }])
+    const originalEntry = (await queue(root, parent.id))[0].id
+    const removed = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(removed).toMatchObject({ entry: originalEntry, state: "landed", head, worktree: "removed", alreadyLanded: true })
+    expect(await queue(root, parent.id)).toHaveLength(1)
+    expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(later)
+    expect(await fs.readFile(path.join(repo.dir, "later.txt"), "utf8")).toBe("uncommitted parent work\n")
+    expect(await fs.stat(child.directory).then(() => true, () => false)).toBe(false)
+    expect(await git(repo.dir, ["rev-parse", child.branch])).toBe(head)
+    expect((await loadRun(root, child.id))?.head).toBe(head)
+    expect((await loadRun(root, child.id))?.worktree).toBe("removed")
+  })
+})
+
+test("git cleanup failure remains a landed result with a retained worktree", async () => {
+  await withReadyChild(async ({ root, repo, parent, child, head }) => {
+    await git(repo.dir, ["worktree", "lock", child.directory])
+    const value = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(value).toMatchObject({ state: "landed", head, worktree: "retained", reason: expect.stringContaining("locked") })
+    expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(head)
+    expect((await loadRun(root, child.id))?.worktree).toBe("present")
+    expect((await loadRun(root, child.id))?.head).toBe(head)
+    expect(await fs.realpath(child.directory)).toBe(child.directory)
+    const busy = context({ session: { wait: () => Effect.never } as unknown as SessionDomain })
+    const retry = required(await integrateHandler(busy, { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(retry).toMatchObject({ state: "landed", head, worktree: "retained", alreadyLanded: true, cleanup: [{ code: "E_BUSY" }] })
+    expect((await loadRun(root, child.id))?.worktree).toBe("present")
+    expect(await queue(root, parent.id)).toHaveLength(1)
+  })
+})
+
+test("successful cleanup records the actual original child head for history", async () => {
+  await withReadyChild(async ({ root, repo, parent, child, head }) => {
+    const value = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(value).toMatchObject({ state: "landed", head, worktree: "removed" })
+    expect((await loadRun(root, child.id))?.worktree).toBe("removed")
+    expect((await loadRun(root, child.id))?.head).toBe(head)
+    expect((await loadRun(root, child.id))?.base).toBe(repo.head)
+    expect(await fs.stat(child.directory).then(() => true, () => false)).toBe(false)
+  })
+})
+
 test("happy path lands the child commit in the parent worktree", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
@@ -417,7 +593,7 @@ test("dirty parent is refused with E_DIRTY naming the file", async () => {
   })
 })
 
-test("second integrate of the same child is refused with E_ALREADY", async () => {
+test("second integrate of a removed child returns its saved landing without enqueuing again", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -459,9 +635,10 @@ test("second integrate of the same child is refused with E_ALREADY", async () =>
       expect(first.state).toBe("landed")
       const landedHead = first.head
       if (typeof landedHead !== "string") throw new Error("missing landed head")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: landedHead }, callerFor(parent), shippedTable()))
-      expect(error.code).toBe("E_ALREADY")
-      expect(error.message).toBe(`Child w-ffffffffffffffff is already landed at ${landedHead}.`)
+      const unavailable = context({ session: { wait: () => Effect.fail(new Error("Session unavailable")) } as unknown as SessionDomain })
+      const again = required(await integrateHandler(unavailable, { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
+      expect(again).toMatchObject({ entry: first.entry, state: "landed", head: landedHead, worktree: "removed", alreadyLanded: true })
+      expect(await queue(root, parent.id)).toHaveLength(1)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
@@ -572,15 +749,27 @@ test("integrate drains an older pending entry instead of stranding it", async ()
         expectedParentHead: parentHead,
       })
       expect(await pending(root, parent.id)).toHaveLength(1)
+      const busy = context({ session: {
+        wait: ({ sessionID }: { sessionID: string }) => sessionID === oldChild.sessionID ? Effect.never : Effect.void,
+      } as unknown as SessionDomain })
+      const refusal = rejected(await integrateHandler(busy, { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
+      expect(refusal.code).toBe("E_BUSY")
+      expect(refusal.message).toContain(oldChild.id)
+      expect(await pending(root, parent.id)).toHaveLength(1)
+      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(parentHead)
+      const sessions = recordSession()
       const value = required(
-        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
+        await integrateHandler(context({ session: sessions.domain }), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
       ) as { entry: string; state: string; head: string | null }
+      expect(sessions.waited).toEqual([{ sessionID: newChild.sessionID }, { sessionID: oldChild.sessionID }])
       expect(value.state).toBe("landed")
       expect(typeof value.head).toBe("string")
       expect(await pending(root, parent.id)).toHaveLength(0)
       expect((await queue(root, parent.id)).filter((entry) => entry.state === "landed")).toHaveLength(2)
       expect(await fs.readFile(path.join(repo.dir, "old.txt"), "utf8")).toBe("old\n")
       expect(await fs.readFile(path.join(repo.dir, "new.txt"), "utf8")).toBe("new\n")
+      expect((await loadRun(root, newChild.id))?.head).toBe(newWork.head)
+      expect((await loadRun(root, newChild.id))?.head).not.toBe(value.head)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

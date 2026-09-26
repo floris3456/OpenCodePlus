@@ -182,6 +182,76 @@ async function agePastStartMs(dir: string): Promise<void> {
   await fs.utimes(dir, abandoned, abandoned)
 }
 
+for (const state of ["stopped", "superseded"] as const) {
+  test.skipIf(process.platform !== "linux")(`GC retains live cwd references for ${state} runs and orphans, then removes after release`, async () => {
+    await withIsolatedTeamsRoot(async (root) => {
+      const repo = await makeRepo()
+      try {
+        const parent = baseRun({
+          id: "main-0123456789abcdef",
+          kind: "main",
+          directory: repo.dir,
+          branch: "main",
+          base: repo.head,
+          head: repo.head,
+          state: "working",
+        })
+        const childWork = await makeChildWorktree(path.join(ownedRoot(root, parent.repoKey), "implementer"), repo.dir, `held-${state}`, repo.head)
+        const child = baseRun({
+          id: "w-abababababababab",
+          directory: childWork.dir,
+          branch: childWork.branch,
+          base: repo.head,
+          head: childWork.head,
+          state,
+          lastUsed: "2020-01-01T00:00:00.000Z",
+          worktree: "present",
+        })
+        await saveRun(root, parent)
+        await saveRun(root, child)
+        const orphan = path.join(ownedRoot(root, parent.repoKey), "implementer", `held-orphan-${state}`)
+        await git(repo.dir, ["worktree", "add", "-b", `team/orphan/held-${state}`, orphan, repo.head])
+        await agePastStartMs(orphan)
+        const holders = [child.directory, orphan].map((cwd) => Bun.spawn(["sh", "-c", "printf 'ready\\n'; read -r release"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" }))
+        try {
+          for (const holder of holders) {
+            const reader = holder.stdout.getReader()
+            expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n")
+            reader.releaseLock()
+          }
+          expect(await fs.readlink(`/proc/${holders[0].pid}/cwd`)).toBe(child.directory)
+          expect(await fs.readlink(`/proc/${holders[1].pid}/cwd`)).toBe(orphan)
+          const retained = await gc(root, defaultPolicy)
+          expect(retained.reaped).not.toContain(child.id)
+          expect(retained.removeFailed).toContain(child.id)
+          expect(retained.orphansRemoved).not.toContain(orphan)
+          expect((await loadRun(root, child.id))?.state).toBe(state)
+          expect((await loadRun(root, child.id))?.worktree).toBe("present")
+          expect(await dirExists(child.directory)).toBe(true)
+          expect(await dirExists(orphan)).toBe(true)
+          expect(holders.every((holder) => holder.exitCode === null)).toBe(true)
+        } finally {
+          for (const holder of holders) {
+            holder.stdin.write("release\n")
+            holder.stdin.end()
+          }
+          expect(await Promise.all(holders.map((holder) => holder.exited))).toEqual([0, 0])
+        }
+        const removed = await gc(root, defaultPolicy)
+        expect(removed.reaped).toContain(child.id)
+        expect(removed.removeFailed).not.toContain(child.id)
+        expect(removed.orphansRemoved).toContain(orphan)
+        expect(await dirExists(child.directory)).toBe(false)
+        expect(await dirExists(orphan)).toBe(false)
+        expect((await loadRun(root, child.id))?.state).toBe("reaped")
+        expect((await loadRun(root, child.id))?.worktree).toBe("removed")
+      } finally {
+        await fs.rm(repo.scratch, { recursive: true, force: true })
+      }
+    })
+  })
+}
+
 // A stale superseded run whose directory is already gone. `gc` reaps it in step
 // 4, before its orphan sweep; watching its state reach "reaped" is the
 // deterministic handshake that gc's opening record read is complete and the

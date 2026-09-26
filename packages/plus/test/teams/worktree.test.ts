@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { create, list, orphans, ownedRoot, remove, slug, stamp } from "../../src/teams/worktree.js"
 import { git, gitRaw } from "../../src/teams/git.js"
+import { directoryUse } from "../../src/teams/directory-use.js"
 
 let scratch = ""
 let stateDir = ""
@@ -25,6 +26,7 @@ beforeAll(async () => {
   stateDir = join(scratch, "state")
   repoRoot = join(scratch, "repo")
   wsRoot = join(scratch, "ws")
+  await mkdir(wsRoot, { recursive: true })
   await mkdir(repoRoot, { recursive: true })
   await git(repoRoot, ["init", "-b", "main"])
   await git(repoRoot, ["config", "user.email", "teams@test.local"])
@@ -56,6 +58,84 @@ describe("slug and stamp", () => {
 })
 
 describe("worktree manager", () => {
+  test.skipIf(process.platform !== "linux")("a live child cwd retains the worktree even with force, until released", async () => {
+    const c = await create(stateDir, { repoRoot, repoKey: "opencode", role: "implementer", name: "heldcwd", base, workspaceRoot: wsRoot })
+    const child = Bun.spawn(["sh", "-c", "printf 'ready\\n'; read -r release"], {
+      cwd: c.dir, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    })
+    const reader = child.stdout.getReader()
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n")
+      expect(await readlink(`/proc/${child.pid}/cwd`)).toBe(c.dir)
+      for (const force of [false, true]) {
+        const error = await remove(stateDir, c.dir, { repoRoot, repoKey: "opencode", force }).catch((error: unknown) => error)
+        expect(error).toMatchObject({ code: "E_WT_IN_USE", message: expect.stringContaining(`PID ${child.pid}`) })
+        expect(await exists(c.dir)).toBe(true)
+        expect(child.exitCode).toBeNull()
+      }
+    } finally {
+      reader.releaseLock()
+      child.stdin.write("release\n")
+      child.stdin.end()
+      expect(await child.exited).toBe(0)
+    }
+    await remove(stateDir, c.dir, { repoRoot, repoKey: "opencode" })
+    expect(await exists(c.dir)).toBe(false)
+  })
+
+  for (const surface of ["fd", "maps", "environ"] as const) {
+    test.skipIf(process.platform !== "linux")(`a live child ${surface} reference retains a worktree from outside its cwd`, async () => {
+      const c = await create(stateDir, { repoRoot, repoKey: "opencode", role: "implementer", name: `held${surface}`, base, workspaceRoot: wsRoot })
+      const file = join(c.dir, "README.md")
+      const script = surface === "fd"
+        ? `const fs = require('node:fs'); const fd = fs.openSync(${JSON.stringify(file)}, 'r'); console.log('ready'); await Bun.stdin.text(); fs.closeSync(fd)`
+        : surface === "maps"
+          ? `const view = Bun.mmap(${JSON.stringify(file)}); console.log('ready'); await Bun.stdin.text(); console.log(view[0])`
+          : `console.log('ready'); await Bun.stdin.text()`
+      const child = Bun.spawn([process.execPath, "-e", script], {
+        cwd: repoRoot, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, ...(surface === "environ" ? { TEAM_WORKTREE_CONFIG: file } : {}) },
+      })
+      const reader = child.stdout.getReader()
+      try {
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe("ready\n")
+        expect(await readlink(`/proc/${child.pid}/cwd`)).toBe(repoRoot)
+        if (surface === "maps") expect(await readFile(`/proc/${child.pid}/maps`, "utf8")).toContain(file)
+        const result = await directoryUse(c.dir)
+        expect(result?.code).toBe("E_WT_IN_USE")
+        expect(result?.reason).toContain(`PID ${child.pid}`)
+        expect(result?.reason).toContain(`via ${surface}`)
+        await expect(remove(stateDir, c.dir, { repoRoot, repoKey: "opencode", force: true })).rejects.toMatchObject({ code: "E_WT_IN_USE" })
+        expect(await exists(c.dir)).toBe(true)
+      } finally {
+        reader.releaseLock()
+        child.stdin.write("release\n")
+        child.stdin.end()
+        expect(await child.exited).toBe(0)
+      }
+      await remove(stateDir, c.dir, { repoRoot, repoKey: "opencode" })
+      expect(await exists(c.dir)).toBe(false)
+    })
+  }
+
+  test.skipIf(process.platform !== "linux")("incomplete same-user /proc inspection is an explicit retention reason", async () => {
+    const proc = join(scratch, "proc-fixture")
+    const pid = join(proc, "123")
+    await mkdir(join(pid, "fd"), { recursive: true })
+    await symlink(repoRoot, join(pid, "cwd"))
+    await writeFile(join(pid, "status"), `State:\tS (sleeping)\nUid:\t${Array(4).fill(process.geteuid?.()).join("\t")}\n`)
+    await writeFile(join(pid, "environ"), "")
+    // A directory cannot be read as a maps file, regardless of test-user mode.
+    await mkdir(join(pid, "maps"))
+    expect(await directoryUse(wsRoot, proc)).toEqual({
+      code: "E_WT_INSPECTION",
+      reason: `Worktree retained: incomplete same-user inspection of PID 123 (uid ${process.geteuid?.()}): maps.`,
+    })
+    await rm(join(pid, "maps"), { recursive: true })
+    await writeFile(join(pid, "maps"), "")
+    expect(await directoryUse(wsRoot, proc)).toBeUndefined()
+  })
+
   // `create` must return an absolute, canonical directory whose parents exist,
   // not the joined string it happened to compute: core resolves the location it
   // is handed with `FileSystem.realPath`. This pins the canonical-name half of
