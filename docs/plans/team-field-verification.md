@@ -56,4 +56,23 @@ and assessment, not authority to deploy a new release or alter unrelated teams.
 
 ## Outcome
 
-In progress. Final results will be recorded in a companion assessment.
+Executed on the existing immutable r4.6 host. See the completed
+[assessment](../reports/team-field-verification.md) for coverage, failures,
+prioritized fixes, proposed acceptance tests, and retained state.
+
+- Created two User team presets, four supporting agent presets, and two global
+  team instances. Verified all eight Instructions tools and guard refusals.
+- Exercised all fourteen product team tools through five real model-backed
+  sessions. The fixture implementation and follow-up were checkpointed,
+  integrated, independently reviewed, and passed all four focused tests.
+- Found live lifecycle failures: both resumed roots could not record their first
+  final report, and historical diff failed after worktree removal. Preserved
+  failures; did not weaken guards or rewrite run records.
+- Independently reviewed root admission, lifecycle/resource ownership, scope,
+  telemetry, and Instructions parity with read-only general sub-agents.
+- Retained reusable definitions with both global teams disabled. All five owned
+  sessions were independently verified idle; owned idle MCP connections were
+  released through the public API. No unrelated runtime restart or cleanup.
+- Workspace structure/pins check and workspace team-index smoke test passed.
+- Only sanitized documentation is checkpointed in the product task branch;
+  authored fixture commits and local verification evidence are preserved.
