@@ -72,7 +72,9 @@ with general sub-agents working in separate task worktrees.
 ## Verification matrix
 
 - On/off: ordinary and built-in agents; disabled agents stay editable and can
-  be re-enabled; disabled agents cannot be selected/launched through the host.
+  be re-enabled; disabled agents disappear from host selection catalogues and
+  cannot execute or launch as subagents. Preserve the existing low-level API's
+  ability to store an explicit agent ID; reject missing agents at execution.
 - Scope: project over global, linked presets and Defaults entries; shared
   Defaults; reset; standalone and team-member catalogues remain isolated.
 - Parity: all three modes, hidden vs disabled, description, color, steps,
@@ -92,4 +94,43 @@ with general sub-agents working in separate task worktrees.
 - Starting revision: `59069f781` (`feat(plus): add agent presets and tool permissions`).
 - Initial working tree: clean (`git status --short`).
 - Read workspace and repository operating instructions and V2 agent guide.
-- Implementation and verification results will be appended as work completes.
+- Plan checkpoint: `77f1cbb1b`.
+- Delegated implementation to general sub-agents on isolated `agent-settings`,
+  `agent-compaction`, `opencode-origins`, and `instructions-controls` branches.
+  UI work started against explicit agreed item IDs in parallel; integration
+  will reconcile its contracts before verification.
+- Baseline `bun typecheck` in `packages/plus`: passed.
+- Baseline `bun run release:typecheck` in `packages/plus`: all ten package
+  checks passed (cli/client/core/util/tui/plus/plugin/server/protocol/schema).
+- Baseline TUI gate `bun test test/active-team.test.tsx test/route.test.tsx`:
+  88 passed, one existing skip, zero failed.
+- Workspace `./bin/bun run check`: structure and manifest valid (not a runtime
+  readiness check). `./bin/team list`: index answered with 733 entries.
+- Evidence directory:
+  `run/team/instructions-controls/runs/ses_f227a73ceffe7EvvHwbH6pqkJk/checks/`
+  in the workspace repository, outside source control.
+- Implementation and final verification results will be appended as work completes.
+
+### Core integration
+
+- Integrated the compaction sub-agent's commit as `844323086`.
+- Canonical contract: `Agent.Compaction` with optional `strategy` (`auto`,
+  `local`, `remote`), `model` (`Model.Ref`), and `system` (`string`).
+- Explicit local fields override the maintenance compaction agent; absent
+  model values ultimately use the active session model, not a saved snapshot.
+- Remote mode uses actual provider endpoint/trigger capability. Unsupported
+  remote requests fail explicitly and cannot fall back to local compaction.
+- Parent reruns: four core config/compaction/schema-identity test files,
+  **62 passed**; eight new actual-runner scenarios, **8 passed**; three focused
+  Schema files, **13 passed**; generated client byte-for-byte check, **passed**;
+  ten-package affected typechecks, **passed**.
+- Wider runner selection (`compaction|overflow`): **59 passed, 3 failed**. The
+  three exact system-part assertions omit the existing empty Code Mode notice:
+  `moves the epoch at compaction and narrates later changes`, `refreshes
+  preparation after overflow compaction without promoting new input`, and
+  `uses epoch values after compaction while a source is unavailable`. The core
+  sub-agent reproduced these using baseline runner/compaction sources. They
+  are recorded as pre-existing failures, not hidden by narrowing assertions.
+- A separate general sub-agent is adding real embedded SDK/host verification
+  because the Plus recording harness alone does not prove publication into
+  the production agent registry or rejection by the actual subagent tool.
