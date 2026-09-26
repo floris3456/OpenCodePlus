@@ -700,7 +700,7 @@ test("a settle pass cannot resurrect a worktree another writer removed", async (
           if (id !== child.sessionID) return Effect.succeed({ id: Session.ID.make(id) })
           return Effect.promise(async () => {
             const integrated = await integrateHandler(
-              context({}),
+              context({ session: sessions }),
               { run: child.id, expectedParentHead: repo.head },
               callerFor(parent),
               shippedTable(),
