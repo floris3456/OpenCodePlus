@@ -63,6 +63,24 @@ Hidden is a visibility setting, not an origin: `general` and `explore` stay ordi
 
 Code Mode tool rows support toggle, edit, split, reset and a new **pin** (`p` toggles it, the `pinned` badge reads the resolved pin); pinning keeps a tool's full listing inline in the catalog even when the inline budget is tight. The synthetic `execute` row is an OpenCode toggle-only row whose only child is its Permissions (Limits → Tool calls per run). Code Mode and MCP tools list Permissions like any tool, but you cannot add your own rules to them: their core deny is whole-tool (Code Mode) or their resource is always `"*"` (MCP), so a rule could never match.
 
+## Agent settings and compaction
+
+Alongside the inventory groups above, every agent/member, Defaults entry, and
+agent/member preset has **Settings** and **Compaction** categories. Shared
+Defaults exposes both categories as well. See [Agent controls](docs/agent-controls.md)
+for inheritance, reset behavior, and Instructions Tool examples.
+
+- **Space** on an agent/member toggles Enabled; **Ctrl+Space** selects an
+  eligible primary agent. Disabled agents stay editable in Instructions.
+- **Enter** on Mode cycles **Primary → Subagent → All**. Description, Hidden,
+  Color, and Steps use OpenCode's existing agent fields.
+- Compaction supports **Auto**, **Local**, and **Remote**, with per-agent model
+  and instruction overrides. Remote grays and locks the local fields without
+  discarding their values. Unsupported provider compaction fails explicitly.
+- Local compaction inherits a configured maintenance compaction model, otherwise
+  the current session model. Project, Global, Defaults, and Presets use the same
+  scope chain as the rest of Instructions.
+
 ## Model selection
 
 Each agent subtree opens with a `Models` group (`[a: add model]` from the host catalog). Rows are the union of stored candidates down the existing chain (most-specific source wins) plus the agent's upstream model, each with a `source` badge (`project`/`global`/`defaults`/`upstream`). At most one stored row per (level, agent) carries `active`; the effective model is the first active row down the chain, else upstream. Space (or `set` with or without `active: true`) activates one candidate exclusively at that level, creating the local row when the candidate is inherited; `r` clears only that level's active flag so the chain falls through; `d` deletes the candidate at that level only. Adding stores an inactive row and never steals the effective model. The active model reaches the host in one `ctx.agent.transform` (`applyModels` in `src/instructions/apply.ts`) and reaches sessions through `switchModel` on `session.created` / `session.agent.selected` only when the session's current model differs; manual mid-session picks (`session.model.selected`) are never subscribed to and never overridden. The per-agent base badge follows the Plus-active model rather than the upstream model, with `PromptTemplate.active` classifying `claude` and `gemini` model ids to their own base template ids (`claude` and `gemini`). The base template follows the model family automatically: the context hook classifies each request's model through `ctx.prompt.active` and applies only the template active for that request.

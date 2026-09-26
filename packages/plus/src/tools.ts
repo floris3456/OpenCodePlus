@@ -81,7 +81,7 @@ const ShowDescription =
 const SetDescription =
   "Save an override, toggle, pin, activate a model, resolve a review row, or relink (TUI Enter/Space/p/k/t/e/l).\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
-  "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant, empty follows the session model.\n" +
+  "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
 
@@ -96,7 +96,7 @@ const SplitDescription =
 
 const CreateDescription =
   "Create an agent, team, member, Defaults entry, preset, file-backed row, model candidate or permission rule (TUI `a`).\n" +
-  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); no preset = everything off. Kinds:\n" +
+  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset). No preset leaves the agent unlinked: Defaults still apply, ordinary tools otherwise fall back to off, and controls retain configuration defaults. Kinds:\n" +
   "agent (id, scope project|global default project, preset), team (team+level, preset = team preset id; created disabled),\n" +
   "member (team+level+id, preset; level defaults creates a Teams member entry, team and id are patterns),\n" +
   "entry (catalogue agents|teams + name, team pattern for teams, preset; names may hold * and %, matched case-insensitively),\n" +

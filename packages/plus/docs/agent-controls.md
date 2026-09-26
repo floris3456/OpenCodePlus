@@ -12,8 +12,8 @@ become effective again.
   from the host agent catalogue and cannot execute as a subagent.
 - **Hidden** controls discovery and normal pickers. It is not a permission or
   security boundary.
-- **Mode** controls whether the agent can be used as Primary, Subagent, or All.
-  Press Enter on Mode to cycle through those values.
+- **Mode** controls normal primary selection and subagent-tool eligibility:
+  Primary, Subagent, or All. Press Enter on Mode to cycle through those values.
 
 Description, color, and maximum steps use OpenCode's existing agent fields. The
 step limit is a positive integer; new user input resets the allowance. Empty
@@ -91,6 +91,7 @@ requests. Configure effective request settings on providers, models, or model
 variants instead.
 
 The low-level session API retains OpenCode's existing ability to store an
-explicit agent ID before execution. Disabling removes the agent from available
-agents; a session retaining that ID must select an enabled agent before it can
-execute again.
+explicit agent ID before execution, including a subagent-only ID. Mode is not
+an authorization boundary. Disabling removes the agent from available agents;
+a session retaining that ID must select an enabled agent before it can execute
+again.

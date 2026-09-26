@@ -269,7 +269,7 @@ export function controlDetail(node: TreeNode, snapshot: Snapshot): string[] {
     : item === "setting:steps" ? "Positive whole-number step limit; empty means unlimited. Reset follows the value above."
     : item === "setting:color" ? "Agent display color (#RRGGBB); empty clears the color. Reset follows the value above."
     : item === "compaction:strategy" ? "Enter cycles Auto → Local → Remote. Remote requires provider support."
-    : item === "compaction:model" ? "Local compaction model (provider/model#variant); empty uses this agent's active session model."
+    : item === "compaction:model" ? "Local model (provider/model#variant); empty inherits the maintenance compaction model, otherwise the active session model."
     : item === "compaction:instructions" ? "Local compaction instructions; empty saves an empty prompt. Reset follows inherited instructions, including the global compaction agent."
     : "Reset removes only this level's override."
   return [

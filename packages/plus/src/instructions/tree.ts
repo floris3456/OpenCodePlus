@@ -1251,7 +1251,7 @@ export function controlValue(item: string, text: string, enabled: boolean): stri
   if (controlKind(item) === "toggle") return enabled ? "On" : "Off"
   if (controlChoices(item) !== undefined) return text.length === 0 ? "Inherited" : text[0].toUpperCase() + text.slice(1)
   if (text.length > 0) return text.replace(/\s+/g, " ").slice(0, 80)
-  if (item === "compaction:model") return "Active agent model"
+  if (item === "compaction:model") return "Inherited model"
   if (item === "compaction:instructions") return "Empty prompt"
   if (item === "setting:steps") return "Unlimited"
   return "Not set"

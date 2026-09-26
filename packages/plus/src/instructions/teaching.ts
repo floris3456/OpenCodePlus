@@ -38,7 +38,7 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 ## Presets, Defaults entries and links
 
-An agent behaves exactly as its rows say; nothing is read from its name. What a row does not set comes, in order, from the agent's own levels, its **preset** (the one it is linked to, live), the **Defaults entries** matching its name, Defaults "for every agent", and last the fallback: OpenCode agents keep their upstream value, everything else is **off**. \`show\` answers \`from\` in words ("from preset Orchestrator", "from default *orchestrator*", "from Defaults (every agent)", "OpenCode", "off by default"); \`list({ fields: ["id", "from"] })\` projects it.
+An agent behaves exactly as its rows say; nothing is read from its name. What a row does not set comes, in order, from the agent's own levels, its **preset** (the one it is linked to, live), the **Defaults entries** matching its name, Defaults "for every agent", and last the fallback: OpenCode agents and agent-owned rows keep their upstream value; other tool/instruction rows are **off**. Settings and compaction retain configuration defaults. No preset means unlinked, not exempt from Defaults. \`show\` answers \`from\` in words ("from preset Orchestrator", "from default *orchestrator*", "from Defaults (every agent)", "OpenCode", "off by default"); \`list({ fields: ["id", "from"] })\` projects it.
 
 - Presets live under the Presets root: \`agent:preset:<id>\` (OpenCode: build, plan, general, explore, title, summary, compaction; Plus: planner, orchestrator, implementer, reviewer, scout, build-seat; User: yours) and team presets \`team:preset:<team>\` (Plus or User only) with member presets \`team:preset:<team>:<member>\`. OpenCode and Plus presets ship with the release: their rows are editable (your edits win), the presets themselves cannot be deleted. Their rows are not an agent's, so \`protectedAgents\` does not guard them.
 - Name a preset as \`"<id>"\` (an agent preset) or \`"<team>/<member>"\` (a member preset), or as \`{ kind: "agent", id }\` / \`{ kind: "member", team, id }\`; a team takes a team preset id.
@@ -74,7 +74,7 @@ Agent and member rows accept \`set({ id, state: "off" })\` / \`"on"\` without de
 
 Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that agent's catalog entry (first description line only, truncated at 120 characters), and \`pin\` overrides the registry default; the synthetic \`tool:execute\` row is toggle-only and \`off\` removes Code Mode entirely. Filter them with \`namespace:<name>\`, \`pinned:true|false\`, and \`execute:true|false\`, e.g. \`list({ where: "codemode:true pinned:true" })\`.
 
-Models are live: each agent subtree opens with a \`Models\` group holding the union down the chain plus the agent's upstream model. \`set({ id, active:true })\` (or bare \`set({ id })\`) activates one candidate exclusively at that level; \`reset({ id })\` clears that level's active flag; \`create({ kind:"model", providerID, modelID, variant?, level?, agent? })\` adds a candidate — \`level\` defaults to \`project\`, and \`project\` and \`global\` rows need \`agent\`; \`delete({ id, confirm:true })\` removes the candidate at that level. Filter with \`item:model\` and \`active:true|false\`.
+Models are live: each agent subtree has a \`Models\` group holding the union down the chain plus the agent's upstream model. \`set({ id, active:true })\` (or bare \`set({ id })\`) activates one candidate exclusively at that level; \`reset({ id })\` clears that level's active flag; \`create({ kind:"model", providerID, modelID, variant?, level?, agent? })\` adds a candidate — \`level\` defaults to \`project\`, and \`project\` and \`global\` rows need \`agent\`; \`delete({ id, confirm:true })\` removes the candidate at that level. Filter with \`item:model\` and \`active:true|false\`.
 
 Agent settings use \`item:<level>:<owner>:setting:<field>\`: \`enabled\` and \`hidden\` accept \`state\`; \`mode\`, \`description\`, \`color\`, and \`steps\` accept \`text\`. Mode is primary/subagent/all, color is six-digit #RRGGBB, steps is a positive integer; empty color/steps clear that field. Hidden changes discovery, not permissions. These controls use the same preset/Defaults/scope chain, but their fallback is the agent's configuration, not the off-by-default tool policy. They do not support sections or pins. Filter with \`item:setting\`.
 
@@ -93,7 +93,7 @@ Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` sp
 \`create({ kind, ...fields })\` — one row per call. Every enabled kind returns \`{ id, item, … }\`: \`id\` is the tree row id — the id \`show\`, \`set\`, and \`delete\` accept for that row — and \`item\` is the stored item id. Pass the returned \`id\` to follow-up calls rather than rebuilding it.
 
 | kind | required fields |
-| agent | \`id\` (+ optional \`scope\` project\|global, \`preset\`; no preset = tools off, not the agent itself) |
+| agent | \`id\` (+ optional \`scope\` project\|global, \`preset\`; no preset = unlinked, Defaults still apply) |
 | skill | \`name\`, \`body\` |
 | base | \`id\`, \`title\`, \`text\` |
 | instruction | disabled: fails with \`instruction.disabled\` |

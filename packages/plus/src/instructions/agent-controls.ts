@@ -70,6 +70,6 @@ export function controlRecordError(record: Pick<CustomizationRecord, "item" | "s
   if (record.item === "setting:steps" && text !== "" && (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text)))) return "Steps must be a positive integer or empty (unlimited)"
   if (record.item === "setting:color" && text !== "" && !/^#[0-9a-fA-F]{6}$/.test(text)) return "Color must be a six-digit #RRGGBB value or empty"
   if (record.item === "compaction:strategy" && !["auto", "local", "remote"].includes(text)) return "Compaction strategy must be auto, local, or remote"
-  if (record.item === "compaction:model" && text !== "" && !/^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/.test(text)) return "Compaction model must be provider/model with an optional #variant, or empty (session model)"
+  if (record.item === "compaction:model" && text !== "" && !/^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/.test(text)) return "Compaction model must be provider/model with an optional #variant, or empty (inherit the maintenance compaction model, otherwise the active session model)"
   return undefined
 }
