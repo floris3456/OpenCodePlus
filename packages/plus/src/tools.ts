@@ -25,6 +25,7 @@ import {
   saveSplit,
   saveText,
   setEnabled,
+  setAgentMode,
   setPin,
   teamPlan,
   teamRowEntity,
@@ -51,7 +52,8 @@ import {
 } from "./instructions/model.js"
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
-import type { CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
+import { controlItemFor, isControl } from "./instructions/agent-controls.js"
+import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
 import { presetListing } from "./instructions/presets.js"
@@ -79,11 +81,13 @@ const ShowDescription =
 const SetDescription =
   "Save an override, toggle, pin, activate a model, resolve a review row, or relink (TUI Enter/Space/p/k/t/e/l).\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
+  "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant, empty follows the session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
+  "Agent/member rows reset their settings and compaction controls at this level.\n" +
   "Removes the stored text/state at the addressed row (model rows clear only that level's active flag). Writes pass actor tool and retry once when stale."
 
 const SplitDescription =
@@ -169,6 +173,7 @@ const ShowInput = Schema.Struct({
 
 const SetInput = Schema.Struct({
   id: Schema.String,
+  mode: Schema.optionalKey(Schema.Literals(["primary", "subagent", "all"])),
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
   pin: Schema.optionalKey(Schema.Boolean),
@@ -305,7 +310,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
-          if (node.kind === "team") return yield* setTeam(api, memo, input.id, actor, input)
+           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
           const op = computeSet(memo, input)
@@ -629,7 +634,7 @@ function presetRefOf(snapshot: Plus.Snapshot, input: string | Plus.PresetRef, te
 
 function computeSet(
   memo: MemoInput,
-  input: { id: string; text?: string; state?: "on" | "off"; pin?: boolean; resolve?: "keep" | "take" | "edit" },
+  input: { id: string; mode?: "primary" | "subagent" | "all"; text?: string; state?: "on" | "off"; pin?: boolean; resolve?: "keep" | "take" | "edit" },
 ) {
   const preserved = modelsOfMemo(memo)
   const preservedRules = rulesOfMemo(memo)
@@ -637,6 +642,11 @@ function computeSet(
     ...memo,
     records: [...records, ...splits, ...preserved, ...preservedRules],
   })
+  if (input.mode !== undefined) {
+    const first = setAgentMode(memo, input.id, input.mode)
+    if ("refusal" in first || (input.state === undefined && input.text === undefined && input.pin === undefined && input.resolve === undefined)) return first
+    return computeSet(withModels(first.records, first.splits), { ...input, mode: undefined })
+  }
   if (input.resolve !== undefined) {
     if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text)
     const first = resolveReview(memo, input.id, input.resolve, input.text)
@@ -1171,7 +1181,8 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
   })
 }
 
-function upstreamOf(memo: MemoInput, address: { item: string; agent: string | null }) {
+function upstreamOf(memo: MemoInput, address: Pick<Address, "item" | "agent" | "team" | "memberOf">) {
+  if (isControl(address.item)) return controlItemFor(memo.items, address)
   const matches = memo.items.filter((item) => item.id === address.item)
   if (address.agent === null) return matches[0]
   return matches.find((item) => applies(item, address.agent as string)) ?? matches[0]

@@ -9,12 +9,14 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { idFromPath, parseAgentModel } from "../agents/files.js"
+import { controlItems } from "./agent-controls.js"
 import { unmaskModel, unmaskText, upstreamEnabled, type ModelBaseline, type ModelRefLike, type PromptBaseline } from "./inventory.js"
 import {
   fingerprint,
   isCodeModeToolEntry,
   modelItemId,
   permItemId,
+  resolve,
   resolveActiveModel,
   runtimeScope,
   type AgentSource,
@@ -22,6 +24,7 @@ import {
   type Item,
   type ModelRecord,
   type RuleRecord,
+  type SplitRecord,
 } from "./model.js"
 import { catalogItems, categoryOfRow } from "./permission-catalog.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
@@ -66,12 +69,19 @@ export interface DiscoverInput {
   readonly presetState?: PresetState
   /** Teams and their member ids, for members addressed without a team. */
   readonly teams?: ContextInput["teams"]
+  /** Registry observed before Plus transforms; includes agents Plus removes. */
+  readonly agentUpstream?: readonly Agent.Info[]
+  readonly splits?: readonly SplitRecord[]
 }
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
   const directory = input.ctx.location.directory
   const projectDirectory = input.ctx.location.project.directory
-  const agents = await yieldList(input.ctx.agent.list())
+  const live = await yieldList(input.ctx.agent.list())
+  const agents = input.agentUpstream === undefined ? live : [
+    ...input.agentUpstream,
+    ...live.filter((agent) => !input.agentUpstream?.some((upstream) => upstream.id === agent.id)),
+  ]
   const skills = await yieldList(input.ctx.skill.list())
   const tools = await readTransform(input.ctx.tool.transform, (editor) => editor.list())
   const servers = await readTransform(input.ctx.mcp.transform, (editor) => editor.list())
@@ -145,6 +155,14 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const baseRows = baseItems(input.baseTemplates)
   const skillRows = skillItems(skills, directory, baselines)
   const roleRows = roleItems(agents, baselines, bodies)
+  const compactor = withBase.find((source) => source.id === "compaction")
+  const compactorRole = roleRows.find((item) => item.agents?.includes("compaction"))
+  const controlScopes = chainContext({ agents: withBase, items: roleRows, ...input.presetState, teams: input.teams ?? [] })
+  const runtime = runtimeScope({ id: "compaction", level: compactor?.scope ?? "defaults" }, controlScopes)
+  const inheritedInstructions = compactorRole === undefined ? "" : resolve({
+    upstream: compactorRole, records: input.records, splits: input.splits ?? [], scopes: runtime.scopes,
+    address: { level: runtime.level, agent: "compaction", item: "system:role", section: null },
+  }).assembled
   const fileRows = instructionFileItems(directory, instructions)
   const teachingRows = teachingItems(teaching, instructions.length)
   const modelRows = modelItems(modelRecords, upstream)
@@ -170,6 +188,8 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...mcp.items,
     ...modelRows,
     ...permRows,
+    ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent, inheritedInstructions)),
+    ...controlItems(undefined, {}, inheritedInstructions),
   ]
   return { items, agents: withBase, servers: mcp.servers, bodies, modelUpstream: upstream, hosts: agents }
 }

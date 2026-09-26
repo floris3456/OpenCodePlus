@@ -53,6 +53,8 @@ export const ItemKind = Schema.Union([
   Schema.Literal("mcp"),
   Schema.Literal("model"),
   Schema.Literal("perm"),
+  Schema.Literal("setting"),
+  Schema.Literal("compaction"),
 ]).annotate({ identifier: "Plus.ItemKind" })
 
 export type ItemGroup = typeof ItemGroup.Type
@@ -95,6 +97,7 @@ export const SnapshotItem = Schema.Struct({
   enabled: Schema.Boolean,
   fingerprint: Schema.String,
   agents: Schema.optionalKey(Schema.Array(Schema.String)),
+  controlTeam: Schema.optionalKey(TeamOwner),
   order: Schema.optionalKey(Schema.Number),
   userBase: Schema.optionalKey(Schema.Boolean),
   codemode: Schema.optionalKey(Schema.Boolean),
@@ -1417,6 +1420,7 @@ export const Definition = Rpc.define({
       errors: {
         "project.disabled": PortableProjectDisabled,
         "agent.protected": PortableAgentProtected,
+        "agent.invalid": PortableAgentInvalid,
       },
     },
     "instructions.log": {

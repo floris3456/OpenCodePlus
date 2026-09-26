@@ -19,7 +19,8 @@ import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFiel
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
-import { apply, roleUpdates, type ApplyAgent, type ToolPlan } from "./instructions/apply.js"
+import { apply, applyAgentControls, roleUpdates, runRegistration, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
+import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerReleaseTools } from "./release/tools.js"
@@ -83,6 +84,8 @@ export interface PlusState {
   permissions: PermissionTable | undefined
   /** Hook-side permission state that outlives one publish (pending approvals, "always" answers). */
   enforcement: EnforcementState
+  agentObserver?: Registration
+  agentUpstream?: readonly Agent.Info[]
 }
 
 export function createState(): PlusState {
@@ -141,6 +144,7 @@ export type MutateResult =
   | { ok: true; value: Plus.MutateResult }
   | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
   | { ok: false; error: { code: "agent.protected"; message: string; data: Plus.AgentProtected } }
+  | { ok: false; error: { code: "agent.invalid"; message: string; data: Plus.AgentInvalid } }
 
 export type LogResult =
   | { ok: true; value: Plus.LogOutput }
@@ -553,6 +557,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       )
       const refusal = refuseProtectedForTool(input.actor, protectedRow?.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
+      const invalid = records.flatMap((record) => {
+        if (record.type === "split" && (record.item.startsWith("setting:") || record.item.startsWith("compaction:")))
+          return [{ id: record.item, reason: "Agent controls do not support sections" }]
+        if (record.type !== "customization") return []
+        const reason = controlRecordError(record)
+        return reason === undefined ? [] : [{ id: record.item, reason }]
+      })[0]
+      if (invalid !== undefined) return { ok: false as const, error: { code: "agent.invalid" as const, message: invalid.reason, data: invalid } }
       const staleStore =
         input.expectedRevision !== loaded.projectRevision
           ? ("project" as const)
@@ -2609,6 +2621,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!result.ok) {
           if (result.error.code === "project.disabled")
             return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
+          if (result.error.code === "agent.invalid")
+            return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
         }
         return result.value
@@ -3957,6 +3971,11 @@ async function discoverAll(
   // resolve against the parent project, not the copy-free worktree.
   directory: string = ctx.location.directory,
 ): Promise<Discovered> {
+  if (state.agentObserver === undefined) {
+    state.agentObserver = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+      state.agentUpstream = structuredClone(editor.list())
+    })
+  }
   const resolved = await resolveBaseTemplates(ctx)
   const teams = await discoverAllTeams(directory, builtins)
   const discovered = await discover({
@@ -3970,10 +3989,22 @@ async function discoverAll(
     modelBaselines: state.modelBaselines,
     presetState: presetStateOf(loaded.records),
     teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
+    agentUpstream: state.agentUpstream,
+    splits: splitsOf(loaded.records),
   })
+  const memberControls = (await Promise.all(teams.flatMap((team) => team.agents.map(async (member) => {
+    const fields = member.path === undefined
+      ? builtins.find((entry) => entry.name === team.team)?.members.find((entry) => entry.id === member.id)?.fields
+      : parseTeamFields(await fs.readFile(member.path, "utf8"))
+    return controlItems(member.id, {
+      ...fields,
+      steps: fields?.steps as Agent.Info["steps"],
+    }, discovered.items.find((item) => item.id === "compaction:instructions" && item.agents === undefined)?.text)
+      .map((item) => ({ ...item, controlTeam: { level: team.level, team: team.team } }))
+  })))).flat()
   return {
     ...discovered,
-    items: [...discovered.items, ...(await teamPolicyRows(loaded, discovered, builtins, state.teamOutputIds, directory))],
+    items: [...discovered.items, ...memberControls, ...(await teamPolicyRows(loaded, discovered, builtins, state.teamOutputIds, directory))],
   }
 }
 
@@ -4244,6 +4275,9 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
       yield* disposeApplied(state)
+      if (state.agentObserver !== undefined) yield* state.agentObserver.dispose
+      state.agentObserver = undefined
+      state.agentUpstream = undefined
       yield* disposeTooling(state)
       yield* disposeTeamTooling(state)
       state.fingerprint = undefined
@@ -4488,25 +4522,22 @@ function publishFresh(
       // transform overwrites the same key (agent.system, disabled = true, skill
       // rules with a presence check, session tools by agent), so the briefly
       // doubled callback ends with the new value.
-      const applied = yield* Effect.promise(() => {
-        return apply(ctx, {
-          items: discovered.items,
-          // First entry per id wins downstream: discover returns the effective
-          // agent followed by its shadowed scope identities, and apply loops
-          // iterate agents in order with last write winning — applying every
-          // identity would let the shadowed copy overwrite the effective one.
-          // Discovery keeps the shadows for scope resolution and the UI.
-          agents: applyAgentsOf(publishAgents),
-          records: customizations,
-          splits,
-          scopes: publishScopes,
-          models: modelRecords,
-          rules: rulesOf(stored.records),
-          teamAgents: view.teamAgents.map((agent) => agent.id),
-          enforcement: state.enforcement,
-          enforcementDeps: { headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w" },
-        })
-      })
+      const applyInput: ApplyInput = {
+        items: discovered.items,
+        // Discovery keeps shadowed identities for scope resolution and the UI;
+        // runtime application uses the first (effective) identity per id.
+        agents: applyAgentsOf(publishAgents),
+        records: customizations,
+        splits,
+        scopes: publishScopes,
+        models: modelRecords,
+        rules: rulesOf(stored.records),
+        teamAgents: view.teamAgents.map((agent) => agent.id),
+        enforcement: state.enforcement,
+        enforcementDeps: { headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w" },
+        deferAgentControls: true,
+      }
+      const applied = yield* Effect.promise(() => apply(ctx, applyInput))
       // Enabled teams become real core-visible agents: resolve the enabled
       // teams (on-disk project/global plus built-in defaults) against the
       // unmasked regular sources (Plus team output never feeds back as a
@@ -4528,8 +4559,10 @@ function publishFresh(
       const teamRoleOverrides = view.overrides
       const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides, specialRoleOverrides))
       const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins, teamRoleOverrides))
+      const controls = yield* Effect.promise(() => applyAgentControls(ctx, applyInput))
+      if (controls !== undefined) yield* ctx.agent.reload()
       const previous = state.applied
-      state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations]
+      state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations, ...(controls === undefined ? [] : [controls])]
       const winnerById = new Map(teamAgents.map((agent) => [agent.id, agent] as const))
       const ownership = new Map<string, TeamOwnership>()
       for (const id of [...teamApplied.installedIds, ...builtinApplied.installedIds]) {
@@ -5301,6 +5334,7 @@ function toSnapshot(
         ...(item.order === undefined ? {} : { order: item.order }),
         ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
         ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
+        ...(item.controlTeam === undefined ? {} : { controlTeam: item.controlTeam }),
         ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
         ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
         ...(item.execute === undefined ? {} : { execute: item.execute }),

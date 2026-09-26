@@ -25,6 +25,7 @@ import {
   type PermissionTable,
 } from "./permission-enforce.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
+import { booleanControl, controlItemFor, isControl, type Compaction } from "./agent-controls.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -55,6 +56,8 @@ export interface ApplyInput {
   readonly enforcement?: EnforcementState
   /** How enforcement tells a delegated team run (nobody to ask) from a watched session. */
   readonly enforcementDeps?: EnforcementDeps
+  /** publishFresh installs controls after team transforms as the final writer. */
+  readonly deferAgentControls?: boolean
 }
 
 export interface ToolPlan {
@@ -110,7 +113,9 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
         installed.push(registration)
     const mcp = await applyMcp(ctx, input)
     if (mcp !== undefined) installed.push(mcp)
-    if (role !== undefined || model !== undefined || skills.agentChanged || session.agentChanged) await runVoid(ctx.agent.reload())
+    const controls = input.deferAgentControls ? undefined : await applyAgentControls(ctx, input)
+    if (controls !== undefined) installed.push(controls)
+    if (role !== undefined || model !== undefined || skills.agentChanged || session.agentChanged || controls !== undefined) await runVoid(ctx.agent.reload())
     if (skills.skillChanged) await runVoid(ctx.skill.reload())
     if (mcp !== undefined) await runVoid(ctx.mcp.reload())
     return { registrations: [...installed], tools: session.tools, permissions }
@@ -118,6 +123,58 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     await disposeRegistrations(installed)
     throw error
   }
+}
+
+/** Final Plus agent writer: deletions happen after all possible team upserts. */
+export async function applyAgentControls(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const plans = input.agents.flatMap((agent) => {
+    const rows = input.items.filter((item) => isControl(item.id) && applies(item, agent.id))
+    const unique = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
+      const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
+      if (item === undefined) return []
+      const value = resolvedFor(item, agent, input)
+      // A false upstream state (e.g. a disabled member file) is a ceiling.
+      if (id === "setting:enabled" && (!item.enabled || !value.enabled)) return [{ id, text: "", enabled: false }]
+      if (booleanControl(id) ? value.enabled === item.enabled : value.text === item.text && value.textFrom.kind === "upstream") return []
+      return [{ id, text: value.text, enabled: value.enabled }]
+    })
+    return unique.length === 0 ? [] : [{ agent: agent.id, rows: unique }]
+  })
+  if (plans.length === 0) return undefined
+  return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+    for (const plan of plans) {
+      if (plan.rows.some((row) => row.id === "setting:enabled" && !row.enabled)) {
+        editor.remove(plan.agent)
+        continue
+      }
+      // Config-disabled agents are absent from the upstream registry. Never
+      // manufacture an Agent.Info.default just to apply retained settings.
+      if (!editor.get(plan.agent)) continue
+      editor.update(plan.agent, (agent) => {
+        const compaction: Compaction = { ...(agent as Agent.Info & { compaction?: Compaction }).compaction }
+        for (const row of plan.rows) {
+          if (row.id === "setting:mode") agent.mode = row.text as Agent.Info["mode"]
+          if (row.id === "setting:description") agent.description = row.text
+          if (row.id === "setting:hidden") agent.hidden = row.enabled
+          if (row.id === "setting:color") {
+            if (row.text === "") delete agent.color
+            else agent.color = row.text
+          }
+          if (row.id === "setting:steps") {
+            if (row.text === "") delete agent.steps
+            else agent.steps = Number(row.text) as Agent.Info["steps"]
+          }
+          if (row.id === "compaction:strategy") compaction.strategy = row.text as Compaction["strategy"]
+          if (row.id === "compaction:model") {
+            if (row.text === "") delete compaction.model
+            else compaction.model = Model.Ref.parse(row.text)
+          }
+          if (row.id === "compaction:instructions") compaction.system = row.text
+        }
+        if (plan.rows.some((row) => row.id.startsWith("compaction:"))) Object.assign(agent, { compaction })
+      })
+    }
+  })
 }
 
 // Every agent's permission rows, resolved lazily. Rows nobody customized

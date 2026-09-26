@@ -976,7 +976,7 @@ function instructionTargets(): CategorySpec {
     rows: [
       { id: "self", label: "Its own rows", on: true, message: "an agent may not change its own rows here" },
       { id: "permissions", label: "Permission rows (perm:)", on: true, patterns: ["*:perm:*", "perm:*"], message: "changing permission rows is not allowed here" },
-      { id: "models", label: "Model rows (model:)", on: true, patterns: ["*:model:*", "model:*"], message: "changing model rows is not allowed here" },
+      { id: "models", label: "Model rows (model:)", on: true, patterns: ["*:model:*", "model:*", "*:compaction:model"], message: "changing model rows is not allowed here" },
       { id: "teams", label: "Teams and members (team:)", on: true, patterns: ["team:*"], message: "changing teams is not allowed here" },
       { id: "global", label: "Global rows (level global)", on: true, patterns: ["*:global:*"], message: "changing global rows is not allowed here" },
       { id: "defaults", label: "Defaults rows (level defaults)", on: true, patterns: ["*:defaults:*"], message: "changing Defaults rows is not allowed here" },
@@ -1011,6 +1011,7 @@ const instructionsCatalog: Record<string, readonly CategorySpec[]> = {
       rows: [
         { id: "text", label: "Override text (text)", on: true, field: "text" },
         { id: "state", label: "Switch rows on or off (state)", on: true, field: "state" },
+        { id: "mode", label: "Change agent mode (mode)", on: true, field: "mode" },
         { id: "pin", label: "Pin Code Mode tools (pin)", on: true, field: "pin" },
         { id: "active", label: "Activate models (active)", on: true, field: "active" },
         { id: "resolve", label: "Resolve reviews (resolve)", on: true, field: "resolve" },

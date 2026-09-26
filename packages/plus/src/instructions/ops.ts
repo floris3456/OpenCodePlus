@@ -1,4 +1,5 @@
 import { fromLabel } from "./from-label.js"
+import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
 import {
   acknowledgeActiveModel,
   addModelRecord,
@@ -169,8 +170,57 @@ function memoOfInput(input: MemoInput): Memo {
 function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode } | undefined {
   const memo = memoOfInput(input)
   const lazy = findLazy(memo, rowId)
-  if (lazy === undefined) return undefined
+  if (lazy === undefined) {
+    const node = controlRow(memo, rowId)
+    return node === undefined ? undefined : { memo, node }
+  }
   return { memo, node: materialize(lazy) }
+}
+
+// Control rows can be addressed by the Tool before a client expands their
+// category. Keep the existing item id grammar, including member owner paths.
+function controlRow(memo: Memo, id: string): TreeNode | undefined {
+  const match = /^item:(project|global|defaults|preset):(.*):((?:setting|compaction):[^:]+)$/.exec(id)
+  if (match === null || !isControl(match[3])) return undefined
+  const level = match[1] as Level
+  const owner = match[2]
+  const item = match[3]
+  const member = /^(.*?)\/:(special:)?([^:]+)$/.exec(owner)
+  const shared = owner === "" || owner === "/teams"
+  const parent = shared ? undefined : findLazy(memo, member === null ? `agent:${level}:${owner}` : `team:${level}:${member[1]}:${member[2] ?? ""}${member[3]}`)
+  if (shared ? level !== "defaults" : parent === undefined) return undefined
+  const team = member === null ? undefined : { level, team: member[1] }
+  const address: Address = {
+    level, agent: shared ? null : member?.[3] ?? owner, item, section: null,
+    ...(team === undefined ? {} : level === "preset" || member?.[2] !== undefined || parent?.owner?.entry !== undefined ? { team } : { memberOf: team }),
+    ...(member !== null || owner === "/teams" ? { catalogue: "teams" as const } : {}),
+  }
+  const upstream = controlItemFor(memo.ctx.items, address)
+  if (upstream === undefined) return undefined
+  const resolved = resolve({ upstream, address, records: memo.ctx.customizations, splits: [], scopes: memo.ctx.scopes })
+  return {
+    id, kind: "item", label: upstream.title, depth: (parent?.depth ?? 2) + 2, address,
+    badges: { state: resolved.enabled ? "on" : "off", modified: resolved.modified, review: resolved.review, from: resolved.from, textFrom: resolved.textFrom },
+    actions: { toggle: booleanControl(item), edit: !booleanControl(item), reset: resolved.overriddenHere, remove: false, split: false, pin: false },
+  }
+}
+
+function entityControlId(node: TreeNode, item: string): string | undefined {
+  if (node.kind === "agent") return node.id.replace(/^agent:/, "item:") + `:${item}`
+  const special = node.kind === "team" && node.depth === 4 ? /^team:(project|global|defaults):(.+):special:([^:]+)$/.exec(node.id) : null
+  if (special !== null) return `item:${special[1]}:${special[2]}/:special:${special[3]}:${item}`
+  if (node.kind !== "team" || node.depth !== 3) return undefined
+  const owner = node.owner
+  if (owner?.team !== undefined && owner.agent !== null) return `item:${owner.level}:${owner.team.team}/:${owner.agent}:${item}`
+  const suffix = `:${node.label}`
+  if (!node.id.endsWith(suffix)) return undefined
+  return node.id.slice(0, -suffix.length).replace(/^team:/, "item:") + `/:${node.label}:${item}`
+}
+
+export function setAgentMode(input: MemoInput, rowId: string, mode: "primary" | "subagent" | "all"): OpResult {
+  const node = findRow(input, rowId)
+  const id = node === undefined ? undefined : entityControlId(node, "setting:mode")
+  return id === undefined ? { refusal: `"${rowId}" is not an agent or member` } : saveText(input, id, mode)
 }
 
 /** One row by id, found by descending the lazy tree (no full expansion). */
@@ -305,6 +355,7 @@ export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity |
 }
 
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+  if (isControl(address.item)) return controlItemFor(items, address)
   const matches = items.filter((entry) => entry.id === address.item)
   const owner = address.agent
   if (owner === null) return matches[0]
@@ -413,6 +464,8 @@ export function toggle(input: MemoInput, rowId: string): OpResult {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
+  const control = entityControlId(node, "setting:enabled")
+  if (control !== undefined) return toggle(input, control)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
@@ -446,6 +499,8 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpR
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
+  const control = entityControlId(node, "setting:enabled")
+  if (control !== undefined) return setEnabled(input, control, value)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
@@ -533,6 +588,15 @@ export function reset(input: MemoInput, rowId: string): OpResult {
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
+  const control = entityControlId(node, "setting:enabled")
+  if (control !== undefined) {
+    const address = controlRow(memo, control)?.address
+    if (address === undefined) return { refusal: `"${node.label}" cannot be reset` }
+    return {
+      records: memo.ctx.customizations.filter((record) => !((controlIds as readonly string[]).includes(record.item) && scopedTo(record, address))),
+      splits: [...memo.ctx.splits], status: `Reset agent controls for "${node.label}"`, retryHint: "Agent controls changed; retry to reset",
+    }
+  }
   if (node.address === undefined) return { refusal: `"${node.label}" cannot be reset` }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }

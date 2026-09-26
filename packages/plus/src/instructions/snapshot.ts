@@ -26,6 +26,7 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     enabled: item.enabled,
     fingerprint: item.fingerprint,
     ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
+    ...(item.controlTeam === undefined ? {} : { controlTeam: item.controlTeam }),
     ...(item.order === undefined ? {} : { order: item.order }),
     ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
     ...(item.codemode === undefined ? {} : { codemode: item.codemode }),

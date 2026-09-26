@@ -6,6 +6,7 @@
 // all import this module and compute the same catalogue — the client from the
 // snapshot's items and records, so shipped content never crosses the wire.
 import { builtinTeams, teamRoles } from "./builtin-teams.js"
+import { controlItems, isControl } from "./agent-controls.js"
 import {
   fingerprint,
   presetKey,
@@ -443,10 +444,15 @@ export function presetCatalog(input: { readonly items: readonly Item[]; readonly
     shipped: (ref, item, section, upstream) => {
       if (section !== null || ref.kind === "team") return undefined
       if (ref.kind === "member") return memberShipped(ref.team, ref.id, item)
+      if (isControl(item) && (nativePresetIds as readonly string[]).includes(ref.id))
+        return valueOf(input.items.find((entry) => entry.id === item && entry.agents?.includes(ref.id)))
       if ((nativePresetIds as readonly string[]).includes(ref.id))
         return valueOf(item === "system:role" ? roles.get(ref.id) : upstream)
       const plus = plusAgentPresets.find((preset) => preset.id === ref.id)
       if (plus === undefined) return undefined
+      if (item === "setting:mode") return { text: plus.mode }
+      if (item === "setting:description") return { text: plus.description }
+      if (isControl(item)) return undefined
       const shipped = item === "system:role" ? { text: plus.role, state: "on" as const } : valueOf(upstream)
       const override = plusAgentOverrides[plus.id][item] ?? (plus.id === "build-seat" ? buildSeatDelegates(item) : undefined)
       if (override === undefined) return shipped
@@ -589,7 +595,11 @@ export function withOwnerRoles(items: readonly Item[], state: PresetState): Item
     ...presetListing(state.presets).flatMap((entry) => (entry.ref.kind === "team" ? [] : [entry.ref.id])),
     ...(state.entries ?? []).map((entry) => entry.name),
   ]
-  return [...items, ...ownerRoleItems(items, owners)]
+  const controls = [...new Set(owners)].flatMap((owner) =>
+    controlItems(owner, {}, items.find((item) => item.id === "compaction:instructions" && item.agents === undefined)?.text)
+      .filter((row) => !items.some((item) => item.id === row.id && item.agents?.includes(owner) && item.controlTeam === undefined)),
+  )
+  return [...items, ...ownerRoleItems(items, owners), ...controls]
 }
 
 /**
@@ -618,6 +628,8 @@ function memberShipped(team: string, id: string, item: string): ShippedValue | u
   const member = plusTeamPresets.find((entry) => entry.id === team)?.members.find((entry) => entry.id === id)
   if (member === undefined) return undefined
   if (item === "system:role") return { text: member.role, state: "on" }
+  if (item === "setting:mode") return { text: member.mode }
+  if (item === "setting:description") return { text: member.description }
   return plusMemberOverrides[team]?.[id]?.[item]
 }
 

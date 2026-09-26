@@ -71,7 +71,7 @@ export interface Address {
   readonly memberOf?: TeamRef
 }
 
-export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm"
+export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm" | "setting" | "compaction"
 export type ItemGroup = "native" | "plus" | "mcp" | "project" | "none"
 
 export interface Item {
@@ -84,6 +84,8 @@ export interface Item {
   readonly enabled: boolean
   readonly fingerprint: string
   readonly agents?: readonly string[]
+  /** Settings upstream from a particular team member file. */
+  readonly controlTeam?: TeamRef
   readonly order?: number
   /** True for user-created base templates (deletable, never the host active answer). */
   readonly userBase?: boolean
@@ -1278,6 +1280,7 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
   const agent = input.address.agent
   if (native === undefined) return "upstream"
   if (input.upstream.kind === "mcp") return "upstream"
+  if (input.upstream.kind === "setting" || input.upstream.kind === "compaction") return "upstream"
   if (agent === null) return "off"
   if (input.address.level === "preset") {
     if (input.address.team !== undefined) return "off"

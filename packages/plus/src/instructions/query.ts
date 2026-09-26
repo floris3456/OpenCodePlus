@@ -1,4 +1,5 @@
 import { applies, canReset, catalogueForAddress, catalogueOf, sameTeam, upstreamForEdit } from "./model.js"
+import { controlItemFor, isControl } from "./agent-controls.js"
 import type {
   Address,
   AgentSource,
@@ -175,7 +176,8 @@ function splitOfAddress(state: QueryState, address: Address): SplitRecord | unde
   return state.splits.get(JSON.stringify([address.level, address.agent, address.item, catalogueForAddress(address)]))?.[0]
 }
 
-function lookupItem(state: QueryState, itemId: string, owner: string | null): Item | undefined {
+function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "memberOf">): Item | undefined {
+  if (isControl(itemId)) return controlItemFor(state.memo.ctx.items, { item: itemId, agent: owner, ...context })
   const matches = state.memo.ctx.items.filter((entry) => entry.id === itemId)
   if (owner === null) return matches[0]
   return matches.find((entry) => applies(entry, owner)) ?? matches[0]
@@ -218,7 +220,7 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
       // lazy.children() would also derive sections via splitOf and resolve
       // every address even for structural misses.
       const address = lazy.address
-      const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
+      const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent, address)
       // Perm rows hang off the tool row and share its owner path, which the
       // row id already carries between `item:<level>:` and `:<itemId>`.
       const groups =
@@ -413,7 +415,7 @@ function nodeOf(state: QueryState, candidate: Candidate): TreeNode | undefined {
 function resolvedTextOf(state: QueryState, candidate: Candidate): string {
   if (candidate.resolvedText !== undefined) return candidate.resolvedText
   const address = candidate.address
-  const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
+  const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent, address)
   const text =
     address === undefined || item === undefined
       ? ""
@@ -427,7 +429,7 @@ function resolvedTextOf(state: QueryState, candidate: Candidate): string {
 function upstreamTextOf(state: QueryState, candidate: Candidate): string {
   if (candidate.upstreamText !== undefined) return candidate.upstreamText
   const address = candidate.address
-  const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
+  const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent, address)
   const text =
     address === undefined || item === undefined
       ? ""
@@ -447,7 +449,7 @@ function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
   const address = candidate.address
   if (address === undefined || candidate.orphan)
     return { toggle: false, edit: false, reset: false, remove: false, split: false, pin: false }
-  const item = lookupItem(state, address.item, address.agent)
+  const item = lookupItem(state, address.item, address.agent, address)
   // Pin is true only for a whole Code Mode tool row, never a section and
   // never the host-owned execute row: mirrors lazyItem in tree.ts.
   const executable = item?.execute === true
@@ -525,7 +527,7 @@ function catalogueOfCandidate(candidate: Candidate): Catalogue | undefined {
 function itemKindOf(state: QueryState, candidate: Candidate): string | undefined {
   const address = candidate.address
   if (address === undefined) return undefined
-  const item = lookupItem(state, address.item, address.agent)
+  const item = lookupItem(state, address.item, address.agent, address)
   if (item !== undefined) return item.kind
   if (!candidate.orphan) return undefined
   const prefix = address.item.split(":")[0]
@@ -598,7 +600,7 @@ function deadOf(state: QueryState, candidate: Candidate): boolean {
   if (address === undefined) return false
   const own = ownOf(state, address)
   if (own === undefined) return false
-  const item = lookupItem(state, address.item, address.agent)
+  const item = lookupItem(state, address.item, address.agent, address)
   if (item === undefined) return false
   if (item.kind === "mcp" && own.text !== undefined) return true
   if (address.section === null && own.text === undefined && own.state === "off" && (item.id === "system:role" || item.kind === "base"))
@@ -634,7 +636,7 @@ const CHARACTERS_PER_TOKEN = 4
 function tokensOf(state: QueryState, candidate: Candidate): number {
   if (candidate.address === undefined) return 0
   const text = resolvedTextOf(state, candidate)
-  const item = lookupItem(state, candidate.address.item, candidate.address.agent)
+  const item = lookupItem(state, candidate.address.item, candidate.address.agent, candidate.address)
   if (item?.kind === "tool" && item.codemode === true) {
     const first = (text.split("\n", 1)[0] ?? "").trim()
     const truncated = first.length > DESCRIPTION_LIMIT ? first.slice(0, DESCRIPTION_LIMIT) : first
@@ -1200,7 +1202,7 @@ function hasOf(state: QueryState, candidate: Candidate, alt: string): boolean {
   if (alt === "record") return ownOf(state, address) !== undefined
   if (alt === "split") return splitOfAddress(state, address) !== undefined
   if (alt === "sections") return candidate.sectionIds.length > 0
-  const item = lookupItem(state, address.item, address.agent)
+  const item = lookupItem(state, address.item, address.agent, address)
   return (ownOf(state, address)?.text ?? item?.text ?? "") !== ""
 }
 
