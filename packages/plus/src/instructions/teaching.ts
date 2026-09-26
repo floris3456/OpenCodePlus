@@ -14,7 +14,7 @@ export const teachingTitle = "OpenCodePlus"
 // row id its follow-ups take, the skill that carries the rest, and the
 // permission pattern grammar. teaching.test.ts pins the character bound.
 export const teachingContent =
-  "`tools.instructions.*` edits rows (tools/base/skills/system/MCP/models/teams/perms). " +
+  "`tools.instructions.*` edits agents/tools/base/skills/system/MCP/models/teams/perms. " +
   "Ids: `item:<level>:<agent|''>:<itemId>`, `section:…:<sectionId>`, `agent:<level>:<id>`, `team:<level>:<name>[:<member>]`. " +
   "`create` returns `{id,item}`; `show`/`set`/`delete` take that `id`. " +
   "`list({where:\"review:true\"})`→`show({id,view:\"diff\"})`→`set({id,resolve:\"keep\"})`. " +
@@ -22,11 +22,10 @@ export const teachingContent =
   "Patterns are core wildcards, not regex; shell resource is the parsed command, so `git *` matches bare `git`. " +
   "Skill `instructions-tools`: filters, views, presets, create/delete, errors."
 
-// Roughly 1k tokens: the full filter grammar, every show view, create
-// fields per kind, split boundaries, the error table, and worked examples.
+// Detailed, on-demand guidance keeps the seed instruction within its size budget.
 export const teachingSkillContent = `# instructions-tools
 
-Read and write the Instructions tree through \`tools.instructions.*\` (namespace \`instructions\`, all Code Mode). Rows cover tools, base prompts, skills, system files, MCP servers, models, teams and their members, and per-tool permission rules. Every successful write is logged with actor \`tool\`; inspect history with \`log\`.
+Read and write the Instructions tree through \`tools.instructions.*\` (namespace \`instructions\`, all Code Mode). Rows cover agent settings, compaction, tools, base prompts, skills, system files, MCP servers, models, teams and their members, and per-tool permission rules. Every successful write is logged with actor \`tool\`; inspect history with \`log\`.
 
 ## Row ids
 
@@ -57,7 +56,7 @@ The tree splits into two catalogues under every level: **Agents** and **Teams**.
 
 \`list({ where?, fields?, sort?, limit?, offset? })\` — \`limit\` defaults to 40. \`where\` terms are ANDed; \`!key:value\` negates one term; \`a,b\` is OR within a single key; a bare word matches case-insensitively over label or id; \`key:>7d\` and \`key:<N\` compare ages and counts.
 
-Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|perm), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\` (project|global|defaults|preset), \`catalogue\` (agents|teams), \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
+Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|perm|setting|compaction), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\` (project|global|defaults|preset), \`catalogue\` (agents|teams), \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 
@@ -69,11 +68,17 @@ Permission rows hang directly off each OpenCode/Plus tool row (after its section
 
 ## set and reset
 
+Agent and member rows accept \`set({ id, state: "off" })\` / \`"on"\` without deleting the agent, and \`set({ id, mode: "primary" })\` / \`"subagent"\` / \`"all"\`. Off agents remain editable in Instructions but cannot execute. Authoritatively config-disabled agents are not recreated. On an agent or member row, \`reset({ id })\` clears only its nine agent/compaction controls at that level; its other instruction overrides remain.
+
 \`set({ id, text?, state?, pin?, active?, resolve? })\` (or \`set({ id, preset })\` to relink, above) — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`active\` is \`true\` to activate a model row exclusively at that level; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row (model rows clear only that level's active flag). On perm rows \`state\` toggles the rule (off installs core deny rules for that agent only); \`message\` (or \`label\`/\`patterns\`/\`keywords\`) edits the rule; perm rows accept no text, pin, or resolve.
 
 Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that agent's catalog entry (first description line only, truncated at 120 characters), and \`pin\` overrides the registry default; the synthetic \`tool:execute\` row is toggle-only and \`off\` removes Code Mode entirely. Filter them with \`namespace:<name>\`, \`pinned:true|false\`, and \`execute:true|false\`, e.g. \`list({ where: "codemode:true pinned:true" })\`.
 
 Models are live: each agent subtree opens with a \`Models\` group holding the union down the chain plus the agent's upstream model. \`set({ id, active:true })\` (or bare \`set({ id })\`) activates one candidate exclusively at that level; \`reset({ id })\` clears that level's active flag; \`create({ kind:"model", providerID, modelID, variant?, level?, agent? })\` adds a candidate — \`level\` defaults to \`project\`, and \`project\` and \`global\` rows need \`agent\`; \`delete({ id, confirm:true })\` removes the candidate at that level. Filter with \`item:model\` and \`active:true|false\`.
+
+Agent settings use \`item:<level>:<owner>:setting:<field>\`: \`enabled\` and \`hidden\` accept \`state\`; \`mode\`, \`description\`, \`color\`, and \`steps\` accept \`text\`. Mode is primary/subagent/all, color is six-digit #RRGGBB, steps is a positive integer; empty color/steps clear that field. Hidden changes discovery, not permissions. These controls use the same preset/Defaults/scope chain, but their fallback is the agent's configuration, not the off-by-default tool policy. They do not support sections or pins. Filter with \`item:setting\`.
+
+Compaction rows are \`compaction:strategy\`, \`compaction:model\`, and \`compaction:instructions\`, all accepting \`text\`. Strategy is auto/local/remote. Auto follows the active model's policy; local uses the per-agent model (provider/model#variant), otherwise a configured maintenance compaction model, otherwise the active session model. Instructions inherit the maintenance compaction agent unless overridden; empty instructions explicitly clear the prompt, while Reset resumes inheritance. Remote uses provider capabilities and ignores local model/instruction values without discarding them; unsupported remote compaction fails explicitly. All scopes and agent/member presets support these rows. Filter with \`item:compaction\`.
 
 Permission rules are live: turning a rule \`off\` installs core deny rules \`{ action, resource, effect: "deny" }\` for that agent only (appended; core evaluates last-match-wins) and scrubs matching lines from tool descriptions, system parts, the base part, and catalog descriptions. \`show\` on a perm row previews the scrub and displays any refusal \`message\`. \`create({ kind:"rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds a custom rule — \`level\` defaults to \`project\`, and a rule with no \`agent\` is shared: it displays as the canonical Defaults row \`item:defaults::perm:<tool>:<id>\` without changing where it is stored; \`delete({ id, confirm:true })\` removes only user-created rules. \`set({ id, message })\` updates the refusal message shown to the model. An agent may change its own rules; only \`protectedAgents\` (enforced again at the shared API boundary when the actor is a tool), \`confirm:true\`, and project mode guard writes.
 
@@ -88,7 +93,7 @@ Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` sp
 \`create({ kind, ...fields })\` — one row per call. Every enabled kind returns \`{ id, item, … }\`: \`id\` is the tree row id — the id \`show\`, \`set\`, and \`delete\` accept for that row — and \`item\` is the stored item id. Pass the returned \`id\` to follow-up calls rather than rebuilding it.
 
 | kind | required fields |
-| agent | \`id\` (+ optional \`scope\` project\|global, \`preset\`; no preset = everything off) |
+| agent | \`id\` (+ optional \`scope\` project\|global, \`preset\`; no preset = tools off, not the agent itself) |
 | skill | \`name\`, \`body\` |
 | base | \`id\`, \`title\`, \`text\` |
 | instruction | disabled: fails with \`instruction.disabled\` |

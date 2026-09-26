@@ -85,6 +85,11 @@ test("the skill content covers the tool surface", async () => {
     "actor `tool`",
     "original→mine",
     "original→upstream",
+    'set({ id, mode: "primary" })',
+    "setting:<field>",
+    "compaction:strategy",
+    "compaction:model",
+    "compaction:instructions",
   ]) {
     expect(teachingSkillContent).toContain(phrase)
   }

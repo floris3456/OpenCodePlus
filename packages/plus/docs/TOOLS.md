@@ -50,7 +50,7 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 | --- | --- | --- |
 | `instructions_list` | `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | Query result (`packages/plus/src/tools.ts:133`, `packages/plus/src/tools.ts:248`) |
 | `instructions_show` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
-| `instructions_set` | `id`, `text`, `state` `on`/`off`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
+| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
 | `instructions_create` | `kind` plus kind fields (`packages/plus/src/tools.ts:181`) | `{ …created, id, item }` per kind (§4) |
@@ -109,7 +109,16 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   (`packages/plus/src/instructions/ops.ts:866`). Only user-created rules are
   deletable (`packages/plus/src/tools.ts:816`).
 
-### 2.3 Error prefixes
+### 2.3 Agent controls
+
+Agent/member rows also accept `state` and `mode` edits. Their `setting:*` and
+`compaction:*` rows reuse scoped customization records; resetting the entity
+clears only those nine controls. See [Agent controls](agent-controls.md) for
+scope, inheritance, remote-compaction behavior, and examples. The canonical
+control IDs and validation live in
+`packages/plus/src/instructions/agent-controls.ts`.
+
+### 2.4 Error prefixes
 
 | Prefix | Meaning | Source |
 | --- | --- | --- |

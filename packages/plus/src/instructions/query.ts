@@ -981,7 +981,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => allowed.some((alt) => candidate.kind === lower(alt))
     }
     case "item": {
-      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "perm"], term)
+      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "perm", "setting", "compaction"], term)
       return (candidate) => allowed.some((alt) => itemKindOf(state, candidate) === lower(alt))
     }
     case "tool": {
