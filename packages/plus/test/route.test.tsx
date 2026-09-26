@@ -1035,16 +1035,16 @@ test("key availability follows the selected row", async () => {
     expect(rootBinds).not.toContain("space")
     expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
-    // Agent row: removable, so d appears; space selects the agent (the same
-    // gesture as the picker), never a record toggle — no mutate is sent. The
+    // Agent row: Space toggles Enabled; ctrl+space selects without a write. The
     // agent hides under its Agents group; the initial Implementer frame only
     // gates the mount, then gotoAgent reveals the row.
     await gotoAgent(fixture, "Implementer")
     const agentBinds = binds(fixture)
     expect(agentBinds).toContain("d")
     expect(agentBinds).toContain("space")
-    expect(fixture.captureCharFrame()).toContain("space select")
-    dispatch(fixture, "space")
+    expect(agentBinds).toContain("ctrl+space")
+    expect(fixture.captureCharFrame()).toContain("ctrl+space select")
+    dispatch(fixture, "ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["Implementer"])
     expect(fixture.fake.mutateInputs.length).toBe(0)
   } finally {
@@ -3421,7 +3421,7 @@ test("space on a Models row under a team special persists the team-scoped record
   }
 })
 
-test("space on an Agents-group agent row selects it through the core picker, never on special or team member rows", async () => {
+test("ctrl+space selects an Agents-group agent through the core picker, never special or team member rows", async () => {
   const snapshot: Snapshot = {
     ...createSnapshot({
       agents: [
@@ -3434,9 +3434,9 @@ test("space on an Agents-group agent row selects it through the core picker, nev
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await gotoAgent(fixture, "alpha")
-    expect(binds(fixture)).toContain("space")
-    expect(fixture.captureCharFrame()).toContain("space select")
-    expect(dispatch(fixture, "space")).toBe(true)
+    expect(binds(fixture)).toContain("ctrl+space")
+    expect(fixture.captureCharFrame()).toContain("ctrl+space select")
+    expect(dispatch(fixture, "ctrl+space")).toBe(true)
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
     expect(fixture.fake.mutateInputs.length).toBe(0)
 
@@ -3446,7 +3446,8 @@ test("space on an Agents-group agent row selects it through the core picker, nev
     await moveTo(fixture, "crew")
     await expand(fixture)
     await moveTo(fixture, "mate")
-    expect(binds(fixture)).not.toContain("space")
+    expect(binds(fixture)).toContain("space")
+    expect(binds(fixture)).not.toContain("ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
 
     // Special agents are not offered by the picker: no select bind. They sit
@@ -3459,7 +3460,8 @@ test("space on an Agents-group agent row selects it through the core picker, nev
     await moveTo(fixture, "Special")
     await expand(fixture)
     await moveTo(fixture, "title")
-    expect(binds(fixture)).not.toContain("space")
+    expect(binds(fixture)).toContain("space")
+    expect(binds(fixture)).not.toContain("ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
   } finally {
     fixture.destroy()

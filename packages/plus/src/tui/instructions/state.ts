@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
+import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { applies, parsePermItemId, resolve, resolveSplit, threeWay } from "../../instructions/model.js"
 import type {
   Address,
@@ -13,11 +14,12 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
-import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { controlChoices, expandedTree, tree, withControlItems, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import { agentOf, contextOfSnapshot, itemOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
   addSection,
+  findRow,
   isModelRowId,
   isPermRowId,
   modelReviewChoice,
@@ -155,7 +157,7 @@ export function createInstructionsState(context: Plugin.Context) {
   const itemsForTree = createMemo<Item[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return withOwnerRoles(current.items.map(itemOf), presetStateOfSnapshot(current))
+    return withOwnerRoles(withControlItems(current.items.map(itemOf)), presetStateOfSnapshot(current))
   })
 
   const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]>(() => {
@@ -431,6 +433,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+    if (isControl(address.item)) return controlItemFor(items, address)
     const matches = items.filter((entry) => entry.id === address.item)
     const owner = address.agent
     if (owner === null) return matches[0]
@@ -559,7 +562,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function toggleRow(node: TreeNode): Promise<boolean> {
-    if (node.kind === "team") return toggleTeamRow(node)
+    if (node.kind === "team" && node.enabledRow === undefined) return toggleTeamRow(node)
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = activateModelRow(memoInput(), node.id)
       if ("refusal" in result) {
@@ -568,7 +571,7 @@ export function createInstructionsState(context: Plugin.Context) {
       }
       return persistModels(result.models, result.status, result.retryHint)
     }
-    const result = toggle(memoInput(), node.id)
+    const result = toggle(memoInput(), node.enabledRow ?? node.id)
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -579,8 +582,8 @@ export function createInstructionsState(context: Plugin.Context) {
   // Team toggle: the tree row id is `team:<level>:<team>` (member rows hang
   // one level deeper as `team:<level>:<team>:<member>`). The match takes the
   // first segment after `team:` as the level and everything after as the
-  // team name, so names containing colons still parse. Member rows carry no
-  // toggle action, so only the team row itself reaches here. Enablement reads from the snapshot (same source the badge
+  // team name, so names containing colons still parse. Member rows toggle
+  // their Enabled item above, so only the team itself reaches here. Enablement reads from the snapshot (same source the badge
   // renders), inverts, calls team.setEnabled, then refreshes from the host
   // exactly like agent.delete/mcp.remove do — the fresh snapshot rebuilds
   // the tree with the new state. Declared errors surface as status text
@@ -650,7 +653,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function setEnabledRow(node: TreeNode, value: boolean): Promise<boolean> {
-    const result = setEnabled(memoInput(), node.id, value)
+    const result = setEnabled(memoInput(), node.enabledRow ?? node.id, value)
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -672,6 +675,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function saveTextRow(node: TreeNode, text: string): Promise<boolean> {
+    if (blockedControlWrite(node)) return false
     const result = saveText(memoInput(), node.id, text)
     if ("refusal" in result) {
       setStatus(result.refusal)
@@ -681,6 +685,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function resetNode(node: TreeNode): Promise<boolean> {
+    if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = resetModelRow(memoInput(), node.id)
       if ("refusal" in result) {
@@ -695,14 +700,37 @@ export function createInstructionsState(context: Plugin.Context) {
       return false
     }
     const confirmed = await context.ui.dialog.confirm({
-      title: `Reset "${node.label}"?`,
-      message: `Reset "${node.label}" to its default? This discards the override and cannot be undone.`,
+      title: node.enabledRow === undefined ? `Reset "${node.label}"?` : `Reset controls for "${node.label}"?`,
+      message: node.enabledRow === undefined
+        ? `Reset "${node.label}" to its default? This discards the override and cannot be undone.`
+        : "Remove all Settings and Compaction overrides at this level, including retained local compaction values, and follow inherited values?",
     })
     if (!confirmed) {
       setStatus(`Reset of "${node.label}" cancelled`)
       return false
     }
+    if (blockedControlWrite(node)) return false
     return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
+  // A snapshot update can make an already-open local editor unavailable.
+  // Resolve the current row at save/reset/review time, rather than trusting
+  // the node captured when the editor opened, and retain every saved value.
+  function blockedControlWrite(node: TreeNode): boolean {
+    if (node.address?.item !== "compaction:model" && node.address?.item !== "compaction:instructions") return false
+    const reason = findRow(memoInput(), node.id)?.badges.disabled
+    if (reason === undefined) return false
+    setStatus(reason)
+    return true
+  }
+
+  async function cycleRow(node: TreeNode): Promise<boolean> {
+    const current = findRow(memoInput(), node.id)
+    const choices = controlChoices(current?.address?.item)
+    if (current === undefined || choices === undefined || current.actions?.edit !== true) return false
+    const value = resolvedText(current)
+    const index = choices.indexOf(value)
+    return saveTextRow(current, choices[(index + 1) % choices.length])
   }
 
   async function saveSplitRow(
@@ -735,6 +763,7 @@ export function createInstructionsState(context: Plugin.Context) {
   // them to some parts under review (the state/pin choice before the text's
   // three-way diff).
   async function resolveKeep(node: TreeNode, only?: readonly ReviewPart[]): Promise<boolean> {
+    if (blockedControlWrite(node)) return false
     const result = resolveReview(memoInput(), node.id, "keep", undefined, only)
     if ("refusal" in result) {
       setStatus(result.refusal)
@@ -744,6 +773,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function resolveTake(node: TreeNode, only?: readonly ReviewPart[]): Promise<boolean> {
+    if (blockedControlWrite(node)) return false
     const result = resolveReview(memoInput(), node.id, "take", undefined, only)
     if ("refusal" in result) {
       setStatus(result.refusal)
@@ -771,6 +801,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
+    if (blockedControlWrite(node)) return false
     const result = resolveReview(memoInput(), node.id, "edit", edited)
     if ("refusal" in result) {
       setStatus(result.refusal)
@@ -969,6 +1000,7 @@ export function createInstructionsState(context: Plugin.Context) {
     selectAgent,
     move,
     toggle: toggleRow,
+    cycle: cycleRow,
     setEnabled: setEnabledRow,
     setPin: setPinRow,
     togglePin: togglePinRow,

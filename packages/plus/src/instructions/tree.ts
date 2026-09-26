@@ -1,4 +1,5 @@
 import { builtinBaseIds } from "../agents/base.js"
+import { booleanControl, controlIds, controlItemFor, controlItems, isControl } from "./agent-controls.js"
 import {
   applies,
   canReset,
@@ -111,6 +112,13 @@ export interface RowOwner {
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
+  /** Resolved control value, shown beside its label without changing the row id. */
+  readonly value?: string
+  /** Hidden affects picker visibility; it is independent of enabled/off. */
+  readonly hidden?: boolean
+  readonly mode?: string
+  /** A temporarily unavailable control, with the reason shown in details. */
+  readonly disabled?: string
   readonly modified?: boolean
   readonly review?: boolean
   readonly reviewCount?: number
@@ -151,6 +159,8 @@ export interface TreeNode {
   readonly address?: Address
   readonly add?: AddKind
   readonly owner?: RowOwner
+  /** Entity rows toggle their real Enabled item, retaining their entity address. */
+  readonly enabledRow?: string
   readonly badges: TreeNodeBadges
   readonly actions?: TreeNodeActions
 }
@@ -196,6 +206,7 @@ export interface Lazy {
   readonly address?: Address
   readonly add?: AddKind
   readonly owner?: RowOwner
+  readonly enabledRow?: string
   readonly actions: TreeNodeActions
   readonly selfReview: () => boolean
   readonly partial: () => TreeNodeBadges
@@ -232,6 +243,7 @@ declare module "./resolve-memo.js" {
   interface Memo {
     reviewCountCache?: Map<string, number>
     selfReviewCache?: Map<string, boolean>
+    controlItems?: readonly Item[]
   }
 }
 
@@ -537,6 +549,7 @@ function shell(lazy: Lazy, badges: TreeNodeBadges): TreeNode {
     ...(lazy.address === undefined ? {} : { address: lazy.address }),
     ...(lazy.add === undefined ? {} : { add: lazy.add }),
     ...(lazy.owner === undefined ? {} : { owner: lazy.owner }),
+    ...(lazy.enabledRow === undefined ? {} : { enabledRow: lazy.enabledRow }),
     badges,
     actions: lazy.actions,
   }
@@ -575,7 +588,7 @@ function branch(memo: Memo, args: BranchArgs, address?: Address): Lazy {
 
 // Every root holds exactly two catalogues, Agents and Teams. Each owns its own
 // population (agent origins / team rows) and, at Defaults where the shared
-// "everyone" rows live, its own six inventory groups. A row resolved through
+// "everyone" rows live, its own inventory groups. A row resolved through
 // one catalogue never reads the other's inventory (model.ts resolutionChain).
 function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   return branch(memo, {
@@ -590,7 +603,7 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 
 // DESIGN §2: Presets → Agents → OpenCode / Plus / User; Teams → Plus / User. An agent preset
 // row (`agent:preset:<id>`) and a member preset row
-// (`team:preset:<team>:<member>`) carry the same five groups as any agent;
+// (`team:preset:<team>:<member>`) carry the same groups as any agent;
 // their rows address `preset/<id>` (members `preset/<member>@<team>`). Only
 // User presets can be removed or take new presets and members.
 function lazyPresetRoot(ctx: BuildContext, memo: Memo): Lazy {
@@ -692,13 +705,15 @@ function lazyPresetTeam(ctx: BuildContext, memo: Memo, entry: PresetEntry): Lazy
   })
 }
 
-// The six shared inventory groups of one catalogue. Only Defaults carries
+// The shared inventory groups of one catalogue. Only Defaults carries
 // them: `{ level: "defaults", agent: null }` is the one address the resolution
 // chain falls through to, so an inventory row at any other level would address
 // records no agent ever reads.
 function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, depth: number): Lazy[] {
   return [
+    lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
+    lazyControls(memo, "compaction", "defaults", null, depth, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyBase(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySkills(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
@@ -782,7 +797,7 @@ function lazyAgent(ctx: BuildContext, memo: Memo, level: Level, agent: AgentSour
   })
 }
 
-// An `agent:<level>:<id>` row with the five groups: a discovered agent, a
+// An `agent:<level>:<id>` row with the agent groups: a discovered agent, a
 // Defaults entry or an agent preset. Their rows address `level/<id>`.
 function lazyOwnerRow(
   ctx: BuildContext,
@@ -797,7 +812,7 @@ function lazyOwnerRow(
     readonly owner?: RowOwner
   },
 ): Lazy {
-  return branch(memo, {
+  return withAgentControls(memo, branch(memo, {
     kind: "agent",
     id: `agent:${row.level}:${row.id}`,
     label: row.label,
@@ -805,13 +820,15 @@ function lazyOwnerRow(
     ...(row.owner === undefined ? {} : { owner: row.owner }),
     actions: { ...noActions(), remove: row.remove },
     children: () => [
+      lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
       lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
+      lazyControls(memo, "compaction", row.level, row.id, row.depth + 1),
       lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       lazySkills(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
     ],
-  })
+  }), row.level, row.id)
 }
 
 // A link owner with the preset it is linked to now.
@@ -977,11 +994,10 @@ function lazyEntryAgent(ctx: BuildContext, memo: Memo, entry: EntryRecord): Lazy
 // empty level still advertises team creation. `add` there still creates at
 // project or global scope, never defaults: pressing `a` opens the existing
 // addTeam flow, which prompts for a project/global scope. Member agent ids
-// hang under each team row with the same five groups an Agents-group agent
-// renders (Models, Tools, Base, Skills, System): the member rows themselves
-// carry no address and no toggle, while their descendants address the same
-// records as the Agents-group rows (level + agent + item) with working
-// toggle/edit/reset.
+// hang under each team row with the same groups an Agents-group agent renders.
+// Member rows retain their entity identity and alias their Enabled setting's
+// toggle. Their descendants address the same records as the Agents-group rows
+// (level + agent + item), resolved through the Teams catalogue.
 function lazyTeamsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   const teams = ctx.teams
     .filter((team) => team.level === level)
@@ -1094,7 +1110,7 @@ function lazyTeamMember(
   // names and nested member ids.
   const memberPath = `${team.team}/:${member}`
   const memberGroup = `group:${level}:${memberPath}`
-  return branch(memo, {
+  return withAgentControls(memo, branch(memo, {
     kind: "team",
     id: `team:${level}:${team.team}:${member}`,
     label: member,
@@ -1112,13 +1128,15 @@ function lazyTeamMember(
     // the member's `<team>/:<member>` owner path instead of colliding with
     // the stand-alone agent's.
     children: () => [
+      lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
       lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
+      lazyControls(memo, "compaction", level, owner, depth + 1, teamRef, "teams", memberPath),
       lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
       lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
       lazySkills(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:skills`, teamRef, "teams", memberPath),
       lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
     ],
-  })
+  }), level, owner, teamRef, "teams", memberPath)
 }
 
 function lazyTeamSpecial(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput): Lazy {
@@ -1145,20 +1163,22 @@ function lazyTeamSpecialAgent(
   const teamRef: TeamRef = { level, team: team.team }
   const specialPath = `${team.team}/:special:${agent.id}`
   const specialGroup = `group:${level}:${specialPath}`
-  return branch(memo, {
+  return withAgentControls(memo, branch(memo, {
     kind: "team",
     id: `team:${level}:${team.team}:special:${agent.id}`,
     label: agent.id,
     depth: 4,
     actions: noActions(),
     children: () => [
+      lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
       lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
+      lazyControls(memo, "compaction", level, owner, 5, teamRef, "teams", specialPath),
       lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
       lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
       lazySkills(ctx, memo, level, owner, agent, 5, `${specialGroup}:skills`, teamRef, "teams", specialPath),
       lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
     ],
-  })
+  }), level, owner, teamRef, "teams", specialPath)
 }
 
 function lazyTeam(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput): Lazy {
@@ -1202,7 +1222,164 @@ function lazyMcpInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, d
   })
 }
 
-// Models group, first child of every agent subtree and first shared Defaults
+/** Control behavior is UI metadata; values and inheritance belong to the discovered Items. */
+export function controlKind(item: string | undefined): "toggle" | "cycle" | "text" | undefined {
+  if (item === undefined) return undefined
+  if (booleanControl(item)) return "toggle"
+  if (controlChoices(item) !== undefined) return "cycle"
+  if (isControl(item)) return "text"
+  return undefined
+}
+
+export function controlChoices(item: string | undefined): readonly string[] | undefined {
+  if (item === "setting:mode") return ["primary", "subagent", "all"]
+  if (item === "compaction:strategy") return ["auto", "local", "remote"]
+  return undefined
+}
+
+/** Older/empty snapshots still have the backend's default controls for presets and Defaults. */
+export function withControlItems(items: readonly Item[]): readonly Item[] {
+  if (items.some((item) => isControl(item.id) && item.agents === undefined)) return items
+  return [...items, ...controlItems()]
+}
+
+function itemsForControls(memo: Memo): readonly Item[] {
+  return memo.controlItems ??= withControlItems(memo.ctx.items)
+}
+
+export function controlValue(item: string, text: string, enabled: boolean): string {
+  if (controlKind(item) === "toggle") return enabled ? "On" : "Off"
+  if (controlChoices(item) !== undefined) return text.length === 0 ? "Inherited" : text[0].toUpperCase() + text.slice(1)
+  if (text.length > 0) return text.replace(/\s+/g, " ").slice(0, 80)
+  if (item === "compaction:model") return "Active agent model"
+  if (item === "compaction:instructions") return "Empty prompt"
+  if (item === "setting:steps") return "Unlimited"
+  return "Not set"
+}
+
+function lazyControls(
+  memo: Memo,
+  kind: "setting" | "compaction",
+  level: Level,
+  owner: string | null,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const items = itemsForControls(memo)
+  return branch(memo, {
+    kind: "group",
+    id: `group:${level}:${ownerPath ?? ownerSegment(owner, catalogue)}:${kind === "setting" ? "settings" : "compaction"}`,
+    label: kind === "setting" ? "Settings" : "Compaction",
+    depth,
+    actions: noActions(),
+    children: () => [...new Set(items.filter((item) => item.kind === kind).map((item) => item.id))]
+      .flatMap((item) => {
+        const upstream = controlItemFor(items, addressOf(level, owner, item, null, teamRef, catalogue))
+        return upstream === undefined ? [] : [upstream]
+      })
+      .sort(byOrderTitle)
+      .map((item) => lazyControl(memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath)),
+  })
+}
+
+function lazyControl(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const address = addressOf(level, owner, item.id, null, teamRef, catalogue)
+  const id = rowIdOf("item", level, owner, item.id, catalogue, ownerPath)
+  const local = item.id === "compaction:model" || item.id === "compaction:instructions"
+  const strategy = local ? controlItemFor(itemsForControls(memo), { ...address, item: "compaction:strategy" }) : undefined
+  const disabled = () => strategy !== undefined && wholeOf(memo, level, owner, strategy, catalogue, teamRef).text === "remote"
+    ? "Remote compaction uses the provider. Local model and instructions are retained; choose Auto or Local to edit them."
+    : undefined
+  const toggle = controlKind(item.id) === "toggle"
+  return {
+    id,
+    kind: "item",
+    label: item.title[0].toUpperCase() + item.title.slice(1),
+    depth,
+    address,
+    get actions() {
+      const available = disabled() === undefined
+      return {
+        ...noActions(),
+        toggle: toggle && available,
+        edit: !toggle && available,
+        reset: available && canReset(memo.ctx.customizations, address),
+      }
+    },
+    selfReview: () => flagOf(memo, level, owner, item, null, catalogue, teamRef),
+    partial: () => {
+      const resolved = wholeOf(memo, level, owner, item, catalogue, teamRef)
+      const from = toggle ? resolved.from : resolved.textFrom
+      const reason = disabled()
+      return {
+        ...(toggle ? { state: resolved.enabled ? "on" as const : "off" as const } : {}),
+        value: controlValue(item.id, resolved.text, resolved.enabled),
+        modified: resolved.modified,
+        source: resolved.source,
+        from,
+        fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }),
+        ...(resolved.reviewOf.length === 0 ? {} : { reviewOf: resolved.reviewOf }),
+        ...(reason === undefined ? {} : { disabled: reason }),
+      }
+    },
+    reviewCount: () => 0,
+    children: () => [],
+  }
+}
+
+// Entity rows retain their ids and entity semantics. Their on/off action is
+// an alias of the same Enabled item the Settings category renders, including
+// its team/catalogue chain; no second record or synthetic item is introduced.
+function withAgentControls(
+  memo: Memo,
+  row: Lazy,
+  level: Level,
+  owner: string,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const address = addressOf(level, owner, "setting:enabled", null, teamRef, catalogue)
+  const items = itemsForControls(memo)
+  const enabled = controlItemFor(items, address)
+  if (enabled === undefined) return row
+  const control = lazyControl(memo, level, owner, enabled, row.depth, teamRef, catalogue, ownerPath)
+  return {
+    ...row,
+    enabledRow: control.id,
+    actions: {
+      ...row.actions,
+      toggle: control.actions.toggle,
+      // Member presets currently expose reset on their individual controls;
+      // ops.reset accepts other agent/member entities but not this entity kind.
+      reset: row.owner?.preset?.ref.kind !== "member" && controlIds.some((item) => canReset(memo.ctx.customizations, { ...address, item })),
+    },
+    partial: () => {
+      const hidden = controlItemFor(items, { ...address, item: "setting:hidden" })
+      const mode = controlItemFor(items, { ...address, item: "setting:mode" })
+      const { value, ...badges } = control.partial()
+      return {
+        ...row.partial(),
+        ...badges,
+        ...(hidden === undefined ? {} : { hidden: wholeOf(memo, level, owner, hidden, catalogue, teamRef).enabled }),
+        ...(mode === undefined ? {} : { mode: wholeOf(memo, level, owner, mode, catalogue, teamRef).text }),
+      }
+    },
+  }
+}
+
+// Models group, following Settings in each agent subtree and shared Defaults
 // inventory. Rows are the union down the chain (deduplicated) plus the
 // agent's upstream model, each carrying a source badge naming the level it
 // came from. Toggle activates exclusively at this level, remove deletes the

@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import { badgeLabels } from "../../instructions/from-label.js"
-import type { TreeNode } from "../../instructions/tree.js"
+import { controlKind, type TreeNode } from "../../instructions/tree.js"
 
 // The badge words are shared with `instructions_list` (from-label.ts).
 export { badgeLabels }
@@ -28,6 +28,7 @@ export function hasVisibleChildren(nodes: readonly TreeNode[], index: number): b
 // hidden from the flat list.
 export function isExpandableRow(node: TreeNode, visibleChildren: boolean, expanded: ReadonlySet<string>): boolean {
   if (node.kind === "section") return false
+  if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   if (node.address?.item.startsWith("model:")) return false
   if (node.address?.item.startsWith("perm:")) return false
   if (visibleChildren) return true
@@ -70,6 +71,18 @@ export function badgeColor(context: Plugin.Context, label: string) {
   return context.theme.text.subdued
 }
 
+export function controlColor(context: Plugin.Context, node: TreeNode) {
+  return node.badges.disabled === undefined ? context.theme.text.formfield.default : context.theme.text.formfield.disabled
+}
+
+export function controlLabels(node: TreeNode): string[] {
+  return [
+    ...(node.badges.hidden === true ? ["hidden"] : []),
+    ...(node.badges.mode ? [node.badges.mode] : []),
+    ...(node.badges.disabled === undefined ? [] : ["Remote"]),
+  ]
+}
+
 export function TreePane(props: TreePaneProps) {
   return (
     <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
@@ -101,15 +114,23 @@ export function TreePane(props: TreePaneProps) {
                 return (
                   <box
                     flexDirection="row"
+                    height={1}
+                    flexShrink={0}
                     backgroundColor={selected() ? props.context.theme.background.formfield.selected : undefined}
                   >
-                    <text fg={props.context.theme.text.formfield.selected}>{selected() ? "›" : " "}</text>
-                    <text flexShrink={0} fg={props.context.theme.text.default}>
+                    <text flexShrink={0} fg={props.context.theme.text.formfield.selected}>{selected() ? "›" : " "}</text>
+                    <text flexShrink={0} wrapMode="none" fg={node.badges.disabled === undefined ? props.context.theme.text.default : props.context.theme.text.formfield.disabled}>
                       {"  ".repeat(node.depth)}
                       {marker()} {node.label}
                     </text>
+                    <Show when={node.badges.value !== undefined && node.badges.state === undefined}>
+                      <text flexShrink={1} fg={controlColor(props.context, node)} wrapMode="none" truncate>{` · ${node.badges.value}`}</text>
+                    </Show>
+                    <For each={controlLabels(node)}>
+                      {(label) => <text flexShrink={0} wrapMode="none" fg={controlColor(props.context, node)}> [{label}]</text>}
+                    </For>
                     <For each={badgeLabels(node)}>
-                      {(label) => <text flexShrink={0} fg={badgeColor(props.context, label)}> [{label}]</text>}
+                      {(label) => <text flexShrink={0} wrapMode="none" fg={badgeColor(props.context, label)}> [{label}]</text>}
                     </For>
                     {/* Provenance is secondary information about the row, so it takes the subdued text role. */}
                     <Show when={provenanceSuffix(node)}>

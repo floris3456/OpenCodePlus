@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { controlItems } from "../src/instructions/agent-controls.js"
 import { Schema } from "effect"
 import {
   fingerprint,
@@ -64,6 +65,7 @@ function teams(): TeamInput[] {
 function items(): Item[] {
   const text = (value: string, overrides?: Partial<Item>): Item => makeItem({ text: value, ...overrides })
   return [
+    ...controlItems(),
     text("run commands", { id: "tool:bash", kind: "tool", group: "native", title: "bash", order: 1 }),
     text("v2 upstream", { id: "tool:plus-one", kind: "tool", group: "plus", title: "plus-one" }),
     text("odd-name", { id: "tool:odd-name", kind: "tool", group: "mcp", server: "sample", title: "odd-name" }),
@@ -656,9 +658,9 @@ test("projection defaults and opt-in fields", () => {
 
 test("query badges match the tree badges for every row", () => {
   const tree = expandedTree(input())
+  const rows = new Map(query(input(), { fields: ["id", "badges", "source"] }).rows.map((row) => [row.id, row]))
   for (const node of tree) {
-    const rows = query(input(), { where: `id:${node.id}`, fields: ["id", "badges", "source"] }).rows
-    const found = rows.find((row) => row.id === node.id)
+    const found = rows.get(node.id)
     expect(found).toBeDefined()
     expect(found?.badges).toBe(badgeLabels(node).join(" "))
     expect(found?.source).toBe(node.badges.source)

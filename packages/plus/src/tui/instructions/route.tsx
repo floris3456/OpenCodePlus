@@ -4,7 +4,7 @@ import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
-import type { TreeNode } from "../../instructions/tree.js"
+import { controlKind, type TreeNode } from "../../instructions/tree.js"
 import { DetailPane } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -17,22 +17,23 @@ export const WIDE_THRESHOLD = 100
 type Mode = "tree" | "diff" | "split"
 
 function isExpandable(node: TreeNode): boolean {
+  if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   return node.kind === "root" || node.kind === "group" || node.kind === "agent" || node.kind === "item" || node.kind === "team"
 }
 
 function canToggle(node: TreeNode | undefined): boolean {
   // Team rows carry no address by design (a synthetic address would corrupt
   // the mutate path), so toggleability reads from their toggle action alone.
-  if (node?.kind === "team") return node?.actions?.toggle === true
+  if (node?.kind === "team" || node?.enabledRow !== undefined) return node?.actions?.toggle === true
   return node?.address !== undefined && node?.actions?.toggle === true
 }
 
 // Agent rows under the Agents groups (never team member rows, which are kind
-// "team") can be made the current agent with space, the same gesture as
-// picking them in Select agent or team. Special agents are not selectable
-// there either, so they get no select here.
+// "team") can be made the current agent with ctrl+space. Space toggles their
+// Enabled item; older snapshots with no controls retain space-to-select.
 export function selectableAgentId(node: TreeNode | undefined): string | undefined {
   if (node?.kind !== "agent") return undefined
+  if (node.badges.state === "off" || node.badges.hidden === true || node.badges.mode === "subagent") return undefined
   // Presets (`agent:preset:…`) and Defaults entries are not agents.
   if (node.owner?.entry !== undefined) return undefined
   const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
@@ -44,7 +45,7 @@ function canEdit(node: TreeNode | undefined): boolean {
 }
 
 function canReset(node: TreeNode | undefined): boolean {
-  return node?.address !== undefined && node?.actions?.reset === true
+  return (node?.address !== undefined || node?.enabledRow !== undefined) && node?.actions?.reset === true
 }
 
 function canDelete(node: TreeNode | undefined): boolean {
@@ -223,11 +224,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     props.onClose()
   }
 
-  // Space on an Agents-group agent row makes it the current agent, exactly
-  // like choosing it under "Agents" in Select agent or team: the core picker
-  // clears any active team, so cycling returns to the normal agents. Special
-  // agents (general, explore, …) are not offered by the picker and are not
-  // selectable here either.
+  // Selection follows the picker: disabled, hidden, subagent-only and
+  // maintenance agents stay editable but cannot become the current agent.
   function selectableAgent(node: TreeNode | undefined): string | undefined {
     const id = selectableAgentId(node)
     if (id === undefined) return undefined
@@ -239,12 +237,19 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function toggle() {
     const node = current()
     if (!node) return
+    if (canToggle(node)) {
+      void state.toggle(node)
+      return
+    }
+    selectAgent()
+  }
+
+  function selectAgent() {
+    const node = current()
     const agentId = selectableAgent(node)
     if (agentId !== undefined) {
       props.context.ui.agents.set?.(agentId)
-      return
     }
-    void state.toggle(node)
   }
 
   function togglePin() {
@@ -318,6 +323,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       expandOrChild()
       return
     }
+    if (node.badges.disabled !== undefined) {
+      state.setStatus(node.badges.disabled)
+      return
+    }
+    const control = controlKind(node.address.item)
+    if (control === "cycle") {
+      void state.cycle(node)
+      return
+    }
     if (isReview(node)) {
       if (node.address.item.startsWith("model:")) {
         void reviewModel(node)
@@ -329,6 +343,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         return
       }
       openDiff(node)
+      return
+    }
+    if (control === "toggle") {
+      void state.toggle(node)
       return
     }
     if (node.address.item.startsWith("perm:")) {
@@ -470,19 +488,25 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       hints.push("right detail")
     // A row with no patterns is a plain switch: space (below) is its only key.
     const perm = node === undefined ? undefined : permItem(node)
-    if (node?.address !== undefined && isReview(node)) hints.push("enter review")
+    const control = controlKind(node?.address?.item)
+    if (node?.badges.disabled !== undefined) hints.push("local settings unavailable in Remote")
+    else if (control === "cycle") hints.push("enter cycle")
+    else if (node?.address !== undefined && isReview(node)) hints.push("enter review")
+    else if (control === "toggle") hints.push("enter toggle")
     else if (perm !== undefined && isValueRow(perm)) hints.push("enter edit number")
     else if (perm !== undefined && (perm.patterns ?? []).length > 0 && node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
     else if (perm !== undefined) hints.push("space switch")
     else if (node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
-    else hints.push("enter edit")
+    else if (canEdit(node)) hints.push("enter edit")
+    else if (node && isExpandable(node)) hints.push("enter expand")
     if (canToggle(node) && !hints.includes("space switch")) hints.push("space toggle")
     else if (selectableAgent(node) !== undefined) hints.push("space select")
+    if (canToggle(node) && selectableAgent(node) !== undefined) hints.push("ctrl+space select")
     if (canPin(node)) hints.push("p pin")
     hints.push("a add")
     if (isLinkable(node?.owner)) hints.push("l link")
     if (canDelete(node)) hints.push("d delete")
-    if (canReset(node)) hints.push("r reset")
+    if (canReset(node)) hints.push(node?.enabledRow === undefined ? "r reset" : "r reset controls")
     if (canSplit(node)) hints.push("s split")
     hints.push("/ filter")
     hints.push("? help")
@@ -495,6 +519,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return [
       "arrows move · left collapse · right expand",
       "enter edit (rule editor on permission rows)",
+      "enter Mode: Primary → Subagent → All; Strategy: Auto → Local → Remote",
+      "space toggles agents and Enabled/Hidden settings · ctrl+space selects an enabled primary agent",
+      "Hidden hides from the picker; Off disables the agent. Remote retains local compaction settings but locks edits.",
       "enter on a yellow review row: keep yours or take the new value (state, pin, model), diff for text",
       "space toggle include/exclude · p pin Code Mode tool · a add (name, then preset) · d delete (confirm)",
       "l link an agent, member, team, entry or User preset to a preset (or unlink)",
@@ -532,7 +559,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const narrowDetail = !wide() && showDetail()
     if (narrowDetail)
       return {
-        commands: [{ bind: "escape", title: "Back to tree", group: "Instructions", run: back }],
+        commands: [
+          ...(controlKind(node?.address?.item) !== undefined && !detailEditing()
+            ? [
+                { bind: "return", title: "Edit control", group: "Instructions", run: enter },
+                ...(canToggle(node) ? [{ bind: "space", title: "Toggle control", group: "Instructions", run: toggle }] : []),
+                ...(canReset(node) ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }] : []),
+              ]
+            : []),
+          { bind: "escape", title: "Back to tree", group: "Instructions", run: back },
+        ],
       }
     return {
       commands: [
@@ -546,6 +582,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           : selectableAgent(node) !== undefined
             ? [{ bind: "space", title: "Select agent", group: "Instructions", run: toggle }]
             : []),
+        ...(canToggle(node) && selectableAgent(node) !== undefined
+          ? [{ bind: "ctrl+space", title: "Select agent", group: "Instructions", run: selectAgent }]
+          : []),
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: togglePin }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: relink }] : []),

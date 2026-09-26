@@ -1,6 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
+import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { fromLabel } from "../../instructions/from-label.js"
 import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
@@ -8,10 +9,10 @@ import { categorySummary } from "../../instructions/permission-catalog.js"
 import { presetLabels } from "../../instructions/presets.js"
 import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from "../../instructions/snapshot.js"
-import type { TreeNode } from "../../instructions/tree.js"
+import { controlKind, controlValue, withControlItems, type TreeNode } from "../../instructions/tree.js"
 import type { Level, Plus, Snapshot } from "../../rpc.js"
 import { presetName } from "../preset-picker.js"
-import { badgeColor, badgeLabels } from "./tree-pane.js"
+import { badgeColor, badgeLabels, controlColor, controlLabels } from "./tree-pane.js"
 
 export interface DetailPaneState {
   saveText: (node: TreeNode, text: string) => Promise<boolean>
@@ -32,8 +33,8 @@ function agentsOf(snapshot: Snapshot): AgentSource[] {
   return snapshot.agents.map(agentOf)
 }
 
-function itemsOf(snapshot: Snapshot): Item[] {
-  return snapshot.items.map(itemOf)
+function itemsOf(snapshot: Snapshot): readonly Item[] {
+  return withControlItems(snapshot.items.map(itemOf))
 }
 
 function customizationsOf(snapshot: Snapshot): CustomizationRecord[] {
@@ -47,6 +48,7 @@ function splitsOf(snapshot: Snapshot): SplitRecord[] {
 }
 
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+  if (isControl(address.item)) return controlItemFor(items, address)
   const matches = items.filter((entry) => entry.id === address.item)
   const owner = address.agent
   if (owner === null) return matches[0]
@@ -246,7 +248,35 @@ export function isEditable(node: TreeNode | undefined): boolean {
   if (!node) return false
   if (node.address === undefined) return false
   if (node.address.item.startsWith("perm:")) return false
+  const control = controlKind(node.address.item)
+  if (control === "cycle" || control === "toggle" || node.badges.disabled !== undefined) return false
   return node.actions?.edit === true
+}
+
+export function controlDetail(node: TreeNode, snapshot: Snapshot): string[] {
+  if (node.enabledRow !== undefined) return [
+    node.badges.state === "off" ? "Off: this agent cannot be selected or launched." : "On: this agent is enabled.",
+    node.badges.hidden === true ? "Hidden: omitted from the picker; enablement is separate." : "Visible: picker availability also depends on Mode.",
+    ...(node.badges.mode ? [`Mode: ${node.badges.mode}`] : []),
+  ]
+  const item = node.address?.item
+  if (item === undefined || controlKind(item) === undefined) return []
+  const resolved = resolveNode(node, snapshot)
+  if (resolved === undefined) return []
+  const help = item === "setting:enabled" ? "Off disables the agent. Its settings remain editable so it can be re-enabled."
+    : item === "setting:hidden" ? "On hides the agent from the picker; it does not disable the agent."
+    : item === "setting:mode" ? "Enter cycles Primary → Subagent → All."
+    : item === "setting:steps" ? "Positive whole-number step limit; empty means unlimited. Reset follows the value above."
+    : item === "setting:color" ? "Agent display color (#RRGGBB); empty clears the color. Reset follows the value above."
+    : item === "compaction:strategy" ? "Enter cycles Auto → Local → Remote. Remote requires provider support."
+    : item === "compaction:model" ? "Local compaction model (provider/model#variant); empty uses this agent's active session model."
+    : item === "compaction:instructions" ? "Local compaction instructions; empty saves an empty prompt. Reset follows inherited instructions, including the global compaction agent."
+    : "Reset removes only this level's override."
+  return [
+    `Value: ${controlValue(item, resolved.text, resolved.enabled)}`,
+    help,
+    ...(node.badges.disabled === undefined ? [] : [node.badges.disabled]),
+  ]
 }
 
 export function displayLevel(level: Resolved["source"] | Address["level"]): string {
@@ -263,11 +293,17 @@ export function displayLevel(level: Resolved["source"] | Address["level"]): stri
 // (Project)".
 export function provenanceLine(node: TreeNode, snapshot: Snapshot): string | undefined {
   const address = node.address
-  if (address === undefined) return undefined
+  if (address === undefined) return node.enabledRow === undefined ? undefined : `enabled: ${node.badges.fromLabel ?? "inherited"}`
   const labels = presetLabels(listingOfSnapshot(snapshot))
   const say = (from: From) => {
     const label = fromLabel(from, { labels, level: address.level })
     return label === "set here" ? `set here (${displayLevel(address.level)})` : label
+  }
+  const control = controlKind(address.item)
+  if (control !== undefined) {
+    const resolved = resolveNode(node, snapshot)
+    if (resolved === undefined) return undefined
+    return `value: ${say(control === "toggle" ? resolved.from : resolved.textFrom)}`
   }
   if (isModelAddress(address)) {
     const detail = modelDetail(node, snapshot)
@@ -333,6 +369,7 @@ export interface SectionRow {
 export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
+  if (controlKind(address.item) !== undefined) return []
   if (isModelAddress(address)) return []
   const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream === undefined) return []
@@ -374,6 +411,7 @@ export interface ExcludedRange {
 export function excludedRanges(node: TreeNode, snapshot: Snapshot): ExcludedRange[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
+  if (controlKind(address.item) !== undefined) return []
   const upstream = upstreamFor(itemsOf(snapshot), address)
   if (upstream === undefined) return []
   const records = customizationsOf(snapshot)
@@ -575,6 +613,12 @@ export function DetailPane(props: DetailPaneProps) {
                       </text>
                     )}
                   </Show>
+                  <For each={controlDetail(node(), snapshot())}>
+                    {(line) => <text flexShrink={0} fg={controlColor(props.context, node())}>{line}</text>}
+                  </For>
+                  <For each={controlLabels(node())}>
+                    {(label) => <text flexShrink={0} fg={controlColor(props.context, node())}>{label}</text>}
+                  </For>
                   <Show when={linkLine(node(), snapshot())}>
                     {(line) => (
                       <text flexShrink={0} fg={props.context.theme.text.subdued}>
@@ -660,7 +704,7 @@ export function DetailPane(props: DetailPaneProps) {
                       </text>
                     )}
                   </Show>
-                  <Show when={node().address?.section === null}>
+                  <Show when={node().address?.section === null && controlKind(node().address?.item) === undefined}>
                     <text flexShrink={0} fg={props.context.theme.text.subdued}>
                       Sections:
                     </text>
@@ -695,10 +739,10 @@ export function DetailPane(props: DetailPaneProps) {
                           fallback={
                             <text
                               flexShrink={0}
-                              fg={props.context.theme.text.default}
+                              fg={node().badges.disabled === undefined ? props.context.theme.text.default : props.context.theme.text.formfield.disabled}
                               attributes={excludedAttributes(sectionExcluded(node(), snapshot()))}
                             >
-                              {resolvedText(node(), snapshot())}
+                              {node().enabledRow === undefined ? resolvedText(node(), snapshot()) : ""}
                             </text>
                           }
                         >
@@ -709,7 +753,7 @@ export function DetailPane(props: DetailPaneProps) {
                                   {(part) => (
                                     <text
                                       flexShrink={0}
-                                      fg={props.context.theme.text.default}
+                                      fg={node().badges.disabled === undefined ? props.context.theme.text.default : props.context.theme.text.formfield.disabled}
                                       attributes={excludedAttributes(part.excluded)}
                                     >
                                       {`${part.body}${part.excluded ? " [excluded]" : ""}`}
