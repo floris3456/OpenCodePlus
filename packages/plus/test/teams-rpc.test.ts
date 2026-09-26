@@ -159,7 +159,7 @@ test("a created team can then be enabled and its member agents apply", async () 
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
-  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
+  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true, exclusive: true, disabledTeams: [] })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams).toEqual([{ level: "project", team: "crew", enabled: true, agents: ["alpha"] }])
   const listed = await Effect.runPromise(ctx.agent.list())
@@ -288,7 +288,7 @@ test("toggling a team on writes a real TeamRecord and the next snapshot reports 
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
-  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
+  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true, exclusive: true, disabledTeams: [] })
   expectRpcBody(toggled)
   const stored = await load(project)
   expect(stored.records).toHaveLength(1)
@@ -322,13 +322,15 @@ test("enabling a team disables every other enabled team across levels in one sav
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   expect(await enabledOf()).toEqual(["project:crew"])
   // A second project team takes over: crew flips off in the same save.
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "band", enabled: true }, throwingContext({})))
+  const band = await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "band", enabled: true }, throwingContext({})))
+  expect(band.disabledTeams).toEqual([{ level: "project", team: "crew" }])
   expect(await enabledOf()).toEqual(["project:band"])
   const listed = await Effect.runPromise(ctx.agent.list())
   expect(listed.data.some((entry) => String(entry.id) === "alpha")).toBe(false)
   expect(listed.data.find((entry) => String(entry.id) === "beta")?.system).toBe("band beta body")
   // A global team takes over from a project team, and vice versa.
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "orbit", enabled: true }, throwingContext({})))
+  const orbit = await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "orbit", enabled: true }, throwingContext({})))
+  expect(orbit.disabledTeams).toEqual([{ level: "project", team: "band" }])
   expect(await enabledOf()).toEqual(["global:orbit"])
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   expect(await enabledOf()).toEqual(["project:crew"])
@@ -437,7 +439,7 @@ test("an unchanged toggle stays a no-op without moving revisions", async () => {
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
-  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
+  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true, exclusive: true, disabledTeams: [] })
   const reread = await load(project)
   expect(reread.projectRevision).toBe(stored.projectRevision)
   expect(reread.globalRevision).toBe(stored.globalRevision)
@@ -496,7 +498,7 @@ test("enabling a built-in installs its members and disabling removes them", asyn
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})),
   )
-  expect(toggled).toEqual({ level: "defaults", team: "ship", enabled: true })
+  expect(toggled).toEqual({ level: "defaults", team: "ship", enabled: true, exclusive: true, disabledTeams: [] })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams?.find((team) => team.team === "ship")).toEqual({
     level: "defaults",

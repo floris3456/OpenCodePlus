@@ -613,7 +613,9 @@ export function createInstructionsState(context: Plugin.Context) {
       }
       await refresh()
       if (disposed || disabled) return false
-      setStatus(plan.successStatus)
+      setStatus(ref.disabledTeams.length === 0
+        ? plan.successStatus
+        : `${plan.successStatus}; disabled ${ref.disabledTeams.map((team) => `${team.level}:${team.team}`).join(", ")}`)
       return true
     } catch (error: unknown) {
       if (disposed || disabled || requestGen !== generation) return false

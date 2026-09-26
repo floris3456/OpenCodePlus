@@ -74,12 +74,14 @@ const ListDescription =
 
 const ShowDescription =
   "Read one row: resolved text (default), diff, record, sections, an entity, or an agent's assembled view.\n" +
+  "Resolved rows expose stateFrom and textFrom owner identities separately; from remains the state-source label.\n" +
   "Views: resolved (default), upstream, mine, diff, record, sections, assembled (agent rows only).\n" +
   "Team and member rows carry no text: resolved returns the entity (level, team, enabled/members, or member registered), record nests it under record.\n" +
   "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary."
 
 const SetDescription =
   "Save an override, toggle, pin, activate a model, resolve a review row, or relink (TUI Enter/Space/p/k/t/e/l).\n" +
+  "Enabling a team is exclusive across loaded project/global/defaults records; disabledTeams reports the other teams disabled by this save.\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
@@ -102,7 +104,7 @@ const CreateDescription =
   "entry (catalogue agents|teams + name, team pattern for teams, preset; names may hold * and %, matched case-insensitively),\n" +
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
   "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
-  "model (providerID+modelID, variant/level/agent optional),\n" +
+  "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
@@ -1120,6 +1122,8 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           custom: upstream.custom === true,
           enabled: resolved.enabled,
           source: resolved.source,
+          stateFrom: resolved.from,
+          textFrom: resolved.textFrom,
           // Where the row is listed and how it is enforced (permission-catalog.ts).
           category: upstream.category ?? "",
           kind: upstream.permKind ?? "rule",
@@ -1150,6 +1154,8 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           assembled: resolved.assembled,
           enabled: resolved.enabled,
           source: resolved.source,
+          stateFrom: resolved.from,
+          textFrom: resolved.textFrom,
           ...(node.badges.fromLabel === undefined ? {} : { from: node.badges.fromLabel }),
           ...(node.badges.reviewOf === undefined ? {} : { reviewOf: node.badges.reviewOf }),
         },
@@ -1215,6 +1221,7 @@ function recordOfRow(
         (record) =>
           record.level === address.level &&
           record.agent === address.agent &&
+          sameTeam(record.team, address.team) &&
           record.providerID === parsed.providerID &&
           record.modelID === parsed.modelID &&
           record.variant === parsed.variant,
@@ -1465,10 +1472,25 @@ function createRow(
       const snapshot = yield* snapshotOrFail(api)
       if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
         return yield* Effect.fail(protectedError(agent))
+      const memo = memoFromSnapshot(snapshot)
+      const team = input.team?.trim()
+      const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`)
+      // Match the TUI Models group: presets and Defaults entries own scoped
+      // records; an ordinary member writes its agent's records in this team's chain.
+      if (team !== undefined && (agent === null || findRow(memo, `group:${level}:${team}/:${agent}:models`) === undefined))
+        return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
+      const owner = team === undefined
+        ? {}
+        : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
+          ? { team: { level, team } }
+          : { memberOf: { level, team } }
+      if (team === undefined && findRow(memo, `group:${level}:${agent ?? (input.catalogue === "teams" ? "/teams" : "")}:models`) === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown model owner ${JSON.stringify(agent)} at ${level}` }))
       const created = yield* Effect.promise(() =>
         api.addModel({
           level,
           agent,
+          ...(owner.team === undefined ? {} : { team: owner.team }),
           ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
           providerID: input.providerID as string,
           modelID: input.modelID as string,
@@ -1486,8 +1508,11 @@ function createRow(
           createdItemRow(memo, {
             level: created.value.level,
             agent: created.value.agent,
+            ...owner,
             item: modelItemId(created.value),
-            ...catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
+            ...(team === undefined
+              ? catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) })
+              : { catalogue: "teams" }),
           }),
         `model "${created.value.providerID}/${created.value.modelID}"`,
       )

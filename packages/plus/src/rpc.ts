@@ -607,6 +607,13 @@ export const TeamRef = Schema.Struct({
   enabled: Schema.Boolean,
 }).annotate({ identifier: "Plus.TeamRef" })
 
+export interface TeamActivation extends Schema.Schema.Type<typeof TeamActivation> {}
+export const TeamActivation = Schema.Struct({
+  ...TeamRef.fields,
+  exclusive: Schema.Literal(true),
+  disabledTeams: Schema.Array(Schema.Struct({ level: TeamLevel, team: Schema.String })),
+}).annotate({ identifier: "Plus.TeamActivation" })
+
 // Creating a team makes the on-disk team directory without enabling it: a
 // newly created team has no record at all, so it reads as DISABLED until
 // toggled with team.setEnabled. Creation at defaults is refused (Defaults
@@ -1257,6 +1264,7 @@ const PortableSetTeamEnabledInput = Schema.toStandardSchemaV1(
   SetTeamEnabledInput.annotate({ identifier: "Plus.SetTeamEnabledInput" }),
 )
 const PortableTeamRef = Schema.toStandardSchemaV1(TeamRef.annotate({ identifier: "Plus.TeamRef" }))
+const PortableTeamActivation = Schema.toStandardSchemaV1(TeamActivation)
 const PortableCreateTeamInput = Schema.toStandardSchemaV1(
   CreateTeamInput.annotate({ identifier: "Plus.CreateTeamInput" }),
 )
@@ -1564,7 +1572,7 @@ export const Definition = Rpc.define({
     },
     "team.setEnabled": {
       input: PortableSetTeamEnabledInput,
-      output: PortableTeamRef,
+      output: PortableTeamActivation,
       errors: {
         "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,

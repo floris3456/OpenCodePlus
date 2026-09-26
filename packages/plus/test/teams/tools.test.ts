@@ -19,7 +19,7 @@ import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
-import { shippedTable, teamState } from "./preset-table.js"
+import { change, linked, presetTable, shippedTable, teamState } from "./preset-table.js"
 import { git } from "../../src/teams/git.js"
 import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief } from "../../src/teams/schema.js"
@@ -260,6 +260,38 @@ test("the team namespace advertises nothing it cannot do", async () => {
   expect([...tools.keys()].filter((id) => id.startsWith("team_")).toSorted()).toEqual(
     teamNames.map((name) => `team_${name}`).toSorted(),
   )
+})
+
+test("get_context maps real tool surfaces and the caller's permitted custom roster", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const lead = linked("custom-lead", "orchestrator", "crew")
+    const table = presetTable({
+      members: [lead, linked("custom-maker", "implementer", "crew"), linked("denied", "reviewer", "crew"), linked("other-reader", "scout", "other")],
+      records: [
+        change(lead, "perm:team_delegate:to.custom-maker", { state: "on" }),
+      ],
+    })
+    const created = fixture()
+    const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState(table)), () => table)
+    try {
+      await saveRun(root, makeRun("w-1111111111111111", lead.id, "ses_custom_roster"))
+      const output = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_custom_roster", lead.id)))
+      expect(output.output).toMatchObject({
+        delegationTargets: ["custom-maker"],
+        toolSurfaces: {
+          direct: teamNames.filter((name) => codemodeFalse.has(name)).map((name) => `team_${name}`),
+          codeMode: expect.arrayContaining(teamNames.filter((name) => !codemodeFalse.has(name)).map((name) => `tools.team.${name}`)),
+        },
+      })
+      expect(need(created.tools, "team_delegate").description).toContain("Code Mode search does not list them")
+      expect(need(created.tools, "team_get_context").description).toContain("not persona names in preset examples")
+      await saveRun(root, makeRun("w-2222222222222222", "denied", "ses_empty_roster"))
+      const empty = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_empty_roster", "denied")))
+      expect(empty.output).toMatchObject({ delegationTargets: [] })
+    } finally {
+      await Effect.runPromise(registration.dispose)
+    }
+  })
 })
 
 test("no registered team tool returns E_NOT_IMPLEMENTED for any role in its ceiling", async () => {
@@ -1741,4 +1773,3 @@ test("D — a home session with a non-repo location gets E_NOT_ACTOR and creates
     }
   })
 })
-

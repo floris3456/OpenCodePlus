@@ -450,7 +450,7 @@ test("file operations log to the owning store, team toggles log their level, fai
   const toggled = await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
-  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true })
+  expect(toggled).toEqual({ level: "project", team: "crew", enabled: true, exclusive: true, disabledTeams: [] })
   expect(await projectLines(project)).toHaveLength(5)
   expect(JSON.parse((await projectLines(project))[4] ?? "")).toMatchObject({ op: "team.setEnabled", target: "team:project:crew" })
   // An unchanged toggle is a no-op and logs nothing.

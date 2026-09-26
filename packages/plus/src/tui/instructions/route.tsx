@@ -525,6 +525,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       "enter edit (rule editor on permission rows)",
       "enter Mode: Primary → Subagent → All; Strategy: Auto → Local → Remote",
       "space toggles agents and Enabled/Hidden settings · ctrl+space selects an enabled primary agent",
+      "Enabling a team is exclusive: it disables other enabled teams across loaded project/global/defaults records.",
       "Hidden hides from the picker; Off disables the agent. Remote retains local compaction settings but locks edits.",
       "enter on a yellow review row: keep yours or take the new value (state, pin, model), diff for text",
       "space toggle include/exclude · p pin Code Mode tool · a add (name, then preset) · d delete (confirm)",

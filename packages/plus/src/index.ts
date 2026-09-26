@@ -333,7 +333,7 @@ export type RemoveMcpResult =
     }
 
 export type SetTeamEnabledResult =
-  | { ok: true; value: Plus.TeamRef }
+  | { ok: true; value: Plus.TeamActivation }
   | {
       ok: false
       error:
@@ -1231,7 +1231,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       await Effect.runPromise(emitTeamsChanged(state))
-      return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled } }
+      return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled, exclusive: true as const, disabledTeams: saved.disabledTeams } }
     },
     addTeamAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -3109,7 +3109,7 @@ async function saveTeamRecord(
   level: TeamRecord["level"],
   team: string,
   enabled: boolean,
-): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
+): Promise<{ ok: true; changed: boolean; revision: number; disabledTeams: { level: TeamLevel; team: string }[] } | { ok: false }> {
   const attempt = (records: readonly StoredRecord[]) => {
     const existing = records.find(
       (record): record is TeamRecord => record.type === "team" && record.level === level && record.team === team,
@@ -3124,34 +3124,37 @@ async function saveTeamRecord(
     const updated = new Date().toISOString()
     const next: TeamRecord = { type: "team", level, team, enabled, updated }
     const isTarget = (record: StoredRecord) => record.type === "team" && record.level === level && record.team === team
-    return [
-      ...records.filter((record) => !isTarget(record) && !others.includes(record as TeamRecord)),
-      ...others.map((record): TeamRecord => ({ ...record, enabled: false, updated })),
-      next,
-    ] as readonly StoredRecord[]
+    return {
+      records: [
+        ...records.filter((record) => !isTarget(record) && !others.includes(record as TeamRecord)),
+        ...others.map((record): TeamRecord => ({ ...record, enabled: false, updated })),
+        next,
+      ] as readonly StoredRecord[],
+      disabledTeams: others.map((record) => ({ level: record.level, team: record.team })),
+    }
   }
   const revisionOf = (projectRevision: number, globalRevision: number) =>
     level === "project" ? projectRevision : globalRevision
   const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
     level === "project" ? changed.project : changed.global
   const first = attempt(loaded.records)
-  if (first === undefined) return { ok: true, changed: false, revision: revisionOf(loaded.projectRevision, loaded.globalRevision) }
+  if (first === undefined) return { ok: true, changed: false, revision: revisionOf(loaded.projectRevision, loaded.globalRevision), disabledTeams: [] }
   const saved = await save(directory, {
     expectedProjectRevision: loaded.projectRevision,
     expectedGlobalRevision: loaded.globalRevision,
-    records: first,
+    records: first.records,
   })
-  if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision) }
+  if (saved.ok) return { ok: true, changed: changedOf(saved.changed), revision: revisionOf(saved.projectRevision, saved.globalRevision), disabledTeams: first.disabledTeams }
   const fresh = await load(directory)
   const second = attempt(fresh.records)
-  if (second === undefined) return { ok: true, changed: false, revision: revisionOf(fresh.projectRevision, fresh.globalRevision) }
+  if (second === undefined) return { ok: true, changed: false, revision: revisionOf(fresh.projectRevision, fresh.globalRevision), disabledTeams: [] }
   const retried = await save(directory, {
     expectedProjectRevision: fresh.projectRevision,
     expectedGlobalRevision: fresh.globalRevision,
-    records: second,
+    records: second.records,
   })
   if (retried.ok)
-    return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision) }
+    return { ok: true, changed: changedOf(retried.changed), revision: revisionOf(retried.projectRevision, retried.globalRevision), disabledTeams: second.disabledTeams }
   return { ok: false }
 }
 

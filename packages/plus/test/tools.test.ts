@@ -1327,6 +1327,86 @@ test("create model, activate through set, list with item:model and active, then 
   void catalogHarness
 })
 
+test("create model preserves the selected member owner and returns its addressable row", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "preset", id: "reader", from: "scout" })
+  await runOk(create, { kind: "teamPreset", id: "crew" })
+  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "scout" })
+  const model = { kind: "model", providerID: "acme", modelID: "nova-2", level: "preset", agent: "reader" }
+  const standalone = await runOk(create, model) as { id: string }
+  await runOk(set, { id: standalone.id, active: true })
+  const prior = await load(project)
+  for (const invalid of [{ team: "missing" }, { team: "crew", agent: "missing" }, { agent: "missing" }, { team: "" }]) {
+    expect((await runFail(create, { ...model, ...invalid })).message).toContain("model.invalid")
+    expect(await load(project)).toEqual(prior)
+  }
+  const member = await runOk(create, { ...model, team: " crew " }) as { id: string }
+  expect(member.id).toBe("item:preset:crew/:reader:model:acme/nova-2")
+  expect(await runOk(show, { id: member.id, view: "record" })).toMatchObject({
+    record: { level: "preset", agent: "reader", team: { level: "preset", team: "crew" } },
+  })
+  await runOk(set, { id: member.id, active: true })
+  expect(await runOk(show, { id: member.id, view: "record" })).toMatchObject({ record: { active: true } })
+  expect((await load(project)).records.find((record) => record.type === "model" && record.team === undefined))
+    .toEqual(prior.records.find((record) => record.type === "model"))
+
+  // Ordinary discovered members keep per-agent storage, just like the TUI,
+  // but the returned row stays in the selected team's inheritance chain.
+  await runOk(create, { kind: "team", team: "live", level: "project", preset: "crew" })
+  const live = await runOk(create, { ...model, level: "project", team: "live" }) as { id: string }
+  expect(live.id).toBe("item:project:live/:reader:model:acme/nova-2")
+  expect(await runOk(show, { id: live.id, view: "record" })).toMatchObject({ record: { level: "project", agent: "reader" } })
+  expect((await snapshotOf(api)).records.find((record) => record.type === "model" && record.level === "project")?.team).toBeUndefined()
+
+  await runOk(create, { kind: "entry", catalogue: "teams", team: "crew*", name: "reader*" })
+  const entry = await runOk(create, { ...model, level: "defaults", team: "crew*", agent: "reader*" }) as { id: string }
+  expect(entry.id).toBe("item:defaults:crew*/:reader*:model:acme/nova-2")
+  expect(await runOk(show, { id: entry.id, view: "record" })).toMatchObject({ record: { team: { level: "defaults", team: "crew*" } } })
+})
+
+test("show separates inherited state and text provenance across role override and reset", async () => {
+  const { tools } = await freshFixture()
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "teamPreset", id: "crew" })
+  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "scout" })
+  await runOk(set, { id: "item:preset:crew/:reader:system:role", text: "Inherited member verification text" })
+  await runOk(create, { kind: "team", team: "live", level: "global", preset: "crew" })
+  const id = "item:global:live/:reader:system:role"
+  const inherited = {
+    text: "Inherited member verification text",
+    stateFrom: { kind: "preset", id: "scout", shipped: true },
+    textFrom: { kind: "preset", id: "reader", team: "crew", shipped: false },
+    from: "from preset Scout",
+  }
+  expect(await runOk(show, { id })).toMatchObject(inherited)
+  await runOk(set, { id, text: "Local role override" })
+  expect(await runOk(show, { id })).toMatchObject({
+    ...inherited, text: "Local role override", textFrom: { kind: "level", level: "global" },
+  })
+  await runOk(need(tools, "instructions_reset"), { id })
+  expect(await runOk(show, { id })).toMatchObject(inherited)
+})
+
+test("team activation tool reports exactly the teams it disables", async () => {
+  const { api, tools } = await freshFixture()
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "team", team: "one", level: "project" })
+  await runOk(create, { kind: "team", team: "two", level: "global" })
+  expect(await runOk(set, { id: "team:project:one", state: "on" })).toMatchObject({ exclusive: true, disabledTeams: [] })
+  expect(await runOk(set, { id: "team:global:two", state: "on" })).toMatchObject({
+    enabled: true, exclusive: true, disabledTeams: [{ level: "project", team: "one" }],
+  })
+  expect((await snapshotOf(api)).teams?.filter((team) => team.enabled).map((team) => team.team)).toEqual(["two"])
+  expect(await runOk(set, { id: "team:global:two", state: "on" })).toMatchObject({ disabledTeams: [] })
+  expect(await runOk(set, { id: "team:global:two", state: "off" })).toMatchObject({ disabledTeams: [] })
+})
+
 test("perm rules toggle, show, list by item:perm and tool, create custom, and delete only customs", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({

@@ -11,7 +11,8 @@ import { append, type ToolCallOutcome } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
-import type { TeamTool } from "./policy.js"
+import { toolGuidance, toolSurfaces, type TeamTool } from "./policy.js"
+import { delegationTargets } from "./reach.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, type RunRecord } from "./run.js"
 import {
   Brief,
@@ -34,7 +35,7 @@ import {
 const namespace = "team"
 const origin = { type: "plugin", name: "opencode.plus" } as const
 
-const DelegateDescription = "Start a bounded task in a new isolated worktree. One call = one run."
+const DelegateDescription = "Start a bounded task in a new isolated worktree. One call = one run.\n" + toolGuidance
 const FinishDescription = "Declare an outcome for the current attempt.\nDone, blocked, or needs-context with evidence the parent verifies."
 const FollowupDescription =
   "Send a correction to an owned child.\nThe default queue delivers it as a new attempt when the child next goes idle; delivery:\"now\" needs an already idle child and fails E_BUSY otherwise."
@@ -49,7 +50,7 @@ const WaitDescription =
   "Wait for child runs to settle or go idle.\nReturns settled, acknowledged, timedOut, stillOpen and overBudget lists; acknowledges owned outcomes unless ack:false."
 const DiffDescription = "Show a run's worktree diff against a ref or base.\nLarge patches truncate to maxBytes with truncated:true."
 const ListDescription = "List runs in this namespace, optionally filtered.\nHidden states (superseded, reaped) need all:true. Read-only."
-const GetContextDescription = "Load your brief, checks, siblings, inbox and budget.\nCall first, then execute the Brief."
+const GetContextDescription = "Load your brief, checks, siblings, inbox, budget, tool surfaces and permitted delegation targets.\n" + toolGuidance
 const CheckDescription = "Run one assigned focused check in your worktree.\nUnknown ids fail with E_UNKNOWN_CHECK."
 
 // One team tool call in flight, remembered at `tool.execute.before` so a refusal
@@ -348,7 +349,7 @@ export async function registerTeamTools(
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
-    editor.namespace({ name: namespace, description: "Team runs: delegate work, report outcomes, and read run state." })
+    editor.namespace({ name: namespace, description: "Team runs: delegate work, report outcomes, and read run state.\n" + toolGuidance })
     const add = (tool: Tool.Info) => {
       editor.add({
         ...tool,
@@ -470,7 +471,20 @@ export async function registerTeamTools(
       output: Schema.Unknown,
       options: teamOptions("get_context", true),
       origin,
-      execute: (input, context) => runGated("get_context", input, context, ctx, state, (args, caller) => api.get_context(args, caller)),
+      execute: (input, context) => runGated("get_context", input, context, ctx, state, async (args, caller) => {
+        const result = await api.get_context(args, caller)
+        if (!result.ok) return result
+        const table = permissions()
+        return {
+          ok: true,
+          value: {
+            ...(result.value as object),
+            toolSurfaces,
+            guidance: toolGuidance,
+            delegationTargets: delegationTargets(table, caller.agent).filter((target) => table?.teamMembers.has(target)),
+          },
+        }
+      }),
     })
     add({
       name: "check",

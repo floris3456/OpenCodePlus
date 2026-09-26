@@ -19,6 +19,7 @@ import {
   resolveActiveModel,
   resolveResolution,
   resolveSplit,
+  sameTeam,
   scopedTo,
 } from "./model.js"
 import type {
@@ -282,6 +283,8 @@ export interface CreatedItemAddress {
   readonly agent: string | null
   readonly item: string
   readonly catalogue?: Catalogue
+  readonly team?: TeamRef
+  readonly memberOf?: TeamRef
 }
 
 // Only the root of the written level is walked: the row lives under it, and
@@ -293,6 +296,8 @@ export function createdItemRow(input: MemoInput, address: CreatedItemAddress): C
       candidate.address !== undefined &&
       candidate.address.level === address.level &&
       candidate.address.agent === address.agent &&
+      sameTeam(candidate.address.team, address.team) &&
+      (address.memberOf === undefined || sameTeam(candidate.address.memberOf, address.memberOf)) &&
       candidate.address.item === address.item &&
       candidate.address.section === null &&
       catalogueOf(candidate.address.catalogue) === catalogueOf(address.catalogue),
