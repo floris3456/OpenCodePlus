@@ -1,6 +1,7 @@
 export * as ConfigAgentV1 from "./agent.js"
 
 import { Schema, SchemaGetter } from "effect"
+import { ConfigAgent } from "@opencode/schema/config/agent"
 import { PositiveInt } from "../../schema.js"
 import { ConfigPermissionV1 } from "./permission.js"
 
@@ -18,6 +19,7 @@ const AgentSchema = Schema.StructWithRest(
     temperature: Schema.optional(Schema.Finite),
     top_p: Schema.optional(Schema.Finite),
     prompt: Schema.optional(Schema.String),
+    compaction: ConfigAgent.Info.fields.compaction,
     tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
       description: "@deprecated Use 'permission' field instead",
     }),

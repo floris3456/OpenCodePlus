@@ -149,6 +149,50 @@ describe("ConfigNormalize", () => {
     expect(() => Schema.decodeUnknownSync(Info)(result.encoded)).not.toThrow()
   })
 
+  for (const source of ["agent", "mode"] as const) {
+    test(`preserves canonical compaction in legacy ${source} configuration`, () => {
+      const compaction = {
+        strategy: "local",
+        model: { providerID: "example", id: "summary" },
+        system: "Keep exact decisions",
+      }
+      const result = normalized({
+        [source]: {
+          reviewer: {
+            model: "example/chat",
+            temperature: 0.5,
+            prompt: "Primary instructions",
+            options: { effort: "high" },
+            compaction,
+          },
+        },
+      })
+      expect(result.encoded.agents).toEqual({
+        reviewer: {
+          model: { providerID: "example", model: "chat" },
+          request: { body: { effort: "high", temperature: 0.5 } },
+          system: "Primary instructions",
+          ...(source === "mode" ? { mode: "primary" } : {}),
+          compaction,
+        },
+      })
+      expect(result.diagnostics).toEqual([])
+    })
+
+    test(`validates canonical compaction in legacy ${source} configuration`, () => {
+      const result = normalized({
+        [source]: {
+          valid: { prompt: "Keep this agent" },
+          invalid: { temperature: 0.5, compaction: { strategy: "unsupported" } },
+        },
+      })
+      expect(result.encoded.agents).toEqual({
+        valid: { system: "Keep this agent", ...(source === "mode" ? { mode: "primary" } : {}) },
+      })
+      expect(result.diagnostics.map((item) => [item.kind, item.path])).toEqual([["invalid", [source, "invalid"]]])
+    })
+  }
+
   test("migrates the legacy small model to the title agent", () => {
     const result = normalized({ small_model: "anthropic/claude-haiku-4-5" })
     expect(result.encoded.agents).toEqual({

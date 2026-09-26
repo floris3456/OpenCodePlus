@@ -54,6 +54,7 @@ test("keeps schema fields and name out of legacy agent options", () => {
     steps: 10,
     maxSteps: 20,
     permission: { read: "allow" },
+    compaction: { strategy: "local", model: Model.Ref.parse("example/summary"), system: "Keep exact decisions" },
     custom: "preserved",
   })
 
@@ -99,6 +100,29 @@ describe("ConfigAgentPlugin.Plugin", () => {
         model: Model.Ref.parse("example/summary"),
         system: "Keep local settings",
       })
+    }),
+  )
+
+  it.live("preserves canonical compaction alongside legacy Markdown generation options", () =>
+    Effect.gen(function* () {
+      const agent = yield* loadMarkdownAgent(
+        `model: example/chat
+temperature: 0.5
+compaction:
+  strategy: local
+  model:
+    providerID: example
+    id: summary
+  system: Keep exact decisions`,
+        "Primary instructions",
+      )
+      expect(agent.model).toEqual(Model.Ref.parse("example/chat"))
+      expect(agent.compaction).toEqual({
+        strategy: "local",
+        model: Model.Ref.parse("example/summary"),
+        system: "Keep exact decisions",
+      })
+      expect(agent.request).toEqual({ settings: {}, headers: {}, body: { temperature: 0.5 } })
     }),
   )
 
@@ -672,22 +696,19 @@ Use native v2 fields.`,
   )
 })
 
-function loadMarkdownAgent(frontmatter: string) {
+function loadMarkdownAgent(frontmatter: string, system = "Review carefully.") {
   return Effect.gen(function* () {
     const tmp = yield* tmpdirScoped()
     const fs = yield* FSUtil.Service
     yield* fs.makeDirectory(path.join(tmp.path, "agents"))
-    yield* fs.writeFileString(
-      path.join(tmp.path, "agents", "reviewer.md"),
-      `---\n${frontmatter}\n---\nReview carefully.`,
-    )
+    yield* fs.writeFileString(path.join(tmp.path, "agents", "reviewer.md"), `---\n${frontmatter}\n---\n${system}`)
     const agents = yield* Agent.Service
     yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
       Effect.provide(Config.testLayer([directoryEntry(tmp.path)])),
     )
     const agent = yield* agents.get(Agent.ID.make("reviewer"))
     if (!agent) throw new Error("expected configured Markdown agent")
-    expect(agent.system).toBe("Review carefully.")
+    expect(agent.system).toBe(system)
     return agent
   })
 }

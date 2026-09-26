@@ -150,6 +150,7 @@ export function migrateAgent(info: ConfigAgentV1.Info) {
         model: modelSelection(info.model, info.variant),
         request: Object.keys(body).length ? { body } : undefined,
         system: info.prompt,
+        compaction: info.compaction,
         description: info.description,
         mode: info.mode,
         hidden: info.hidden,
