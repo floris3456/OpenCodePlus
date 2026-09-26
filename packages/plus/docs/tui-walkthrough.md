@@ -259,7 +259,7 @@ The Round 3 integration extends the Instructions TUI and Composer experience wit
 - **Defaults Refusal:** Shipped built-in teams (`Defaults → Teams → <team>`) never offer `d delete` on the hint line (`actions.remove === false`), and pressing `d` shows an honest status refusal toast (`"<team>" cannot be deleted: team "<team>" is built in`) without opening a dialog.
 
 ## 2. Team-Scoped Special Group
-- **Structure:** Every team row expands to its member rows followed by a dedicated `Special` group (`team:<level>:<team>:special`). Expanding `Special` reveals the five special agents (`general`, `explore`, `compaction`, `title`, `summary`, id `team:<level>:<team>:special:<id>`), each hosting the standard five agent groups (Models, Tools, Base, Skills, System with prefix `group:<level>:<team>/:special:<id>:<group>`).
+- **Structure:** Every team row expands to its member rows followed by a dedicated `Special` group (`team:<level>:<team>:special`). Expanding `Special` reveals the three maintenance agents (`compaction`, `title`, `summary`, id `team:<level>:<team>:special:<id>`), each hosting the standard five agent groups (Models, Tools, Base, Skills, System with prefix `group:<level>:<team>/:special:<id>:<group>`). `general` and `explore` belong directly under OpenCode; hidden does not mean Special. Earlier captures above record the historical labels and classification.
 - **Team-Scoped Customizations:** Customizations (overrides, section exclusions, model selections, perm rules) made under a team-scoped special agent persist with a `team: { level, team }` record field in `records.jsonl`. These overrides apply dynamically to the host special agents only while that team is enabled, restoring upstream baselines when the team is disabled.
 
 ## 3. Agent Selector Categories and Active-Team Cycling
@@ -281,7 +281,7 @@ Written from the code (`instructions/tree.ts`, `instructions/permission-catalog.
 
 ## 1. Open a tool's Permissions
 
-With project mode on, open `/instructions` and go to `Project → Agents → Native → build → Tools → Native → shell`. Expanding `shell` shows its `Description` (the tool's text, here one section) and its `Permissions`, one group per category:
+With project mode on, open `/instructions` and go to `Project → Agents → OpenCode → build → Tools → OpenCode → shell`. Expanding `shell` shows its `Description` (the tool's text, here one section) and its `Permissions`, one group per category:
 
 ```
 shell [on]
@@ -330,7 +330,7 @@ Written from the code (`tui/instructions/dialogs.tsx`, `route.tsx`, `tree-pane.t
 
 Everywhere the flow is the same: `a`, a name, a preset. There is no template, prompt, model or mode step, and on a Project or Global row no scope question: the row's root decides.
 
-- `Project → Agents` (or its `User`): prompt `Create agent`, then the `Preset` picker. Its options are grouped `Agent presets · Native` (Build, Plan, …), `Agent presets · Plus` (Planner, Orchestrator, …), `Agent presets · User`, `Team preset members` (`starter › planner`, …), and last `None — everything off`. The new agent row is revealed and selected.
+- `Project → Agents` (or its `User`): prompt `Create agent`, then the `Preset` picker. Its options are grouped `Agent presets · OpenCode` (Build, Plan, …), `Agent presets · Plus` (Planner, Orchestrator, …), `Agent presets · User`, `Team preset members` (`starter › planner`, …), and last `None — everything off`. The new agent row is revealed and selected. OpenCode agent presets remain available; team presets have only Plus and User categories because OpenCode ships no teams.
 - `Project → Teams`: prompt `Team name`, then `Team preset` (`Plus`: opencodeplus-team, review, starter; `User`: yours; last `Empty team`).
 - a team row or a member row: prompt `Member name`, then `Preset`.
 - `Defaults → Agents`: prompt `Agent name or pattern` (`* and % match any text, case-insensitive (e.g. *orchestrator*)`), then `Preset` → a Defaults entry.
@@ -341,7 +341,7 @@ Everywhere the flow is the same: `a`, a name, a preset. There is no template, pr
 
 ## 2. Relink with l
 
-On an agent, member or team at Project/Global, a Defaults entry, or a User preset, the hint line offers `l link`. `l` opens `Link to preset` (a team: `Link to team preset`) with the current link preselected and `None — unlink` last. A success toasts `Linked alice to Planner (Plus)` or `Unlinked alice`; relinking a team also relinks every member the team preset has a member of the same id for and says so (`Linked crew to mine (User); relinked helper, planner`), while unlinking a team leaves its members linked; a refusal toasts the server's message, e.g. a cycle between User presets (`Linking … would make it reach itself (…)`). Native and Plus presets, a Teams entry pattern row and a native agent's own Defaults row offer no `l`.
+On an agent, member or team at Project/Global, a Defaults entry, or a User preset, the hint line offers `l link`. `l` opens `Link to preset` (a team: `Link to team preset`) with the current link preselected and `None — unlink` last. A success toasts `Linked alice to Planner (Plus)` or `Unlinked alice`; relinking a team also relinks every member the team preset has a member of the same id for and says so (`Linked crew to mine (User); relinked helper, planner`), while unlinking a team leaves its members linked; a refusal toasts the server's message, e.g. a cycle between User presets (`Linking … would make it reach itself (…)`). OpenCode and Plus presets, a Teams entry pattern row and an OpenCode agent's own Defaults row offer no `l`.
 
 ## 3. Delete a preset or an entry
 
@@ -349,9 +349,8 @@ On an agent, member or team at Project/Global, a Defaults entry, or a User prese
 
 ## 4. Where a value comes from
 
-A row that inherits shows its source after its badges, dim: `bash [on] · from preset Orchestrator`, `· from default *orchestrator*`, `· from Defaults (every agent)`, `· native`, `· off by default`. A row that sets its value itself shows nothing. The detail pane says the same: `state and text: from preset Orchestrator`, or `state: from preset Orchestrator · text: upstream` when they differ, `set here (Project)` for this level's own value. An agent's detail adds `Created from preset: Orchestrator (Plus)` (or `No preset`); a Defaults entry adds `matches agents named: *orchestrator*` and `matching now: …`.
+A row that inherits shows its source after its badges, dim: `bash [on] · from preset Orchestrator`, `· from default *orchestrator*`, `· from Defaults (every agent)`, `· OpenCode`, `· off by default`. A row that sets its value itself shows nothing. The detail pane says the same: `state and text: from preset Orchestrator`, or `state: from preset Orchestrator · text: upstream` when they differ, `set here (Project)` for this level's own value. An agent's detail adds `Created from preset: Orchestrator (Plus)` (or `No preset`); a Defaults entry adds `matches agents named: *orchestrator*` and `matching now: …`. Stored `native` ids, API discriminators, and `group:native` filters remain compatible with the displayed OpenCode origin.
 
 ## 5. Review a changed state, pin or model
 
 When the preset (or a Defaults entry) changes a value you had set yourself, the row reads `[to review (state)]` (text: `[to review]`; both: `[to review (text, state)]`) and the hint line offers `enter review`. Enter opens `Review "bash"`: `Keep yours (off)` keeps your value and acknowledges the change; `Take from preset Orchestrator (on)` drops yours so the row follows the preset again. If the text is under review too, the three-way diff (`k keep mine · t take new · e edit`) follows for the text. A model row under review (`[review]`) offers `Keep yours (acme/mine)` / `Take from Defaults (every agent) (acme/base)`.
-

@@ -354,14 +354,14 @@ test("team matches team rows, members, and team agents", () => {
 test("team and agent query filters match team special rows and children", () => {
   const customAgents: AgentSource[] = [
     ...agents(),
-    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "title", scope: "defaults", origin: "special" },
   ]
   const customRecords = [
     ...records(),
     {
       type: "customization" as const,
       level: "project" as const,
-      agent: "explore",
+      agent: "title",
       team: { level: "project" as const, team: "crew" },
       item: "tool:bash",
       section: null,
@@ -378,14 +378,14 @@ test("team and agent query filters match team special rows and children", () => 
   }
   const qTeam = query(customInput, { where: "team:crew" }).rows.map((r) => r.id)
   expect(qTeam).toContain("team:project:crew:special")
-  expect(qTeam).toContain("team:project:crew:special:explore")
-  expect(qTeam).toContain("group:project:crew/:special:explore:tools")
-  expect(qTeam).toContain("item:project:crew/:special:explore:tool:bash")
+  expect(qTeam).toContain("team:project:crew:special:title")
+  expect(qTeam).toContain("group:project:crew/:special:title:tools")
+  expect(qTeam).toContain("item:project:crew/:special:title:tool:bash")
 
-  const qAgent = query(customInput, { where: "agent:explore" }).rows.map((r) => r.id)
-  expect(qAgent).toContain("team:project:crew:special:explore")
-  expect(qAgent).toContain("group:project:crew/:special:explore:tools")
-  expect(qAgent).toContain("item:project:crew/:special:explore:tool:bash")
+  const qAgent = query(customInput, { where: "agent:title" }).rows.map((r) => r.id)
+  expect(qAgent).toContain("team:project:crew:special:title")
+  expect(qAgent).toContain("group:project:crew/:special:title:tools")
+  expect(qAgent).toContain("item:project:crew/:special:title:tool:bash")
 })
 
 test("acked reads the record acknowledgement", () => {

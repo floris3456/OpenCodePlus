@@ -1,6 +1,6 @@
 // Where a resolved value came from, in the words the tree badge, the detail
 // pane and the tools show (DESIGN §2): "from preset Orchestrator", "from
-// default *orchestrator*", "from Defaults (every agent)", "native", "off by
+// default *orchestrator*", "from Defaults (every agent)", "OpenCode", "off by
 // default". One module so the TUI and `instructions_*` say the same thing.
 import { presetKey, type From, type Level, type ReviewPart } from "./model.js"
 import type { TreeNode } from "./tree.js"
@@ -21,7 +21,7 @@ export function fromLabel(from: From, options: FromLabelOptions = {}): string {
   }
   if (from.kind === "default") return `from default ${from.team === undefined ? from.name : `${from.team} › ${from.name}`}`
   if (from.kind === "defaults-everyone") return "from Defaults (every agent)"
-  if (from.kind === "native") return "native"
+  if (from.kind === "native") return "OpenCode"
   if (from.kind === "upstream") return "upstream"
   return "off by default"
 }

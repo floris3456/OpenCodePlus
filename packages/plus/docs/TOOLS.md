@@ -163,7 +163,7 @@ Item id families:
 
 | Item id | Row | Source |
 | --- | --- | --- |
-| `tool:<toolId>` | Native/Plus/MCP tool row | `packages/plus/src/instructions/discover.ts:513` |
+| `tool:<toolId>` | OpenCode/Plus/MCP tool row | `packages/plus/src/instructions/discover.ts:513` |
 | `base:<templateId>` | Base prompt template | `packages/plus/src/instructions/discover.ts:553` |
 | `skill:<skillId>` | Skill | `packages/plus/src/instructions/discover.ts:606` |
 | `system:<relativePath>` | System file | `packages/plus/src/instructions/discover.ts:833` |
@@ -265,7 +265,7 @@ User presets; a preset anything links to is refused with `preset.inUse`, whose
 message lists the linked row ids. Links held only by other projects (listed as
 `<directory> › <row id>`) are deleted over with `force: true`; those owners
 then show the badge `missing preset` (and `linkMissing: true` in `show`) and
-their rows fall through until relinked. Native and Plus presets are read-only
+their rows fall through until relinked. OpenCode and Plus presets are read-only
 (`preset.readonly`); their rows are editable and, like every preset row, not
 guarded by `protectedAgents` (presets are not agents). Every row badge carries
 `from` (where its state came from), `fromLabel` in words and `reviewOf` (which

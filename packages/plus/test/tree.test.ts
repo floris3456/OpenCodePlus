@@ -140,7 +140,7 @@ test("Implementer subtree shape under the project root", () => {
     "System",
   ])
   expect(childrenOf(nodes, "group:project:Implementer:tools").map((node) => node.label)).toEqual([
-    "Native",
+    "OpenCode",
     "OpenCodePlus",
     "MCP",
   ])
@@ -148,7 +148,7 @@ test("Implementer subtree shape under the project root", () => {
   expect(childrenOf(nodes, "group:project:Implementer:tools:mcp").map((node) => node.label)).toEqual(["sample"])
   expect(childrenOf(nodes, "group:project:Implementer:tools:mcp:sample").map((node) => node.label)).toEqual(["odd-name"])
   expect(childrenOf(nodes, "group:project:Implementer:skills").map((node) => node.label)).toEqual([
-    "Native",
+    "OpenCode",
     "OpenCodePlus",
     "MCP",
     "Project",
@@ -514,8 +514,8 @@ test("team Special group row and special agent subtrees across all three levels"
       records: [],
       agents: [
         ...agents(),
-        { id: "general", scope: "defaults", origin: "special" },
-        { id: "explore", scope: "defaults", origin: "special" },
+        { id: "general", scope: "defaults", origin: "native" },
+        { id: "explore", scope: "defaults", origin: "native" },
         { id: "compaction", scope: "defaults", origin: "special" },
         { id: "title", scope: "defaults", origin: "special" },
         { id: "summary", scope: "defaults", origin: "special" },
@@ -531,8 +531,8 @@ test("team Special group row and special agent subtrees across all three levels"
     expect(specialGroup?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
 
     const specialKids = childrenOf(nodes, `team:${level}:crew:special`)
-    expect(specialKids.length).toBe(5)
-    const expectedIds = ["general", "explore", "compaction", "title", "summary"]
+    expect(specialKids.length).toBe(3)
+    const expectedIds = ["compaction", "title", "summary"]
     expect(specialKids.map((k) => k.label)).toEqual(expectedIds)
 
     for (const id of expectedIds) {
@@ -1409,10 +1409,10 @@ test("a tool text with several sections hangs them under a Description group tha
   ])
 })
 
-test("agents split into Native, Special, Plus and User origin subgroups", () => {
+test("agents split into OpenCode, Special, Plus and User origin subgroups", () => {
   const originAgents: AgentSource[] = [
     { id: "build", scope: "project", origin: "native" },
-    { id: "explore", scope: "project", origin: "special" },
+    { id: "title", scope: "project", origin: "special" },
     { id: "teammate", scope: "project", origin: "plus" },
     { id: "mine", scope: "project", origin: "user" },
   ]
@@ -1422,7 +1422,7 @@ test("agents split into Native, Special, Plus and User origin subgroups", () => 
     "group:project:agents:plus",
     "group:project:agents:user",
   ])
-  expect(nodes.find((node) => node.id === "group:project:agents:native")?.depth).toBe(2)
+  expect(nodes.find((node) => node.id === "group:project:agents:native")).toMatchObject({ depth: 2, label: "OpenCode" })
   expect(nodes.find((node) => node.id === "group:project:agents:native:special")?.depth).toBe(3)
   expect(nodes.find((node) => node.id === "group:project:agents:plus")?.depth).toBe(2)
   expect(nodes.find((node) => node.id === "group:project:agents:user")?.depth).toBe(2)
@@ -1430,11 +1430,11 @@ test("agents split into Native, Special, Plus and User origin subgroups", () => 
     "agent:project:build",
     "group:project:agents:native:special",
   ])
-  expect(childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)).toEqual(["agent:project:explore"])
+  expect(childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)).toEqual(["agent:project:title"])
   expect(childrenOf(nodes, "group:project:agents:plus").map((node) => node.id)).toEqual(["agent:project:teammate"])
   expect(childrenOf(nodes, "group:project:agents:user").map((node) => node.id)).toEqual(["agent:project:mine"])
   expect(nodes.find((node) => node.id === "agent:project:build")?.depth).toBe(3)
-  expect(nodes.find((node) => node.id === "agent:project:explore")?.depth).toBe(4)
+  expect(nodes.find((node) => node.id === "agent:project:title")?.depth).toBe(4)
   expect(nodes.find((node) => node.id === "agent:project:teammate")?.depth).toBe(3)
   expect(nodes.find((node) => node.id === "agent:project:mine")?.depth).toBe(3)
   // Agent rows keep the origin-free id.
@@ -1455,8 +1455,8 @@ test("native and special built-ins appear under every root and cannot be removed
   const builtins: AgentSource[] = [
     { id: "build", scope: "defaults", origin: "native" },
     { id: "plan", scope: "defaults", origin: "native" },
-    { id: "general", scope: "defaults", origin: "special" },
-    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "general", scope: "defaults", origin: "native" },
+    { id: "explore", scope: "defaults", origin: "native" },
     { id: "compaction", scope: "defaults", origin: "special" },
     { id: "title", scope: "defaults", origin: "special" },
     { id: "summary", scope: "defaults", origin: "special" },
@@ -1467,11 +1467,11 @@ test("native and special built-ins appear under every root and cannot be removed
     expect(childrenOf(nodes, `group:${level}:agents:native`).map((node) => node.id)).toEqual([
       `agent:${level}:build`,
       `agent:${level}:plan`,
+      `agent:${level}:general`,
+      `agent:${level}:explore`,
       `group:${level}:agents:native:special`,
     ])
     expect(childrenOf(nodes, `group:${level}:agents:native:special`).map((node) => node.id)).toEqual([
-      `agent:${level}:general`,
-      `agent:${level}:explore`,
       `agent:${level}:compaction`,
       `agent:${level}:title`,
       `agent:${level}:summary`,
@@ -1490,8 +1490,8 @@ test("project-level file-backed build override replaces native projection at pro
   const builtins: AgentSource[] = [
     { id: "build", scope: "defaults", origin: "native" },
     { id: "plan", scope: "defaults", origin: "native" },
-    { id: "general", scope: "defaults", origin: "special" },
-    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "general", scope: "defaults", origin: "native" },
+    { id: "explore", scope: "defaults", origin: "native" },
     { id: "compaction", scope: "defaults", origin: "special" },
     { id: "title", scope: "defaults", origin: "special" },
     { id: "summary", scope: "defaults", origin: "special" },
@@ -1514,8 +1514,6 @@ test("project-level file-backed build override replaces native projection at pro
   expect(projectNativeChildren).not.toContain("agent:project:build")
 
   expect(childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)).toEqual([
-    "agent:project:general",
-    "agent:project:explore",
     "agent:project:compaction",
     "agent:project:title",
     "agent:project:summary",
@@ -1525,12 +1523,12 @@ test("project-level file-backed build override replaces native projection at pro
   expect(childrenOf(nodes, "group:defaults:agents:native").map((node) => node.id)).toContain("agent:defaults:build")
 })
 
-test("project-level file-backed explore override replaces special projection at project level while preserving others", () => {
+test("project-level file-backed explore override replaces OpenCode projection at project level while preserving others", () => {
   const builtins: AgentSource[] = [
     { id: "build", scope: "defaults", origin: "native" },
     { id: "plan", scope: "defaults", origin: "native" },
-    { id: "general", scope: "defaults", origin: "special" },
-    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "general", scope: "defaults", origin: "native" },
+    { id: "explore", scope: "defaults", origin: "native" },
     { id: "compaction", scope: "defaults", origin: "special" },
     { id: "title", scope: "defaults", origin: "special" },
     { id: "summary", scope: "defaults", origin: "special" },
@@ -1551,18 +1549,18 @@ test("project-level file-backed explore override replaces special projection at 
   const projectNativeChildren = childrenOf(nodes, "group:project:agents:native").map((node) => node.id)
   expect(projectNativeChildren).toContain("agent:project:build")
   expect(projectNativeChildren).toContain("agent:project:plan")
+  expect(projectNativeChildren).not.toContain("agent:project:explore")
 
   const projectSpecialChildren = childrenOf(nodes, "group:project:agents:native:special").map((node) => node.id)
   expect(projectSpecialChildren).not.toContain("agent:project:explore")
   expect(projectSpecialChildren).toEqual([
-    "agent:project:general",
     "agent:project:compaction",
     "agent:project:title",
     "agent:project:summary",
   ])
 
-  expect(childrenOf(nodes, "group:global:agents:native:special").map((node) => node.id)).toContain("agent:global:explore")
-  expect(childrenOf(nodes, "group:defaults:agents:native:special").map((node) => node.id)).toContain("agent:defaults:explore")
+  expect(childrenOf(nodes, "group:global:agents:native").map((node) => node.id)).toContain("agent:global:explore")
+  expect(childrenOf(nodes, "group:defaults:agents:native").map((node) => node.id)).toContain("agent:defaults:explore")
 })
 
 test("empty rule sets emit no perm rows but the tool still offers the add choice", () => {

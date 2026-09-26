@@ -14,7 +14,7 @@ export interface AgentPresetPick {
   readonly none?: string
 }
 
-// DESIGN §5's preset step, grouped: Agent presets (Native, Plus, User), Team
+// DESIGN §5's preset step, grouped: Agent presets (OpenCode, Plus, User), Team
 // preset members (`<team> › <member>`), then the None option. Undefined =
 // cancelled, null = None.
 export async function pickAgentPreset(
@@ -50,10 +50,10 @@ export interface TeamPresetPick {
   readonly none?: string
 }
 
-// A team preset, grouped Native / Plus / User; "" = the None option (an empty
+// A team preset, grouped Plus / User; "" = the None option (an empty
 // team, or unlink). Undefined = cancelled.
 export async function pickTeamPreset(context: Plugin.Context, snapshot: Snapshot, pick: TeamPresetPick = {}): Promise<string | undefined> {
-  const teams = listingOfSnapshot(snapshot).filter((entry) => entry.ref.kind === "team")
+  const teams = listingOfSnapshot(snapshot).filter((entry) => entry.ref.kind === "team" && entry.origin !== "native")
   return context.ui.dialog.select<string>({
     title: pick.title ?? "Team preset",
     placeholder: pick.current === undefined ? "Create from a team preset" : "Follow a team preset live",
@@ -66,7 +66,7 @@ export async function pickTeamPreset(context: Plugin.Context, snapshot: Snapshot
 }
 
 export function originLabel(origin: "native" | "plus" | "user"): string {
-  if (origin === "native") return "Native"
+  if (origin === "native") return "OpenCode"
   if (origin === "plus") return "Plus"
   return "User"
 }

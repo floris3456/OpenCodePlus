@@ -1308,12 +1308,12 @@ test("a native agent's base follows the active model its Project or Global row s
   }
 })
 
-test("built-ins split into native and special origins with file-backed user", async () => {
+test("only maintenance built-ins are Special; hidden and file-backed agents keep their origins", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const ids = ["build", "plan", "explore", "title", "summary", "compaction", "general", "custom"]
-  const hostAgents = ids.map((id) => agent(id, `${id} prompt`))
+  const hostAgents = ids.map((id) => ({ ...agent(id, `${id} prompt`), hidden: true }))
   const discovered = await discover({
     ctx: fullContext({ directory, agents: hostAgents }),
     records: [],
@@ -1321,22 +1321,28 @@ test("built-ins split into native and special origins with file-backed user", as
     activeBase: noBase,
   })
   const byId = new Map(discovered.agents.map((entry) => [entry.id, entry]))
-  expect(byId.get("build")).toMatchObject({ scope: "defaults", origin: "native" })
-  expect(byId.get("plan")).toMatchObject({ scope: "defaults", origin: "native" })
-  for (const id of ["explore", "title", "summary", "compaction", "general"]) {
+  for (const id of ["build", "plan", "general", "explore"]) {
+    expect(byId.get(id)).toMatchObject({ scope: "defaults", origin: "native" })
+  }
+  for (const id of ["title", "summary", "compaction"]) {
     expect(byId.get(id)).toMatchObject({ scope: "defaults", origin: "special" })
   }
   expect(byId.get("custom")).toMatchObject({ scope: "defaults", origin: "user" })
   // A file-backed built-in id is user-owned, not native/special.
   await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })
-  await Bun.write(path.join(directory, ".opencode", "agent", "build.md"), "# build\n")
+  for (const id of ["build", "title"]) {
+    await Bun.write(path.join(directory, ".opencode", "agent", `${id}.md`), `# ${id}\n`)
+  }
   const fileBacked = await discover({
     ctx: fullContext({ directory, agents: hostAgents }),
     records: [],
     baseTemplates: noTemplates,
     activeBase: noBase,
   })
-  const built = fileBacked.agents.find((entry) => entry.id === "build" && entry.scope === "project")
-  expect(built).toMatchObject({ scope: "project", origin: "user" })
-  expect(built?.path).toBe(path.join(directory, ".opencode", "agent", "build.md"))
+  for (const id of ["build", "title"]) {
+    const built = fileBacked.agents.find((entry) => entry.id === id && entry.scope === "project")
+    expect(built).toMatchObject({ scope: "project", origin: "user" })
+    expect(built?.path).toBe(path.join(directory, ".opencode", "agent", `${id}.md`))
+    expect(fileBacked.agents.find((entry) => entry.id === id && entry.scope === "defaults")?.origin).toBe(byId.get(id)?.origin)
+  }
 })

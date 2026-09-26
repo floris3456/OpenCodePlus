@@ -444,10 +444,10 @@ function shadowedSources(
 const builtinAgentIds = ["build", "general", "explore", "compaction", "title", "summary", "plan"]
 
 // Server-side origin classification: file-backed agents are always user;
-// unbacked built-ins split into native (build, plan) and special
-// (explore, title, summary, compaction, general); everything else is user.
-const specialAgentIds = ["explore", "title", "summary", "compaction", "general"]
-const nativeAgentIds = ["build", "plan"]
+// unbacked built-ins split into OpenCode and its Special maintenance agents.
+// Hidden is a visibility setting, not an origin; everything else is user.
+const specialAgentIds = ["title", "summary", "compaction"]
+const nativeAgentIds = ["build", "plan", "general", "explore"]
 
 function originForId(id: string): AgentSource["origin"] {
   if ((specialAgentIds as readonly string[]).includes(id)) return "special"

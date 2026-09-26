@@ -64,7 +64,7 @@ const namespace = "instructions"
 // OpenCodePlus: AGENTS.md rows and their create/delete are disabled pending the
 // Context catalogue (instructions/discover.ts carries the full note).
 export const INSTRUCTION_DISABLED =
-  "instruction.disabled: AGENTS.md handling in OpenCodePlus is disabled for now; native opencode applies AGENTS.md files. Being reworked with the Context catalogue."
+  "instruction.disabled: AGENTS.md handling in OpenCodePlus is disabled for now; OpenCode applies AGENTS.md files. Being reworked with the Context catalogue."
 const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
 

@@ -18,7 +18,7 @@ a row resolved through one catalogue never reads the other's inventory
 ```
 Defaults
   Agents                                    group:defaults:agents
-    Native / Special / Plus / User          (unchanged agent subtrees)
+    OpenCode / Special / Plus / User        (unchanged agent subtrees)
     Models · Tools · Base · Skills · System · MCP     group:defaults::<category>
   Teams                                     group:defaults:teams
     <team> > <member>                       (unchanged team subtrees)
@@ -30,12 +30,12 @@ agents and teams; only `Defaults` carries shared inventories, because
 `{ level: "defaults", agent: null }` is the one address the resolution chain
 falls through to.
 
-The `Agents` catalogue's children are the origin subgroups (`Native`, `Plus`,
-`User`, with `Special` nested under `Native`: `group:<level>:agents:native`,
+The `Agents` catalogue's children are the origin subgroups (`OpenCode`, `Plus`,
+`User`, with `Special` nested under `OpenCode`: `group:<level>:agents:native`,
 `group:<level>:agents:native:special`, `group:<level>:agents:plus`,
 `group:<level>:agents:user`, all always emitted even when empty; agent rows
 keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the
-`User` subgroup, never on `Native`/`Special`/`Plus`) holding that level's
+`User` subgroup, never on `OpenCode`/`Special`/`Plus`) holding that level's
 agents with the identical subtree. The `Teams` catalogue holds that level's
 teams, whose team rows (`team:<level>:<team>`, `add: "agent"`) hold member
 rows (`team:<level>:<team>:<member>`, `add: "agent"`) expanding to the same
@@ -50,7 +50,7 @@ and the entries of a pattern equal to its name. `[a]` on the Defaults Teams
 group adds a team entry (team pattern, member pattern, preset: §"TUI create,
 link and review" below). Entry rows address `defaults/<name>` (Teams:
 `defaults/<name>@<pattern>`, catalogue teams) and are removable
-(`entry.delete`). Built-in Native and Special agents
+(`entry.delete`). Built-in OpenCode and Special agents
 project under the Project, Global and Defaults roots with row id `agent:<level>:<id>` and are not
 removable (`actions.remove === false`). Ancestor-backed project agents are
 discovered through core's upward `.opencode` walk, are file-backed, and are not
@@ -69,7 +69,7 @@ Every agent in the three level roots, every Defaults entry and every preset has 
   Models
     <model>
   Tools
-    Native / OpenCodePlus
+    OpenCode / OpenCodePlus
       <tool>
         Description            (its one section, relabelled; several sections hang under a Description group)
         Permissions            (omitted when the tool lists no row for this owner)
@@ -90,7 +90,7 @@ Every agent in the three level roots, every Defaults entry and every preset has 
     <Template>.txt         (the one matching the agent's Plus-active model is marked "active")
       <section>
   Skills
-    Native / OpenCodePlus / MCP > <server> / Project [a: add skill]
+    OpenCode / OpenCodePlus / MCP > <server> / Project [a: add skill]
       <skill>
         <section>
   System                   [a: add instruction]
@@ -139,10 +139,10 @@ team: {level: "preset", team}}` with no prompts.
 ```
 Presets                               root:preset
   Agents                              group:preset:agents
-    Native / Plus / User              group:preset:agents:native|plus|user   (User: [a: add preset])
+    OpenCode / Plus / User            group:preset:agents:native|plus|user   (User: [a: add preset])
       <preset>                        agent:preset:<id>   (label: the preset's label; five groups)
   Teams                               group:preset:teams
-    Native / Plus / User              group:preset:teams:native|plus|user    (User: [a: add team preset])
+    Plus / User                      group:preset:teams:plus|user          (User: [a: add team preset])
       <team preset>                   team:preset:<team>  (User: [a: add member preset])
         <member preset>               team:preset:<team>:<member>  (five groups)
 ```
@@ -161,7 +161,7 @@ preset it is linked to now. Item, perm, section and model rows carry
 `badges.from` (where the on/off state came from, `model.ts` `From`),
 `badges.textFrom` (when the text came from elsewhere), `badges.fromLabel`
 (`from-label.ts`: "from preset Orchestrator", "from default *orchestrator*",
-"from Defaults (every agent)", "native", "upstream", "off by default", "set
+"from Defaults (every agent)", "OpenCode", "upstream", "off by default", "set
 here", "from global") and `badges.reviewOf` (the parts to review). A model row
 whose own active record recorded an active model above that has since changed
 is to review.
@@ -170,11 +170,11 @@ is to review.
 
 The human's flow everywhere (DESIGN §5): `a` → a name → a preset → done; no
 template, prompt, model or mode step. The preset picker (`pickAgentPreset`,
-title `Preset`) groups its options by `category`: `Agent presets · Native`,
+title `Preset`) groups its options by `category`: `Agent presets · OpenCode`,
 `Agent presets · Plus`, `Agent presets · User`, `Team preset members` (titles
 `<team> › <member>`), then `None — everything off` (no category, value
 `__none__` → no `preset`). The team preset picker (`pickTeamPreset`, title
-`Team preset`) groups `Native` / `Plus` / `User` and ends with `Empty team`
+`Team preset`) groups `Plus` / `User` and ends with `Empty team`
 (value `""` → no `preset`).
 
 | cursor | dialogs | call |
@@ -200,8 +200,8 @@ then navigates to the new agent.
 
 **`l` relink.** Bound on every row whose `owner` is linkable (`isLinkable`: an
 agent, member or team at Project/Global, a Defaults entry, a User preset or
-member preset; never a Teams entry pattern row, a Native/Plus preset or a
-native agent's Defaults row). An agent-like owner gets `pickAgentPreset` with
+member preset; never a Teams entry pattern row, an OpenCode/Plus preset or an
+OpenCode agent's Defaults row). An agent-like owner gets `pickAgentPreset` with
 title `Link to preset`, the current link as `current`, and `None — unlink`; a
 team owner (`agent: null`) gets `pickTeamPreset` with title `Link to team
 preset` and `None — unlink`. The choice calls `link.set {level, agent, team?,
@@ -283,7 +283,7 @@ bytes and its exact meaning.
   rows exist for parity and their enablement is not applied separately.
 
 Code Mode grouping (`tree.ts`): inside each origin group, Code Mode tools
-sit under a `Code Mode` subgroup; below Native and OpenCodePlus it holds one
+sit under a `Code Mode` subgroup; below OpenCode and OpenCodePlus it holds one
 group per tool namespace (sorted like the server groups) with
 namespace-less tools hanging directly off it, while below an MCP server the
 rows hang directly off it and the namespace level is skipped (every tool of
@@ -293,7 +293,7 @@ groups append `:<namespace>` (`…:codemode:<namespace>`), and MCP servers
 hold rows directly under `…:mcp:<server>:codemode`. Empty subgroups are
 never emitted: the caller skips the group when there are no rows, and every
 namespace group comes from a row so it is non-empty by construction. The
-synthetic `execute` row (`tool:execute`) is a plain Native row, toggle-only:
+synthetic `execute` row (`tool:execute`) is a plain OpenCode row, toggle-only:
 its text is host-owned and not editable, and it carries no other affordance.
 It has no Description; its only child is its Permissions group (Limits →
 Tool calls per run).
@@ -349,7 +349,7 @@ Mode and MCP included, expands into Description and Permissions.
   rows and holds only the role rows (`policy`) whose host tool this owner's
   inventory lacks; it is omitted when every row found its tool.
 
-Only native/plus, non-Code-Mode, non-`execute` tool rows offer a user rule
+Only OpenCode/Plus, non-Code-Mode, non-`execute` tool rows offer a user rule
 (`canHostPermRules`): MCP resources are always `"*"` and Code Mode denies are
 whole-tool, so a user rule — a core rule — there would never match core
 evaluation. The other tools' Permissions list catalog rows, which the tool
@@ -404,13 +404,17 @@ export function scopesOf(agents: readonly AgentSource[]): Scopes
 ```
 
 Origin is computed server-side in `discover.ts` (`special` for
-`explore|title|summary|compaction|general`, `native` for `build|plan`, else
+`title|summary|compaction`, `native` for `build|plan|general|explore`, else
 `user`; file-backed agents are always `user`) and upgraded to `plus` in
 `index.ts` `toSnapshot` when the id is in `plusTeamOutputIds` or the source
 carries `team`. It crosses the RPC boundary on `AgentEntry.origin` and is
 carried through `snapshot.ts` `agentOf` into `tree.ts` `lazyAgentsGroup`,
 which groups by that carried value (never by hardcoded ids or path/team
-heuristics in the tree layer). Ancestor-backed project agents are discovered
+heuristics in the tree layer). Hidden is a visibility setting and does not
+make an agent Special. OpenCode is the displayed inherited origin; stored
+`native` row ids, API discriminators and `group:native` filters remain
+compatible. OpenCode ships agent presets but no team presets, so Presets →
+Teams has only Plus and User categories. Ancestor-backed project agents are discovered
 through core's upward `.opencode` walk, are file-backed, and carry
 `AgentEntry.ancestor: true` across the RPC boundary; because
 `existingAgentPath` confines deletion to the project directory and cannot
@@ -554,15 +558,15 @@ the first node supplying that field wins, else the fallback:
 | ---- | ----- |
 | project/A (team T optional) | project/A@T → project/A → global/A (Global A exists) → expand(nearest link among those) → matching Defaults entries, most specific first, each followed by expand(its link) → defaults/null → fallback |
 | global/A | global/A → expand(link) → entries → defaults/null → fallback |
-| defaults/E (entry or native agent) | defaults/E → expand(link of E) → defaults/null → fallback |
+| defaults/E (entry or OpenCode agent) | defaults/E → expand(link of E) → defaults/null → fallback |
 | preset/P | expand(P) → defaults/null → fallback |
 | defaults/null | defaults/null → fallback |
 
-`expand(P)` = `preset/P` (the human's edits) → `shipped/P` (Native and Plus
+`expand(P)` = `preset/P` (the human's edits) → `shipped/P` (OpenCode and Plus
 presets only: content from the catalogue, never stored) → expand(link of P).
 A member preset `M@TP` is `preset/M@{level:"preset",team:TP}` and never falls
 through to a stand-alone agent preset `M`. A preset already in the chain is
-not expanded again (cycles are cut). An agent in `ctx.defaults` (native agents
+not expanded again (cycles are cut). An agent in `ctx.defaults` (OpenCode agents
 shown at Defaults) has its own exact Defaults node `defaults/A`, ordered as an
 exact Agents entry. Agents-catalogue entries match stand-alone agents;
 Teams-catalogue entries (`defaults/<member pattern>@{level:"defaults",
@@ -576,7 +580,7 @@ Fallback (§3.3): `state` falls back to the item's upstream state only for an
 agent in `ctx.native` (origin native/special, a team's Special agents
 included), an item the agent owns (`item.agents` includes it — its Role/persona
 — or `item.ownedBy` names it: a user-created rule row carries its RuleRecord's
-agent there, without limiting which agents the row applies to) and a Native
+agent there, without limiting which agents the row applies to) and an OpenCode
 preset; everything else — user agents, members, Defaults entries,
 `defaults/null`, other presets — falls back to **off**. `text` and `pin`
 always fall back to upstream. A context without `native` (a bare
@@ -769,10 +773,10 @@ It is pure data and functions (no filesystem), shared by the server, the TUI
 and the tools, so shipped content never crosses the wire: every side builds
 the same catalogue from the snapshot's `items` and preset records.
 
-- **Native agent presets** (`nativePresetIds`: build, plan, general, explore,
+- **OpenCode agent presets** (`nativePresetIds`: build, plan, general, explore,
   title, summary, compaction). `shipped(ref, item, null, upstream)` answers
   every item with the resolving item's upstream `{ text, state, pin? }` and
-  `system:role` with the native agent's own role item text.
+  `system:role` with the OpenCode agent's own role item text.
 - **Plus agent presets** (`plusAgentPresets`: planner, orchestrator,
   implementer, reviewer, scout, build-seat; mode `primary`). Each ships every
   item's upstream value, overlaid by `plusAgentOverrides[id]` (the former
@@ -789,7 +793,7 @@ the same catalogue from the snapshot's `items` and preset records.
 - No preset ships an active model yet (`model()` is always undefined).
 
 `presetListing(presets)` lists every preset as data `{ ref, origin, kind,
-label, description?, mode?, members? }` (Native, Plus, User agent presets,
+label, description?, mode?, members? }` (OpenCode, Plus, User agent presets,
 then Plus and User team presets each followed by their member presets).
 `presetCatalog({ items, presets })` builds the `PresetCatalog`;
 `chainContext({ agents, items, links, entries, presets, teams })` builds the
@@ -948,8 +952,8 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `link.set` | `{ level, agent, team?, catalogue?, preset: PresetRef \| null, actor? }` | `LinkResult` | `project.disabled`, `link.invalid`, `link.cycle`, `preset.invalid`, `preset.readonly`, `agent.protected` |
 
 Presets, entries and links (DESIGN §4, §5, §7). `agent.create` and
-`team.addAgent` write the preset's `mode` and `description` (Native presets:
-what the host reports for the native agent) and an EMPTY body, and store a
+`team.addAgent` write the preset's `mode` and `description` (OpenCode presets:
+what the host reports for the OpenCode agent) and an EMPTY body, and store a
 link at the created owner (members: team-scoped); no preset is "None —
 everything off" (no link, and a stale link at that owner is dropped). A file
 never goes out without a mode: None (or a preset that names no mode) writes
@@ -968,14 +972,14 @@ patterns) instead of a file. Entry names may hold `*`/`%`, never `:`, NUL or a
 line break (`presets.ts` `validateEntryName`); team patterns follow
 `validateTeamName`; a Teams entry always stores its team pattern (default
 `*`) and may not be named `special`. A duplicate (same catalogue, team pattern
-and name) or an Agents entry named like a native agent's own Defaults row is
+and name) or an Agents entry named like an OpenCode agent's own Defaults row is
 `entry.exists`. Deleting or renaming an entry takes its own records and link
 with it. `preset.create` checks the id against every preset of that kind
 (`preset.exists`); an agent preset copies its base's mode/description into
 `fields` and links to it; a team preset from a team preset copies the member
 list (each member preset linked to the source member, the team linked to the
 source team). `preset.addMember` takes User team presets only
-(`preset.readonly`). `preset.delete` refuses Native/Plus presets and, while
+(`preset.readonly`). `preset.delete` refuses OpenCode/Plus presets and, while
 any stored or shipped link points to the preset (or, for a team preset, to one
 of its members from outside it), answers `preset.inUse { users, elsewhere? }`
 with the owners' row ids; it removes the preset's records, its members' and
@@ -998,7 +1002,7 @@ exists never breaks resolution: its node contributes nothing and the rows fall
 through to the rest of the chain; the owner row carries `owner.linkMissing`,
 the badge `missing preset` (warning), and the detail line `Created from
 preset: <id> — missing (deleted)…`, until it is relinked (`l`). `link.set` validates the owner (an existing project/global agent, team
-or member, a Defaults entry, or a User preset — Native/Plus presets are
+or member, a Defaults entry, or a User preset — OpenCode/Plus presets are
 `preset.readonly`), the preset's kind (an agent takes an agent or member
 preset, a team a team preset) and, at `preset` level, refuses a link that
 would bring the preset back to itself (`link.cycle { through }`). A team's
@@ -1086,7 +1090,7 @@ message?, updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "
 variant? }`), `ancestor?` (`boolean`, true when backed by an ancestor directory
 agent file), and `fileBacked`. `ModelAddInput` and `ModelRemoveInput` carry optional `team?: { level, team }`.
 Every team row expands to its member rows followed by a `Special` row (`team:<level>:<team>:special`),
-which expands to `general`, `explore`, `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`),
+which expands to `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`),
 each carrying the five groups (`group:<level>:<team>/:special:<id>:<group>`). Their overrides carry `team: { level, team }`
 and apply only while the team is enabled. While it is the enabled winner, every Special agent the host runs is published
 with that team (`computeSpecialOverrides` in `index.ts`), so apply resolves its tools, permissions, skills and model through
@@ -1439,7 +1443,7 @@ any agent of an enabled team. `teams/policy.ts` holds only the team tool lists.
 
 Every former hidden rule is a **shared catalogue row** (`permission-catalog.ts`,
 no `agents`, so every agent has it). An agent that nothing sets resolves it to
-its fallback (§3.3: off, unless the agent is native). The **Plus presets**
+its fallback (§3.3: off, unless the agent is from OpenCode). The **Plus presets**
 (`presets.ts` `plusAgentOverrides`, `plusMemberOverrides`) set them so an agent
 linked to a Plus preset behaves like the old role of that name, row for row.
 The team tools read the rows through the permission table
@@ -2023,7 +2027,7 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   shared (`agent: null`) `model` or `rule` lands in; `base`, `instruction` and
   `mcp` create one file both catalogues list, so `catalogue` does not change
   what is written. `create` with `kind: "instruction"` is refused with
-  `instruction.disabled` pending the Context catalogue: native opencode applies
+  `instruction.disabled` pending the Context catalogue: OpenCode applies
   AGENTS.md files and no instruction row is created or bare-name enabled.
   `delete` without
   `confirm: true` fails with `delete.unconfirmed` and writes nothing;
@@ -2103,7 +2107,7 @@ path is skipped.
   not per level/agent (`rule.add`/`rule.remove`/`rule.update` match by tool+id
   only, ownership and logging follow the record actually matched).
 - Display and enforcement resolve one chain for every item kind (tools,
-  skills, base, system, perm) and the active model. A native built-in
+  skills, base, system, perm) and the active model. An OpenCode built-in
   (`build`, `plan`, `explore`, …: origin native or special, discovered at
   Defaults, no team) owns a visible row under Project, Global and Defaults
   alike (`nativeAgentsForLevel`/`specialAgentsForLevel` in `tree.ts`) and ops
@@ -2601,7 +2605,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 | `create.failed` | the write landed but its row is not in the tree; re-read with `instructions_list` |
 | `agent.protected` | that agent is in `protectedAgents` and the write's actor is a tool; data is `{ agent, id?, reason }` |
 | `delete.unconfirmed` | retry with `confirm: true` |
-| `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; native opencode applies AGENTS.md files |
+| `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; OpenCode applies AGENTS.md files |
 | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
 | `project.disabled` | project mode is off and no tool changes that |
 
@@ -2681,4 +2685,3 @@ Built-in team prompts reference the search tools by their exact model-visible ID
 - `planner` prompt: `search_tavily_search` and `search_tavily_extract` for documentation.
 
 The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available. It lists under `search_tavily_search` → Permissions → Access; the three tools' own categories (Queries, Sites, depths, topics, types, limits, Approval) are in the per-tool table under Permission rules.
-

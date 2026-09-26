@@ -739,7 +739,7 @@ test("toggle, reset, and model activation under a team special write records car
   const input = baseInput({
     agents: [
       { id: "alpha", scope: "project" },
-      { id: "explore", scope: "defaults", origin: "special" },
+      { id: "title", scope: "defaults", origin: "special" },
     ],
     records: [
       {
@@ -766,11 +766,11 @@ test("toggle, reset, and model activation under a team special write records car
   })
 
   // 1. Toggle
-  const toolRowId = "item:project:crew/:special:explore:tool:bash"
+  const toolRowId = "item:project:crew/:special:title:tool:bash"
   const toggleResult = toggle(input, toolRowId)
   expect("records" in toggleResult).toBe(true)
   if (!("records" in toggleResult)) throw new Error("expected toggle success")
-  const custom = toggleResult.records.find((r) => r.item === "tool:bash" && r.agent === "explore")
+  const custom = toggleResult.records.find((r) => r.item === "tool:bash" && r.agent === "title")
   expect(custom).toBeDefined()
   expect(custom?.level).toBe("project")
   expect(custom?.team).toEqual({ level: "project", team: "crew" })
@@ -780,15 +780,15 @@ test("toggle, reset, and model activation under a team special write records car
   const resetResult = reset({ ...input, records: toggleResult.records }, toolRowId)
   expect("records" in resetResult).toBe(true)
   if (!("records" in resetResult)) throw new Error("expected reset success")
-  const customAfterReset = resetResult.records.find((r) => r.item === "tool:bash" && r.agent === "explore" && r.team?.team === "crew")
+  const customAfterReset = resetResult.records.find((r) => r.item === "tool:bash" && r.agent === "title" && r.team?.team === "crew")
   expect(customAfterReset).toBeUndefined()
 
   // 3. Model activation
-  const modelRowId = "item:project:crew/:special:explore:model:acme/nova-2"
+  const modelRowId = "item:project:crew/:special:title:model:acme/nova-2"
   const modelResult = activateModelRow(input, modelRowId)
   expect("models" in modelResult).toBe(true)
   if (!("models" in modelResult)) throw new Error("expected model activation success")
-  const modelRec = modelResult.models.find((m) => m.providerID === "acme" && m.modelID === "nova-2" && m.agent === "explore")
+  const modelRec = modelResult.models.find((m) => m.providerID === "acme" && m.modelID === "nova-2" && m.agent === "title")
   expect(modelRec).toBeDefined()
   expect(modelRec?.level).toBe("project")
   expect(modelRec?.team).toEqual({ level: "project", team: "crew" })

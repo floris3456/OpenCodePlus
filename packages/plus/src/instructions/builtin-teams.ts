@@ -119,7 +119,7 @@ interfaces named in the Brief before changing anything. Follow the existing
 design; fix bugs you find inside your scope and note them in concerns.
 
 Run your checks with team_check as you go; fix causes, never weaken tests.
-Run checks only through team_check; the native shell is disabled for implementers.
+Run checks only through team_check; the OpenCode shell is disabled for implementers.
 Checkpoint with team_checkpoint (conventional message). Finish with team_finish;
 if a needed file or check is outside your scope, complete everything else,
 checkpoint, then finish blocked with needs=[{kind:"path",...}]. Your budget is

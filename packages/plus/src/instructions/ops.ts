@@ -794,7 +794,7 @@ export interface StateReviewChoice {
   readonly parts: readonly ReviewPart[]
   readonly mine: string
   readonly above: string
-  /** Where the value above comes from ("from preset Orchestrator", "native", …). */
+  /** Where the value above comes from ("from preset Orchestrator", "OpenCode", …). */
   readonly from: string
 }
 
@@ -897,7 +897,7 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
   const preset = node.owner?.preset
   if (preset !== undefined) {
     if (preset.origin !== "user")
-      return { refusal: `"${node.label}" cannot be deleted: ${preset.origin === "native" ? "Native" : "Plus"} presets are read-only` }
+      return { refusal: `"${node.label}" cannot be deleted: ${preset.origin === "native" ? "OpenCode" : "Plus"} presets are read-only` }
     return {
       kind: "preset.delete",
       ref: preset.ref,

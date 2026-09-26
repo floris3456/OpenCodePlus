@@ -521,7 +521,7 @@ test("a on a tool row adds a section", async () => {
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveToNext(fixture, "Native")
+    await moveToNext(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "bash")
     await fixture.waitForFrame((frame) => frame.includes("run commands"))
@@ -770,10 +770,10 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Native skills hang under Defaults → Agents → Skills → Native.
+    // OpenCode skills hang under Defaults → Agents → Skills → OpenCode.
     await gotoDefaultsInventory(fixture, "Skills")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
@@ -919,13 +919,13 @@ test("tool row does not offer d delete", async () => {
     await expand(fixture)
     await moveTo(fixture, "Agents")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "build")
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "read")
     expect(binds(fixture)).toContain("d")
@@ -1193,10 +1193,10 @@ test("s opens the manual splitter and saves two named sections", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults tools branch: Defaults › Agents › Tools › Native › the item.
+    // Defaults tools branch: Defaults › Agents › Tools › OpenCode › the item.
     await gotoDefaultsInventory(fixture, "Tools")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "bash")
     await fixture.waitForFrame((frame) => frame.includes("Purpose tells when."))
@@ -1393,7 +1393,7 @@ test("Code Mode rows toggle and edit like any other tool", async () => {
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveToNext(fixture, "Native")
+    await moveToNext(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "Code Mode")
     await expand(fixture)
@@ -1439,7 +1439,7 @@ test("p key writes a pin through the same status path as toggle", async () => {
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveToNext(fixture, "Native")
+    await moveToNext(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "Code Mode")
     await expand(fixture)
@@ -1932,7 +1932,7 @@ test("a on a tool row offers Section or Permission rule and creates without scop
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     expect(dispatch(fixture, "a")).toBe(true)
@@ -2043,7 +2043,7 @@ test("perm rows list under the tool's Permissions and category, and enter opens 
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveToNext(fixture, "Native")
+    await moveToNext(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     await expand(fixture)
@@ -2092,7 +2092,7 @@ test("a on a Defaults Teams tool row creates the rule in the Teams catalogue", a
   try {
     await gotoDefaultsInventory(fixture, "Tools", "Teams")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     expect(dispatch(fixture, "a")).toBe(true)
@@ -2190,7 +2190,7 @@ test("enter on a Defaults Teams perm row sends the Teams catalogue with rule.upd
   try {
     await gotoDefaultsInventory(fixture, "Tools", "Teams")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     await expand(fixture)
@@ -2251,7 +2251,7 @@ test("detail pane e starts text editing on a tool row but not on a permission ru
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveToNext(fixture, "Native")
+    await moveToNext(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     // Tool row: 'e' is bound and starts text editing.
@@ -2343,7 +2343,7 @@ test("detail pane shows a rule's refusal message, curated or user-set", async ()
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveToNext(fixture, "Native")
+    await moveToNext(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     await expand(fixture)
@@ -2838,10 +2838,11 @@ test("team create on group:project:teams asks the name, then a grouped team pres
     expect(teamCreates).toEqual([{ level: "project", team: "crew", preset: "opencodeplus-team" }])
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Team name"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Team preset"])
-    // Grouped by origin, Plus team presets first here (Native ships none);
+    // Grouped by origin, Plus team presets first here (OpenCode ships none);
     // the empty team is the last option, without a group.
     const picker = fixture.fake.selectInputs[0]
     expect(picker.options.filter((option) => option.category === "Plus").map((option) => option.value)).toContain("opencodeplus-team")
+    expect(picker.options.some((option) => option.category === "OpenCode" || option.category === "Native")).toBe(false)
     expect(picker.options.at(-1)).toEqual({ title: "Empty team", value: "" })
     expect(fixture.captureCharFrame()).not.toContain("Team scope")
     await fixture.waitForFrame(() =>
@@ -3321,7 +3322,7 @@ test("a on a Special row or special-agent row under a team shows status refusal"
     ...createSnapshot({
       agents: [
         { id: "alpha", scope: "project" as const, fileBacked: true },
-        { id: "explore", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
+        { id: "title", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
       ],
     }),
     teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["alpha"] }],
@@ -3339,7 +3340,7 @@ test("a on a Special row or special-agent row under a team shows status refusal"
     expect(fixture.fake.dialogSelects.length).toBe(0)
 
     await expand(fixture)
-    await moveTo(fixture, "explore")
+    await moveTo(fixture, "title")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Special agents are built in; add is not available here"))
     expect(fixture.fake.dialogSelects.length).toBe(0)
@@ -3353,7 +3354,7 @@ test("space on a Models row under a team special persists the team-scoped record
     ...createSnapshot({
       agents: [
         { id: "alpha", scope: "project" as const, fileBacked: true },
-        { id: "explore", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
+        { id: "title", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
       ],
       items: [
         {
@@ -3364,7 +3365,7 @@ test("space on a Models row under a team special persists the team-scoped record
           text: "acme/nova-2",
           enabled: true,
           fingerprint: "fp-nova-2",
-          agents: ["explore"],
+          agents: ["title"],
         },
       ],
       records: [
@@ -3400,7 +3401,7 @@ test("space on a Models row under a team special persists the team-scoped record
     await expand(fixture)
     await moveTo(fixture, "Special")
     await expand(fixture)
-    await moveTo(fixture, "explore")
+    await moveTo(fixture, "title")
     await expand(fixture)
     await moveTo(fixture, "Models")
     await expand(fixture)
@@ -3411,7 +3412,7 @@ test("space on a Models row under a team special persists the team-scoped record
     expect(fixture.fake.mutateInputs.length).toBe(1)
     const models = fixture.fake.mutateInputs[0].records.filter((record) => record.type === "model")
     expect(models.length).toBeGreaterThan(0)
-    const teamModel = models.find((m) => m.type === "model" && m.agent === "explore" && m.team?.team === "crew")
+    const teamModel = models.find((m) => m.type === "model" && m.agent === "title" && m.team?.team === "crew")
     expect(teamModel).toBeDefined()
     expect(teamModel?.team).toEqual({ level: "project", team: "crew" })
     expect(teamModel?.active).toBe(true)
@@ -3425,7 +3426,7 @@ test("space on an Agents-group agent row selects it through the core picker, nev
     ...createSnapshot({
       agents: [
         { id: "alpha", scope: "project" as const, origin: "user" as const, fileBacked: true },
-        { id: "explore", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
+        { id: "title", scope: "defaults" as const, origin: "special" as const, fileBacked: false },
       ],
     }),
     teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["mate"] }],
@@ -3449,15 +3450,15 @@ test("space on an Agents-group agent row selects it through the core picker, nev
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
 
     // Special agents are not offered by the picker: no select bind. They sit
-    // under Defaults → Agents → Native → Special.
+    // under Defaults → Agents → OpenCode → Special.
     await moveTo(fixture, "Defaults")
     await moveToNext(fixture, "Agents")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "Special")
     await expand(fixture)
-    await moveTo(fixture, "explore")
+    await moveTo(fixture, "title")
     expect(binds(fixture)).not.toContain("space")
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
   } finally {
@@ -3504,8 +3505,8 @@ test("a on Global Agents → User asks the name, then a grouped preset, and crea
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Preset"])
     const picker = fixture.fake.selectInputs[0]
     const categories = [...new Set(picker.options.map((option) => option.category))]
-    expect(categories).toEqual(["Agent presets · Native", "Agent presets · Plus", "Team preset members", undefined])
-    expect(picker.options.find((option) => option.value === "agent:build")?.category).toBe("Agent presets · Native")
+    expect(categories).toEqual(["Agent presets · OpenCode", "Agent presets · Plus", "Team preset members", undefined])
+    expect(picker.options.find((option) => option.value === "agent:build")?.category).toBe("Agent presets · OpenCode")
     expect(picker.options.find((option) => option.value === "agent:orchestrator")?.title).toBe("Orchestrator")
     expect(picker.options.find((option) => option.value === "member:starter/planner")?.title).toBe("starter › planner")
     expect(picker.options.some((option) => option.value === "team:opencodeplus-team")).toBe(false)
@@ -3696,7 +3697,7 @@ test("l on a team relinks to a team preset; l is not offered on rows that take n
     await moveTo(fixture, "Presets")
     await moveToNext(fixture, "Agents")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "Build")
     expect(binds(fixture)).not.toContain("l")
@@ -3779,7 +3780,7 @@ test("tree rows show the from-label suffix and the detail pane its provenance an
     await expand(fixture)
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "bash")
     const frame = await fixture.waitForFrame((next) => next.includes("state and text: from preset Orchestrator"))
@@ -3809,7 +3810,7 @@ async function gotoBash(fixture: TestFixture): Promise<void> {
   await expand(fixture)
   await moveTo(fixture, "Tools")
   await expand(fixture)
-  await moveTo(fixture, "Native")
+  await moveTo(fixture, "OpenCode")
   await expand(fixture)
   await moveTo(fixture, "bash")
 }
@@ -3934,7 +3935,7 @@ test("enter on a model review offers keep yours / take the model above", async (
 test("detail pane: a team's Special agent shows its team-scoped active model and scrub preview", async () => {
   const crew = { level: "project" as const, team: "crew" }
   const snapshot = createSnapshot({
-    agents: [{ id: "general", scope: "defaults" as const, fileBacked: false, origin: "special" as const }],
+    agents: [{ id: "summary", scope: "defaults" as const, fileBacked: false, origin: "special" as const }],
     items: [
       toolItem({ id: "tool:shell", title: "shell", text: "Run commands.\nUse git push to publish.", fingerprint: "fp-shell" }),
       {
@@ -3952,8 +3953,8 @@ test("detail pane: a team's Special agent shows its team-scoped active model and
       },
     ],
     records: [
-      { type: "model" as const, level: "project" as const, agent: "general", team: crew, providerID: "acme", modelID: "nova-1", active: true as const, updated: "2026-09-14T00:00:00.000Z" },
-      { type: "customization" as const, level: "project" as const, agent: "general", team: crew, item: "perm:shell:git-push", section: null, state: "off" as const, basedOn: "fp-git-push", updated: "2026-09-14T00:00:00.000Z" },
+      { type: "model" as const, level: "project" as const, agent: "summary", team: crew, providerID: "acme", modelID: "nova-1", active: true as const, updated: "2026-09-14T00:00:00.000Z" },
+      { type: "customization" as const, level: "project" as const, agent: "summary", team: crew, item: "perm:shell:git-push", section: null, state: "off" as const, basedOn: "fp-git-push", updated: "2026-09-14T00:00:00.000Z" },
     ],
     teams: [{ level: "project" as const, team: "crew", enabled: true, agents: [] }],
   })
@@ -3966,7 +3967,7 @@ test("detail pane: a team's Special agent shows its team-scoped active model and
     await expand(fixture)
     await moveTo(fixture, "Special")
     await expand(fixture)
-    await moveTo(fixture, "general")
+    await moveTo(fixture, "summary")
     await expand(fixture)
     await moveTo(fixture, "Models")
     await expand(fixture)
@@ -3974,7 +3975,7 @@ test("detail pane: a team's Special agent shows its team-scoped active model and
     await fixture.waitForFrame((frame) => frame.includes("source: Project · active"))
     await moveTo(fixture, "Tools")
     await expand(fixture)
-    await moveTo(fixture, "Native")
+    await moveTo(fixture, "OpenCode")
     await expand(fixture)
     await moveTo(fixture, "shell")
     await fixture.waitForFrame((frame) => frame.includes("1 lines hidden by rules: Use git push to publish."))

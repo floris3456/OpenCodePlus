@@ -588,7 +588,7 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   })
 }
 
-// DESIGN §2: Presets → Agents / Teams → Native / Plus / User. An agent preset
+// DESIGN §2: Presets → Agents → OpenCode / Plus / User; Teams → Plus / User. An agent preset
 // row (`agent:preset:<id>`) and a member preset row
 // (`team:preset:<team>:<member>`) carry the same five groups as any agent;
 // their rows address `preset/<id>` (members `preset/<member>@<team>`). Only
@@ -630,7 +630,7 @@ function lazyPresetRoot(ctx: BuildContext, memo: Memo): Lazy {
         depth: 1,
         actions: noActions(),
         children: () =>
-          presetOrigins.map((origin) =>
+          presetOrigins.filter((origin) => origin !== "native").map((origin) =>
             branch(memo, {
               kind: "group",
               id: `group:preset:teams:${origin}`,
@@ -652,7 +652,7 @@ function lazyPresetRoot(ctx: BuildContext, memo: Memo): Lazy {
 const presetOrigins = ["native", "plus", "user"] as const
 
 function originLabel(origin: PresetOrigin): string {
-  if (origin === "native") return "Native"
+  if (origin === "native") return "OpenCode"
   if (origin === "plus") return "Plus"
   return "User"
 }
@@ -663,7 +663,7 @@ function lazyPresetAgent(ctx: BuildContext, memo: Memo, entry: PresetEntry): Laz
     level: "preset",
     id,
     label: entry.label,
-    // A Native preset shows its native agent's upstream model.
+    // An OpenCode preset shows its agent's upstream model.
     agent: entry.origin === "native" ? (ctx.agents.find((agent) => agent.id === id && agent.scope === "defaults") ?? null) : null,
     depth: 3,
     remove: entry.origin === "user",
@@ -843,7 +843,7 @@ function lazyAgentsGroup(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 }
 
 // Origin subgroups: server-side origin carried on AgentSource, never inferred
-// here from ids or paths. Native holds native agents plus the nested Special
+// here from ids or paths. OpenCode holds its agents plus the nested Special
 // subgroup; Plus and User hold their own agents. All four ids are always
 // emitted even when empty; agent rows keep `agent:<level>:<id>`.
 function agentOriginOf(agent: AgentSource): "native" | "special" | "plus" | "user" {
@@ -900,7 +900,7 @@ function lazyNativeAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
   return branch(memo, {
     kind: "group",
     id: `group:${level}:agents:native`,
-    label: "Native",
+    label: "OpenCode",
     depth: 2,
     actions: noActions(),
     children: () => [
@@ -1347,7 +1347,7 @@ function lazyTools(
     children: () => {
       const tools = sortedKind(ctx, "tool", owner).filter((item) => visibleInCatalogue(item, catalogue))
       return [
-        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, tools.filter((item) => item.group === "native"), teamRef, catalogue, ownerPath),
+        toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "OpenCode", depth + 1, tools.filter((item) => item.group === "native"), teamRef, catalogue, ownerPath),
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus"), teamRef, catalogue, ownerPath),
         mcpToolsGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, tools.filter((item) => item.group === "mcp"), teamRef, catalogue, ownerPath),
         ...strayTools(ctx, memo, level, owner, agent, tools, depth + 1, teamRef, catalogue, ownerPath),
@@ -1434,7 +1434,7 @@ function lazySkills(
     children: () => {
       const skills = sortedKind(ctx, "skill", owner)
       return [
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "Native", depth + 1, skills.filter((item) => item.group === "native"), undefined, teamRef, catalogue, ownerPath),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "OpenCode", depth + 1, skills.filter((item) => item.group === "native"), undefined, teamRef, catalogue, ownerPath),
         leafGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, skills.filter((item) => item.group === "plus"), undefined, teamRef, catalogue, ownerPath),
         mcpGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, skills.filter((item) => item.group === "mcp"), teamRef, catalogue, ownerPath),
         leafGroup(
@@ -1623,7 +1623,7 @@ function mcpGroup(
   })
 }
 
-// Native/OpenCodePlus tool origin group: plain tools hang directly off the
+// OpenCode/OpenCodePlus tool origin group: plain tools hang directly off the
 // group exactly as before, while Code Mode tools move under a `Code Mode`
 // child group (absent when there are no Code Mode rows) because a plugin can
 // rewrite the catalog per agent and deny a single tool by id.
@@ -1740,7 +1740,7 @@ function toolServerGroup(
   })
 }
 
-// Code Mode tools group labelled `Code Mode`. Under the Native and
+// Code Mode tools group labelled `Code Mode`. Under the OpenCode and
 // OpenCodePlus origins it holds one group per tool namespace (sorted like the
 // server groups), with namespace-less tools hanging directly off it; for MCP
 // servers the rows hang directly off it. Empty groups are never emitted: the

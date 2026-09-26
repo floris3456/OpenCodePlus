@@ -104,7 +104,7 @@ function context(overrides?: Partial<ChainContext>): ChainContext {
   return {
     global: new Set<string>(),
     defaults: new Set<string>(),
-    native: new Set(["build", "explore"]),
+    native: new Set(["build", "explore", "title"]),
     links: [],
     entries: [],
     presets: catalog(),
@@ -491,7 +491,7 @@ test("fallback: only the state goes off; a limit row keeps its upstream text", (
   expect(resolved.pinFrom).toEqual({ kind: "upstream" })
 })
 
-test("fallback: Defaults for every agent and entries are off; a team's Special agent and a Native preset are native", () => {
+test("fallback: Defaults for every agent and entries are off; a team's Special agent and an OpenCode preset inherit upstream", () => {
   const ctx = context({ entries: [entry("*")] })
   const everyone = resolve({
     upstream: item(),
@@ -514,7 +514,7 @@ test("fallback: Defaults for every agent and entries are off; a team's Special a
     records: [],
     splits: [],
     scopes: ctx,
-    address: address({ agent: "explore", team: { level: "project", team: "crew" } }),
+    address: address({ agent: "title", team: { level: "project", team: "crew" } }),
   })
   expect(special.enabled).toBe(true)
   expect(special.from).toEqual({ kind: "native" })
@@ -550,11 +550,12 @@ test("a bare { global, defaults } keeps the upstream fallback; scopesOf marks na
   expect(legacy.from).toEqual({ kind: "upstream" })
   const scopes = scopesOf([
     { id: "build", scope: "defaults", origin: "native" },
-    { id: "explore", scope: "defaults", origin: "special" },
+    { id: "explore", scope: "defaults", origin: "native" },
+    { id: "title", scope: "defaults", origin: "special" },
     { id: "planner", scope: "defaults", origin: "plus" },
     { id: "alice", scope: "project", origin: "user" },
   ])
-  expect([...(scopes.native ?? [])].toSorted()).toEqual(["build", "explore"])
+  expect([...(scopes.native ?? [])].toSorted()).toEqual(["build", "explore", "title"])
   expect(resolve({ upstream: item(), records: [], splits: [], scopes, address: address({ agent: "alice" }) }).enabled).toBe(
     false,
   )

@@ -2403,7 +2403,7 @@ async function linkOwnerProblem(
         ? entry.catalogue === "agents" && entry.name === agent
         : entry.catalogue === "teams" && entry.name === agent && (entry.team ?? "*") === owner.team.team,
     )
-    return exists ? undefined : invalid(`No Defaults entry at ${ownerRowId(owner)}; a native agent's own Defaults row takes no link`)
+    return exists ? undefined : invalid(`No Defaults entry at ${ownerRowId(owner)}; an OpenCode agent's own Defaults row takes no link`)
   }
   const level = owner.level
   if (owner.team !== undefined) {
@@ -4323,7 +4323,7 @@ function winningEnabledTeams(
   return winners
 }
 
-const specialAgentIds = ["general", "explore", "compaction", "title", "summary"] as const
+const specialAgentIds = ["compaction", "title", "summary"] as const
 
 function computeSpecialOverrides(
   winningEnabled: readonly { level: TeamLevel; team: string }[],

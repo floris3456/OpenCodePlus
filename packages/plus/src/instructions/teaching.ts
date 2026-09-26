@@ -39,15 +39,17 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 ## Presets, Defaults entries and links
 
-An agent behaves exactly as its rows say; nothing is read from its name. What a row does not set comes, in order, from the agent's own levels, its **preset** (the one it is linked to, live), the **Defaults entries** matching its name, Defaults "for every agent", and last the fallback: native opencode agents keep their native value, everything else is **off**. \`show\` answers \`from\` in words ("from preset Orchestrator", "from default *orchestrator*", "from Defaults (every agent)", "native", "off by default"); \`list({ fields: ["id", "from"] })\` projects it.
+An agent behaves exactly as its rows say; nothing is read from its name. What a row does not set comes, in order, from the agent's own levels, its **preset** (the one it is linked to, live), the **Defaults entries** matching its name, Defaults "for every agent", and last the fallback: OpenCode agents keep their upstream value, everything else is **off**. \`show\` answers \`from\` in words ("from preset Orchestrator", "from default *orchestrator*", "from Defaults (every agent)", "OpenCode", "off by default"); \`list({ fields: ["id", "from"] })\` projects it.
 
-- Presets live under the Presets root: \`agent:preset:<id>\` (Native: build, plan, general, explore, title, summary, compaction; Plus: planner, orchestrator, implementer, reviewer, scout, build-seat; User: yours) and team presets \`team:preset:<team>\` with member presets \`team:preset:<team>:<member>\`. Native and Plus presets ship with the release: their rows are editable (your edits win), the presets themselves cannot be deleted. Their rows are not an agent's, so \`protectedAgents\` does not guard them.
+- Presets live under the Presets root: \`agent:preset:<id>\` (OpenCode: build, plan, general, explore, title, summary, compaction; Plus: planner, orchestrator, implementer, reviewer, scout, build-seat; User: yours) and team presets \`team:preset:<team>\` (Plus or User only) with member presets \`team:preset:<team>:<member>\`. OpenCode and Plus presets ship with the release: their rows are editable (your edits win), the presets themselves cannot be deleted. Their rows are not an agent's, so \`protectedAgents\` does not guard them.
 - Name a preset as \`"<id>"\` (an agent preset) or \`"<team>/<member>"\` (a member preset), or as \`{ kind: "agent", id }\` / \`{ kind: "member", team, id }\`; a team takes a team preset id.
 - Defaults entries are rows named by an exact name or a pattern: \`*\` and \`%\` match any text, case-insensitively, on the whole name (\`*orchestrator*\` matches \`Opus-Orchestrator-max\`). Agents entries are \`agent:defaults:<name>\` (Defaults → Agents → User); Teams entries are \`team:defaults:<team pattern>:<name>\` and match a member of a matching team. An exact name beats a pattern, then more literal characters win.
 - \`set({ id, preset })\` on an agent, member, team, entry or user preset row links it (live); \`preset: null\` unlinks. A preset that would come back to itself is refused (\`link.cycle\`). A preset anything links to cannot be deleted (\`preset.inUse\` names who).
 - A \`team_*\` tool row that is off refuses the call (core deny on \`team.<tool>\`), not only hides it.
 
 ## Catalogues
+
+OpenCode → Special contains only the maintenance agents \`title\`, \`compaction\`, and \`summary\`. Hidden agents keep their origin; \`general\` and \`explore\` are ordinary OpenCode agents. The displayed OpenCode origin retains \`native\` in stored row ids, API discriminators, and \`group:native\` filters for compatibility.
 
 The tree splits into two catalogues under every level: **Agents** and **Teams**. A stand-alone agent inherits only the Agents catalogue's shared Defaults rows; an agent launched as a team member inherits only the Teams catalogue's, then its team, then itself. \`<owner>\` names both the agent and the catalogue: the agent id or \`<team>/:<member>\` for a member's row, \`''\` for the Agents shared Defaults row (\`item:defaults::tool:reader\`) and \`/teams\` for the Teams one (\`item:defaults:/teams:tool:reader\`). Filter with \`catalogue:agents|teams\`. A member's row and its stand-alone row address the same record; only the shared tier they inherit differs.
 
@@ -59,7 +61,7 @@ Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|b
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 
-Permission rows hang directly off each native/plus tool row (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`. \`server:<name>\` matches a server's own \`mcp:<name>\` row as well as the rows under it, e.g. \`list({ where: "server:search" })\`.
+Permission rows hang directly off each OpenCode/Plus tool row (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`. \`server:<name>\` matches a server's own \`mcp:<name>\` row as well as the rows under it, e.g. \`list({ where: "server:search" })\`.
 
 ## show
 
@@ -114,7 +116,7 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 | error | meaning |
 | \`row.unknown\` | no row has that id; \`list\` again for the current id |
 | \`create.failed\` | the write landed but its row is still missing from the published tree after a short watcher wait, so no id can be returned; \`list\` (or re-read the row) before retrying, because a blind retry can write a duplicate |
-| \`instruction.disabled\` | \`create kind:"instruction"\` is disabled for now; native opencode applies AGENTS.md files |
+| \`instruction.disabled\` | \`create kind:"instruction"\` is disabled for now; OpenCode applies AGENTS.md files |
 | \`agent.protected\` | that agent is in \`protectedAgents\` |
 | \`delete.unconfirmed\` | retry with \`confirm: true\` |
 | \`view.unsupported\` | that view needs another id kind (\`assembled\` needs an agent row) |
@@ -122,9 +124,9 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 | \`project.disabled\` | project mode is off and no tool changes that |
 | \`preset.invalid\` | no preset answers to that name, or it is the wrong kind (an agent takes an agent or member preset, a team a team preset) |
 | \`preset.exists\` | a preset of that kind already has that id |
-| \`preset.readonly\` | Native and Plus presets are not changed or deleted; create a User preset from one |
+| \`preset.readonly\` | OpenCode and Plus presets are not changed or deleted; create a User preset from one |
 | \`preset.inUse\` | something is linked to the preset; relink or delete the listed rows first |
-| \`entry.invalid\` / \`entry.exists\` / \`entry.missing\` | bad entry name (\`:\` is not allowed), a duplicate (same catalogue, team pattern and name, or a native agent's own Defaults row), or no such entry |
+| \`entry.invalid\` / \`entry.exists\` / \`entry.missing\` | bad entry name (\`:\` is not allowed), a duplicate (same catalogue, team pattern and name, or an OpenCode agent's own Defaults row), or no such entry |
 | \`link.invalid\` / \`link.cycle\` | the row takes no link, or the link would bring a preset back to itself |
 
 ## Examples

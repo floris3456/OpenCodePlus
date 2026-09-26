@@ -2102,7 +2102,7 @@ test("instructions_set on a team-special row persists team-scoped record", async
     directory: project,
     agents: [
       agentInfo("alpha", "upstream alpha"),
-      agentInfo("explore", "upstream explore"),
+      agentInfo("title", "upstream title"),
     ],
     tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
   })
@@ -2117,7 +2117,7 @@ test("instructions_set on a team-special row persists team-scoped record", async
     level: "project",
   })
 
-  const rowId = "item:project:crew/:special:explore:tool:bash"
+  const rowId = "item:project:crew/:special:title:tool:bash"
   const setResult = (await runOk(need(tools, "instructions_set"), {
     id: rowId,
     state: "off",
@@ -2125,7 +2125,7 @@ test("instructions_set on a team-special row persists team-scoped record", async
   expect(setResult.status).toBe('Disabled "bash"')
 
   const snap = await snapshotOf(api)
-  const custom = snap.records.find((r) => r.type === "customization" && r.agent === "explore" && r.item === "tool:bash")
+  const custom = snap.records.find((r) => r.type === "customization" && r.agent === "title" && r.item === "tool:bash")
   expect(custom).toBeDefined()
   expect(custom?.type).toBe("customization")
   if (custom?.type === "customization") {

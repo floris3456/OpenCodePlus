@@ -964,7 +964,12 @@ test("snapshot reports built-in agents with defaults scope once without project 
   expect(planEntries).toEqual([
     { id: "plan", scope: "defaults", origin: "native", base: "general", fileBacked: false },
   ])
-  const specialIds = ["general", "explore", "compaction", "title", "summary"]
+  for (const id of ["general", "explore"]) {
+    expect(snapshot.agents.filter((agent) => agent.id === id)).toEqual([
+      { id, scope: "defaults", origin: "native", base: "general", fileBacked: false },
+    ])
+  }
+  const specialIds = ["compaction", "title", "summary"]
   for (const id of specialIds) {
     const entries = snapshot.agents.filter((agent) => agent.id === id)
     expect(entries).toEqual([

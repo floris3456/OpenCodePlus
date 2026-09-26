@@ -46,7 +46,7 @@ export function isReviewLabel(label: string): boolean {
 
 /**
  * Where an inheriting row's value comes from, for the dim suffix after its
- * badges ("from preset Orchestrator", "native", "off by default", …).
+ * badges ("from preset Orchestrator", "OpenCode", "off by default", …).
  * Nothing when the row sets the value itself.
  */
 export function provenanceSuffix(node: TreeNode): string | undefined {
@@ -104,12 +104,12 @@ export function TreePane(props: TreePaneProps) {
                     backgroundColor={selected() ? props.context.theme.background.formfield.selected : undefined}
                   >
                     <text fg={props.context.theme.text.formfield.selected}>{selected() ? "›" : " "}</text>
-                    <text fg={props.context.theme.text.default}>
+                    <text flexShrink={0} fg={props.context.theme.text.default}>
                       {"  ".repeat(node.depth)}
                       {marker()} {node.label}
                     </text>
                     <For each={badgeLabels(node)}>
-                      {(label) => <text fg={badgeColor(props.context, label)}> [{label}]</text>}
+                      {(label) => <text flexShrink={0} fg={badgeColor(props.context, label)}> [{label}]</text>}
                     </For>
                     {/* Provenance is secondary information about the row, so it takes the subdued text role. */}
                     <Show when={provenanceSuffix(node)}>

@@ -207,12 +207,14 @@ function reviewSnapshot(): Snapshot {
   })
 }
 
-// Defaults MCP inventory: expand Defaults, the MCP group, then move to the
+// Defaults MCP inventory: expand Defaults, Agents, the MCP group, then move to the
 // item. Each navigation step waits for the *frame* to catch up, not just a
 // sleep, so the walk cannot outrun the renderer while frames are stale.
 async function gotoMcpItem(fx: EscapeFixture): Promise<void> {
   await fx.fixture.waitForFrame((frame) => frame.includes("Instructions"))
   await moveTo(fx, "Defaults")
+  await expand(fx)
+  await moveTo(fx, "Agents")
   await expand(fx)
   await moveTo(fx, "MCP")
   await expand(fx)
@@ -220,16 +222,18 @@ async function gotoMcpItem(fx: EscapeFixture): Promise<void> {
   await fx.fixture.waitForFrame((frame) => selectedRow(frame).includes("sample"))
 }
 
-// Defaults tools branch: expand Defaults, Tools, the Native subgroup, then
+// Defaults tools branch: expand Defaults, Agents, Tools, the OpenCode subgroup, then
 // move to the item. Tools rows genuinely support splitting (MCP rows do
 // not), so splitter tests drive from here.
 async function gotoToolItem(fx: EscapeFixture, label = "bash"): Promise<void> {
   await fx.fixture.waitForFrame((frame) => frame.includes("Instructions"))
   await moveTo(fx, "Defaults")
   await expand(fx)
+  await moveTo(fx, "Agents")
+  await expand(fx)
   await moveTo(fx, "Tools")
   await expand(fx)
-  await moveTo(fx, "Native")
+  await moveTo(fx, "OpenCode")
   await expand(fx)
   await moveTo(fx, label)
   await fx.fixture.waitForFrame((frame) => selectedRow(frame).includes(label))

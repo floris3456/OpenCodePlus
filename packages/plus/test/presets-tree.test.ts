@@ -1,5 +1,5 @@
-// DESIGN §2 in the tree: the Presets root (Agents / Teams → Native / Plus /
-// User), Defaults entries under Defaults, row owners, add affordances and the
+// DESIGN §2 in the tree: Presets → Agents → OpenCode / Plus / User and
+// Teams → Plus / User, Defaults entries, row owners, add affordances and the
 // "from …" badge every inheriting row carries.
 import { expect, test } from "bun:test"
 import {
@@ -105,7 +105,7 @@ function childIds(nodes: readonly TreeNode[], id: string): string[] {
   return out
 }
 
-test("the Presets root is last and holds Agents and Teams, each split Native / Plus / User", () => {
+test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode team category", () => {
   const roots = tree({ ...input(), expanded: new Set() })
   expect(roots.map((node) => [node.id, node.label])).toEqual([
     ["root:project", "Project"],
@@ -120,12 +120,14 @@ test("the Presets root is last and holds Agents and Teams, each split Native / P
     "group:preset:agents:plus",
     "group:preset:agents:user",
   ])
-  expect(childIds(nodes, "group:preset:teams")).toEqual(["group:preset:teams:native", "group:preset:teams:plus", "group:preset:teams:user"])
+  expect(childIds(nodes, "group:preset:teams")).toEqual(["group:preset:teams:plus", "group:preset:teams:user"])
+  expect(row(nodes, "group:preset:agents:native").label).toBe("OpenCode")
   expect(childIds(nodes, "group:preset:agents:native")).toEqual(nativePresetIds.map((id) => `agent:preset:${id}`))
   expect(childIds(nodes, "group:preset:agents:plus")).toEqual(plusAgentPresets.map((preset) => `agent:preset:${preset.id}`))
   expect(childIds(nodes, "group:preset:agents:user")).toEqual(["agent:preset:mine"])
-  // opencode ships no teams.
-  expect(childIds(nodes, "group:preset:teams:native")).toEqual([])
+  // OpenCode ships no teams, including when every category is expanded.
+  expect(nodes.some((node) => node.id === "group:preset:teams:native")).toBe(false)
+  expect(nodes.some((node) => node.label === "Native")).toBe(false)
   expect(childIds(nodes, "group:preset:teams:plus")).toEqual(plusTeamPresets.map((team) => `team:preset:${team.id}`))
   expect(childIds(nodes, "group:preset:teams:user")).toEqual(["team:preset:crew"])
   // Agent presets show their label; every preset row has the five groups.
@@ -271,7 +273,7 @@ test("add affordances: Defaults Agents and its User group add entries, Defaults 
   expect(row(nodes, "team:defaults:*").add).toBe("agent")
 })
 
-test("rows say where their state comes from: preset, default entry, Defaults, native, off", () => {
+test("rows say where their state comes from: preset, default entry, Defaults, OpenCode, off", () => {
   const nodes = all()
   const badge = (id: string) => row(nodes, id).badges.fromLabel
   // alice is linked to Plus orchestrator, which switches `question` off and ships `shell` on.
@@ -285,8 +287,9 @@ test("rows say where their state comes from: preset, default entry, Defaults, na
   expect(badge("item:project:bob:tool:shell")).toBe("off by default")
   expect(row(nodes, "item:project:bob:tool:shell").badges.state).toBe("off")
   expect(badge("item:project:bob:tool:read")).toBe("from Defaults (every agent)")
-  // A native agent keeps its native value.
-  expect(badge("item:defaults:build:tool:shell")).toBe("native")
+  // The displayed origin changes, but its API discriminator stays compatible.
+  expect(badge("item:defaults:build:tool:shell")).toBe("OpenCode")
+  expect(row(nodes, "item:defaults:build:tool:shell").badges.from).toEqual({ kind: "native" })
   // A member preset reads through its shipped link to its agent preset.
   expect(badge("item:preset:starter/:planner:tool:shell")).toBe("from preset Planner")
   // A value set on the row itself.
@@ -306,7 +309,7 @@ test("fromLabel and reviewLabel wording", () => {
   expect(fromLabel({ kind: "default", name: "*orch*" })).toBe("from default *orch*")
   expect(fromLabel({ kind: "default", name: "*impl*", team: "crew*" })).toBe("from default crew* › *impl*")
   expect(fromLabel({ kind: "defaults-everyone" })).toBe("from Defaults (every agent)")
-  expect(fromLabel({ kind: "native" })).toBe("native")
+  expect(fromLabel({ kind: "native" })).toBe("OpenCode")
   expect(fromLabel({ kind: "upstream" })).toBe("upstream")
   expect(fromLabel({ kind: "off" })).toBe("off by default")
   expect(fromLabel({ kind: "level", level: "global" })).toBe("from global")

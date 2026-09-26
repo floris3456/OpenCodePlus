@@ -1209,7 +1209,7 @@ test("team.addAgent refuses member id special with team.invalid", async () => {
 test("enable team with special override reaches host agent.system and agent.model, disable restores, project team beats global for same team name", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const specialAgent = { ...agentInfo("explore", "upstream explore text"), origin: "special" as const }
+  const specialAgent = { ...agentInfo("title", "upstream title text"), origin: "special" as const }
   const ctx = fullContext({
     directory: project,
     agents: [specialAgent],
@@ -1230,18 +1230,18 @@ test("enable team with special override reaches host agent.system and agent.mode
     {
       type: "customization",
       level: "global",
-      agent: "explore",
+      agent: "title",
       item: "system:role",
       section: null,
       team: { level: "global", team: "crew" },
-      text: "global explore text",
+      text: "global title text",
       basedOn: "fp",
       updated: UPDATED,
     },
     {
       type: "model",
       level: "global",
-      agent: "explore",
+      agent: "title",
       team: { level: "global", team: "crew" },
       providerID: "acme",
       modelID: "nova-global",
@@ -1251,18 +1251,18 @@ test("enable team with special override reaches host agent.system and agent.mode
     {
       type: "customization",
       level: "project",
-      agent: "explore",
+      agent: "title",
       item: "system:role",
       section: null,
       team: { level: "project", team: "crew" },
-      text: "project explore text",
+      text: "project title text",
       basedOn: "fp",
       updated: UPDATED,
     },
     {
       type: "model",
       level: "project",
-      agent: "explore",
+      agent: "title",
       team: { level: "project", team: "crew" },
       providerID: "acme",
       modelID: "nova-project",
@@ -1284,48 +1284,48 @@ test("enable team with special override reaches host agent.system and agent.mode
   // Case A: Enable only global team "crew"
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "crew", enabled: true }, throwingContext({})))
   const listedGlobal = await Effect.runPromise(ctx.agent.list())
-  const exploreGlobal = listedGlobal.data.find((e) => String(e.id) === "explore")
-  expect(exploreGlobal?.system).toBe("global explore text")
-  expect(exploreGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
-  expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
+  const titleGlobal = listedGlobal.data.find((e) => String(e.id) === "title")
+  expect(titleGlobal?.system).toBe("global title text")
+  expect(titleGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
+  expect(state.activeModels.get("title")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
 
   // Case B: Enable project team "crew" as well -> project beats global for
   // same team name. team.setEnabled keeps one team enabled, so the second
   // enablement goes straight through the store to have both on at once.
   await coEnableTeam(project, handlers, "project", "crew")
   const listedProject = await Effect.runPromise(ctx.agent.list())
-  const exploreProject = listedProject.data.find((e) => String(e.id) === "explore")
-  expect(exploreProject?.system).toBe("project explore text")
-  expect(exploreProject?.model).toMatchObject({ providerID: "acme", id: "nova-project" })
-  expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-project" })
+  const titleProject = listedProject.data.find((e) => String(e.id) === "title")
+  expect(titleProject?.system).toBe("project title text")
+  expect(titleProject?.model).toMatchObject({ providerID: "acme", id: "nova-project" })
+  expect(state.activeModels.get("title")).toMatchObject({ providerID: "acme", modelID: "nova-project" })
 
   // Case C: Disable project team "crew" -> global team "crew" is still enabled, so global wins!
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: false }, throwingContext({})))
   const listedBackToGlobal = await Effect.runPromise(ctx.agent.list())
-  const exploreBackToGlobal = listedBackToGlobal.data.find((e) => String(e.id) === "explore")
-  expect(exploreBackToGlobal?.system).toBe("global explore text")
-  expect(exploreBackToGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
-  expect(state.activeModels.get("explore")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
+  const titleBackToGlobal = listedBackToGlobal.data.find((e) => String(e.id) === "title")
+  expect(titleBackToGlobal?.system).toBe("global title text")
+  expect(titleBackToGlobal?.model).toMatchObject({ providerID: "acme", id: "nova-global" })
+  expect(state.activeModels.get("title")).toMatchObject({ providerID: "acme", modelID: "nova-global" })
 
   // Case D: Disable global team "crew" -> all disabled, restored to non-team state!
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "crew", enabled: false }, throwingContext({})))
   const listedRestored = await Effect.runPromise(ctx.agent.list())
-  const exploreRestored = listedRestored.data.find((e) => String(e.id) === "explore")
-  expect(exploreRestored?.system).toBe("upstream explore text")
-  expect(exploreRestored?.model).toBeUndefined()
-  expect(state.activeModels.get("explore")).toBeUndefined()
+  const titleRestored = listedRestored.data.find((e) => String(e.id) === "title")
+  expect(titleRestored?.system).toBe("upstream title text")
+  expect(titleRestored?.model).toBeUndefined()
+  expect(state.activeModels.get("title")).toBeUndefined()
 })
 
 // A Special agent under an enabled team resolves with the team's chain even
 // when that team sets no active model for it: its tool row turned off under
-// Teams → crew → Special → general is what apply enforces.
+// Teams → crew → Special → summary is what apply enforces.
 test("a Special agent's tool row turned off under the enabled team is enforced without a team-scoped model", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const general = { ...agentInfo("general", "upstream general text"), origin: "special" as const }
+  const summary = { ...agentInfo("summary", "upstream summary text"), origin: "special" as const }
   const ctx = fullContext({
     directory: project,
-    agents: [general],
+    agents: [summary, ...["general", "explore"].map((id) => ({ ...agentInfo(id, `${id} prompt`), hidden: true }))],
     tools: [{ id: "shell", description: "Execute shell commands.", options: { codemode: false } }],
     hooks: { current: 0 },
   })
@@ -1338,7 +1338,7 @@ test("a Special agent's tool row turned off under the enabled team is enforced w
     {
       type: "customization",
       level: "project",
-      agent: "general",
+      agent: "summary",
       item: "tool:shell",
       section: null,
       team: { level: "project", team: "crew" },
@@ -1346,6 +1346,18 @@ test("a Special agent's tool row turned off under the enabled team is enforced w
       basedOn: "fp",
       updated: UPDATED,
     },
+    // Old team-scoped records must not make ordinary hidden agents Special.
+    ...["general", "explore"].map((agent) => ({
+      type: "customization" as const,
+      level: "project" as const,
+      agent,
+      item: "tool:shell",
+      section: null,
+      team: { level: "project" as const, team: "crew" },
+      state: "off" as const,
+      basedOn: "fp",
+      updated: UPDATED,
+    })),
   ]
   await Effect.runPromise(
     handlers["instructions.mutate"](
@@ -1354,9 +1366,16 @@ test("a Special agent's tool row turned off under the enabled team is enforced w
     ),
   )
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  const shown = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:project:crew/:special:general:tool:shell")
+  const shown = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:project:crew/:special:summary:tool:shell")
   expect(shown?.badges.state).toBe("off")
-  expect(state.installedTools).toContainEqual(expect.objectContaining({ agent: "general", tool: "shell", enabled: false }))
+  expect(state.installedTools).toContainEqual(expect.objectContaining({ agent: "summary", tool: "shell", enabled: false }))
+  for (const id of ["general", "explore"]) {
+    expect(snapshot.agents.find((agent) => agent.id === id)?.origin).toBe("native")
+    const nodes = expandedTree(memoInputOf(snapshot))
+    expect(nodes.some((node) => node.id === `team:project:crew:special:${id}`)).toBe(false)
+    expect(nodes.find((node) => node.id === `item:project:${id}:tool:shell`)?.badges.state).toBe("on")
+    expect(state.installedTools).not.toContainEqual(expect.objectContaining({ agent: id, tool: "shell", enabled: false }))
+  }
 })
 
 function makeRunRecord(overrides: Partial<RunRecord> & { id: string }): RunRecord {
