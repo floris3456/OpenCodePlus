@@ -16,8 +16,11 @@ integrate, inspect history, and finish the lead with a saved report.
   neither another task board nor a second event/usage store.
 - Use fast Gemini Flash models for both test leads and workers. Discover the
   actual model catalogue first: prefer `gemini-3.8-flash` if exposed; the previous
-  host demonstrably offered `cliproxyapi/gemini-3.8-flash-high`. Do not invent IDs
-  or silently fall back to an expensive model.
+  host demonstrably offered `cliproxyapi/gemini-3.8-flash-high`. If Gemini 3.8
+  Flash is unavailable, **GPT Luna 5.6 is an explicitly permitted fallback** for
+  both test leads and workers. Resolve its exact provider/model ID from the
+  catalogue and record the fallback in the evidence. Do not invent IDs or
+  silently substitute another model.
 - One implementer at a time by default. A general sub-agent may own a bounded
   implementation task in its own worktree; do not share a writing worktree.
   No chain of planning/review agents. At most one targeted review of changed
@@ -221,8 +224,9 @@ counter; update internal consumers and document any compatibility alias instead
 of pretending attempts are model calls. Leave existing budget admission semantics
 and advisory-only behavior unchanged.
 
-**Live gate:** after real Flash calls, status matches the public Session totals
-at a settled boundary and is nonzero when the Session reports nonzero usage.
+**Live gate:** after real calls using the selected permitted model, status matches
+the public Session totals at a settled boundary and is nonzero when the Session
+reports nonzero usage.
 A small token-only advisory budget is exceeded consistently in status/wait.
 Multiple model calls do not masquerade as one measured model call. No hard budget
 interrupt is introduced.
