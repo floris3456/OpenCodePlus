@@ -16,30 +16,40 @@ The launcher executes this fork directly from source (the installed `opencode2` 
 
 ## Layout
 
-Three top-level trees, in order: `Project`, `Global`, `Defaults`. Each root holds exactly **two catalogues**, `Agents` (`group:<level>:agents`) and `Teams` (`group:<level>:teams`). A catalogue owns its own population and, at `Defaults`, its own six shared inventories, and a row resolved through one catalogue never reads the other's:
+The scope trees are `Project`, `Global`, and `Defaults`, followed by the `Presets` catalogue. Each scope root holds exactly **two catalogues**, `Agents` (`group:<level>:agents`) and `Teams` (`group:<level>:teams`). A catalogue owns its own population and, at `Defaults`, its own shared Settings, Compaction, and six inventory groups. A row resolved through one catalogue never reads the other's:
 
 ```
 Defaults
   Agents                                             group:defaults:agents
     OpenCode / Special / Plus / User                 (unchanged agent subtrees)
-    Models · Tools · Base · Skills · System · MCP    group:defaults::<category>
+    Settings · Models · Compaction · Tools · Base · Skills · System · MCP
+                                                     group:defaults::<category>
   Teams                                              group:defaults:teams
     <team> > <member>                                (unchanged team subtrees)
-    Models · Tools · Base · Skills · System · MCP    group:defaults:/teams:<category>
+    Settings · Models · Compaction · Tools · Base · Skills · System · MCP
+                                                     group:defaults:/teams:<category>
 ```
 
 A stand-alone agent inherits only the Agents catalogue's "everyone" rows; an agent launched as a team member inherits only the Teams catalogue's, then its team, then itself. The same agent can therefore resolve differently depending on which it was launched as, and the detail pane names the catalogue (`catalogue: agents|teams`) on every addressed row. `Project` and `Global` carry the same two catalogue roots holding their own agents and teams; only `Defaults` carries shared inventories, because `{ level: "defaults", agent: null }` is the one address the chain falls through to.
 
 Absent always means `agents`, so every row id and record written before the split keeps its exact meaning: `item:<level>::<itemId>` is the Agents inventory, `item:<level>:/teams:<itemId>` the Teams one, and a team member's rows carry the member's own owner path (`item:<level>:<team>/:<member>:<itemId>`) while the flat `item:<level>:<member>:<itemId>` stays the stand-alone Agents-catalogue row for the same agent. Both address the same records — only the chain they resolve through differs. On the first load after the split, every shared Defaults record is copied into the Teams catalogue so everything that applied to everyone still applies to everyone, persisted as one revision and recorded by one `migrate.catalogues` log line.
 
-Each catalogue's `Agents` group has origin subgroups (`OpenCode`, `Plus`, `User`, with `Special` nested under `OpenCode`: `group:<level>:agents:native`, `group:<level>:agents:native:special`, `group:<level>:agents:plus`, `group:<level>:agents:user`, all always emitted even when empty; agent rows keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the `User` subgroup) holding that level's agents with the identical subtree, plus a `Teams` group (`[a: add team]`) whose team rows (`team:<level>:<team>`, `[a: add agent to the team]`) hold member rows (`team:<level>:<team>:<member>`, `[a: add agent to the team]`) expanding to the same five groups (Models, Tools, Base, Skills, System) with working toggle/edit/reset, whether or not the team is enabled and whether or not the host registered the agent, followed by a `Special` group (`team:<level>:<team>:special`) expanding to the three Special maintenance agents (`compaction`, `title`, `summary`, id `team:<level>:<team>:special:<id>`) whose five groups (`group:<level>:<team>/:special:<id>:<group>`) persist team-scoped overrides carrying `team: { level, team }`. Member group ids carry the team prefix (`group:<level>:<team>/:<member>:models|tools|base|skills|system`) so they never collide with the Agents-group ids; item and section ids stay identical because they address the same records. Origin is computed server-side (`special` for `title|summary|compaction`, `native` for `build|plan|general|explore`, else `user`; file-backed is always `user`, team output upgrades to `plus`) and crosses the RPC boundary on `AgentEntry.origin`. Ancestor-backed project agents are discovered through core's upward `.opencode` walk, are file-backed, and carry `AgentEntry.ancestor: true` across the RPC boundary to suppress deletion (`actions.remove === false`, because deletion is confined to the local project). Built-in OpenCode and Special agents project under every root with row id `agent:<level>:<id>` and are not removable. Team member rows carry `add: "agent"` and are removable when on-disk (project/global, or a Defaults overlay file, invoking `team.removeAgent`) while shipped Defaults members are refused (`actions.remove === false`). Team create from a `group:<level>:teams` row takes that level directly (creating at project or global without a scope dialog; Defaults prompts for project or global) and prefills the name from the chosen template.
+Each scope's `Agents` group has origin subgroups (`OpenCode`, `Plus`, `User`, with `Special` nested under `OpenCode`: `group:<level>:agents:native`, `group:<level>:agents:native:special`, `group:<level>:agents:plus`, `group:<level>:agents:user`, all always emitted even when empty). Agent rows keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the `User` subgroup.
+
+The `Teams` group (`[a: add team]`) holds team rows (`team:<level>:<team>`) and member rows (`team:<level>:<team>:<member>`). Each member expands to Settings, Models, Compaction, Tools, Base, Skills, and System with working toggle/edit/reset, whether or not the team is enabled or the host registered the agent. A team's `Special` group (`team:<level>:<team>:special`) contains only the maintenance agents `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`). Their groups persist overrides carrying `team: { level, team }`. Group ids carry the team prefix (`group:<level>:<team>/:<member>:<group>`, or `group:<level>:<team>/:special:<id>:<group>`) so they never collide with stand-alone agent groups.
+
+Origin is computed server-side (`special` for `title|summary|compaction`, `native` for `build|plan|general|explore`, else `user`; file-backed is always `user`, team output upgrades to `plus`) and crosses the RPC boundary on `AgentEntry.origin`. Ancestor-backed project agents are discovered through core's upward `.opencode` walk and carry `AgentEntry.ancestor: true` to suppress deletion (`actions.remove === false`, because deletion is confined to the local project). Built-in OpenCode and Special agents project under every root with row id `agent:<level>:<id>` and are not removable.
+
+Team and member rows carry `add: "agent"`. On-disk members (project/global, or a Defaults overlay file) are removable through `team.removeAgent`; shipped Defaults members are not. Team creation asks for a name, then a team preset or an empty team. Project/Global uses the selected scope; Defaults prompts for scope.
 
 Hidden is a visibility setting, not an origin: `general` and `explore` stay ordinary OpenCode agents. The displayed OpenCode origin keeps stored `native` row ids, API discriminators, and `group:native` filters compatible. Presets → Agents retains OpenCode, Plus, and User presets; Presets → Teams has only Plus and User, because OpenCode ships no teams.
 
 ```
 <Agent>
+  Settings                   Enabled · Mode · Description · Hidden · Color · Steps
   Models                     union down the chain plus the agent's upstream model (`source` badge, one `active`)
     <model>
+  Compaction                 Strategy · Model · Instructions
   Tools                      OpenCode / OpenCodePlus / MCP > <server>, each with a `Code Mode` subgroup when it has Code Mode rows (namespaced below OpenCode/OpenCodePlus, flat below an MCP server)
     <tool>
       Description              (the tool's text: one section, or a group of its sections)

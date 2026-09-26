@@ -310,7 +310,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
-           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
+          if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
           const op = computeSet(memo, input)

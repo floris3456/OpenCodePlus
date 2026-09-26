@@ -15,6 +15,10 @@ become effective again.
 - **Mode** controls normal primary selection and subagent-tool eligibility:
   Primary, Subagent, or All. Press Enter on Mode to cycle through those values.
 
+In the TUI, Space on an agent/member or its Enabled row toggles it. Ctrl+Space
+selects an eligible primary agent. Selection uses the effective agent in the
+current project, even while editing its Global or Defaults settings.
+
 Description, color, and maximum steps use OpenCode's existing agent fields. The
 step limit is a positive integer; new user input resets the allowance. Empty
 color or step values clear those fields; Reset resumes inheritance. Reset on an

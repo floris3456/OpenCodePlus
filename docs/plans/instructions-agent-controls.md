@@ -1,5 +1,7 @@
 # Instructions agent controls and compaction
 
+**Status: completed and verified in the task worktree; not deployed.**
+
 ## Goal
 
 Bring Instructions Tool and Instructions TUI agent configuration into parity with
@@ -98,7 +100,7 @@ with general sub-agents working in separate task worktrees.
 - Delegated implementation to general sub-agents on isolated `agent-settings`,
   `agent-compaction`, `opencode-origins`, and `instructions-controls` branches.
   UI work started against explicit agreed item IDs in parallel; integration
-  will reconcile its contracts before verification.
+  reconciled its contracts before verification.
 - Baseline `bun typecheck` in `packages/plus`: passed.
 - Baseline `bun run release:typecheck` in `packages/plus`: all ten package
   checks passed (cli/client/core/util/tui/plus/plugin/server/protocol/schema).
@@ -109,7 +111,7 @@ with general sub-agents working in separate task worktrees.
 - Evidence directory:
   `run/team/instructions-controls/runs/ses_f227a73ceffe7EvvHwbH6pqkJk/checks/`
   in the workspace repository, outside source control.
-- Implementation and final verification results will be appended as work completes.
+- Implementation, review fixes, and final verification are recorded below.
 
 ### Core integration
 
@@ -131,7 +133,7 @@ with general sub-agents working in separate task worktrees.
   `uses epoch values after compaction while a source is unavailable`. The core
   sub-agent reproduced these using baseline runner/compaction sources. They
   are recorded as pre-existing failures, not hidden by narrowing assertions.
-- A separate general sub-agent is adding real embedded SDK/host verification
+- A separate general sub-agent added real embedded SDK/host verification
   because the Plus recording harness alone does not prove publication into
   the production agent registry or rejection by the actual subagent tool.
 
@@ -180,13 +182,14 @@ with general sub-agents working in separate task worktrees.
   host publication and request assembly in the fixture, not provider receipt
   or deployment into the user's running release.
 
-### Review follow-up in progress
+### Independent review and follow-up
 
-- Independent backend review found three concrete issues to fix before final
+- Independent backend review found three concrete issues before final
   acceptance: an agent-wide Reset bypassed the compaction-model target
   permission; an explicit hidden-off value could be suppressed against a
   synthetic team baseline; member-preset entity aliases incorrectly depended
-  on row depth. The backend sub-agent is implementing focused regression fixes.
+  on row depth. The backend sub-agent implemented focused regression fixes;
+  independent re-review closed all three, as recorded below.
 - Documentation validation additionally exposed that the query parser still
   rejected `item:setting` and `item:compaction`. Added those canonical kinds,
   documented settings in the shipped teaching skill and the new
@@ -209,8 +212,8 @@ with general sub-agents working in separate task worktrees.
   exposed by this task's new read-only upstream observer, not a baseline product
   failure. Backend/permissions/team regression selection: **172 passed,
   1 existing skip**.
-- Final combined tree/TUI/query/presets/teaching selection: **256 passed,
-  1 existing skip** across 12 files. Real SDK tests now include live
+- Combined tree/TUI/query/presets/teaching selection before the last UI fix:
+  **256 passed, 1 existing skip** across 12 files. Real SDK tests now include live
   Defaults/preset/project precedence: **4 passed, 138 assertions**.
 - Final core agent/config/compaction/transport selection: **120 passed** across
   nine files. The eight new runner scenarios and schema checks also passed as
@@ -218,7 +221,55 @@ with general sub-agents working in separate task worktrees.
   separately recorded limitation.
 - Ten-package affected typechecks, SDK typecheck, Plus build, and generated
   client byte-for-byte verification passed on the integrated source.
-- Independent UI review found one remaining selector issue: Ctrl+Space used
+- Independent UI review found a selector issue: Ctrl+Space used
   the edited Global/Defaults tier instead of current-location availability.
-  A focused follow-up is in progress; tier-specific editing must remain intact
-  while selection follows the effective host agent.
+  Fixed in `ebec7d9e8` by reading the same reactive effective host catalogue as
+  the core picker. Tier-specific editing and badges remain intact. Twelve
+  override-direction scenarios failed before the repair and passed afterward.
+- Removed the stale member-preset entity Reset restriction now that the backend
+  resolves that owner correctly. Its production-route regression removes all
+  nine scoped controls while preserving unrelated preset records.
+- Independent UI re-review closed the finding: **24 focused route tests passed**,
+  including effective host updates, stale commands, entity exclusions, both
+  override directions, and member-preset Reset.
+- Final parent rerun after the last UI fix: **279 passed, 1 existing skip,
+  0 failed** across the same 12 tree/TUI/query/presets/teaching files, with
+  **15,458 assertions**. Plus package-local typecheck and build passed again.
+- Final real SDK rerun: **4 passed, 138 assertions**. Workspace structure and
+  manifest checks passed; the team index answered with **733 entries**. These
+  workspace checks do not establish runtime readiness or deployment.
+
+### Completion and verification receipts
+
+All seven execution steps are complete. General sub-agents implemented the
+backend, core, origins, UI, and embedded-host tests in isolated worktrees;
+separate general reviewers checked core, backend, UI, and documentation.
+
+The final focused receipts in the evidence directory are:
+
+| Area | Receipt | Result |
+| --- | --- | --- |
+| TUI/tree/query/presets/teaching | `post-review-tui.txt` | 279 pass, 1 existing skip |
+| Backend/permissions/teams | `plus-review-fixes.txt` | 172 pass, 1 existing skip |
+| Embedded SDK host | `post-review-sdk.txt` | 4 pass, 138 assertions |
+| Core agent/config/compaction/transport | `final-core-controls.txt` | 120 pass |
+| New runner scenarios | `core-agent-runner.txt` | 8 pass |
+| Schema | `schema-agent.txt` | 13 pass |
+| Ten affected package typechecks and Plus build | `final-typechecks-build.txt` | passed |
+| SDK typecheck | `final-sdk-typecheck.txt` | passed |
+| Final Plus typecheck/build after UI fix | `post-review-plus-build.txt` | passed |
+| Generated client reproducibility | `final-generated-client.txt` | byte-for-byte match |
+| Workspace/index smoke | `final-workspace-smoke.txt` | structure valid, index answered |
+
+Known limitations remain explicit: the wider runner selection has the three
+baseline Code Mode system-part assertion failures listed above; no assertion or
+safety gate was weakened. No desktop connection or `termctrl` was available, so
+layout evidence is from the production OpenTUI renderer, not interactive
+screenshots. TestLLM proves host behavior and request assembly, not receipt by
+a real provider. Low-level V2 agent-ID admission remains upstream behavior, as
+documented in `packages/plus/docs/agent-controls.md`.
+
+Changes are locally committed on `r4-7`. No remote push, release promotion,
+controller restart, workspace team-code/agent-definition edit, or live
+Instructions mutation was performed. The user guide is
+`packages/plus/docs/agent-controls.md`.
