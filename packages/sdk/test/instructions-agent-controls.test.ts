@@ -301,3 +301,46 @@ it.live(
     }),
   45_000,
 )
+
+it.live(
+  "Instructions Defaults and linked presets remain live beneath project controls on the host",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture
+      yield* f.plus["preset.create"]({ kind: "agent", id: "controls-source" }, { location: f.location })
+      yield* f.plus["entry.create"]({ catalogue: "agents", name: targetID }, { location: f.location })
+      yield* f.plus["link.set"](
+        { level: "project", agent: targetID, preset: { kind: "agent", id: "controls-source" } },
+        { location: f.location },
+      )
+      yield* f.instructions("set", { id: "item:defaults:controls-probe:setting:mode", text: "subagent" })
+      yield* f.instructions("set", {
+        id: "item:defaults:controls-probe:compaction:instructions",
+        text: "Inherited Defaults summary guidance",
+      })
+      expect((yield* f.opencode.agent.get({ location: f.location, agentID: targetID })).data).toMatchObject({
+        mode: "subagent",
+        compaction: { system: "Inherited Defaults summary guidance" },
+      })
+      yield* f.instructions("set", { id: "item:preset:controls-source:setting:mode", text: "all" })
+      yield* f.instructions("set", { id: "item:preset:controls-source:compaction:model", text: "fixture/summary" })
+      expect((yield* f.opencode.agent.get({ location: f.location, agentID: targetID })).data).toMatchObject({
+        mode: "all",
+        compaction: { model: compactModel, system: "Inherited Defaults summary guidance" },
+      })
+      yield* f.instructions("set", { id: modeRow, text: "primary" })
+      yield* f.instructions("set", { id: modelRow, text: "fixture/active" })
+      expect((yield* f.opencode.agent.get({ location: f.location, agentID: targetID })).data).toMatchObject({
+        mode: "primary",
+        compaction: { model: activeModel },
+      })
+      yield* f.instructions("reset", { id: agentRow })
+      expect((yield* f.opencode.agent.get({ location: f.location, agentID: targetID })).data).toMatchObject({
+        mode: "all",
+        compaction: { model: compactModel },
+      })
+      yield* f.instructions("set", { id: "item:preset:controls-source:setting:mode", text: "subagent" })
+      expect((yield* f.opencode.agent.get({ location: f.location, agentID: targetID })).data.mode).toBe("subagent")
+    }),
+  45_000,
+)
