@@ -134,3 +134,61 @@ with general sub-agents working in separate task worktrees.
 - A separate general sub-agent is adding real embedded SDK/host verification
   because the Plus recording harness alone does not prove publication into
   the production agent registry or rejection by the actual subagent tool.
+
+### Backend and origin integration
+
+- Integrated backend settings as `0b1897df3` and OpenCode/Special presentation
+  as `cc027ad5e`; replaced the temporary backend compaction type with the
+  canonical `Agent.Compaction` in `30ec773e2`.
+- Settings persist as existing whole-item customization records:
+  `setting:enabled`, `mode`, `description`, `hidden`, `color`, `steps`, and
+  `compaction:strategy`, `model`, `instructions`. Boolean fields use state;
+  scalar fields use text. Model syntax is `provider/model#variant`.
+- Empty compaction instructions are an explicit empty prompt; Reset restores
+  inheritance. An agent-row Reset clears only its nine agent/compaction
+  controls, not its other Instructions customizations.
+- Plus-disabled agents retain an upstream inventory entry for re-enabling.
+  Authoritatively config-disabled agents are not recreated by retained Plus
+  settings. Final control transforms run after team-agent upserts.
+- Parent backend regression check: **176 passed, 6 existing skips** across
+  controls/apply/Tool/RPC. Canonical-type follow-up: Plus typecheck and **9
+  controls tests passed**. Agent/subagent catalogue checks: **20 passed**.
+- Independent core review found mixed legacy Markdown frontmatter was treating
+  the new compaction object as provider options. Fixed in `28991e0a1` using the
+  canonical schema in compatibility decoding and migration. Parent config
+  regressions: **69 passed**; independent reviewer confirmed the finding
+  closed, including malformed-input rejection and no provider-body leakage.
+- Additional compaction admission/transport checks: **6 passed**.
+- Desktop screenshot attempt was unavailable: this API session has no desktop
+  browser connection and `termctrl` is not installed. Do not claim interactive
+  screenshots; use production OpenTUI renderer tests for layout verification.
+- Merged backend/origin checks: **214 passed, 2 existing skips** across the
+  discovery/tree/presets/query/ops/teaching/chain files; rendered route/escape/
+  panes regression selection: **97 passed, 1 existing skip**.
+
+### Real embedded host verification
+
+- Integrated `f29d599cb`: `packages/sdk/test/instructions-agent-controls.test.ts`.
+- Parent rerun: **3 passed, 103 assertions**. Uses the production embedded SDK,
+  Instructions tools through Code Mode, isolated HOME/config/data, memory DB,
+  TestLLM provider boundary, and rejects external HTTP requests.
+- Verified disable/re-enable changes the real host list/get results and
+  execution/subagent admission; disabled agents remain editable; all three
+  modes reach the host and primary-only mode rejects subagent launch.
+- Verified compaction settings pass through public SDK metadata into the local
+  summary request, and Reset restores inherited model behavior. This proves
+  host publication and request assembly in the fixture, not provider receipt
+  or deployment into the user's running release.
+
+### Review follow-up in progress
+
+- Independent backend review found three concrete issues to fix before final
+  acceptance: an agent-wide Reset bypassed the compaction-model target
+  permission; an explicit hidden-off value could be suppressed against a
+  synthetic team baseline; member-preset entity aliases incorrectly depended
+  on row depth. The backend sub-agent is implementing focused regression fixes.
+- Documentation validation additionally exposed that the query parser still
+  rejected `item:setting` and `item:compaction`. Added those canonical kinds,
+  documented settings in the shipped teaching skill and the new
+  `packages/plus/docs/agent-controls.md`, and kept the seed instruction within
+  its existing 600-character budget. Teaching/query checks: **65 passed**.
