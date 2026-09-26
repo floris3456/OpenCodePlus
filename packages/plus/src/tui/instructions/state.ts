@@ -1,36 +1,44 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
-import { applies, parsePermItemId, resolve, resolveSplit, scopesOf, threeWay } from "../../instructions/model.js"
+import { applies, parsePermItemId, resolve, resolveSplit, threeWay } from "../../instructions/model.js"
 import type {
   Address,
   AgentSource,
   CustomizationRecord,
   Item,
   ModelRecord,
+  ReviewPart,
   RuleRecord,
+  Scopes,
   SplitRecord,
 } from "../../instructions/model.js"
+import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
 import { expandedTree, tree, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
-import { agentOf, itemOf, recordOf, teamOf } from "../../instructions/snapshot.js"
+import { agentOf, contextOfSnapshot, itemOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
   addSection,
   isModelRowId,
   isPermRowId,
+  modelReviewChoice,
   removalPlan,
   removeModelRow,
   reset,
   resetModelRow,
+  resolveModelReview,
   resolveReview,
   saveSplit,
   saveText,
   setEnabled,
   setPin,
+  stateReviewChoice,
   teamPlan,
   toggle,
+  type ModelReviewChoice,
+  type StateReviewChoice,
 } from "../../instructions/ops.js"
 import { query } from "../../instructions/query.js"
-import { Definition, type Snapshot, type SnapshotItem, type SnapshotRecord } from "../../rpc.js"
+import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
 
@@ -79,6 +87,8 @@ export function toRpcRecords(
         basedOn: record.basedOn,
         ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
         ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+        ...(record.basedOnState === undefined ? {} : { basedOnState: record.basedOnState }),
+        ...(record.basedOnPin === undefined ? {} : { basedOnPin: record.basedOnPin }),
         updated: record.updated,
       }),
     ),
@@ -106,6 +116,7 @@ export function toRpcRecords(
         modelID: record.modelID,
         ...(record.variant === undefined ? {} : { variant: record.variant }),
         ...(record.active === undefined ? {} : { active: record.active }),
+        ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         updated: record.updated,
       }),
     ),
@@ -140,10 +151,11 @@ export function createInstructionsState(context: Plugin.Context) {
   let disabled = false
   let generation = 0
 
+  // Presets and Defaults entries get the Role/persona row every agent has.
   const itemsForTree = createMemo<Item[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return current.items.map(itemOf)
+    return withOwnerRoles(current.items.map(itemOf), presetStateOfSnapshot(current))
   })
 
   const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]>(() => {
@@ -167,6 +179,12 @@ export function createInstructionsState(context: Plugin.Context) {
     }))
   })
 
+  const presetStateForTree = createMemo<PresetState>(() => {
+    const current = snapshot()
+    if (!current) return {}
+    return presetStateOfSnapshot(current)
+  })
+
   const allNodes = createMemo<TreeNode[]>(() => {
     const current = snapshot()
     if (!current) return []
@@ -175,6 +193,7 @@ export function createInstructionsState(context: Plugin.Context) {
       records: recordsForTree(),
       agents: agentsForTree(),
       teams: teamsForTree(),
+      ...presetStateForTree(),
       expanded: expanded(),
     })
   })
@@ -237,6 +256,7 @@ export function createInstructionsState(context: Plugin.Context) {
           records: recordsForTree(),
           agents: agentsForTree(),
           teams: teamsForTree(),
+          ...presetStateForTree(),
         }),
       }
     }
@@ -259,7 +279,13 @@ export function createInstructionsState(context: Plugin.Context) {
     try {
       const ids = new Set(
         query(
-          { items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() },
+          {
+            items: itemsForTree(),
+            records: recordsForTree(),
+            agents: agentsForTree(),
+            teams: teamsForTree(),
+            ...presetStateForTree(),
+          },
           { where: raw, fields: ["id"] },
         ).rows.map((row) => row.id),
       )
@@ -276,7 +302,30 @@ export function createInstructionsState(context: Plugin.Context) {
     return nodes().find((node) => node.id === selectedId())
   })
 
+  // A row a create flow wants selected (reveal): its ancestors are expanded
+  // and it is selected as soon as a snapshot carries it. Core reloads agents
+  // on a debounce, so that can be a later snapshot than the create's own
+  // refresh. Moving the cursor drops the wish.
+  let pending: { readonly expand: readonly string[]; readonly row: string } | undefined
+
+  function reveal(expand: readonly string[], row: string) {
+    pending = { expand, row }
+    applyPending()
+  }
+
+  function applyPending(): boolean {
+    const wanted = pending
+    if (wanted === undefined) return false
+    const next = new Set([...expanded(), ...wanted.expand])
+    if (next.size !== expanded().size) setExpanded(next)
+    if (!nodes().some((node) => node.id === wanted.row)) return false
+    pending = undefined
+    setSelectedId(wanted.row)
+    return true
+  }
+
   function ensureSelection() {
+    if (applyPending()) return
     const list = nodes()
     if (list.length === 0) {
       setSelectedId(undefined)
@@ -338,6 +387,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function select(id: string) {
+    pending = undefined
     setSelectedId(id)
   }
 
@@ -366,6 +416,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function move(delta: number) {
+    pending = undefined
     const list = nodes()
     if (list.length === 0) return
     const current = selectedId()
@@ -379,7 +430,7 @@ export function createInstructionsState(context: Plugin.Context) {
     setSelectedId(list[next].id)
   }
 
-  function upstreamFor(items: readonly SnapshotItem[], address: Address): SnapshotItem | undefined {
+  function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
     const matches = items.filter((entry) => entry.id === address.item)
     const owner = address.agent
     if (owner === null) return matches[0]
@@ -392,9 +443,8 @@ export function createInstructionsState(context: Plugin.Context) {
     const current = snapshot()
     const address = node.address
     if (!current || !address) return undefined
-    const found = upstreamFor(current.items, address)
-    if (!found) return undefined
-    const upstream: Item = itemOf(found)
+    const upstream = upstreamFor(itemsForTree(), address)
+    if (!upstream) return undefined
     const converted = recordsOf(current.records)
     return {
       address,
@@ -404,10 +454,10 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
-  function scopes(): ReturnType<typeof scopesOf> {
+  function scopes(): Scopes {
     const current = snapshot()
     if (!current) return { global: new Set<string>(), defaults: new Set<string>() }
-    return scopesOf(current.agents.map(agentOf))
+    return contextOfSnapshot(current)
   }
 
   function resolvedText(node: TreeNode): string {
@@ -487,7 +537,13 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   function memoInput(): MemoInput {
-    return { items: itemsForTree(), records: recordsForTree(), agents: agentsForTree(), teams: teamsForTree() }
+    return {
+      items: itemsForTree(),
+      records: recordsForTree(),
+      agents: agentsForTree(),
+      teams: teamsForTree(),
+      ...presetStateForTree(),
+    }
   }
 
   async function persistModels(models: readonly ModelRecord[], successStatus: string, retryHint: string): Promise<boolean> {
@@ -675,9 +731,11 @@ export function createInstructionsState(context: Plugin.Context) {
     return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
-  // Yellow (review) resolutions via threeWay/resolveResolution.
-  async function resolveKeep(node: TreeNode): Promise<boolean> {
-    const result = resolveReview(memoInput(), node.id, "keep")
+  // Yellow (review) resolutions via threeWay/resolveResolution. `only` limits
+  // them to some parts under review (the state/pin choice before the text's
+  // three-way diff).
+  async function resolveKeep(node: TreeNode, only?: readonly ReviewPart[]): Promise<boolean> {
+    const result = resolveReview(memoInput(), node.id, "keep", undefined, only)
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -685,13 +743,31 @@ export function createInstructionsState(context: Plugin.Context) {
     return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
-  async function resolveTake(node: TreeNode): Promise<boolean> {
-    const result = resolveReview(memoInput(), node.id, "take")
+  async function resolveTake(node: TreeNode, only?: readonly ReviewPart[]): Promise<boolean> {
+    const result = resolveReview(memoInput(), node.id, "take", undefined, only)
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
     }
     return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
+  // §3.6: the two sides of a state/pin review, and of an active-model review.
+  function reviewChoice(node: TreeNode): StateReviewChoice | undefined {
+    return stateReviewChoice(memoInput(), node.id)
+  }
+
+  function modelReview(node: TreeNode): ModelReviewChoice | undefined {
+    return modelReviewChoice(memoInput(), node.id)
+  }
+
+  async function resolveModel(node: TreeNode, resolution: "keep" | "take"): Promise<boolean> {
+    const result = resolveModelReview(memoInput(), node.id, resolution)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
   }
 
   async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
@@ -805,6 +881,35 @@ export function createInstructionsState(context: Plugin.Context) {
         await plus["skill.delete"]({ id: plan.id }, { location: context.location })
       } else if (plan.kind === "base.delete") {
         await plus["base.delete"]({ id: plan.id }, { location: context.location })
+      } else if (plan.kind === "preset.delete") {
+        const refused = await plus["preset.delete"]({ ref: plan.ref }, { location: context.location }).then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        if (refused !== undefined) {
+          // Only other projects link to it: they cannot be relinked from here,
+          // so the human may delete over them once more, knowingly.
+          const elsewhere = onlyElsewhere(refused)
+          if (elsewhere === undefined) throw refused
+          const forced = await context.ui.dialog.confirm({
+            title: `Delete preset ${node.label} anyway?`,
+            message: `Other projects link to it: ${elsewhere.join(", ")}. Their links will show as a missing preset until relinked there. Delete anyway?`,
+          })
+          if (forced !== true) {
+            setStatus(`Delete of "${node.label}" cancelled`)
+            return false
+          }
+          await plus["preset.delete"]({ ref: plan.ref, confirm: true }, { location: context.location })
+        }
+      } else if (plan.kind === "entry.delete") {
+        await plus["entry.delete"](
+          {
+            catalogue: plan.catalogue,
+            ...(plan.team === undefined ? {} : { team: plan.team }),
+            ...(plan.name === undefined ? {} : { name: plan.name }),
+          },
+          { location: context.location },
+        )
       } else {
         await plus["instruction.delete"]({ name: plan.name }, { location: context.location })
       }
@@ -815,6 +920,10 @@ export function createInstructionsState(context: Plugin.Context) {
       return true
     } catch (error: unknown) {
       setStatus(errorMessage(error))
+      // A preset something links to is refused with the list of who uses it
+      // (preset.inUse); that list is what the human needs, so it is toasted.
+      if (plan.kind === "preset.delete" || plan.kind === "entry.delete")
+        context.ui.toast.show({ variant: "error", message: refusalWithUsers(error) })
       return false
     }
   }
@@ -874,6 +983,10 @@ export function createInstructionsState(context: Plugin.Context) {
     resolveKeep,
     resolveTake,
     resolveEdit,
+    reviewChoice,
+    modelReview,
+    resolveModel,
+    reveal,
     remove,
     refresh,
     dispose,
@@ -891,4 +1004,32 @@ function errorMessage(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string")
     return error.message
   return String(error)
+}
+
+// The server's message, plus the users a preset.inUse refusal carries when the
+// message does not already name them.
+// The users of a preset.inUse refusal when every one of them is in another
+// project (`data.elsewhere`); undefined when any is here, or for any other error.
+function onlyElsewhere(error: unknown): string[] | undefined {
+  if (typeof error !== "object" || error === null || !("data" in error)) return undefined
+  const data = error.data
+  if (typeof data !== "object" || data === null || !("users" in data) || !("elsewhere" in data)) return undefined
+  if (!Array.isArray(data.users) || !Array.isArray(data.elsewhere)) return undefined
+  const users = data.users.filter((user): user is string => typeof user === "string")
+  const count = data.elsewhere.reduce(
+    (total: number, project: unknown) =>
+      total + (typeof project === "object" && project !== null && "users" in project && Array.isArray(project.users) ? project.users.length : 0),
+    0,
+  )
+  return users.length > 0 && count === users.length ? users : undefined
+}
+
+function refusalWithUsers(error: unknown): string {
+  const message = errorMessage(error)
+  if (typeof error !== "object" || error === null || !("data" in error)) return message
+  const data = error.data
+  if (typeof data !== "object" || data === null || !("users" in data) || !Array.isArray(data.users)) return message
+  const users = data.users.filter((user): user is string => typeof user === "string")
+  if (users.every((user) => message.includes(user))) return message
+  return `${message} (used by ${users.join(", ")})`
 }

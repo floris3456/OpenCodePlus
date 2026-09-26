@@ -1,4 +1,4 @@
-import { applies, canReset, catalogueForAddress, catalogueOf, upstreamForEdit } from "./model.js"
+import { applies, canReset, catalogueForAddress, catalogueOf, sameTeam, upstreamForEdit } from "./model.js"
 import type {
   Address,
   AgentSource,
@@ -7,10 +7,12 @@ import type {
   Item,
   Level,
   SplitRecord,
+  TeamRef,
 } from "./model.js"
-import { buildMemo, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { materialize, skeletonOf, teamsOwnerSegment, toolPermRows, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
+import { materialize, skeletonOf, teamsOwnerSegment, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
+import { badgeLabels } from "./from-label.js"
 
 export type Field =
   | "id"
@@ -24,6 +26,7 @@ export type Field =
   | "path"
   | "updated"
   | "sections"
+  | "from"
 
 export type Sort =
   | "tokens"
@@ -57,6 +60,8 @@ export interface QueryRow {
   readonly path?: string
   readonly updated?: string
   readonly sections?: readonly string[]
+  /** Where the row's value comes from, in words ("from preset Orchestrator"). */
+  readonly from?: string
 }
 
 export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { rows: QueryRow[]; total: number } {
@@ -103,7 +108,13 @@ interface Filter {
   readonly rank: number
   readonly excludesSections: boolean
   readonly mentionsSections: boolean
+  /** `kind:group`: a tool's Description group only exists once its sections are known. */
+  readonly mentionsGroups?: boolean
   readonly propagating: boolean
+  /** Positive `level:`/`id:` terms: the only root levels whose rows can match. */
+  readonly roots?: ReadonlySet<string>
+  /** Positive `id:` terms: the lowercased prefixes a matching id starts with. */
+  readonly idPrefixes?: readonly string[]
   readonly test: (candidate: Candidate) => boolean
 }
 
@@ -145,17 +156,19 @@ function atNode(
   level: Level,
   agent: string | null,
   catalogue: Catalogue,
+  team?: TeamRef,
 ): CustomizationRecord | undefined {
   return records.find(
     (record) =>
       record.level === level &&
       record.agent === agent &&
+      sameTeam(record.team, team) &&
       (agent !== null || catalogueOf(record.catalogue) === catalogue),
   )
 }
 
 function ownOf(state: QueryState, address: Address): CustomizationRecord | undefined {
-  return atNode(recsAt(state, address.item, address.section), address.level, address.agent, catalogueForAddress(address))
+  return atNode(recsAt(state, address.item, address.section), address.level, address.agent, catalogueForAddress(address), address.team)
 }
 
 function splitOfAddress(state: QueryState, address: Address): SplitRecord | undefined {
@@ -183,46 +196,59 @@ function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
     out.push({ ...candidate, index: out.length, node: undefined, resolvedText: undefined, upstreamText: undefined })
   }
   const skipRows = parsed.filters.some((filter) => filter.excludesSections)
-  const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
+  const wantsGroups = !skipRows || parsed.filters.some((filter) => filter.mentionsGroups === true)
+  const needIds = !skipRows || wantsGroups || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
-      const enumerated = (!needIds || failsPropagating(parsed, lazy) ? [] : sectionsFor(lazy))
-      push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
-      if (!skipRows) {
-        for (const section of enumerated)
-          push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: lazy, address: section.address, sectionIds: [] })
+      const enumerated = !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
+      push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.flatMap((section) => (section.group ? [] : [section.id])) })
+      for (const section of enumerated) {
+        if (section.group !== undefined) {
+          // The group shows the tool's text in the detail pane, but it is
+          // not the tool row: item filters must not match it twice.
+          if (wantsGroups)
+            push({ id: section.id, kind: "group", label: section.label, depth: section.depth, orphan: false, lazy: section.group, parent: undefined, address: undefined, sectionIds: [] })
+          continue
+        }
+        if (!skipRows)
+          push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
       }
-      // Item rows may own non-section children (permission rows hanging
-      // directly off tool rows after their sections). Sections are already
-      // pushed above; enumerate perm rows directly (they filter items with no
-      // resolve) instead of lazy.children(), which would also derive sections
-      // via splitOf and resolve every address even for structural misses.
+      // A tool row's Permissions group, its categories and their rows are
+      // walked directly: building them resolves nothing, whereas
+      // lazy.children() would also derive sections via splitOf and resolve
+      // every address even for structural misses.
       const address = lazy.address
       const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent)
       // Perm rows hang off the tool row and share its owner path, which the
       // row id already carries between `item:<level>:` and `:<itemId>`.
-      const permRows =
-        item === undefined || address === undefined
+      const groups =
+        item === undefined || address === undefined || item.kind !== "tool"
           ? []
-          : toolPermRows(
+          : toolPermissions(
               state.memo.ctx,
               state.memo,
               address.level,
               address.agent,
               item,
+              lazy.id,
               lazy.depth + 1,
-              address.team,
+              rowTeamOf(address),
               address.catalogue,
               lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1),
             )
-      for (const perm of permRows)
-        push({ id: perm.id, kind: perm.kind, label: perm.label, depth: perm.depth, orphan: false, lazy: perm, parent: undefined, address: perm.address, sectionIds: [] })
+      const walk = (node: Lazy) => {
+        push({ id: node.id, kind: node.kind, label: node.label, depth: node.depth, orphan: false, lazy: node, parent: undefined, address: node.address, sectionIds: [] })
+        if (node.kind === "group") for (const child of node.children()) walk(child)
+      }
+      for (const group of groups) walk(group)
       return
     }
     push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [] })
     for (const child of lazy.children()) visit(child)
   }
-  for (const root of skeletonOf(state.memo)) visit(root)
+  const roots = parsed.filters.flatMap((filter) => (filter.roots === undefined ? [] : [filter.roots]))
+  for (const root of skeletonOf(state.memo))
+    if (roots.every((allowed) => allowed.has(root.id.slice("root:".length)))) visit(root)
   if (parsed.wantsOrphans) pushOrphans(state, push, skipRows)
   return out
 }
@@ -231,6 +257,22 @@ const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group",
 // pinned is resolved state like state:/modified: (per-row resolve through the
 // shared memo), so it must not propagate: a section inherits its whole row's
 // pin for display, but enumeration cannot skip sections from the item test.
+
+// A positive `id:` term none of whose prefixes can match this item row or
+// any of its sections (`section:…`) and Description group (`group:…`):
+// enumerating them would split the item for nothing.
+function missesById(parsed: Parsed, itemId: string): boolean {
+  const id = itemId.toLowerCase()
+  const rest = id.slice("item:".length)
+  const under = [`section:${rest}:`, `group:${rest}:`]
+  return parsed.filters.some(
+    (filter) =>
+      filter.idPrefixes !== undefined &&
+      filter.idPrefixes.every(
+        (prefix) => !id.startsWith(prefix) && under.every((head) => !head.startsWith(prefix) && !prefix.startsWith(head)),
+      ),
+  )
+}
 
 function failsPropagating(parsed: Parsed, lazy: Lazy): boolean {
   const probe: Candidate = { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
@@ -241,14 +283,28 @@ interface SectionRow {
   readonly id: string
   readonly label: string
   readonly depth: number
-  readonly address: Address
+  readonly address?: Address
+  /** The tool's Description group, listed before the sections it holds. */
+  readonly group?: Lazy
+  /** The row whose children hold this section, when it is not the item row. */
+  readonly parent?: Lazy
 }
 
 function sectionsFor(lazy: Lazy): SectionRow[] {
   // Single source of truth for "this row has no sections": read the tree's
-  // lazy children, which already return [] for the host-owned execute row.
+  // lazy children, which already return [] for the host-owned execute row. A
+  // tool's sections may sit under its Description group; the group itself is
+  // returned too so it lists in tree order.
   const rows: SectionRow[] = []
   for (const child of lazy.children()) {
+    if (child.kind === "group" && child.id.endsWith(":description")) {
+      rows.push({ id: child.id, label: child.label, depth: child.depth, address: child.address, group: child })
+      for (const section of child.children()) {
+        if (section.kind !== "section" || section.address === undefined) continue
+        rows.push({ id: section.id, label: section.label, depth: section.depth, address: section.address, parent: child })
+      }
+      continue
+    }
     if (child.kind !== "section" || child.address === undefined) continue
     rows.push({ id: child.id, label: child.label, depth: child.depth, address: child.address })
   }
@@ -324,9 +380,16 @@ function isOrphan(
 ): boolean {
   const item = lookupItem(state, itemId, agent)
   if (item === undefined) return true
-  if (agent !== null && !state.agents.has(agent)) return true
+  // Presets and Defaults entries own records too, without being agents.
+  if (agent !== null && !state.agents.has(agent) && !ownsRecords(state, level, agent)) return true
   if (section === null) return false
   return !splitOf(state.memo, level, agent, item, catalogue).sections.some((entry) => entry.id === section)
+}
+
+function ownsRecords(state: QueryState, level: Level, agent: string): boolean {
+  if (level === "preset") return state.memo.ctx.listing.some((entry) => entry.ref.kind !== "team" && entry.ref.id === agent)
+  if (level === "defaults") return state.memo.ctx.entries.some((entry) => entry.name === agent)
+  return false
 }
 
 // Badge values come from the one tree path: materializing a lazy row runs
@@ -355,8 +418,8 @@ function resolvedTextOf(state: QueryState, candidate: Candidate): string {
     address === undefined || item === undefined
       ? ""
       : address.section === null
-        ? wholeOf(state.memo, address.level, address.agent, item, address.catalogue).text
-        : sectionResolveOf(state.memo, address.level, address.agent, item, address.section, address.catalogue).text
+        ? wholeOf(state.memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address)).text
+        : sectionResolveOf(state.memo, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address)).text
   candidate.resolvedText = text
   return text
 }
@@ -421,7 +484,7 @@ function actionsOf(state: QueryState, candidate: Candidate): TreeNodeActions {
 function levelOf(candidate: Candidate): Level | undefined {
   if (candidate.address !== undefined) return candidate.address.level
   const segment = candidate.id.split(":")[1]
-  return segment === "project" || segment === "global" || segment === "defaults" ? segment : undefined
+  return segment === "project" || segment === "global" || segment === "defaults" || segment === "preset" ? segment : undefined
 }
 
 function agentOf(candidate: Candidate): string | null {
@@ -450,7 +513,10 @@ function catalogueOfCandidate(candidate: Candidate): Catalogue | undefined {
   if (id.startsWith("agent:")) return "agents"
   const parts = id.split(":")
   if (parts[0] === "group") {
-    if (parts[2] === "teams" || parts[2] === teamsOwnerSegment) return "teams"
+    // Team-member groups carry `<team>/:<member>` (member presets and Teams
+    // entries included); the Presets root's `group:preset:teams[:<origin>]`
+    // and every Teams catalogue root are teams too.
+    if (parts[2] === "teams" || parts[2] === teamsOwnerSegment || id.includes("/:")) return "teams"
     return "agents"
   }
   return undefined
@@ -470,6 +536,9 @@ function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
   if (candidate.address?.team !== undefined) {
     return [candidate.address.team.team]
   }
+  // Team presets, member presets and Teams entries name their team on the row.
+  const ownerTeam = candidate.lazy?.owner?.team
+  if (ownerTeam !== undefined) return [ownerTeam.team]
   if (candidate.kind === "agent") {
     const id = agentOf(candidate) ?? ""
     const fromTeams = state.memo.ctx.teams.filter((entry) => entry.agents.includes(id)).map((entry) => entry.team)
@@ -621,7 +690,27 @@ function parseTerm(raw: string, state: QueryState): TermOut | undefined {
     if (alts.length !== 1) throw new Error(`bad sort directive in "${raw}"`)
     return { sort: parseSortKey(alts[0] ?? "", raw) }
   }
-  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: key === "has" && alts.some((alt) => lower(alt) === "sections"), propagating: !negate && propagatingKeys.has(key), test: testFor(key, alts, raw, state), wantsOrphans: key === "orphan" && wantsTrue(alts, negate) }
+  const roots = rootsFor(key, alts, negate)
+  const idPrefixes = !negate && key === "id" ? alts.map(lower) : undefined
+  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: key === "has" && alts.some((alt) => lower(alt) === "sections"), mentionsGroups: !negate && key === "kind" && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans: key === "orphan" && wantsTrue(alts, negate) }
+}
+
+// The roots a positive `level:` or `id:` term can match under: every row id
+// carries its level in its second segment, so an id prefix that reaches it
+// (`item:project:…`, `root:pre`) names the only roots worth walking. The
+// Presets root alone holds dozens of agent subtrees, so a query that cannot
+// match there does not walk it.
+function rootsFor(key: string, alts: readonly string[], negate: boolean): ReadonlySet<string> | undefined {
+  if (negate) return undefined
+  const levels = ["project", "global", "defaults", "preset"]
+  if (key === "level") return new Set(alts.map(lower))
+  if (key !== "id") return undefined
+  const matched = alts.map((alt) => {
+    const parts = lower(alt).split(":")
+    if (parts.length < 2) return levels
+    return levels.filter((level) => level.startsWith(parts[1] ?? "") && (parts.length === 2 || level === parts[1]))
+  })
+  return new Set(matched.flat())
 }
 
 function excludesSections(key: string, alts: readonly string[], negate: boolean): boolean {
@@ -925,7 +1014,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       }
     }
     case "level": {
-      const allowed = oneOf(key, alts, ["project", "global", "defaults"], term)
+      const allowed = oneOf(key, alts, ["project", "global", "defaults", "preset"], term)
       return (candidate) => allowed.some((alt) => levelOf(candidate) === lower(alt))
     }
     // Run-scoped rows only: the live run whose edit scope the row expresses.
@@ -974,7 +1063,8 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => allowed.some((alt) => (nodeOf(state, candidate)?.badges.review === true) === alt)
     }
     case "source": {
-      const allowed = oneOf(key, alts, ["project", "global", "defaults", "upstream"], term)
+      // `preset`: a preset in the chain supplied the row (DESIGN §3.2).
+      const allowed = oneOf(key, alts, ["project", "global", "defaults", "preset", "upstream"], term)
       return (candidate) => {
         const source = nodeOf(state, candidate)?.badges.source
         if (source === undefined) return false
@@ -1146,32 +1236,23 @@ function sortCandidates(state: QueryState, candidates: Candidate[], sort: SortSp
     .map((entry) => entry.candidate)
 }
 
-function badgesString(node: TreeNode): string {
-  const labels: string[] = []
-  if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
-  if (node.badges.modified === true) labels.push("modified")
-  if (node.badges.active === true) labels.push("active")
-  if (node.badges.inactive === true) labels.push("inactive")
-  if (node.badges.pinned === true) labels.push("pinned")
-  if (node.badges.unsupported === true) labels.push("unsupported")
-  const count = node.badges.reviewCount ?? 0
-  if (count > 0) labels.push(`${count} to review`)
-  else if (node.badges.review === true) labels.push("review")
-  return labels.join(" ")
-}
-
 function project(state: QueryState, candidate: Candidate, fields: readonly Field[]): QueryRow {
   const row: Record<string, unknown> = { id: candidate.id }
   for (const field of fields) {
     if (field === "id") continue
     if (field === "badges") {
       const node = nodeOf(state, candidate)
-      if (node !== undefined) row.badges = badgesString(node)
+      if (node !== undefined) row.badges = badgeLabels(node).join(" ")
       continue
     }
     if (field === "source") {
       const source = nodeOf(state, candidate)?.badges.source
       if (source !== undefined) row.source = source
+      continue
+    }
+    if (field === "from") {
+      const from = nodeOf(state, candidate)?.badges.fromLabel
+      if (from !== undefined) row.from = from
       continue
     }
     if (field === "tokens") {
@@ -1215,7 +1296,7 @@ function project(state: QueryState, candidate: Candidate, fields: readonly Field
       // the returned rows instead of trusting the enumeration cache.
       if (candidate.kind === "item" && candidate.address !== undefined && !candidate.orphan) {
         const lazy = candidate.lazy
-        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(lazy).map((section) => section.id)
+        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(lazy).flatMap((section) => (section.group === undefined ? [section.id] : []))
       }
     }
   }

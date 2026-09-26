@@ -1,7 +1,8 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { Definition, type Plus } from "../../rpc.js"
+import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
-import type { AddKind, TreeNode } from "../../instructions/tree.js"
+import type { AddKind, RowOwner, TreeNode } from "../../instructions/tree.js"
+import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import type { InstructionsState } from "./state.js"
 
 export function createInstructionsDialogs(context: Plugin.Context, state: InstructionsState) {
@@ -62,16 +63,25 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   }
 
   async function addKind(kind: AddKind, node?: TreeNode): Promise<void> {
+    if (kind === "preset") return addPreset()
+    if (kind === "team-preset") return addTeamPreset()
     if (kind === "agent") {
+      // A user team preset takes member presets.
+      if (node?.owner?.preset?.ref.kind === "team") return addPresetMember(node.owner.preset.ref.id)
       // Team rows and member rows carry `add: "agent"` (kind "team"); both
-      // route to addTeamAgent, which resolves the enclosing team.
+      // route to addTeamAgent, which resolves the enclosing team (at
+      // Defaults: a member entry of the team pattern).
       if (node?.kind === "team" && node.add === "agent" && node.id.match(/^team:(project|global|defaults):(.+)$/s) !== null)
         return addTeamAgent(node)
-      return addAgent()
+      // Defaults → Agents takes entries (names or patterns), not files.
+      if (node?.id.startsWith("group:defaults:agents") === true) return addEntry()
+      return addAgent(node)
     }
     if (kind === "base") return addBase()
     if (kind === "skill") return addSkill()
     if (kind === "instruction") return addInstruction()
+    // Defaults → Teams takes team entries: a team pattern with a member entry.
+    if (kind === "team" && node?.id === "group:defaults:teams") return addTeamEntry()
     if (kind === "team") return addTeam(node)
     if (kind === "section") return addSection(node)
     if (kind === "model") return addModel(node)
@@ -103,75 +113,69 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     await state.addSection(node, name, text)
   }
 
-  async function addAgent(): Promise<void> {
-    if (disposed) return
-    let templates: { id: string }[] = []
+  async function currentSnapshot(): Promise<Plus.Snapshot | undefined> {
     try {
       const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
-      if (disposed) return
-      templates = snapshot.agents.filter((entry) => entry.scope === "defaults").map((entry) => ({ id: entry.id }))
+      if (disposed) return undefined
+      return snapshot
     } catch (error: unknown) {
-      if (disposed) return
+      if (disposed) return undefined
       context.ui.toast.show({ variant: "error", message: errorMessage(error) })
-      return
+      return undefined
     }
-    const template = await context.ui.dialog.select<string>({
-      title: "Agent template",
-      placeholder: "Select a Defaults template",
-      options: [
-        { title: "Blank", value: "", description: "Start with an empty prompt" },
-        ...templates.map((entry) => ({ title: entry.id, value: entry.id })),
-      ],
-    })
-    if (disposed) return
-    if (template === undefined) return
-    const raw = await context.ui.dialog.prompt({
-      title: "Create agent",
-      description: "Agent id; use / for nesting. .. is not allowed.",
-      placeholder: "my-agent",
-    })
-    if (disposed) return
-    if (raw === undefined) return
-    const id = raw.trim()
-    if (id.length === 0) {
-      context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
-      return
+  }
+
+  async function promptName(title: string, description: string, placeholder: string): Promise<string | undefined> {
+    const raw = await context.ui.dialog.prompt({ title, description, placeholder })
+    if (disposed || raw === undefined) return undefined
+    const name = raw.trim()
+    if (name.length === 0) {
+      context.ui.toast.show({ variant: "error", message: `${title} cannot be empty` })
+      return undefined
     }
-    const scope = await context.ui.dialog.select<"project" | "global">({
-      title: "Agent scope",
-      options: [
-        { title: "Project", value: "project", description: "Stored with this project" },
-        { title: "Global", value: "global", description: "Stored in your global config" },
-      ],
-    })
+    return name
+  }
+
+  // DESIGN §5: a → name → preset → done. The cursor's Project or Global root
+  // decides where; a row outside both asks for the scope last.
+  async function addAgent(node?: TreeNode): Promise<void> {
+    if (disposed) return
+    const id = await promptName("Create agent", "Agent name; use / for nesting (team/lead). .. is not allowed.", "my-agent")
+    if (id === undefined) return
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const preset = await pickAgentPreset(context, snapshot)
+    if (disposed) return
+    if (preset === undefined) return
+    const scope = levelOfRow(node) ?? (await pickScope("Agent scope"))
     if (disposed) return
     if (scope === undefined) return
-    const prompt = await context.ui.dialog.prompt({
-      title: "Agent prompt",
-      description: template ? `Starting from template ${template}` : "Starting prompt",
-      placeholder: "You are a helpful assistant",
-    })
-    if (disposed) return
-    if (prompt === undefined) return
     try {
       const ref = await plus["agent.create"](
-        {
-          scope,
-          id,
-          ...(template ? { template } : {}),
-          prompt,
-        },
+        { scope, id, ...(preset === null ? {} : { preset }) },
         { location: context.location },
       )
       if (disposed) return
       context.ui.toast.show({ variant: "success", message: `Created agent ${id} at ${ref.path}` })
       context.ui.dialog.clear()
-      context.ui.router.navigate({ type: "plugin", name: "instructions", data: { agent: id } })
+      // Core reloads agents on a debounce, so the row may appear a snapshot
+      // later: the state selects it as soon as it is there.
+      state.reveal([`root:${scope}`, `group:${scope}:agents`, `group:${scope}:agents:user`], `agent:${scope}:${id}`)
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return
       context.ui.toast.show({ variant: "error", message: errorMessage(error) })
     }
+  }
+
+  async function pickScope(title: string): Promise<"project" | "global" | undefined> {
+    return context.ui.dialog.select<"project" | "global">({
+      title,
+      options: [
+        { title: "Project", value: "project", description: "Stored with this project" },
+        { title: "Global", value: "global", description: "Stored in your global config" },
+      ],
+    })
   }
 
   async function addTeamAgent(node: TreeNode): Promise<void> {
@@ -211,60 +215,47 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
         entry.agents.some((member) => node.id === `team:${level}:${entry.team}:${member}`) ||
         node.id.startsWith(`team:${level}:${entry.team}:`),
     )
-    const team = matchEntry !== undefined ? matchEntry.team : (match[2] as string)
-    let templates: { id: string }[] = []
-    try {
-      const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
-      if (disposed) return
-      templates = snapshot.agents.filter((entry) => entry.scope === "defaults").map((entry) => ({ id: entry.id }))
-    } catch (error: unknown) {
-      if (disposed) return
-      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
-      return
-    }
-    const template = await context.ui.dialog.select<string>({
-      title: "Agent template",
-      placeholder: "Select a Defaults template",
-      options: [
-        { title: "Blank", value: "", description: "Start with an empty prompt" },
-        ...templates.map((entry) => ({ title: entry.id, value: entry.id })),
-      ],
-    })
+    // The row names its team: a team or member row its team, a Defaults team
+    // entry or member entry row its team PATTERN (entry rows carry no team in
+    // the snapshot, so the row's owner is the only source for them).
+    const team = node.owner?.team?.team ?? (matchEntry !== undefined ? matchEntry.team : (match[2] as string))
+    const id =
+      level === "defaults"
+        ? await promptName("Member name or pattern", `A member entry of ${team}; ${wildcards} (e.g. *orchestrator*)`, "*orchestrator*")
+        : await promptName("Member name", `A new member of team ${team}; use / for nesting. .. is not allowed.`, "my-agent")
+    if (id === undefined) return
+    await addMember(level, team, id)
+  }
+
+  // Defaults → Teams: a team entry is a team pattern with at least one member
+  // entry (the entry record is the member), so both patterns are asked.
+  async function addTeamEntry(): Promise<void> {
     if (disposed) return
-    if (template === undefined) return
-    const raw = await context.ui.dialog.prompt({
-      title: "Create agent",
-      description: "Agent id; use / for nesting. .. is not allowed.",
-      placeholder: "my-agent",
-    })
+    const team = await promptName("Team name or pattern", `The teams this entry matches; ${wildcards} (e.g. *review*)`, "*review*")
+    if (team === undefined) return
+    const id = await promptName("Member name or pattern", `The members it matches in ${team}; ${wildcards} (e.g. *orchestrator*)`, "*orchestrator*")
+    if (id === undefined) return
+    await addMember("defaults", team, id)
+  }
+
+  async function addMember(level: "project" | "global" | "defaults", team: string, id: string): Promise<void> {
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const preset = await pickAgentPreset(context, snapshot)
     if (disposed) return
-    if (raw === undefined) return
-    const id = raw.trim()
-    if (id.length === 0) {
-      context.ui.toast.show({ variant: "error", message: "Agent id cannot be empty" })
-      return
-    }
-    const prompt = await context.ui.dialog.prompt({
-      title: "Agent prompt",
-      description: template ? `Starting from template ${template}` : "Starting prompt",
-      placeholder: "You are a helpful assistant",
-    })
-    if (disposed) return
-    if (prompt === undefined) return
+    if (preset === undefined) return
     try {
       const ref = await plus["team.addAgent"](
-        {
-          level,
-          team,
-          id,
-          ...(template ? { template } : {}),
-          prompt,
-        },
+        { level, team, id, ...(preset === null ? {} : { preset }) },
         { location: context.location },
       )
       if (disposed) return
-      context.ui.toast.show({ variant: "success", message: `Created agent ${id} in team ${team} at ${ref.path}` })
+      context.ui.toast.show({
+        variant: "success",
+        message: level === "defaults" ? `Created Defaults entry ${id} in ${team}` : `Created agent ${id} in team ${team} at ${ref.path}`,
+      })
       context.ui.dialog.clear()
+      state.reveal([`root:${level}`, `group:${level}:teams`, `team:${level}:${team}`], `team:${level}:${team}:${id}`)
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return
@@ -384,64 +375,153 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
+  // DESIGN §5: a → team name → team preset (or an empty team) → done. The
+  // cursor's Project or Global root decides where.
   async function addTeam(node?: TreeNode): Promise<void> {
     if (disposed) return
-    const match = node?.id.match(/^group:(project|global|defaults):teams$/)
-    const cursorLevel = match ? (match[1] as "project" | "global" | "defaults") : undefined
-    let templates: { team: string }[] = []
+    const team = await promptName("Team name", "A new team; no slashes or ..", "my-team")
+    if (team === undefined) return
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const preset = await pickTeamPreset(context, snapshot)
+    if (disposed) return
+    if (preset === undefined) return
+    const level = levelOfRow(node) ?? (await pickScope("Team scope"))
+    if (disposed) return
+    if (level === undefined) return
     try {
-      const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
+      const ref = await plus["team.create"]({ level, team, ...(preset === "" ? {} : { preset }) }, { location: context.location })
       if (disposed) return
-      templates = (snapshot.teams ?? []).filter((entry) => entry.level === "defaults").map((entry) => ({ team: entry.team }))
+      context.ui.toast.show({ variant: "success", message: `Created team ${ref.team}` })
+      state.reveal([`root:${level}`, `group:${level}:teams`], `team:${level}:${ref.team}`)
+      await state.refresh()
     } catch (error: unknown) {
       if (disposed) return
       context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  // Defaults → Agents: an entry named by a name or pattern, from a preset.
+  async function addEntry(): Promise<void> {
+    if (disposed) return
+    const name = await promptName("Agent name or pattern", `The agents this entry matches; ${wildcards} (e.g. *orchestrator*)`, "*orchestrator*")
+    if (name === undefined) return
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const preset = await pickAgentPreset(context, snapshot)
+    if (disposed || preset === undefined) return
+    await run(
+      () => plus["entry.create"]({ catalogue: "agents", name, ...(preset === null ? {} : { preset }) }, { location: context.location }),
+      `Created Defaults entry ${name}`,
+      [["root:defaults", "group:defaults:agents", "group:defaults:agents:user"], `agent:defaults:${name}`],
+    )
+  }
+
+  // Presets → Agents → User: a user preset from a base preset (or none).
+  async function addPreset(): Promise<void> {
+    if (disposed) return
+    const id = await promptName("Preset name", "A new User agent preset", "my-preset")
+    if (id === undefined) return
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const from = await pickAgentPreset(context, snapshot, { title: "Base preset" })
+    if (disposed || from === undefined) return
+    await run(
+      () => plus["preset.create"]({ kind: "agent", id, ...(from === null ? {} : { from }) }, { location: context.location }),
+      `Created preset ${id}`,
+      [["root:preset", "group:preset:agents", "group:preset:agents:user"], `agent:preset:${id}`],
+    )
+  }
+
+  // Presets → Teams → User: a user team preset, its members copied from a team preset.
+  async function addTeamPreset(): Promise<void> {
+    if (disposed) return
+    const id = await promptName("Team preset name", "A new User team preset", "my-team")
+    if (id === undefined) return
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const from = await pickTeamPreset(context, snapshot)
+    if (disposed || from === undefined) return
+    await run(
+      () => plus["preset.create"]({ kind: "team", id, ...(from === "" ? {} : { from }) }, { location: context.location }),
+      `Created team preset ${id}`,
+      [["root:preset", "group:preset:teams", "group:preset:teams:user"], `team:preset:${id}`],
+    )
+  }
+
+  async function addPresetMember(team: string): Promise<void> {
+    if (disposed) return
+    const id = await promptName("Member name", `A new member of team preset ${team}`, "my-member")
+    if (id === undefined) return
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const from = await pickAgentPreset(context, snapshot)
+    if (disposed || from === undefined) return
+    await run(
+      () => plus["preset.addMember"]({ team, id, ...(from === null ? {} : { from }) }, { location: context.location }),
+      `Added member preset ${id} to ${team}`,
+      [["root:preset", "group:preset:teams", "group:preset:teams:user", `team:preset:${team}`], `team:preset:${team}:${id}`],
+    )
+  }
+
+  // l: relink the row's owner (an agent, member, team, Defaults entry or User
+  // preset) to another preset, or unlink it. The current link is preselected;
+  // refusals (a cycle, a protected agent, a read-only preset) toast the
+  // server's message.
+  async function relink(node: TreeNode | undefined): Promise<void> {
+    if (disposed) return
+    const owner = node?.owner
+    if (node === undefined || !isLinkable(owner)) {
+      state.setStatus(`"${node?.label ?? "This row"}" takes no preset link`)
       return
     }
-    const template = await context.ui.dialog.select<string>({
-      title: "Team template",
-      placeholder: "Select a Defaults template",
-      options: [
-        { title: "Blank", value: "", description: "Start with an empty team" },
-        ...templates.map((entry) => ({ title: entry.team, value: entry.team })),
-      ],
+    const snapshot = await currentSnapshot()
+    if (snapshot === undefined) return
+    const preset = owner.agent === null ? await pickTeamLink(snapshot, owner.link) : await pickAgentPreset(context, snapshot, {
+      title: "Link to preset",
+      none: "None — unlink",
+      ...(owner.link === undefined ? {} : { current: owner.link }),
     })
-    if (disposed) return
-    if (template === undefined) return
-    const raw = await context.ui.dialog.prompt({
-      title: "Team name",
-      description: template ? `Starting from template ${template}` : "Team name; no slashes or ..",
-      placeholder: "my-team",
-      ...(template ? { value: template } : {}),
+    if (disposed || preset === undefined) return
+    const said = preset === null ? `Unlinked ${node.label}` : `Linked ${node.label} to ${presetName(snapshot, preset)}`
+    await run(
+      () =>
+        plus["link.set"](
+          {
+            level: owner.level,
+            agent: owner.agent,
+            ...(owner.team === undefined ? {} : { team: owner.team }),
+            ...(owner.catalogue === undefined ? {} : { catalogue: owner.catalogue }),
+            preset,
+          },
+          { location: context.location },
+        ),
+      // A team relink also relinks the members the team preset has.
+      (result) => (result.members === undefined || result.members.length === 0 ? said : `${said}; relinked ${result.members.map((member) => member.agent).join(", ")}`),
+    )
+  }
+
+  async function pickTeamLink(snapshot: Plus.Snapshot, link: PresetRef | undefined): Promise<PresetRef | null | undefined> {
+    const picked = await pickTeamPreset(context, snapshot, {
+      title: "Link to team preset",
+      none: "None — unlink",
+      ...(link?.kind === "team" ? { current: link.id } : {}),
     })
-    if (disposed) return
-    if (raw === undefined) return
-    const team = raw.trim()
-    if (team.length === 0) {
-      context.ui.toast.show({ variant: "error", message: "Team name cannot be empty" })
-      return
-    }
-    let scope: "project" | "global" | undefined
-    if (cursorLevel === "project" || cursorLevel === "global") {
-      scope = cursorLevel
-    } else {
-      scope = await context.ui.dialog.select<"project" | "global">({
-        title: "Team scope",
-        options: [
-          { title: "Project", value: "project", description: "Stored with this project" },
-          { title: "Global", value: "global", description: "Stored in your global config" },
-        ],
-      })
-      if (disposed) return
-      if (scope === undefined) return
-    }
+    if (picked === undefined) return undefined
+    if (picked === "") return null
+    return { kind: "team", id: picked }
+  }
+
+  async function run<Result>(
+    call: () => Promise<Result>,
+    success: string | ((result: Result) => string),
+    reveal?: readonly [readonly string[], string],
+  ): Promise<void> {
     try {
-      const ref = await plus["team.create"](
-        { level: scope, team, ...(template ? { template } : {}) },
-        { location: context.location },
-      )
+      const result = await call()
       if (disposed) return
-      context.ui.toast.show({ variant: "success", message: `Created team ${ref.team}` })
+      context.ui.toast.show({ variant: "success", message: typeof success === "string" ? success : success(result) })
+      if (reveal !== undefined) state.reveal(reveal[0], reveal[1])
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return
@@ -453,12 +533,21 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     disposed = true
   }
 
-  function scopeFromModelsGroup(node: TreeNode | undefined): { level: "project" | "global" | "defaults"; agent: string | null } | undefined {
+  // The row a group hangs under (the nearest shallower row above it).
+  function parentOf(node: TreeNode): TreeNode | undefined {
+    const list = state.nodes()
+    const index = list.findIndex((entry) => entry.id === node.id)
+    return list.slice(0, Math.max(index, 0)).findLast((entry) => entry.depth < node.depth)
+  }
+
+  function scopeFromModelsGroup(
+    node: TreeNode | undefined,
+  ): { level: "project" | "global" | "defaults" | "preset"; agent: string | null; team?: { level: Level; team: string } } | undefined {
     if (node === undefined) return undefined
-    const match = node.id.match(/^group:(project|global|defaults):(.*):models$/)
+    const match = node.id.match(/^group:(project|global|defaults|preset):(.*):models$/)
     if (match === null) return undefined
     const level = match[1]
-    if (level !== "project" && level !== "global" && level !== "defaults") return undefined
+    if (level !== "project" && level !== "global" && level !== "defaults" && level !== "preset") return undefined
     const owner = match[2] ?? ""
     if (owner === "") {
       if (level !== "defaults") return undefined
@@ -471,8 +560,16 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     // `:` stripped, even for colon team names and nested member ids.
     const slash = owner.indexOf("/")
     if (slash !== -1 && owner[slash + 1] === ":") {
-      const member = owner.slice(slash + 2)
-      if (member.length > 0) return { level, agent: member }
+      const rest = owner.slice(slash + 2)
+      const special = rest.startsWith("special:")
+      const member = special ? rest.slice("special:".length) : rest
+      if (member.length === 0) return undefined
+      // Member presets, Teams entries and a team's Special agents keep
+      // team-scoped records; a discovered member's are its own (tree.ts
+      // lazyTeamMember).
+      const parent = special ? undefined : parentOf(node)?.owner
+      const scoped = special || parent?.preset !== undefined || parent?.entry !== undefined
+      return { level, agent: member, ...(scoped ? { team: { level, team: owner.slice(0, slash) } } : {}) }
     }
     return { level, agent: owner }
   }
@@ -484,8 +581,9 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   async function addModel(node?: TreeNode): Promise<void> {
     if (disposed) return
     const scoped = scopeFromModelsGroup(node)
-    let level: "project" | "global" | "defaults" | undefined = scoped?.level
+    let level: "project" | "global" | "defaults" | "preset" | undefined = scoped?.level
     let agent: string | null | undefined = scoped?.agent
+    const team = scoped?.team
     let catalog: { providerID: string; modelID: string; variant?: string; name: string }[]
     try {
       const output = await plus["catalog.models"](undefined, { location: context.location })
@@ -585,7 +683,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (level === undefined || agent === undefined) return
     try {
       const ref = await plus["model.add"](
-        { level, agent, providerID: provider, modelID, ...(variant === undefined ? {} : { variant }) },
+        { level, agent, ...(team === undefined ? {} : { team }), providerID: provider, modelID, ...(variant === undefined ? {} : { variant }) },
         { location: context.location },
       )
       if (disposed) return
@@ -608,6 +706,8 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   ): { level: "project" | "global" | "defaults"; agent: string | null; catalogue?: "agents" | "teams" } | undefined {
     if (node === undefined || node.kind !== "item" || node.address === undefined) return undefined
     if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:")) return undefined
+    // Rules are not added at preset level yet: the caller prompts for a scope.
+    if (node.address.level === "preset") return undefined
     const catalogue = node.address.agent === null ? node.address.catalogue : undefined
     return { level: node.address.level, agent: node.address.agent, ...(catalogue === undefined ? {} : { catalogue }) }
   }
@@ -841,10 +941,30 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, editRule, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, editRule, relink, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>
+
+const wildcards = "* and % match any text, case-insensitive"
+
+/**
+ * Whether `l` can relink this row: an agent, member or team at Project or
+ * Global, a Defaults entry, or a User preset. A Teams entry pattern row takes
+ * no link (its member entries do), Native and Plus presets are read-only.
+ */
+export function isLinkable(owner: RowOwner | undefined): owner is RowOwner {
+  if (owner === undefined) return false
+  if (owner.level === "defaults" && owner.agent === null) return false
+  if (owner.preset !== undefined && owner.preset.origin !== "user") return false
+  return true
+}
+
+// The Project or Global root a row sits under, read from its id's level segment.
+function levelOfRow(node: TreeNode | undefined): "project" | "global" | undefined {
+  const level = node?.id.match(/^[a-z]+:(project|global)(?::|$)/)?.[1]
+  return level === "project" || level === "global" ? level : undefined
+}
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message

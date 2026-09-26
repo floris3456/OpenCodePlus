@@ -25,7 +25,8 @@ import { LayerNode } from "../../../util/src/effect/layer-node.js"
 import { createPlusApi, createState, type PlusApi } from "../../src/index.js"
 import { apply } from "../../src/instructions/apply.js"
 import { discover } from "../../src/instructions/discover.js"
-import { scopesOf, type Level } from "../../src/instructions/model.js"
+import { type Level } from "../../src/instructions/model.js"
+import { chainContext } from "../../src/instructions/presets.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
 import { enable } from "../../src/project.js"
@@ -33,7 +34,7 @@ import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
 import { gc, onSessionEvent } from "../../src/teams/lifecycle.js"
-import { allowedTeamTools, codeTools, teamTools } from "../../src/teams/policy.js"
+import { codeTools, teamTools } from "../../src/teams/policy.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Policy } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
@@ -123,7 +124,9 @@ function pluginContext(directory: string, session?: SessionDomain) {
     location,
     agent: agents.domain,
     tool: tools.domain,
-    ...(session === undefined ? {} : { session }),
+    // Publishing a team installs its members' tool plans on the session
+    // context hook, which this host accepts and never calls.
+    session: { ...(session ?? {}), hook: () => Effect.succeed({ dispose: Effect.void }) } as SessionDomain,
   })
   return { ctx, tools: tools.tools }
 }
@@ -134,12 +137,17 @@ async function registerAll(ctx: Context) {
   const state = createState()
   const plus = createPlusApi(ctx, state)
   await registerInstructionTools(ctx, plus)
-  await registerTeamTools(ctx, createTeamApi(ctx, state))
+  await registerTeamTools(ctx, createTeamApi(ctx, state), () => state.permissions)
   return plus
 }
 
+// The shipped team is a Plus team preset now, not a Defaults team (DESIGN §2,
+// §5): the walkthrough creates a project team from it (same members, each
+// linked to its member preset) and enables that.
 async function enableShippedTeam(plus: PlusApi): Promise<void> {
-  const enabled = await plus.setTeamEnabled({ level: "defaults", team: TEAM, enabled: true })
+  const created = await plus.createTeam({ level: "project", team: TEAM, preset: TEAM })
+  expect(created.ok).toBe(true)
+  const enabled = await plus.setTeamEnabled({ level: "project", team: TEAM, enabled: true })
   expect(enabled.ok).toBe(true)
 }
 
@@ -258,7 +266,7 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
           "vary between runs.",
         ].join("\n"),
       )
-      banner("20b", "a team member's ceiling and native denies are instructions rows")
+      banner("20b", "a team member's rules are ordinary rows its preset sets")
       await enable(repo.dir)
       const fixture = pluginContext(repo.dir)
       await enableShippedTeam(await registerAll(fixture.ctx))
@@ -266,46 +274,37 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       const ctx = toolContext("ses_walkthrough_20b", "sol-orchestrator")
       const where = "agent:gemini-implementer item:perm"
       const fields = ["id", "label", "badges", "source"]
-      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 200 }, ctx)
-      call("instructions_list", { where, fields, limit: 200 }, listed)
+      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500 }, ctx)
+      call("instructions_list", { where, fields, limit: 500 }, listed)
 
       const ids = listed.rows.map((row) => row.id)
-      const ceiling = allowedTeamTools("implementer")
+      // The shared team rows every agent has, and the member's own Delegate to rows.
       for (const item of [
-        "perm:shell:team-role",
-        "perm:question:team-role",
-        "perm:subagent:team-role",
-        "perm:task:team-role",
-        "perm:read:team-role",
-        "perm:external_directory:team-role",
-        "perm:search:team-tavily",
+        "perm:team_finish:requirements.clean",
+        "perm:team_get_context:bootstrap.chat",
+        "perm:team_get_context:accepts.scope-paths",
+        "perm:team_delegate:access.delegated",
+        "perm:team_status:runs.others",
+        "perm:team_delegate:to.sol-orchestrator",
+        "perm:team_delegate:to.other-teams",
       ])
-        expect(ids.some((id) => id.endsWith(item))).toBe(true)
-      // Every team tool outside the ceiling, including the Code Mode ones
-      // (team_wait, team_list) that no tool row can host: they reach a caller
-      // through the member's own Policy group.
-      for (const tool of teamTools.filter((name) => !ceiling.includes(name)))
-        expect(ids.some((id) => id.endsWith(`perm:team_${tool}:role-ceiling`))).toBe(true)
-      for (const tool of ceiling) expect(ids.some((id) => id.endsWith(`perm:team_${tool}:role-ceiling`))).toBe(false)
+        expect([item, ids.some((id) => id.endsWith(item))]).toEqual([item, true])
+      // No row carries a role any more.
+      expect(ids.filter((id) => id.endsWith(":team-role") || id.endsWith(":role-ceiling"))).toEqual([])
 
-      const delegateRow = ids.find((id) => id.endsWith("perm:team_delegate:role-ceiling"))
-      expect(delegateRow).toBeDefined()
-      const shown = await runOk<{ tool: string; enabled: boolean; patterns: string[] }>(
-        need(fixture.tools, "instructions_show"),
-        { id: delegateRow },
-        ctx,
-      )
-      call("instructions_show", { id: delegateRow }, shown)
-      expect(shown.tool).toBe("team_delegate")
-      expect(shown.enabled).toBe(false)
-      expect(shown.patterns).toEqual(["*"])
+      const cleanRow = ids.find((id) => id.endsWith("perm:team_finish:requirements.clean"))
+      const shown = await runOk<{ tool: string; enabled: boolean }>(need(fixture.tools, "instructions_show"), { id: cleanRow }, ctx)
+      call("instructions_show", { id: cleanRow }, shown)
+      expect(shown.tool).toBe("team_finish")
+      // On for gemini-implementer: its implementer preset sets it.
+      expect(shown.enabled).toBe(true)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
   })
 }, 60000)
 
-test("[20c] a non-member catalog has zero team tools; a member's is exactly its ceiling", async () => {
+test("[20c] a non-member catalog has zero team tools; an implementer-preset member's is exactly the old implementer ceiling", async () => {
   banner("20c", "a non-member catalog has zero team tools; a member's is exactly its ceiling")
   const member = "gemini-implementer"
   const codeSet = new Set<string>(codeTools)
@@ -339,9 +338,10 @@ test("[20c] a non-member catalog has zero team tools; a member's is exactly its 
       reload: () => Effect.void,
       hook: () => Effect.die("unused tool.hook"),
     },
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
-  await apply(ctx, {
+  const applied = await apply(ctx, {
     items: [...discovered.items, ...teamPolicyItems(policyMembersOf([member]))],
     agents: [
       { id: member, level: "defaults" as Level },
@@ -349,10 +349,20 @@ test("[20c] a non-member catalog has zero team tools; a member's is exactly its 
     ],
     records: [],
     splits: [],
-    scopes: scopesOf([
-      { id: member, scope: "defaults" as const },
-      { id: "build", scope: "project" as const },
-    ]),
+    // DESIGN §3.3: shared rows fall back to off unless a preset sets them.
+    // The member is created from Plus `implementer`, the other agent from
+    // Native `build`: the member's tool rows are its ceiling.
+    scopes: chainContext({
+      agents: [
+        { id: member, scope: "defaults" as const },
+        { id: "build", scope: "project" as const },
+      ],
+      items: discovered.items,
+      links: [
+        { type: "link", level: "defaults", agent: member, preset: { kind: "agent", id: "implementer" }, updated: "2026-01-01T00:00:00.000Z" },
+        { type: "link", level: "project", agent: "build", preset: { kind: "agent", id: "build" }, updated: "2026-01-01T00:00:00.000Z" },
+      ],
+    }),
     teamAgents: [member],
   })
 
@@ -394,15 +404,17 @@ test("[20c] a non-member catalog has zero team tools; a member's is exactly its 
   call("tool catalog for agent build (team entries)", undefined, nonMember)
   expect(nonMember).toEqual({ native: [], codemode: [] })
 
-  const ceiling = allowedTeamTools("implementer")
+  // The old implementer ceiling, which the implementer preset's tool rows reproduce.
+  const ceiling = ["checkpoint", "finish", "status", "diff", "get_context", "check"]
+  // Direct tools whose row is off leave the member's request through its
+  // tool plans (the session context hook); Code Mode ones leave the core
+  // catalog through a deny on their name.
+  const dropped = new Set(applied.tools.filter((plan) => plan.agent === member && !plan.enabled).map((plan) => plan.tool))
   const memberCatalog = await visible(member)
-  call(`tool catalog for agent ${member} (team entries)`, undefined, memberCatalog)
-  expect(memberCatalog.native).toEqual(
-    ceiling.filter((name) => !codeSet.has(name)).map((name) => `team_${name}`).toSorted(),
-  )
-  expect(memberCatalog.codemode).toEqual(
-    ceiling.filter((name) => codeSet.has(name)).map((name) => `team.${name}`).toSorted(),
-  )
+  const seen = { native: memberCatalog.native.filter((name) => !dropped.has(name)), codemode: memberCatalog.codemode }
+  call(`tool catalog for agent ${member} (team entries)`, undefined, seen)
+  expect(seen.native).toEqual(ceiling.filter((name) => !codeSet.has(name)).map((name) => `team_${name}`).toSorted())
+  expect(seen.codemode).toEqual(ceiling.filter((name) => codeSet.has(name)).map((name) => `team.${name}`).toSorted())
 }, 60000)
 
 test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification, wait, integrate", async () => {
@@ -445,11 +457,12 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "text", "badges", "source"] }
       const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_list"), scopeQuery, parent)
       call("instructions_list", scopeQuery, scopeRows)
-      // One produced row at two addresses: the member is listed as a Defaults
-      // agent and again under the Defaults team it belongs to.
+      // One produced row at two addresses: the member is listed under the
+      // project team it belongs to and again as the Defaults agent the host
+      // reports once it is installed.
       expect(scopeRows.rows.map((row) => row.id)).toEqual([
+        `item:project:${TEAM}/:gemini-implementer:perm:edit:run:${childRun}`,
         `item:defaults:gemini-implementer:perm:edit:run:${childRun}`,
-        `item:defaults:${TEAM}/:gemini-implementer:perm:edit:run:${childRun}`,
       ])
       const scopeRow = scopeRows.rows.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
       expect(scopeRow).toBeDefined()
@@ -577,8 +590,9 @@ test("[20e] a turn that ends without finish is idle / no_report", async () => {
       })
       await saveRun(root, child)
       const sessions = recordSession()
+      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, sessions.domain)
-      await registerAll(fixture.ctx)
+      await enableShippedTeam(await registerAll(fixture.ctx))
 
       await onSessionEvent(fixture.ctx, root, { type: "session.idle", properties: { sessionID: "ses_walkthrough_noreport" } })
       const ctx = toolContext("ses_walkthrough_noreport", "gemini-implementer")
@@ -625,8 +639,9 @@ test("[20f] a followup queued while the child is working is delivered on idle", 
       await saveRun(root, parentRun)
       await saveRun(root, child)
       const sessions = recordSession()
+      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, sessions.domain)
-      await registerAll(fixture.ctx)
+      await enableShippedTeam(await registerAll(fixture.ctx))
 
       const followup = { run: child.id, requestID: "ev-f1", prompt: "Also cover the empty-list case." }
       const queued = await runOk<{ attempt: number; state: string }>(
@@ -778,8 +793,9 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
           sessionID: "ses_walkthrough_refusal",
         }),
       )
+      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, recordSession().domain)
-      await registerAll(fixture.ctx)
+      await enableShippedTeam(await registerAll(fixture.ctx))
       const ctx = toolContext("ses_walkthrough_refusal", "sol-orchestrator")
 
       const checksInput = { checks: [{ id: "unit", argv: ["bun", "test"] }] }
@@ -800,7 +816,7 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
       const pathsMessage = await runMessage(need(fixture.tools, "team_delegate"), pathsInput, ctx)
       call("team_delegate", pathsInput, pathsMessage)
       expect(pathsMessage).toBe(
-        `E_PATHS: Implementers need scope.paths (files or dir/* they may edit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+        `E_PATHS: gemini-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
       )
 
       for (const message of [checksMessage, pathsMessage]) {
@@ -820,8 +836,9 @@ test("[21] finish on the root run", async () => {
     try {
       banner("21", "finish on the root run")
       await enable(repo.dir)
+      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, recordSession().domain)
-      await registerAll(fixture.ctx)
+      await enableShippedTeam(await registerAll(fixture.ctx))
       const ctx = toolContext("ses_walkthrough_root_finish", "sol-orchestrator")
       const bootstrap = await runOk<StatusEntry[]>(need(fixture.tools, "team_status"), {}, ctx)
       const rootRun = bootstrap[0].run

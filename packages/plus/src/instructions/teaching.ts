@@ -20,7 +20,7 @@ export const teachingContent =
   "`list({where:\"review:true\"})`→`show({id,view:\"diff\"})`→`set({id,resolve:\"keep\"})`. " +
   "`list({where:\"agent:X item:tool\"})`→`set({id,text})`. " +
   "Patterns are core wildcards, not regex; shell resource is the parsed command, so `git *` matches bare `git`. " +
-  "Skill `instructions-tools`: filters, views, create/delete, errors."
+  "Skill `instructions-tools`: filters, views, presets, create/delete, errors."
 
 // Roughly 1k tokens: the full filter grammar, every show view, create
 // fields per kind, split boundaries, the error table, and worked examples.
@@ -32,10 +32,20 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 - \`item:<level>:<owner>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`.
 - \`section:…:<sectionId>\` — one section inside a row; list exact ids with \`show({ id, view: "sections" })\`.
-- \`agent:<level>:<id>\` — one agent's subtree. Only these ids accept \`view: "assembled"\`.
+- \`agent:<level>:<id>\` — one agent's subtree. Only project/global/defaults agent ids accept \`view: "assembled"\`.
 - \`team:<level>:<name>\` — one team; \`team:<level>:<team>:<member>\` — one member of it.
 
-\`<level>\` is \`project\`, \`global\`, or \`defaults\`.
+\`<level>\` is \`project\`, \`global\`, \`defaults\`, or \`preset\` (the Presets root).
+
+## Presets, Defaults entries and links
+
+An agent behaves exactly as its rows say; nothing is read from its name. What a row does not set comes, in order, from the agent's own levels, its **preset** (the one it is linked to, live), the **Defaults entries** matching its name, Defaults "for every agent", and last the fallback: native opencode agents keep their native value, everything else is **off**. \`show\` answers \`from\` in words ("from preset Orchestrator", "from default *orchestrator*", "from Defaults (every agent)", "native", "off by default"); \`list({ fields: ["id", "from"] })\` projects it.
+
+- Presets live under the Presets root: \`agent:preset:<id>\` (Native: build, plan, general, explore, title, summary, compaction; Plus: planner, orchestrator, implementer, reviewer, scout, build-seat; User: yours) and team presets \`team:preset:<team>\` with member presets \`team:preset:<team>:<member>\`. Native and Plus presets ship with the release: their rows are editable (your edits win), the presets themselves cannot be deleted. Their rows are not an agent's, so \`protectedAgents\` does not guard them.
+- Name a preset as \`"<id>"\` (an agent preset) or \`"<team>/<member>"\` (a member preset), or as \`{ kind: "agent", id }\` / \`{ kind: "member", team, id }\`; a team takes a team preset id.
+- Defaults entries are rows named by an exact name or a pattern: \`*\` and \`%\` match any text, case-insensitively, on the whole name (\`*orchestrator*\` matches \`Opus-Orchestrator-max\`). Agents entries are \`agent:defaults:<name>\` (Defaults → Agents → User); Teams entries are \`team:defaults:<team pattern>:<name>\` and match a member of a matching team. An exact name beats a pattern, then more literal characters win.
+- \`set({ id, preset })\` on an agent, member, team, entry or user preset row links it (live); \`preset: null\` unlinks. A preset that would come back to itself is refused (\`link.cycle\`). A preset anything links to cannot be deleted (\`preset.inUse\` names who).
+- A \`team_*\` tool row that is off refuses the call (core deny on \`team.<tool>\`), not only hides it.
 
 ## Catalogues
 
@@ -45,7 +55,7 @@ The tree splits into two catalogues under every level: **Agents** and **Teams**.
 
 \`list({ where?, fields?, sort?, limit?, offset? })\` — \`limit\` defaults to 40. \`where\` terms are ANDed; \`!key:value\` negates one term; \`a,b\` is OR within a single key; a bare word matches case-insensitively over label or id; \`key:>7d\` and \`key:<N\` compare ages and counts.
 
-Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|perm), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\`, \`catalogue\` (agents|teams), \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
+Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|perm), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\` (project|global|defaults|preset), \`catalogue\` (agents|teams), \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 
@@ -57,7 +67,7 @@ Permission rows hang directly off each native/plus tool row (after its sections)
 
 ## set and reset
 
-\`set({ id, text?, state?, pin?, active?, resolve? })\` — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`active\` is \`true\` to activate a model row exclusively at that level; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row (model rows clear only that level's active flag). On perm rows \`state\` toggles the rule (off installs core deny rules for that agent only); \`message\` (or \`label\`/\`patterns\`/\`keywords\`) edits the rule; perm rows accept no text, pin, or resolve.
+\`set({ id, text?, state?, pin?, active?, resolve? })\` (or \`set({ id, preset })\` to relink, above) — \`state\` is \`on\`|\`off\`; \`pin\` is \`true\`|\`false\` for Code Mode tools; \`active\` is \`true\` to activate a model row exclusively at that level; \`resolve\` is \`keep\` (ack upstream, keep text), \`take\` (drop your text, follow upstream), or \`edit\` (store \`text\` against current upstream). \`reset({ id })\` deletes the override at that row (model rows clear only that level's active flag). On perm rows \`state\` toggles the rule (off installs core deny rules for that agent only); \`message\` (or \`label\`/\`patterns\`/\`keywords\`) edits the rule; perm rows accept no text, pin, or resolve.
 
 Code Mode tools are live: \`off\` denies the tool id, stored text rewrites that agent's catalog entry (first description line only, truncated at 120 characters), and \`pin\` overrides the registry default; the synthetic \`tool:execute\` row is toggle-only and \`off\` removes Code Mode entirely. Filter them with \`namespace:<name>\`, \`pinned:true|false\`, and \`execute:true|false\`, e.g. \`list({ where: "codemode:true pinned:true" })\`.
 
@@ -76,19 +86,23 @@ Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` sp
 \`create({ kind, ...fields })\` — one row per call. Every enabled kind returns \`{ id, item, … }\`: \`id\` is the tree row id — the id \`show\`, \`set\`, and \`delete\` accept for that row — and \`item\` is the stored item id. Pass the returned \`id\` to follow-up calls rather than rebuilding it.
 
 | kind | required fields |
-| agent | \`id\`, \`prompt\` (+ optional \`scope\` project\|global, \`template\`, \`fields\`) |
+| agent | \`id\` (+ optional \`scope\` project\|global, \`preset\`; no preset = everything off) |
 | skill | \`name\`, \`body\` |
 | base | \`id\`, \`title\`, \`text\` |
 | instruction | disabled: fails with \`instruction.disabled\` |
 | mcp | \`name\`, \`config\` |
-| team | \`team\`, \`level\` project\|global (+ optional \`template\`, a built-in Defaults team whose roster seeds the new directory) |
-| member | \`team\`, \`level\` project\|global\|defaults, \`id\` (agent id), \`prompt\` (+ optional \`template\`, \`fields\`) |
-| model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\` project\|global\|defaults, \`agent\`; \`level\` defaults to \`project\`, and project/global rows need \`agent\`) |
+| team | \`team\`, \`level\` project\|global (+ optional \`preset\`, a team preset: its members are created, each linked to its member preset) |
+| member | \`team\`, \`level\` project\|global\|defaults, \`id\` (+ optional \`preset\`; at defaults \`team\` and \`id\` are patterns and it adds a Teams entry) |
+| entry | \`catalogue\` agents\|teams, \`name\` (+ \`team\` pattern for teams, optional \`preset\`) |
+| preset | \`id\` (+ optional \`from\`, the agent or member preset it is linked to) |
+| teamPreset | \`id\` (+ optional \`from\`, a team preset whose members are copied) |
+| presetMember | \`team\` (a User team preset), \`id\` (+ optional \`from\`) |
+| model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\` project\|global\|defaults\|preset, \`agent\`; \`level\` defaults to \`project\`, and project/global/preset rows need \`agent\`) |
 | rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ optional \`keywords\`, \`message\`, \`level\` project\|global\|defaults, \`agent\`; \`level\` defaults to \`project\`) |
 
-Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\` for file, model, and rule rows; \`agent:<level>:<id>\` for an agent; \`team:<level>:<team>\` for a team; \`team:<level>:<team>:<member>\` for a member. A \`member\` writes a team member file (\`team.addAgent\`); at \`defaults\` it writes the Defaults overlay the TUI writes.
+Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\` for file, model, and rule rows; \`agent:<level>:<id>\` for an agent, an Agents entry or an agent preset; \`team:<level>:<team>\` for a team or team preset; \`team:<level>:<team>:<member>\` for a member, a Teams entry or a member preset. An agent or member file carries its preset's mode and description and an empty body; everything else follows the preset.
 
-\`delete({ id, confirm: true })\` — refused without \`confirm: true\`; pass the \`id\` a \`create\` returned. Only user-created rules can be deleted; curated/mined rule rows refuse with why.
+\`delete({ id, confirm: true })\` — refused without \`confirm: true\`; pass the \`id\` a \`create\` returned. Only user-created rules can be deleted; curated/mined rule rows refuse with why. Entries and User presets delete too (a Teams team-pattern row deletes all its member entries); a preset in use is refused.
 
 ## Guards and errors
 
@@ -106,6 +120,12 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 | \`view.unsupported\` | that view needs another id kind (\`assembled\` needs an agent row) |
 | \`agent.unknown\` | no agent has that id; \`list\` again for the current id |
 | \`project.disabled\` | project mode is off and no tool changes that |
+| \`preset.invalid\` | no preset answers to that name, or it is the wrong kind (an agent takes an agent or member preset, a team a team preset) |
+| \`preset.exists\` | a preset of that kind already has that id |
+| \`preset.readonly\` | Native and Plus presets are not changed or deleted; create a User preset from one |
+| \`preset.inUse\` | something is linked to the preset; relink or delete the listed rows first |
+| \`entry.invalid\` / \`entry.exists\` / \`entry.missing\` | bad entry name (\`:\` is not allowed), a duplicate (same catalogue, team pattern and name, or a native agent's own Defaults row), or no such entry |
+| \`link.invalid\` / \`link.cycle\` | the row takes no link, or the link would bring a preset back to itself |
 
 ## Examples
 
@@ -122,7 +142,9 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 6. One \`execute\` updates three rows: acknowledge a review, reword a tool, and switch a server off — pass one \`set\` per row in the same call.
 7. Grow the tree: \`create({ kind: "base", id, title, text })\` → \`split({ id: result.id, boundaries })\` → \`delete({ id: result.id, confirm: true })\`.
 8. Switch an agent's model: \`list({ where: "agent:alpha item:model" })\` → \`set({ id, active:true })\` → \`reset({ id })\` to fall back.
-9. Scaffold a team: \`create({ kind: "team", team, level: "project", template })\` seeds the roster from a built-in Defaults team; \`create({ kind: "member", team, level: "project", id, prompt })\` adds one member.
+9. Scaffold a team: \`create({ kind: "team", team, level: "project", preset: "starter" })\` creates the team preset's members, each linked; \`create({ kind: "member", team, level: "project", id, preset: "planner" })\` adds one member.
+10. Give every orchestrator a setting: \`create({ kind: "entry", catalogue: "agents", name: "*orchestrator*", preset: "orchestrator" })\`, then \`list({ where: "level:defaults agent:orchestrator item:tool" })\` → \`set({ id, state: "off" })\`.
+11. Relink an agent: \`set({ id: "agent:project:alpha", preset: "review/editor" })\`; \`set({ id, preset: null })\` unlinks.
 `
 
 

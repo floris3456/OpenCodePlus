@@ -11,14 +11,22 @@ import type {
   CreateBaseInput,
   CreateInstructionInput,
   CreateSkillInput,
+  CreateTeamInput,
   DeleteBaseInput,
   DeleteInstructionInput,
   DeleteSkillInput,
+  EntryCreateInput,
   ImportSkillInput,
+  LinkSetInput,
+  ModelAddInput,
   MutateInput,
+  PresetAddMemberInput,
+  PresetCreateInput,
+  PresetDeleteInput,
   RuleAddInput,
   Snapshot,
   Status,
+  TeamAddAgentInput,
 } from "../src/rpc.js"
 
 export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
@@ -28,6 +36,11 @@ export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
     agents: overrides?.agents ?? [],
     items: overrides?.items ?? [],
     records: overrides?.records ?? [],
+    ...(overrides?.links === undefined ? {} : { links: overrides.links }),
+    ...(overrides?.entries === undefined ? {} : { entries: overrides.entries }),
+    ...(overrides?.presets === undefined ? {} : { presets: overrides.presets }),
+    ...(overrides?.teams === undefined ? {} : { teams: overrides.teams }),
+    ...(overrides?.listing === undefined ? {} : { listing: overrides.listing }),
     servers: overrides?.servers ?? [],
     protectedAgents: overrides?.protectedAgents ?? [],
   }
@@ -96,10 +109,44 @@ export interface FakeRpc {
   readonly mcpAdds: AddMcpInput[]
   readonly mcpRemoves: { name: string }[]
   readonly ruleAdds: RuleAddInput[]
+  readonly teamCreates: CreateTeamInput[]
+  readonly teamAddAgents: TeamAddAgentInput[]
+  readonly entryCreates: EntryCreateInput[]
+  readonly presetCreates: PresetCreateInput[]
+  readonly presetAddMembers: PresetAddMemberInput[]
+  readonly presetDeletes: PresetDeleteInput[]
+  readonly linkSets: LinkSetInput[]
+  readonly modelAdds: ModelAddInput[]
+  /** Every toast shown, in order. */
+  readonly toasts: { variant?: string; message: string }[]
+  /** Full prompt and select inputs (titles, descriptions, options, current), in order. */
+  readonly promptInputs: TestPromptInput[]
+  readonly selectInputs: TestSelectInput[]
   readonly dialogPrompts: string[][]
   readonly dialogSelects: unknown[][]
   readonly dialogConfirms: unknown[][]
   readonly agentSelects: string[]
+}
+
+export interface TestPromptInput {
+  readonly title: string
+  readonly description?: string
+  readonly placeholder?: string
+  readonly value?: string
+}
+
+export interface TestSelectInput {
+  readonly title: string
+  readonly placeholder?: string
+  readonly current?: unknown
+  readonly options: readonly { readonly title: string; readonly value: unknown; readonly category?: string; readonly description?: string }[]
+}
+
+/** A declared RPC error the fake throws instead of answering (the shape the client raises). */
+export interface TestRpcError {
+  readonly type: string
+  readonly message: string
+  readonly data?: unknown
 }
 
 export interface DialogScript {
@@ -130,6 +177,9 @@ export interface RenderFixtureOptions {
   readonly routeData?: unknown
   readonly dialogs?: DialogScript
   readonly mutateResult?: unknown
+  /** RPC name → the error it throws (link.set, preset.delete, …). */
+  readonly rpcErrors?: Readonly<Record<string, TestRpcError>>
+  readonly models?: readonly { providerID: string; modelID: string; variant?: string; name: string }[]
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -155,6 +205,17 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     mcpAdds: [],
     mcpRemoves: [],
     ruleAdds: [],
+    teamCreates: [],
+    teamAddAgents: [],
+    entryCreates: [],
+    presetCreates: [],
+    presetAddMembers: [],
+    presetDeletes: [],
+    linkSets: [],
+    modelAdds: [],
+    toasts: [],
+    promptInputs: [],
+    selectInputs: [],
     dialogPrompts: [],
     dialogSelects: [],
     dialogConfirms: [],
@@ -172,6 +233,11 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     return [...layers]
       .reverse()
       .flatMap((fn) => fn().commands ?? [])
+  }
+
+  function fail(name: string): void {
+    const error = options.rpcErrors?.[name]
+    if (error !== undefined) throw error
   }
 
   function nextSnapshot(): Snapshot {
@@ -245,6 +311,51 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fake.ruleAdds.push(input)
           return { level: input.level, agent: input.agent, tool: input.tool, id: input.id, label: input.label }
         },
+        "team.create": async (input: CreateTeamInput) => {
+          fake.teamCreates.push(input)
+          fail("team.create")
+          return { level: input.level, team: input.team, enabled: false }
+        },
+        "team.addAgent": async (input: TeamAddAgentInput) => {
+          fake.teamAddAgents.push(input)
+          fail("team.addAgent")
+          return { id: input.id, path: `/teams/${input.team}/${input.id}.md` }
+        },
+        "entry.create": async (input: EntryCreateInput) => {
+          fake.entryCreates.push(input)
+          fail("entry.create")
+          return { id: `agent:defaults:${input.name}`, catalogue: input.catalogue, name: input.name }
+        },
+        "entry.delete": async () => {
+          fail("entry.delete")
+          return { id: "", catalogue: "agents" }
+        },
+        "preset.create": async (input: PresetCreateInput) => {
+          fake.presetCreates.push(input)
+          fail("preset.create")
+          return { id: `preset:${input.id}`, ref: { kind: input.kind, id: input.id } }
+        },
+        "preset.addMember": async (input: PresetAddMemberInput) => {
+          fake.presetAddMembers.push(input)
+          fail("preset.addMember")
+          return { id: `team:preset:${input.team}:${input.id}`, ref: { kind: "member", team: input.team, id: input.id } }
+        },
+        "preset.delete": async (input: PresetDeleteInput) => {
+          fake.presetDeletes.push(input)
+          fail("preset.delete")
+          return { id: "", ref: input.ref }
+        },
+        "link.set": async (input: LinkSetInput) => {
+          fake.linkSets.push(input)
+          fail("link.set")
+          return { level: input.level, agent: input.agent, ...(input.team === undefined ? {} : { team: input.team }), preset: input.preset }
+        },
+        "catalog.models": async () => ({ models: options.models ?? [] }),
+        "model.add": async (input: ModelAddInput) => {
+          fake.modelAdds.push(input)
+          fail("model.add")
+          return { level: input.level, agent: input.agent, providerID: input.providerID, modelID: input.modelID }
+        },
         events: {
           on: (name: string, handler: RpcListener) => {
             if (name === "project.changed") {
@@ -306,19 +417,23 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           if (confirmScript.length > 0) return confirmScript.shift()
           return true
         },
-        prompt: async (input: { title: string }) => {
+        prompt: async (input: TestPromptInput) => {
+          fake.promptInputs.push(input)
           fake.dialogPrompts.push([input.title])
           if (promptScript.length > 0) return promptScript.shift()
           return undefined
         },
-        select: async (input: { title: string }) => {
+        select: async (input: TestSelectInput) => {
+          fake.selectInputs.push(input)
           fake.dialogSelects.push([input.title])
           if (selectScript.length > 0) return selectScript.shift()
           return undefined
         },
       },
       toast: {
-        show: () => {},
+        show: (toast: { variant?: string; message: string }) => {
+          fake.toasts.push(toast)
+        },
       },
       agents: {
         groups: () => () => {},
@@ -418,6 +533,8 @@ export interface RenderRouteOptions {
   readonly onClose?: () => void
   readonly dialogs?: DialogScript
   readonly mutateResult?: unknown
+  readonly rpcErrors?: Readonly<Record<string, TestRpcError>>
+  readonly models?: readonly { providerID: string; modelID: string; variant?: string; name: string }[]
 }
 
 export async function renderInstructionsRoute(options: RenderRouteOptions): Promise<TestFixture> {
@@ -428,6 +545,8 @@ export async function renderInstructionsRoute(options: RenderRouteOptions): Prom
     height: options.height,
     dialogs: options.dialogs,
     mutateResult: options.mutateResult,
+    ...(options.rpcErrors === undefined ? {} : { rpcErrors: options.rpcErrors }),
+    ...(options.models === undefined ? {} : { models: options.models }),
     render: (context) =>
       createComponent(InstructionsRoute, {
         context,

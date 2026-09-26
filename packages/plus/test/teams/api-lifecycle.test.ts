@@ -11,6 +11,7 @@ import { peek } from "../../src/teams/inbox.js"
 import { loadRun, saveRun, isAttemptTerminal, type AttemptRecord, type RunRecord } from "../../src/teams/run.js"
 import { claim, create, load } from "../../src/teams/tasks.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
+import { shippedTable } from "./preset-table.js"
 import { stopHandler, stopRun, supersedeHandler } from "../../src/teams/api-lifecycle.js"
 import { onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
 import { atomicJson } from "../../src/teams/store.js"
@@ -702,6 +703,7 @@ test("a settle pass cannot resurrect a worktree another writer removed", async (
               context({}),
               { run: child.id, expectedParentHead: repo.head },
               callerFor(parent),
+              shippedTable(),
             )
             landing.ok = integrated.ok
             return undefined

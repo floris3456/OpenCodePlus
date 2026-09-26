@@ -563,12 +563,14 @@ test("row ids tolerate /, @, and extra : in the item segment through the real tr
   const ids = expandedTree(memo).map((node) => node.id)
   expect(ids).toContain("item:project:alpha:perm:shell:git-push")
   expect(ids).toContain("item:project:alpha:model:openai/gpt-5@high")
+  // alpha is a user agent: an unset row falls back to off (DESIGN §3.3), so
+  // the toggle writes "on".
   const perm = toggle(memo, "item:project:alpha:perm:shell:git-push")
   if ("refusal" in perm) throw new Error(`expected toggle success, got ${perm.refusal}`)
-  expect(perm.records.some((record) => record.item === "perm:shell:git-push" && record.state === "off")).toBe(true)
+  expect(perm.records.some((record) => record.item === "perm:shell:git-push" && record.state === "on")).toBe(true)
   const model = toggle(memo, "item:project:alpha:model:openai/gpt-5@high")
   if ("refusal" in model) throw new Error(`expected toggle success, got ${model.refusal}`)
-  expect(model.records.some((record) => record.item === "model:openai/gpt-5@high" && record.state === "off")).toBe(true)
+  expect(model.records.some((record) => record.item === "model:openai/gpt-5@high" && record.state === "on")).toBe(true)
 })
 
 test("a perm: item resolves enabled through the existing chain with no new logic", () => {

@@ -22,6 +22,7 @@ import { seedSystemInstruction, teachingContent } from "../src/instructions/teac
 import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
+import { chainContext } from "../src/instructions/presets.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness, type PromptClassificationTable } from "./harness.js"
 
 const roots: string[] = []
@@ -1004,7 +1005,14 @@ test("discover -> apply honors active base classification", async () => {
     makeInput({
       items: discovered.items,
       records,
-      scopes: scopesOf(discovered.agents),
+      // DESIGN §3.3: alpha stands for an agent created from the Native `build`
+      // preset, so its uncustomized tool and skill rows keep their native
+      // value and only the base customization under test installs.
+      scopes: chainContext({
+        agents: discovered.agents,
+        items: discovered.items,
+        links: [{ type: "link", level: "project", agent: "alpha", preset: { kind: "agent", id: "build" }, updated: UPDATED }],
+      }),
       agents: [{ id: "alpha", level: "project", base: alpha.base }],
     }),
   )
@@ -1270,6 +1278,34 @@ test("base classification follows the Plus-active model, not the upstream", asyn
     ],
   })
   expect(withRecord.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
+})
+
+// A native agent discovered at Defaults runs its Project row (runtimeScope),
+// so applyModels installs a Project or Global active model; the Base badge
+// must classify that model, not the upstream one.
+test("a native agent's base follows the active model its Project or Global row selects", async () => {
+  const directory = await tempDir("plus-discover-")
+  const global = await tempDir("plus-discover-global-")
+  process.env.OPENCODE_CONFIG_DIR = global
+  const hostAgents = [agent("build", "build prompt", modelRef("acme", "nova-1"))]
+  const classify = (candidate: { model?: { id?: unknown } }): string | undefined => {
+    const id = typeof candidate.model?.id === "string" ? candidate.model.id : ""
+    if (id === "claude-fable-5") return "claude"
+    if (id === "nova-1") return "general"
+    return undefined
+  }
+  const run = (level: "project" | "global") =>
+    discover({
+      ctx: fullContext({ directory, agents: hostAgents }),
+      records: [],
+      baseTemplates: noTemplates,
+      activeBase: classify as (agent: Agent.Info) => string | undefined,
+      modelRecords: [{ type: "model", level, agent: "build", providerID: "cliproxyapi", modelID: "claude-fable-5", active: true, updated: UPDATED }],
+    })
+  for (const level of ["project", "global"] as const) {
+    const built = (await run(level)).agents.find((entry) => entry.id === "build")
+    expect(built).toMatchObject({ scope: "defaults", origin: "native", base: "claude" })
+  }
 })
 
 test("built-ins split into native and special origins with file-backed user", async () => {

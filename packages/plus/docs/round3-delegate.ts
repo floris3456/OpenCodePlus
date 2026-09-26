@@ -40,6 +40,7 @@ import { attemptTransition, bySession, loadRun, saveRun, startAttempt, type RunR
 import { Brief, RunID } from "../src/teams/schema.js"
 import { registerTeamTools } from "../src/teams/tools.js"
 import { context, toolHarness } from "../test/harness.js"
+import { shippedTable } from "../test/teams/preset-table.js"
 
 export const LAB_HOME_PREFIX = "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-"
 export const HUMAN_SERVER_PORT = "40374"
@@ -274,7 +275,11 @@ export async function labToolContext(options: { directory: string; session: Sess
   })
   const ctx = context({ location, tool: tools.domain, session: options.session })
   const state = createState()
-  const registration = await registerTeamTools(ctx, createTeamApi(ctx, state))
+  // The lab publishes no instructions: the team tools read the shipped team's
+  // rows (each member linked to its member preset), as a publish of that team
+  // would hand them. Nothing is read from a member's id.
+  state.permissions = shippedTable()
+  const registration = await registerTeamTools(ctx, createTeamApi(ctx, state), () => state.permissions)
   return {
     ctx,
     state,

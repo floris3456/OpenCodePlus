@@ -7,7 +7,7 @@ import { createHandlers, createState, deactivate } from "../src/index.js"
 import { assembled } from "../src/instructions/assembled.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { scrubLines } from "../src/instructions/tool-permissions.js"
-import { save } from "../src/instructions/store.js"
+import { load, save } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness, skillInfo, toolHarness } from "./harness.js"
@@ -42,6 +42,29 @@ function throwingContext(captured: { current?: unknown }): {
   }
 }
 
+// DESIGN §3.3: a user agent's shared rows fall back to off unless a preset
+// sets them. The fixture agents stand for agents created from the Native
+// `build` preset, so every row a test does not customize keeps its native
+// value and each test keeps its own subject.
+async function linkToBuild(project: string, ids: readonly string[]): Promise<void> {
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records,
+      ...ids.map((id) => ({
+        type: "link" as const,
+        level: "project" as const,
+        agent: id,
+        preset: { kind: "agent" as const, id: "build" },
+        updated: UPDATED,
+      })),
+    ],
+  })
+  if (!saved.ok) throw new Error("linkToBuild: stale save")
+}
+
 // End-to-end through the real path: handlers run real discovery against the
 // shared harness registry, mutate publishes (real apply installs the private
 // copy through the transform seam), and assembled reads the host back.
@@ -56,6 +79,7 @@ async function setup() {
     await fs.mkdir(path.dirname(agentPath), { recursive: true })
     await Bun.write(agentPath, "upstream role")
   }
+  await linkToBuild(project, ["alpha", "beta"])
   const agents = agentHarness([agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")])
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([skillInfo("notes", "upstream body")])
@@ -411,14 +435,19 @@ test("reports a stored skill off with an installed denial as absent", async () =
 async function setupTools(options: {
   agents: string[]
   tools: Parameters<typeof toolHarness>[0]
+  /** Link every agent to the Native `build` preset (see linkToBuild). */
+  fromBuild?: boolean
+  /** Native host agents (build, plan, …): no agent files, so discovery classifies them native. */
+  native?: boolean
 }) {
   const { project } = await tempRoot()
   await enable(project)
-  for (const id of options.agents) {
+  for (const id of options.native === true ? [] : options.agents) {
     const agentPath = path.join(project, ".opencode", "agent", `${id}.md`)
     await fs.mkdir(path.dirname(agentPath), { recursive: true })
     await Bun.write(agentPath, "upstream role")
   }
+  if (options.fromBuild === true) await linkToBuild(project, options.agents)
   const agents = agentHarness(options.agents.map((id) => agentInfo(id, "upstream role")))
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([])
@@ -457,7 +486,7 @@ function toolOff(item: Plus.SnapshotItem, overrides?: Partial<Plus.SnapshotCusto
 }
 
 test("a Code Mode off installs a deny for one agent while the other keeps the tool", async () => {
-  const { handlers, agents } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers, agents } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }], fromBuild: true })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const item = snapshot.items.find((entry) => entry.id === "tool:coder")
   if (!item) throw new Error("expected tool:coder")
@@ -478,8 +507,15 @@ test("a Code Mode off installs a deny for one agent while the other keeps the to
   expect(forBeta.tools.find((entry) => entry.id === "coder")?.codemode).toBe(true)
 })
 
+// A preset or Defaults entry wins over Defaults "for every agent" (DESIGN
+// §3.1), and an unlinked user agent's rows are off anyway (§3.3): the agents
+// that inherit this row are native agents, so the fixture uses build and plan.
 test("a Defaults-level Code Mode off cascades to inheriting agents", async () => {
-  const { handlers, agents } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers, agents } = await setupTools({
+    agents: ["build", "plan"],
+    tools: [{ id: "coder", description: "code mode tool" }],
+    native: true,
+  })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const item = snapshot.items.find((entry) => entry.id === "tool:coder")
   if (!item) throw new Error("expected tool:coder")
@@ -501,16 +537,16 @@ test("a Defaults-level Code Mode off cascades to inheriting agents", async () =>
   )
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
-  expect(agents.state.get("beta")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
-  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(agents.state.get("build")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  expect(agents.state.get("plan")?.permissions.slice(-1)).toEqual([{ action: "coder", resource: "*", effect: "deny" }])
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "build" }, throwingContext({})))
   expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("coder")
-  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "plan" }, throwingContext({})))
   expect(forBeta.tools.map((entry) => entry.id)).not.toContain("coder")
 })
 
 test("the execute entry is present unless denied", async () => {
-  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }], fromBuild: true })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const execute = snapshot.items.find((entry) => entry.id === "tool:execute")
   if (!execute) throw new Error("expected tool:execute")
@@ -531,7 +567,7 @@ test("the execute entry is present unless denied", async () => {
 })
 
 test("a Code Mode text and pin reports the installed catalog plan for the owning agent only", async () => {
-  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }], fromBuild: true })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const item = snapshot.items.find((entry) => entry.id === "tool:coder")
   if (!item) throw new Error("expected tool:coder")
@@ -617,7 +653,7 @@ test("a permission-group deny excludes the Code Mode tool sharing that group", a
 })
 
 test("a pin-only record reaches assembled as pinned for that agent", async () => {
-  const { handlers, state } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers, state } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }], fromBuild: true })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const item = snapshot.items.find((entry) => entry.id === "tool:coder")
   if (!item) throw new Error("expected tool:coder")
@@ -685,7 +721,7 @@ test("a group deny plus a later id allow still reads as absent in both orders", 
 })
 
 test("denying execute hides other Code Mode tools too", async () => {
-  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers } = await setupTools({ agents: ["alpha", "beta"], tools: [{ id: "coder", description: "code mode tool" }], fromBuild: true })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const execute = snapshot.items.find((entry) => entry.id === "tool:execute")
   if (!execute) throw new Error("expected tool:execute")
@@ -737,7 +773,7 @@ test("a stored-but-unpublished pin reports the registry default", async () => {
 })
 
 test("disposal clears the installed pin, so a stale pin record falls back to default", async () => {
-  const { handlers, state } = await setupTools({ agents: ["alpha"], tools: [{ id: "coder", description: "code mode tool" }] })
+  const { handlers, state } = await setupTools({ agents: ["alpha"], tools: [{ id: "coder", description: "code mode tool" }], fromBuild: true })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const item = snapshot.items.find((entry) => entry.id === "tool:coder")
   if (!item) throw new Error("expected tool:coder")
@@ -839,4 +875,48 @@ test("an all-matching scrub preserves the original in assembled, matching the li
   expect(scrubLines("git push", ["git push"]).text).toBe("")
   expect(result.system).toEqual(["git push"])
   expect(result.tools.find((entry) => entry.id === "shell")?.description).toBe("git push")
+})
+
+// A team member's runtime chain is its team's: `project/m@crew` beats the
+// per-agent `project/m` its Agents row reads. The readback resolves the
+// member with the team and the publish context apply ran it with, so a
+// permission row the team keeps on scrubs nothing — as in its sessions.
+test("a team member's readback resolves with its team, as apply does", async () => {
+  const { handlers, agents } = await setupTools({
+    agents: [],
+    tools: [{ id: "shell", description: "Run commands.\nUse git push to publish.", options: { codemode: false } }],
+  })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  // From the Native build preset, so its other rows keep their native value.
+  await Effect.runPromise(
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "m", preset: { kind: "agent", id: "build" } }, throwingContext({})),
+  )
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const row = (id: string) => {
+    const item = snapshot.items.find((entry) => entry.id === id)
+    if (!item) throw new Error(`expected ${id}`)
+    return item
+  }
+  const crew = { level: "project" as const, team: "crew" }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [
+          toolOff(row("tool:shell"), { agent: "m", state: "on" }),
+          // The Agents row (per-agent) turns git push off; the team keeps it on.
+          toolOff(row("perm:shell:git-push"), { agent: "m", state: "off" }),
+          toolOff(row("perm:shell:git-push"), { agent: "m", team: crew, state: "on" }),
+        ],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  // Apply ran the member with its team: no git push deny.
+  expect(agents.state.get("m")?.permissions.some((rule) => rule.resource === "git push *")).toBe(false)
+  const forMember = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "m" }, throwingContext({})))
+  expect(forMember.tools.find((entry) => entry.id === "shell")?.description).toBe("Run commands.\nUse git push to publish.")
 })

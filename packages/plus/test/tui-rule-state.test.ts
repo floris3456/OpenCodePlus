@@ -173,6 +173,8 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
     expect(agentsRuleRow.id).toBe("item:defaults::perm:shell:no-pull")
 
     // Space on the Teams rule row: the real op behind the state's toggleRow.
+    // Defaults "for every agent" falls back to off when nothing sets it
+    // (DESIGN §3.3), so space stores it "on".
     const toggled = toggle(memo, teamsRuleRow.id)
     if ("refusal" in toggled) throw new Error(toggled.refusal)
 
@@ -189,7 +191,7 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
       (record): record is Plus.SnapshotCustomizationRecord => record.type === "customization" && record.item === "perm:shell:no-push",
     )
     expect(payloadState?.catalogue).toBe("teams")
-    expect(payloadState?.state).toBe("off")
+    expect(payloadState?.state).toBe("on")
     const payloadModel = resubmitted.find((record): record is Plus.SnapshotModelRecord => record.type === "model")
     expect(payloadModel?.catalogue).toBe("teams")
     const payloadAgentsRule = resubmitted.find(
@@ -228,7 +230,7 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
       (record): record is Plus.SnapshotCustomizationRecord => record.type === "customization" && record.item === "perm:shell:no-push",
     )
     expect(storedState?.catalogue).toBe("teams")
-    expect(storedState?.state).toBe("off")
+    expect(storedState?.state).toBe("on")
     const storedModel = mutated.snapshot.records.find((record): record is Plus.SnapshotModelRecord => record.type === "model")
     expect(storedModel?.catalogue).toBe("teams")
 
@@ -241,14 +243,14 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
       (record): record is CustomizationRecord => record.type === "customization" && record.item === "perm:shell:no-push",
     )
     expect(diskState?.catalogue).toBe("teams")
-    expect(diskState?.state).toBe("off")
+    expect(diskState?.state).toBe("on")
     const globalLines = await storedLines(globalRecordsPath())
     const teamsRuleLine = globalLines.find((line) => line.type === "rule" && line.id === "no-push")
     expect(teamsRuleLine?.catalogue).toBe("teams")
     expect(teamsRuleLine?.message).toBe("pushing is not allowed in this team")
     const stateLine = globalLines.find((line) => line.type === "customization" && line.item === "perm:shell:no-push")
     expect(stateLine?.catalogue).toBe("teams")
-    expect(stateLine?.state).toBe("off")
+    expect(stateLine?.state).toBe("on")
     const modelLine = globalLines.find((line) => line.type === "model")
     expect(modelLine?.catalogue).toBe("teams")
   })

@@ -5,8 +5,9 @@ import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../../src/index.js"
 import { enable } from "../../src/project.js"
-import { teamTools } from "../../src/teams/policy.js"
+import { directTools, teamTools } from "../../src/teams/policy.js"
 import { fullContext } from "../harness.js"
+import { presetInput, resolvedStates } from "./preset-table.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -40,6 +41,18 @@ function throwingContext(captured: { current?: unknown }): {
   }
 }
 
+// The shipped team is a Plus team preset now, not a Defaults team (DESIGN §2,
+// §5): a project team created from it has the same ten members, each linked
+// to its member preset, and enabling it installs them.
+async function installFromPreset(handlers: ReturnType<typeof createHandlers>): Promise<void> {
+  await Effect.runPromise(
+    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext({})),
+  )
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext({})),
+  )
+}
+
 const TEN = [
   "fable-planner",
   "astra-planner",
@@ -53,151 +66,77 @@ const TEN = [
   "scout",
 ] as const
 
-interface Expectation {
-  readonly description: string
-  readonly shell: "allow" | "deny"
-  readonly external: "allow" | "deny"
-  readonly question: "allow" | "deny"
-  /** null when the role's ceiling is the whole namespace, so nothing is denied. */
-  readonly deniedTeamTool: string | null
-  readonly allowedTeamTool: string
+const DESCRIPTIONS: Record<(typeof TEN)[number], string> = {
+  "fable-planner": "Fable planner: turns goals into exact task plans with paths and checks",
+  "astra-planner": "Astra planner: turns goals into exact task plans with paths and checks",
+  "sol-orchestrator": "Sol orchestrator: owns work, delegates by task, verifies and integrates",
+  "opus-orchestrator": "Opus orchestrator: owns work, delegates by task, verifies and integrates",
+  "muse-implementer": "Muse implementer: executes the brief inside scope and finishes",
+  "gemini-implementer": "Gemini implementer: executes bounded work inside scope and finishes",
+  "spark-implementer": "Spark implementer: rapid edit and check loops for a small piece",
+  "opus-implementer": "Genuinely hard or mistake-costly tasks",
+  "astra-reviewer": "Astra reviewer: reviews diffs against the brief with findings",
+  scout: "Scout: finds things and reports exact file locations compactly",
 }
 
-const EXPECTED: Record<string, Expectation> = {
-  "fable-planner": {
-    description: "Fable planner: turns goals into exact task plans with paths and checks",
-    shell: "deny",
-    external: "allow",
-    question: "allow",
-    deniedTeamTool: "check",
-    allowedTeamTool: "delegate",
-  },
-  "sol-orchestrator": {
-    description: "Sol orchestrator: owns work, delegates by task, verifies and integrates",
-    shell: "allow",
-    external: "allow",
-    question: "deny",
-    deniedTeamTool: "checkpoint",
-    allowedTeamTool: "delegate",
-  },
-  "muse-implementer": {
-    description: "Muse implementer: executes the brief inside scope and finishes",
-    shell: "deny",
-    external: "deny",
-    question: "deny",
-    deniedTeamTool: "delegate",
-    allowedTeamTool: "checkpoint",
-  },
-  "gemini-implementer": {
-    description: "Gemini implementer: executes bounded work inside scope and finishes",
-    shell: "deny",
-    external: "deny",
-    question: "deny",
-    deniedTeamTool: "delegate",
-    allowedTeamTool: "checkpoint",
-  },
-  "spark-implementer": {
-    description: "Spark implementer: rapid edit and check loops for a small piece",
-    shell: "deny",
-    external: "deny",
-    question: "deny",
-    deniedTeamTool: "delegate",
-    allowedTeamTool: "checkpoint",
-  },
-  "opus-implementer": {
-    description: "Genuinely hard or mistake-costly tasks",
-    shell: "deny",
-    external: "deny",
-    question: "deny",
-    deniedTeamTool: "delegate",
-    allowedTeamTool: "checkpoint",
-  },
-  "astra-reviewer": {
-    description: "Astra reviewer: reviews diffs against the brief with findings",
-    shell: "deny",
-    external: "deny",
-    question: "deny",
-    deniedTeamTool: "delegate",
-    allowedTeamTool: "finish",
-  },
-  scout: {
-    description: "Scout: finds things and reports exact file locations compactly",
-    shell: "deny",
-    external: "deny",
-    question: "deny",
-    deniedTeamTool: "delegate",
-    allowedTeamTool: "finish",
-  },
-}
+const orchestrators = new Set(["sol-orchestrator", "opus-orchestrator"])
+const planners = new Set(["fable-planner", "astra-planner"])
 
-// The rules no longer travel on the member definition: they are instructions
-// rows under each member, and this test reads the end of that path — what
-// /api/agent reports after a publish. The effective permissions are the same
-// ones the old member-carried `permissions` list produced.
-test("enabling opencodeplus-team installs all ten roles with mode, description, and deny rules", async () => {
+// The host's own tools plus the team namespace as Plus registers it: direct
+// tools stay on the provider's list, code tools go through Code Mode.
+const hostTools = [
+  { id: "read", description: "Read a file.", options: { codemode: false } },
+  { id: "shell", description: "Run a command.", options: { codemode: false } },
+  ...teamTools.map((name) => ({
+    id: name,
+    description: `team ${name}`,
+    options: { namespace: "team", permission: `team.${name}`, codemode: !(directTools as readonly string[]).includes(name) },
+  })),
+]
+
+// The rules no longer travel on the member definition: they are rows each
+// member's preset sets, and this test reads the end of that path — what
+// /api/agent reports after a publish.
+test("enabling opencodeplus-team installs all ten members with mode, description, and their presets' core denies", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const ctx = fullContext({ directory: project })
+  const ctx = fullContext({ directory: project, tools: hostTools, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
   const handlers = createHandlers(ctx, createState())
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})))
+  await installFromPreset(handlers)
   const listed = await Effect.runPromise(ctx.agent.list())
   const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
-  for (const id of TEN) expect(byId.has(id)).toBe(true)
-  for (const [id, expected] of Object.entries(EXPECTED)) {
+  for (const id of TEN) {
     const agent = byId.get(id)
     expect(agent).toBeDefined()
     if (agent === undefined) continue
     expect(agent.mode).toBe("primary")
-    expect(agent.description).toBe(expected.description)
+    expect(agent.description).toBe(DESCRIPTIONS[id])
     const permissions = agent.permissions ?? []
     const has = (action: string, resource: string, effect: string) =>
       permissions.some((rule) => rule.action === action && rule.resource === resource && rule.effect === effect)
-    expect(has("shell", "*", expected.shell)).toBe(true)
-    expect(has("external_directory", "*", expected.external)).toBe(true)
-    expect(has("question", "*", expected.question)).toBe(true)
-    expect(has("subagent", "*", "deny")).toBe(true)
-    expect(has("task", "*", "deny")).toBe(true)
-    expect(has("read", "*.key", "deny")).toBe(true)
-    expect(has("read", "*.env*", "deny")).toBe(true)
-    expect(has("read", "*/auth.json", "deny")).toBe(true)
-    if (expected.deniedTeamTool !== null) expect(has(`team.${expected.deniedTeamTool}`, "*", "deny")).toBe(true)
-    expect(has(`team.${expected.allowedTeamTool}`, "*", "deny")).toBe(false)
+    // Secrets are closed for every member (read's Files rows off).
+    expect([id, has("read", "*.key", "deny"), has("read", "*.env*", "deny"), has("read", "*/auth.json", "deny")]).toEqual([id, true, true, true])
+    // Paths outside the checkout: open for coordinators, closed for workers.
+    expect([id, has("external_directory", "*", "deny")]).toEqual([id, !orchestrators.has(id) && !planners.has(id)])
+    // Orchestrators change no files, commits or refs from the shell.
+    expect([id, has("shell", "git push *", "deny"), has("shell", "git stash", "deny")]).toEqual([id, orchestrators.has(id), orchestrators.has(id)])
     // A member is never hidden from the namespace it belongs to.
     expect(has("team.*", "*", "deny")).toBe(false)
   }
 })
 
-test("built-in roles allow shell only for orchestrators and deny shell for all others", async () => {
-  const { project } = await tempRoot()
-  await enable(project)
-  const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})))
-  const listed = await Effect.runPromise(ctx.agent.list())
-  const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
-  const orchestrators = new Set(["sol-orchestrator", "opus-orchestrator"])
-  for (const id of TEN) {
-    const agent = byId.get(id)
-    expect(agent).toBeDefined()
-    if (agent === undefined) continue
-    const permissions = agent.permissions ?? []
-    const has = (action: string, resource: string, effect: string) =>
-      permissions.some((rule) => rule.action === action && rule.resource === resource && rule.effect === effect)
-    const expectedShell = orchestrators.has(id) ? "allow" : "deny"
-    expect(has("shell", "*", expectedShell)).toBe(true)
-    expect(has("shell", "*", "ask")).toBe(false)
-  }
+// What each member's rows resolve to, through its member preset and the Plus
+// agent preset behind it: the old roles, row for row.
+const input = presetInput()
+const states = Object.fromEntries(TEN.map((id) => [id, resolvedStates(input, id)]))
+
+test("the shell tool is on only for orchestrator-preset members", () => {
+  for (const id of TEN) expect([id, states[id]?.["tool:shell"]]).toEqual([id, orchestrators.has(id) ? "on" : "off"])
+  for (const id of TEN) expect([id, states[id]?.["tool:question"]]).toEqual([id, planners.has(id) ? "on" : "off"])
+  for (const id of TEN) expect([id, states[id]?.["tool:subagent"]]).toEqual([id, "off"])
 })
 
-test("final ceilings are asserted exactly for every built-in team role", async () => {
-  const { project } = await tempRoot()
-  await enable(project)
-  const ctx = fullContext({ directory: project })
-  const handlers = createHandlers(ctx, createState())
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})))
-  const listed = await Effect.runPromise(ctx.agent.list())
-  const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
-
+test("final ceilings are the team tool rows, exactly the old ceiling of every built-in role", () => {
   const ceilings: Record<string, string[]> = {
     "fable-planner": ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
     "astra-planner": ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
@@ -210,29 +149,11 @@ test("final ceilings are asserted exactly for every built-in team role", async (
     "astra-reviewer": ["finish", "status", "get_context", "diff"],
     scout: ["finish", "status", "get_context", "diff"],
   }
-
-  for (const [roleId, allowedList] of Object.entries(ceilings)) {
-    const agent = byId.get(roleId)
-    expect(agent).toBeDefined()
-    if (agent === undefined) continue
-    const permissions = agent.permissions ?? []
-    const has = (action: string, resource: string, effect: string) =>
-      permissions.some((rule) => rule.action === action && rule.resource === resource && rule.effect === effect)
-
-    const allowedSet = new Set(allowedList)
-    for (const tool of teamTools) {
-      if (allowedSet.has(tool)) {
-        // In-ceiling tools are not denied
-        expect(has(`team.${tool}`, "*", "deny")).toBe(false)
-        if (tool === "delegate" && (roleId === "fable-planner" || roleId === "astra-planner")) {
-          // D6: team.delegate defaults to "ask" for planners
-          expect(has("team.delegate", "*", "ask")).toBe(true)
-        }
-      } else {
-        // Out-of-ceiling tools must be denied
-        expect(has(`team.${tool}`, "*", "deny")).toBe(true)
-      }
-    }
+  for (const [id, allowed] of Object.entries(ceilings)) {
+    const open: string[] = teamTools.filter((tool) => states[id]?.[`tool:team_${tool}`] === "on")
+    expect([id, open.toSorted()]).toEqual([id, allowed.toSorted()])
+    // D6: a planner asks the human before each delegation.
+    expect([id, states[id]?.["perm:team_delegate:approval.every"]]).toEqual([id, planners.has(id) ? "on" : "off"])
   }
 })
 
@@ -273,19 +194,18 @@ test("effective permission at /api/agent for a child session is never ask", asyn
     history: [],
   })
 
-  await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})))
+  await installFromPreset(handlers)
   const listed = await Effect.runPromise(ctx.agent.list())
   const planner = listed.data.find((entry) => String(entry.id) === "fable-planner")
   expect(planner).toBeDefined()
   const permissions = planner?.permissions ?? []
 
-  // The child session's run-scoped row overrides ask to deny for team.delegate
-  const effective = evaluate("team.delegate", "*", permissions)
-  expect(effective.effect).toBe("deny")
-  expect(effective.effect).not.toBe("ask")
-
+  // No core rule asks: a planner's approval is a Plus hook that refuses in a
+  // run nobody watches, and whether its delegated run delegates at all is its
+  // "Delegate from a delegated run" row, which the planner preset turns off.
   for (const tool of teamTools) {
     const eff = evaluate(`team.${tool}`, "*", permissions)
     expect(eff.effect).not.toBe("ask")
   }
+  expect(states["fable-planner"]?.["perm:team_delegate:access.delegated"]).toBe("off")
 })

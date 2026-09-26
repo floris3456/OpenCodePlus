@@ -1,12 +1,16 @@
 import { TextAttributes } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, For, Show } from "solid-js"
-import { applies, catalogueForAddress, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate, scopesOf } from "../../instructions/model.js"
-import type { Address, AgentSource, CustomizationRecord, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
+import { fromLabel } from "../../instructions/from-label.js"
+import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
+import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
+import { categorySummary } from "../../instructions/permission-catalog.js"
+import { presetLabels } from "../../instructions/presets.js"
 import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
-import { agentOf, itemOf, recordOf } from "../../instructions/snapshot.js"
+import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from "../../instructions/snapshot.js"
 import type { TreeNode } from "../../instructions/tree.js"
 import type { Level, Plus, Snapshot } from "../../rpc.js"
+import { presetName } from "../preset-picker.js"
 import { badgeColor, badgeLabels } from "./tree-pane.js"
 
 export interface DetailPaneState {
@@ -73,14 +77,24 @@ export function modelDetail(
   if (address === undefined || !isModelAddress(address)) return undefined
   const parsed = parseModelItemId(address.item)
   if (parsed === undefined) return undefined
-  const agents = agentsOf(snapshot)
-  const scopes = scopesOf(agents)
+  const scopes = contextOfSnapshot(snapshot)
   const models = modelsOfSnapshot(snapshot)
   const upstream = upstreamModelOf(snapshot, address.agent)
-  const candidates = modelCandidates({ models, scopes, level: address.level, agent: address.agent, ...(upstream === undefined ? {} : { upstream }) })
-  const candidate = candidates.find((entry) => sameModelCandidate(entry, parsed))
+  // The row's whole address: a member's or Special agent's team, the Teams
+  // catalogue — the chain its tree row resolves.
+  const input = {
+    models,
+    scopes,
+    level: address.level,
+    agent: address.agent,
+    ...(address.team === undefined ? {} : { team: address.team }),
+    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
+    ...(upstream === undefined ? {} : { upstream }),
+  }
+  const candidate = modelCandidates(input).find((entry) => sameModelCandidate(entry, parsed))
   if (candidate === undefined) return undefined
-  const active = resolveActiveModel({ models, scopes, level: address.level, agent: address.agent, ...(upstream === undefined ? {} : { upstream }) })
+  const active = resolveActiveModel(input)
   return {
     providerID: candidate.providerID,
     modelID: candidate.modelID,
@@ -99,7 +113,7 @@ export function resolveNode(node: TreeNode, snapshot: Snapshot): Resolved | unde
     upstream,
     records: customizationsOf(snapshot),
     splits: splitsOf(snapshot),
-    scopes: scopesOf(agentsOf(snapshot)),
+    scopes: contextOfSnapshot(snapshot),
     address,
   })
 }
@@ -129,14 +143,15 @@ export function scrubInfo(
   const items = itemsOf(snapshot)
   const records = customizationsOf(snapshot)
   const splits = splitsOf(snapshot)
-  const scopes = scopesOf(agentsOf(snapshot))
+  const scopes = contextOfSnapshot(snapshot)
   const keywords = items.flatMap((item) => {
     if (item.kind !== "perm" || item.keywords === undefined) return []
     const owner = address.agent
     if (owner === null) {
       if (item.agents !== undefined) return []
     } else if (!applies(item, owner)) return []
-    const state = resolve({ upstream: item, records, splits, scopes, address: { level: address.level, agent: address.agent, item: item.id, section: null } })
+    // The same owner, team and catalogue as the row: only the item differs.
+    const state = resolve({ upstream: item, records, splits, scopes, address: { ...address, item: item.id, section: null } })
     if (state.enabled) return []
     return [...item.keywords]
   })
@@ -152,7 +167,16 @@ export function scrubInfo(
 export function permDetail(
   node: TreeNode,
   snapshot: Snapshot,
-): { tool: string; rule: string; patterns: readonly string[]; keywords: readonly string[]; provenance: readonly string[]; custom: boolean; message?: string } | undefined {
+): {
+  tool: string
+  rule: string
+  patterns: readonly string[]
+  keywords: readonly string[]
+  provenance: readonly string[]
+  custom: boolean
+  message?: string
+  enforcement: string
+} | undefined {
   const address = node.address
   if (address === undefined) return undefined
   const upstream = upstreamFor(itemsOf(snapshot), address)
@@ -167,9 +191,10 @@ export function permDetail(
     upstream.custom === true
       ? snapshot.records.find(
           (record): record is Plus.SnapshotRuleRecord => record.type === "rule" && record.tool === tool && record.id === rule,
-        )?.message
-      : curatedRuleMessage(tool, rule)
+        )?.message ?? upstream.message
+      : curatedRuleMessage(tool, rule) ?? upstream.message
   return {
+    enforcement: enforcementLine(upstream),
     tool,
     rule,
     patterns: upstream.patterns === undefined ? [] : [...upstream.patterns],
@@ -178,6 +203,43 @@ export function permDetail(
     custom: upstream.custom === true,
     ...(message === undefined ? {} : { message }),
   }
+}
+
+// How a permission row takes effect, in one line for the detail pane.
+export function enforcementLine(item: Item): string {
+  const kind = item.permKind ?? "rule"
+  const field = item.field === undefined ? "" : ` (${item.field})`
+  if (kind === "rule") {
+    if (item.policy !== undefined) return `role rule: installs its own core rules on ${item.permAction ?? item.permTool ?? "its action"}`
+    return `core rule on ${item.permAction ?? item.permTool ?? "the tool"}: off refuses what the patterns match`
+  }
+  if (kind === "input" && item.fallback === true && item.category === "where")
+    return `tool input${field}: off refuses paths outside this checkout unless an allowed row below matches`
+  if (kind === "input" && item.fallback === true) return `tool input${field}: off refuses everything this category's allowed rows do not let through`
+  if (kind === "input" && item.allow === true) return `tool input${field}: on lets its patterns through while this category's first row is off`
+  if (kind === "input") return `tool input${field}: off refuses a call whose value matches the patterns`
+  if (kind === "value") return `tool input${field}: off removes "${String(item.value)}" from the schema and refuses it`
+  if (kind === "param") return `tool input${field}: off removes the parameter from the schema and refuses a call that uses it`
+  if (kind === "limit") return `limit on ${item.field ?? "the call"} (${item.measure ?? "value"}, ${item.mode === "clamp" ? "lowered to the cap" : "refused above it"}): on applies the number`
+  if (kind === "approval") return "approval: on asks the human before the call; a delegated run is refused instead"
+  if (kind === "env") return "shell environment: off strips the matching variables before the command starts"
+  if (item.permTool === "team_get_context" && (item.category === "accepts" || item.category === "limits"))
+    return "read by team_delegate and team_followup for this member when a brief or a correction names it, not for the caller"
+  if (item.permTool === "team_get_context" && item.category === "bootstrap")
+    return "read by the team tools when a chat of this member calls one with no team run yet"
+  return "read by the team tools themselves, for the member that calls them"
+}
+
+// A Permissions category group's one-line summary, from its id
+// (group:<level>:<owner>:tool:<id>:permissions:<category>).
+export function categoryDetail(node: TreeNode): string | undefined {
+  if (node.kind !== "group") return undefined
+  const match = node.id.match(/:tool:([^:]+):permissions(?::(.+))?$/)
+  if (match === null) return undefined
+  const tool = match[1] ?? ""
+  const category = match[2]
+  if (category === undefined) return `Every permission of ${tool}, one group per category. Rows are on/off; enter edits a rule's patterns or a limit's number.`
+  return categorySummary(tool, category)
 }
 
 export function isEditable(node: TreeNode | undefined): boolean {
@@ -191,22 +253,75 @@ export function displayLevel(level: Resolved["source"] | Address["level"]): stri
   if (level === "upstream") return "upstream"
   if (level === "project") return "Project"
   if (level === "global") return "Global"
+  if (level === "preset") return "Preset"
   return "Defaults"
 }
 
+// Where the row's values come from, in the tree's words (from-label.ts): one
+// source for state and text, or "state: from preset Orchestrator · text:
+// upstream" when they differ. A value this level sets reads "set here
+// (Project)".
 export function provenanceLine(node: TreeNode, snapshot: Snapshot): string | undefined {
   const address = node.address
   if (address === undefined) return undefined
+  const labels = presetLabels(listingOfSnapshot(snapshot))
+  const say = (from: From) => {
+    const label = fromLabel(from, { labels, level: address.level })
+    return label === "set here" ? `set here (${displayLevel(address.level)})` : label
+  }
   if (isModelAddress(address)) {
     const detail = modelDetail(node, snapshot)
     if (detail === undefined) return undefined
-    if (detail.active) return `active model from: ${displayLevel(detail.source)}`
-    return `candidate from: ${displayLevel(detail.source)}`
+    const source = node.badges.from === undefined ? displayLevel(detail.source) : say(node.badges.from)
+    return detail.active ? `active model: ${source}` : `candidate: ${source}`
   }
-  const resolved = resolveNode(node, snapshot)
-  if (!resolved) return undefined
-  if (resolved.overriddenHere) return `overridden here: ${displayLevel(address.level)}`
-  return `inherited from: ${displayLevel(resolved.source)}`
+  const from = node.badges.from
+  if (from === undefined) {
+    const resolved = resolveNode(node, snapshot)
+    if (!resolved) return undefined
+    return `state: ${say(resolved.from)} · text: ${say(resolved.textFrom)}`
+  }
+  const textFrom = node.badges.textFrom
+  if (textFrom === undefined) return `state and text: ${say(from)}`
+  return `state: ${say(from)} · text: ${say(textFrom)}`
+}
+
+/**
+ * The preset an agent, member, team, Defaults entry or User preset follows:
+ * "Created from preset: Orchestrator (Plus)", or "No preset". Nothing for rows
+ * that take no link (a Teams entry pattern, a shipped preset of its own).
+ */
+export function linkLine(node: TreeNode, snapshot: Snapshot): string | undefined {
+  const owner = node.owner
+  if (owner === undefined) return undefined
+  if (owner.level === "defaults" && owner.agent === null) return undefined
+  if (owner.link === undefined) return owner.preset !== undefined && owner.preset.origin !== "user" ? undefined : "No preset"
+  if (owner.linkMissing === true)
+    return `Created from preset: ${presetName(snapshot, owner.link)} — missing (deleted); its rows fall through to the rest of the chain. Relink with l`
+  return `Created from preset: ${presetName(snapshot, owner.link)}`
+}
+
+/**
+ * A Defaults entry's pattern and what it matches now (DESIGN §4): Agents
+ * entries match agents by name, Teams entries members of the teams their team
+ * pattern matches; a team pattern row lists the teams.
+ */
+export function matchLines(node: TreeNode, snapshot: Snapshot): string[] {
+  const entry = node.owner?.entry
+  if (entry === undefined) return []
+  const listed = (names: readonly string[]) => (names.length === 0 ? "matching now: nothing yet" : `matching now: ${names.join(", ")}`)
+  if (entry.catalogue === "agents") {
+    const name = entry.name ?? node.label
+    return [`matches agents named: ${name}`, listed([...new Set(snapshot.agents.map((agent) => agent.id))].filter((id) => matchesName(name, id)))]
+  }
+  const pattern = entry.team ?? "*"
+  const teams = (snapshot.teams ?? []).filter((team) => matchesName(pattern, team.team))
+  if (entry.name === undefined) return [`matches teams named: ${pattern}`, listed([...new Set(teams.map((team) => team.team))])]
+  const name = entry.name
+  return [
+    `matches members named: ${name} in teams named: ${pattern}`,
+    listed([...new Set(teams.flatMap((team) => team.agents.filter((member) => matchesName(name, member)).map((member) => `${team.team} › ${member}`)))]),
+  ]
 }
 
 export interface SectionRow {
@@ -223,7 +338,7 @@ export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
   if (upstream === undefined) return []
   const records = customizationsOf(snapshot)
   const splits = splitsOf(snapshot)
-  const scopes = scopesOf(agentsOf(snapshot))
+  const scopes = contextOfSnapshot(snapshot)
   const whole = resolve({ upstream, records, splits, scopes, address })
   const split = resolveSplit({ text: whole.text, title: upstream.title, splits, scopes, address })
   return split.sections.map((section) => {
@@ -263,7 +378,7 @@ export function excludedRanges(node: TreeNode, snapshot: Snapshot): ExcludedRang
   if (upstream === undefined) return []
   const records = customizationsOf(snapshot)
   const splits = splitsOf(snapshot)
-  const scopes = scopesOf(agentsOf(snapshot))
+  const scopes = contextOfSnapshot(snapshot)
   const whole = resolve({ upstream, records, splits, scopes, address })
   const split = resolveSplit({ text: whole.text, title: upstream.title, splits, scopes, address })
   const excluded = new Set<string>()
@@ -460,6 +575,20 @@ export function DetailPane(props: DetailPaneProps) {
                       </text>
                     )}
                   </Show>
+                  <Show when={linkLine(node(), snapshot())}>
+                    {(line) => (
+                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                        {line()}
+                      </text>
+                    )}
+                  </Show>
+                  <For each={matchLines(node(), snapshot())}>
+                    {(line) => (
+                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                        {line}
+                      </text>
+                    )}
+                  </For>
                   <For each={badgeLabels(node())}>
                     {(label) => (
                       <text flexShrink={0} fg={badgeColor(props.context, label)}>
@@ -489,11 +618,21 @@ export function DetailPane(props: DetailPaneProps) {
                       </box>
                     )}
                   </Show>
+                  <Show when={categoryDetail(node())}>
+                    {(line) => (
+                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                        {line()}
+                      </text>
+                    )}
+                  </Show>
                   <Show when={permDetail(node(), snapshot())}>
                     {(detail) => (
                       <box flexDirection="column" flexShrink={0}>
                         <text flexShrink={0} fg={props.context.theme.text.subdued}>
                           {`tool: ${detail().tool} · rule: ${detail().rule}${detail().custom ? " · custom" : ""}`}
+                        </text>
+                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+                          {`enforced by: ${detail().enforcement}`}
                         </text>
                         <text flexShrink={0} fg={props.context.theme.text.subdued}>
                           {`patterns: ${detail().patterns.join(", ") || "(none)"}`}

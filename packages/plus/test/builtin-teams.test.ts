@@ -9,7 +9,9 @@ import { builtinTeams } from "../src/instructions/builtin-teams.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { validateTeamName } from "../src/instructions/teams.js"
 import { enable } from "../src/project.js"
-import { allowedTeamTools, kindOf, teamTools } from "../src/teams/policy.js"
+import { teamTools } from "../src/teams/policy.js"
+import { plusTeamPresets } from "../src/instructions/presets.js"
+import { presetInput, resolvedStates } from "./teams/preset-table.js"
 import { fullContext } from "./harness.js"
 
 const roots: string[] = []
@@ -85,9 +87,9 @@ test("starter and review members carry no fields", () => {
   }
 })
 
-// The member definition no longer carries what the member may do: the
-// ceiling and the native answers are instructions rows produced from
-// teams/policy.ts, and apply installs whatever they resolve to. The
+// The member definition does not carry what the member may do: that is its
+// rows, which its member preset and the Plus agent preset behind it set, and
+// apply installs whatever they resolve to. The
 // end-to-end proof that they reach /api/agent unchanged lives in
 // test/teams/roles.test.ts.
 test("opencodeplus-team members carry description and mode and no permissions", () => {
@@ -105,35 +107,27 @@ test("opencodeplus-team members carry description and mode and no permissions", 
   }
 })
 
-test("every member gets one ceiling row per out-of-ceiling tool and none for its own ceiling", () => {
+test("every member preset links to a Plus agent preset whose team tool rows are the old ceiling", () => {
   const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
   if (team === undefined) throw new Error("missing opencodeplus-team")
-  const items = teamPolicyItems(policyMembersOf(team.members.map((member) => member.id)))
-  for (const member of team.members) {
-    const resolved = kindOf(member.id)
-    if (!resolved.ok) throw new Error(`unknown role ${member.id}`)
-    const allowed = new Set<string>(allowedTeamTools(resolved.kind))
-    const rows = items.filter((item) => item.agents?.includes(member.id) === true)
-    expect(rows.length).toBeGreaterThan(0)
-    for (const tool of teamTools) {
-      const row = rows.find((item) => item.id === `perm:team_${tool}:role-ceiling`)
-      if (allowed.has(tool)) {
-        expect(row).toBeUndefined()
-        continue
-      }
-      expect(row?.enabled).toBe(false)
-      expect(row?.policy?.off).toEqual([
-        {
-          action: `team.${tool}`,
-          resource: "*",
-          effect: "deny",
-          message: `team_${tool} is outside the ${resolved.kind} ceiling`,
-        },
-      ])
-    }
-    // Per-run edit scope is never a role property: it only exists while a run does.
-    expect(rows.some((item) => item.runID !== undefined)).toBe(false)
+  const input = presetInput()
+  const ceilings: Record<string, readonly string[]> = {
+    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
+    implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
+    reviewer: ["finish", "status", "get_context", "diff"],
+    scout: ["finish", "status", "get_context", "diff"],
   }
+  const presets = plusTeamPresets.find((entry) => entry.id === "opencodeplus-team")?.members ?? []
+  for (const member of team.members) {
+    const preset = presets.find((entry) => entry.id === member.id)?.preset
+    if (preset === undefined) throw new Error(`no preset for ${member.id}`)
+    const states = resolvedStates(input, member.id)
+    const open: string[] = teamTools.filter((tool) => states[`tool:team_${tool}`] === "on")
+    expect([member.id, open.toSorted()]).toEqual([member.id, [...(ceilings[preset] ?? [])].toSorted()])
+  }
+  // Per-run edit scope is never a member property: it only exists while a run does.
+  expect(teamPolicyItems(policyMembersOf(team.members.map((member) => member.id))).some((item) => item.runID !== undefined)).toBe(false)
 })
 
 // The producer tests above prove the rows exist for a list of member ids; they
@@ -142,36 +136,32 @@ test("every member gets one ceiling row per out-of-ceiling tool and none for its
 // a resolver fed that echo drops every member and produces nothing. The
 // snapshot is the first place that shows: it is what the Instructions tree, the
 // Policy group and instructions.list all read.
-test("the live snapshot carries each member's policy rows after the team is installed", async () => {
+// The shipped team is no Defaults team any more (DESIGN §2): it is the Plus
+// team preset a project team is created from, with the same member ids.
+test("the live snapshot carries each member's Delegate to rows after the team is installed", async () => {
   const project = await tempProject()
   await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
   await Effect.runPromise(
-    handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext()),
+    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext()),
+  )
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext()),
   )
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
   const rowIds = (member: string) =>
     snapshot.items.filter((item) => item.kind === "perm" && item.agents?.includes(member) === true).map((item) => item.id)
 
-  const implementer = rowIds("gemini-implementer")
-  expect(implementer).toContain("perm:shell:team-role")
-  expect(implementer).toContain("perm:read:team-role")
-  expect(implementer).toContain("perm:team_delegate:role-ceiling")
-  expect(implementer).toContain("perm:search:team-tavily")
-
-  const orchestrator = rowIds("sol-orchestrator")
-  expect(orchestrator).toContain("perm:shell:team-role")
-  expect(orchestrator).toContain("perm:team_checkpoint:role-ceiling")
-
-  const planner = rowIds("fable-planner")
-  expect(planner).toContain("perm:shell:team-role")
-  expect(planner).toContain("perm:team_delegate:team-role")
-
-  // No member may be silently absent: every shipped role owns its rows.
+  // Each member owns one "Delegate to" row per teammate plus the other-teams row.
   const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
   if (team === undefined) throw new Error("missing opencodeplus-team")
-  for (const member of team.members) expect(rowIds(member.id)).toContain("perm:shell:team-role")
+  // No member may be silently absent: every shipped member owns its rows.
+  for (const member of team.members)
+    expect([member.id, rowIds(member.id).toSorted()]).toEqual([
+      member.id,
+      [...team.members.filter((peer) => peer.id !== member.id).map((peer) => `perm:team_delegate:to.${peer.id}`), "perm:team_delegate:to.other-teams"].toSorted(),
+    ])
 })
 
 test("no built-in prompt names a tool that left the namespace", () => {

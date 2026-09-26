@@ -1,6 +1,10 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
+import { badgeLabels } from "../../instructions/from-label.js"
 import type { TreeNode } from "../../instructions/tree.js"
+
+// The badge words are shared with `instructions_list` (from-label.ts).
+export { badgeLabels }
 
 export interface TreePaneProps {
   context: Plugin.Context
@@ -36,26 +40,19 @@ export function rowMarker(node: TreeNode, visibleChildren: boolean, expanded: Re
   return expanded.has(node.id) ? "-" : "+"
 }
 
-export function badgeLabels(node: TreeNode): string[] {
-  const labels: string[] = []
-  // On/off reads from the badge state, not the address: item and section
-  // rows always carry state, and team rows carry state with no address (a
-  // synthetic address would corrupt the mutate path). Structural rows carry
-  // no state and still render no badge.
-  if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
-  if (node.badges.modified === true) labels.push("modified")
-  if (node.badges.active === true) labels.push("active")
-  if (node.badges.inactive === true) labels.push("inactive")
-  if (node.badges.pinned === true) labels.push("pinned")
-  if (node.badges.unsupported === true) labels.push("unsupported")
-  const count = node.badges.reviewCount ?? 0
-  if (count > 0) labels.push(`${count} to review`)
-  else if (node.badges.review === true) labels.push("review")
-  return labels
+export function isReviewLabel(label: string): boolean {
+  return label === "review" || label.endsWith(" to review") || label.startsWith("to review")
 }
 
-export function isReviewLabel(label: string): boolean {
-  return label === "review" || label.endsWith(" to review")
+/**
+ * Where an inheriting row's value comes from, for the dim suffix after its
+ * badges ("from preset Orchestrator", "native", "off by default", …).
+ * Nothing when the row sets the value itself.
+ */
+export function provenanceSuffix(node: TreeNode): string | undefined {
+  const label = node.badges.fromLabel
+  if (label === undefined || label === "set here") return undefined
+  return label
 }
 
 export function badgeColor(context: Plugin.Context, label: string) {
@@ -68,6 +65,8 @@ export function badgeColor(context: Plugin.Context, label: string) {
   // warning yellow.
   if (isReviewLabel(label)) return context.theme.text.feedback.warning.default
   if (label === "unsupported") return context.theme.text.feedback.warning.default
+  // A link to a deleted preset: the rows fall through until it is relinked.
+  if (label === "missing preset") return context.theme.text.feedback.warning.default
   return context.theme.text.subdued
 }
 
@@ -112,6 +111,14 @@ export function TreePane(props: TreePaneProps) {
                     <For each={badgeLabels(node)}>
                       {(label) => <text fg={badgeColor(props.context, label)}> [{label}]</text>}
                     </For>
+                    {/* Provenance is secondary information about the row, so it takes the subdued text role. */}
+                    <Show when={provenanceSuffix(node)}>
+                      {(label) => (
+                        <text flexShrink={1} fg={props.context.theme.text.subdued} wrapMode="none" truncate>
+                          {` · ${label()}`}
+                        </text>
+                      )}
+                    </Show>
                   </box>
                 )
               }}

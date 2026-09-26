@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
-import { createState } from "../../src/index.js"
+import { teamState } from "./preset-table.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek, put } from "../../src/teams/inbox.js"
 import { SessionRunEvents, deliverInbox, onSessionEvent, onSessionIdle } from "../../src/teams/lifecycle.js"
@@ -290,7 +290,7 @@ test("a followup already delivered to an idle child is not prompted twice", asyn
     await saveRun(root, child)
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
-    const api = createTeamApi(ctx, createState())
+    const api = createTeamApi(ctx, teamState())
     const queued = await api.followup(
       { run: child.id, requestID: "dup-1", prompt: "Continue in place: tighten the error message." },
       callerFor(parent),

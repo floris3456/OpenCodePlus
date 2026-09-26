@@ -469,7 +469,10 @@ async function scanDiskAgents(projectDirectory: string): Promise<Map<string, Age
       const id = Agent.ID.make(idFromPath(directory, file))
       if (found.has(id)) continue
       const text = await fs.readFile(file, "utf8").catch(() => undefined)
-      if (text === undefined) continue
+      // Core decodes a file only when it has content
+      // (packages/core/src/config/plugin/agent.ts loadEntry:
+      // `content ? decode(file, content) : undefined`): an empty file is no agent.
+      if (!text) continue
       found.set(id, fromMarkdown(id, text))
     }
   }

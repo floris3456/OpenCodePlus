@@ -108,6 +108,10 @@ arrows move · left/right expand · enter edit · a add · / filter · ? help ·
 
 ## Capture 4 — Team Create from Template at Project (R1)
 
+> Superseded by presets (see "Presets: create, link, review" below): `a` on
+> `Project → Teams` now asks the team name first, then a team preset; there
+> is no Defaults template picker. Kept as the Round 2 record.
+
 Pressing `a` on `Project → Teams` displays the Defaults template picker:
 
 ```
@@ -140,6 +144,9 @@ Submitting with a single Enter creates the team without displaying any `Team sco
 ---
 
 ## Capture 5 — `a` on a Team Member Row Opens the Agent Template Flow (R2)
+
+> Superseded by presets: `a` on a member row now asks `Member name`, then a
+> preset. Kept as the Round 2 record.
 
 With the cursor on member row `astra-planner` under `Project → Teams → opencodeplus-team`, pressing `a`:
 
@@ -265,4 +272,86 @@ The Round 3 integration extends the Instructions TUI and Composer experience wit
 - **Active Team Overview:** When a team is active, navigating to `Team` (`Right` ×3) displays the team members along with their execution mode, configured model, and session status (`idle` for active chat session owner, `none` when no session exists).
 - **Direct Agent Switch:** Pressing `Enter` on any member without an existing session switches the current composer session agent to that member.
 - **Inactive Fallback:** When no team is active, the tab renders the fallback notice: `No active team — select one with ctrl+x a`. Built-in composer navigation (`escape` to close, `left` to return to prior tabs) is fully preserved.
+
+---
+
+# Tool Permissions
+
+Written from the code (`instructions/tree.ts`, `instructions/permission-catalog.ts`, `instructions/ops.ts`, `tui/instructions/route.tsx`, `tui/instructions/detail-pane.tsx`) and checked in a tui-lab home: the lab captures are in the workspace handoff `docs/handoffs/2026-09-25-tool-permissions/evidence/` (`tui-edit-permissions.txt`, `tui-delegate-to.txt`, `tui-filter-shell.txt`). The quoted strings are the ones those files produce; the tree sketch is schematic. `SPEC.md` (Permission rules) lists every tool's categories and every `enforced by` line.
+
+## 1. Open a tool's Permissions
+
+With project mode on, open `/instructions` and go to `Project → Agents → Native → build → Tools → Native → shell`. Expanding `shell` shows its `Description` (the tool's text, here one section) and its `Permissions`, one group per category:
+
+```
+shell [on]
+  Description [on]
+  Permissions
+    Commands
+    Working directories
+    Parameters
+    Environment
+    Limits
+    Approval
+```
+
+(`Mentioned in instructions` follows when instruction text suggested shell rules.) On `Permissions` (`group:project:build:tool:shell:permissions`) the detail pane reads `Every permission of shell, one group per category. Rows are on/off; enter edits a rule's patterns or a limit's number.`; on `Commands` it reads the category's summary, `Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it.`
+
+## 2. Read "enforced by" and turn a row off
+
+Expand `Commands`. `Every other command`, the category's Everything else row, comes first, then the curated rules, then the catalog's command families. Select `Git branches, tags and worktrees [on]`: the hint line offers `enter edit rule` and `space toggle`, and the detail pane's rule block reads
+
+```
+tool: shell · rule: commands.git-refs
+enforced by: core rule on shell: off refuses what the patterns match
+patterns: git branch -d *, git branch -D *, git branch -m *, git branch -M *, git branch -f *, git tag *, git update-ref *, git worktree add *, git worktree remove *, git worktree prune *, git worktree move *
+keywords: (none)
+provenance: (curated)
+message: changing git refs or worktrees is not allowed here
+```
+
+Press space: the badge turns `[off]` and the status line reads `Disabled "Git branches, tags and worktrees"`. The record lands at the row's own level (Project, for `build`), and once applied, build's shell refuses `git tag v1.0` with `changing git refs or worktrees is not allowed here`. `r` drops the override again.
+
+Other rows say other things on that line. `Parameters → Background (background: true)` reads `tool input (background): off removes the parameter from the schema and refuses a call that uses it`; it has no patterns, so its hint says `space switch` and enter only shows `"Background (background: true)" is a switch: space turns it on or off`. `Environment → Keys, tokens and passwords` reads `shell environment: off strips the matching variables before the command starts`.
+
+## 3. Edit a limit
+
+Expand `Limits` and select `Longest timeout (ms) [off]`. The hint line offers `enter edit number`; the detail pane reads `enforced by: limit on timeout (value, lowered to the cap): on applies the number`, and the row's text is its number, `600000`.
+
+Press enter: a prompt titled `Longest timeout (ms)` says `A number. Space switches the cap off and on.`, prefilled with `600000`. Enter `120000`: the status reads `Saved "Longest timeout (ms)"`. The row is still off, so nothing is capped yet; space turns it on (`Enabled "Longest timeout (ms)"`). Once applied, a shell call asking for `timeout: 300000` runs with `120000`, and build's shell schema carries `maximum: 120000` on `timeout`. An answer with no number in it is refused with the toast `"Longest timeout (ms)" takes a number`. A tool can do the same with `tools.instructions.set({ id: "item:project:build:perm:shell:limits.timeout", text: "120000" })`.
+
+---
+
+# Presets: create, link, review
+
+Written from the code (`tui/instructions/dialogs.tsx`, `route.tsx`, `tree-pane.tsx`, `detail-pane.tsx`, `tui/preset-picker.ts`, `tui/agents/create.tsx`) and its tests (`test/route.test.tsx`, `test/agent-create-palette.test.tsx`, `test/instructions-panes.test.tsx`); not a live lab capture. The quoted strings are the ones the code produces. `SPEC.md` (§"TUI create, link and review") has the full table.
+
+## 1. Create: a → name → preset → done
+
+Everywhere the flow is the same: `a`, a name, a preset. There is no template, prompt, model or mode step, and on a Project or Global row no scope question: the row's root decides.
+
+- `Project → Agents` (or its `User`): prompt `Create agent`, then the `Preset` picker. Its options are grouped `Agent presets · Native` (Build, Plan, …), `Agent presets · Plus` (Planner, Orchestrator, …), `Agent presets · User`, `Team preset members` (`starter › planner`, …), and last `None — everything off`. The new agent row is revealed and selected.
+- `Project → Teams`: prompt `Team name`, then `Team preset` (`Plus`: opencodeplus-team, review, starter; `User`: yours; last `Empty team`).
+- a team row or a member row: prompt `Member name`, then `Preset`.
+- `Defaults → Agents`: prompt `Agent name or pattern` (`* and % match any text, case-insensitive (e.g. *orchestrator*)`), then `Preset` → a Defaults entry.
+- `Defaults → Teams`: prompts `Team name or pattern`, `Member name or pattern`, then `Preset` → a team entry with its first member entry. `a` on that team pattern row or its member entry rows adds more member entries to the same pattern.
+- `Presets → Agents → User`: prompt `Preset name`, then `Base preset` (the same picker). `Presets → Teams → User`: prompt `Team preset name`, then `Team preset`. A User team preset row: prompt `Member name`, then `Preset`.
+- A Models group anywhere, member presets included, adds a model for that owner with no scope prompts.
+- The palette `Create agent` has no cursor, so it asks `Create agent`, then `Agent scope` (Project / Global), then `Preset`.
+
+## 2. Relink with l
+
+On an agent, member or team at Project/Global, a Defaults entry, or a User preset, the hint line offers `l link`. `l` opens `Link to preset` (a team: `Link to team preset`) with the current link preselected and `None — unlink` last. A success toasts `Linked alice to Planner (Plus)` or `Unlinked alice`; relinking a team also relinks every member the team preset has a member of the same id for and says so (`Linked crew to mine (User); relinked helper, planner`), while unlinking a team leaves its members linked; a refusal toasts the server's message, e.g. a cycle between User presets (`Linking … would make it reach itself (…)`). Native and Plus presets, a Teams entry pattern row and a native agent's own Defaults row offer no `l`.
+
+## 3. Delete a preset or an entry
+
+`d` on a User preset or a Defaults entry confirms and deletes. A preset something links to is refused, and the toast names who uses it (`… (used by agent:project:alice)`).
+
+## 4. Where a value comes from
+
+A row that inherits shows its source after its badges, dim: `bash [on] · from preset Orchestrator`, `· from default *orchestrator*`, `· from Defaults (every agent)`, `· native`, `· off by default`. A row that sets its value itself shows nothing. The detail pane says the same: `state and text: from preset Orchestrator`, or `state: from preset Orchestrator · text: upstream` when they differ, `set here (Project)` for this level's own value. An agent's detail adds `Created from preset: Orchestrator (Plus)` (or `No preset`); a Defaults entry adds `matches agents named: *orchestrator*` and `matching now: …`.
+
+## 5. Review a changed state, pin or model
+
+When the preset (or a Defaults entry) changes a value you had set yourself, the row reads `[to review (state)]` (text: `[to review]`; both: `[to review (text, state)]`) and the hint line offers `enter review`. Enter opens `Review "bash"`: `Keep yours (off)` keeps your value and acknowledges the change; `Take from preset Orchestrator (on)` drops yours so the row follows the preset again. If the text is under review too, the three-way diff (`k keep mine · t take new · e edit`) follows for the text. A model row under review (`[review]`) offers `Keep yours (acme/mine)` / `Take from Defaults (every agent) (acme/base)`.
 

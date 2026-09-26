@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
-import { createState } from "../../src/index.js"
+import { shippedTable, teamState } from "./preset-table.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
@@ -257,6 +257,7 @@ test("landed child worktree is removed on landing; branch ref and records remain
         dummyContext(),
         { run: child.id, expectedParentHead: parentHead },
         callerFor(parent),
+        shippedTable(),
       )
       expect(res.ok).toBe(true)
 
@@ -886,7 +887,7 @@ test("two concurrent delegates provision and start under a running sweep", async
       await saveRun(root, parent)
 
       const sessions = recordingSessions()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const sweeps = startSweeps(root)
       try {
         const results = await Promise.all([
@@ -935,7 +936,7 @@ test("twenty back-to-back delegates provision and start under a running sweep", 
       await saveRun(root, parent)
 
       const sessions = recordingSessions()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const sweeps = startSweeps(root)
       try {
         for (let i = 0; i < 20; i++) {

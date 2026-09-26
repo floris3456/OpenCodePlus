@@ -127,7 +127,9 @@ test("a shared row in one catalogue never reaches the other catalogue's agents",
 test("a team member row resolves through Teams while its stand-alone row resolves through Agents", () => {
   const nodes = expandAll({
     items: [bashItem()],
-    records: [sharedOff()],
+    // mate is a user agent, whose unset rows fall back to off (DESIGN §3.3):
+    // the Teams "everyone" row turns bash on so the two chains differ.
+    records: [sharedOff(), { ...sharedOff("teams"), state: "on" }],
     agents: agents(),
     teams: [{ level: "project", team: "crew", enabled: true, agents: ["mate"] }],
   })
@@ -169,7 +171,7 @@ test("migrateCatalogues copies every shared Defaults row into Teams and is idemp
   ]
   const once = migrateCatalogues(before)
   expect(once.migrated).toBe(true)
-  expect(once.records.filter((record) => record.type !== "team" && record.catalogue === "teams")).toHaveLength(4)
+  expect(once.records.filter((record) => "catalogue" in record && record.catalogue === "teams")).toHaveLength(4)
   expect(once.records).toHaveLength(before.length + 4)
   const twice = migrateCatalogues(once.records)
   expect(twice.migrated).toBe(false)
@@ -246,7 +248,12 @@ test("model.add writes a Teams-catalogue shared row only when asked", async () =
 
 test("collapsed roots still expand into the two catalogues", () => {
   const rows = tree({ items: [bashItem()], records: [], agents: agents(), expanded: new Set(["root:defaults"]) })
-  const defaults = rows.slice(rows.findIndex((row) => row.id === "root:defaults") + 1)
+  // Presets is the last root: Defaults' own rows are the ones before it.
+  const defaults = rows.slice(
+    rows.findIndex((row) => row.id === "root:defaults") + 1,
+    rows.findIndex((row) => row.id === "root:preset"),
+  )
   expect(defaults.map((row) => row.id)).toEqual(["group:defaults:agents", "group:defaults:teams"])
   expect(defaults.map((row) => row.depth)).toEqual([1, 1])
+  expect(rows.at(-1)?.id).toBe("root:preset")
 })

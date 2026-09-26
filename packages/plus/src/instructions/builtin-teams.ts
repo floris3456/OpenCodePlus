@@ -1,11 +1,12 @@
-// Shipped built-in teams: source data, not files on disk.
+// The Plus team presets' source data (DESIGN §3.5), not files on disk.
 //
 // `packages/plus/package.json` declares `"files": ["dist"]` and the build is
 // plain `tsc`, so a markdown directory under `src/` would not be published
-// and would break at runtime. Built-ins live here as exported source
-// constants, following the `teaching.ts` pattern. They are read-only: no
-// filesystem path, never written, never created or deleted. Enablement is a
-// `TeamRecord` at level `defaults` routed to the global store.
+// and would break at runtime. The teams live here as exported source
+// constants, following the `teaching.ts` pattern. They are no longer Defaults
+// teams: `presets.ts` turns them into Plus team presets (each member linked to
+// its Plus agent preset), and `team.create` copies one into a project or
+// global team. `teamRoles` feeds the Plus agent presets' role text.
 //
 // Placeholder product content: minimal, obvious, and easy to replace. Tests
 // must not couple to this roster; behaviour tests supply fixture registries
@@ -14,9 +15,9 @@
 // `opencodeplus-team` carries the ten team roles verbatim from
 // docs/team-v2/04-handoff-contract.md §5: shared.md first, then the role's
 // own block. Members carry the agent fields that describe them (description,
-// mode) and NO permissions: what a member may do is an instructions row,
-// derived from `teams/policy.ts` by `instructions/team-policy-rows.ts` and
-// installed by `instructions/apply.ts`.
+// mode) and NO permissions: what a member may do is its instructions rows,
+// which its Plus agent and member presets set (`presets.ts`) and
+// `instructions/apply.ts` installs.
 import type { TeamFields } from "./teams-apply.js"
 
 export interface BuiltinTeamMember {
@@ -136,6 +137,9 @@ Finish with status done and findings (empty findings = explicit approval).`
 const scout = `Find things, report compactly: exact file:line with a one-line note each.
 Read broadly, return little. No design opinions, no edits, no delegation.
 Finish with status done and the findings in summary.`
+
+/** `shared` plus one block per role: a Plus agent preset's role text is `shared` + its block. */
+export const teamRoles = { shared, planner, orchestrator, implementer, reviewer, scout } as const
 
 function member(id: string, description: string, role: string): BuiltinTeamMember {
   return {

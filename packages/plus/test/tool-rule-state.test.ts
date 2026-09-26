@@ -73,7 +73,7 @@ async function openFixture(): Promise<Fixture> {
 // A real project agent file written by the host handler, so discovery reports
 // it fileBacked at project scope.
 async function addFileBackedAgent(api: PlusApi): Promise<void> {
-  const created = await api.createAgent({ scope: "project", id: "alpha", prompt: "Project alpha role." })
+  const created = await api.createAgent({ scope: "project", id: "alpha" })
   if (!created.ok) throw new Error(`createAgent failed: ${created.error.message}`)
 }
 

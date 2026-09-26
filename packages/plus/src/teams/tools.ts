@@ -10,7 +10,8 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { append, type ToolCallOutcome } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
-import { kindOf, toolsByServer, type TeamTool } from "./policy.js"
+import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
+import type { TeamTool } from "./policy.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, type RunRecord } from "./run.js"
 import {
   Brief,
@@ -80,6 +81,8 @@ interface AskedCall {
 interface TeamAuditState {
   readonly calls: Map<string, TeamCall[]>
   readonly askedRequests: Map<string, AskedCall>
+  /** The permission table of the latest publish: whether a chat may start a team run is its row. */
+  readonly permissions: () => PermissionTable | undefined
 }
 
 const PermissionEvents: Set<string> = new Set([Permission.Event.Asked.type, Permission.Event.Replied.type])
@@ -333,10 +336,15 @@ async function listenPermissionEvents(ctx: Context, state: TeamAuditState): Prom
   )
 }
 
-export async function registerTeamTools(ctx: Context, api: TeamApi): Promise<Registration> {
+export async function registerTeamTools(
+  ctx: Context,
+  api: TeamApi,
+  permissions: () => PermissionTable | undefined = () => undefined,
+): Promise<Registration> {
   const state: TeamAuditState = {
     calls: new Map<string, TeamCall[]>(),
     askedRequests: new Map<string, AskedCall>(),
+    permissions,
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
@@ -518,7 +526,7 @@ function runGated<A>(
       bound: false,
     }
     const auditState: { run: string | null } = { run: null }
-    const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState).pipe(
+    const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState, state.permissions()).pipe(
       Effect.map((result) => ({ ok: true as const, output: result.output })),
       Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
     )
@@ -549,6 +557,7 @@ function runGatedInner<A>(
   pluginCtx: Context,
   call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
   auditState: { run: string | null },
+  table: PermissionTable | undefined,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
@@ -557,11 +566,22 @@ function runGatedInner<A>(
     auditState.run = found?.id ?? null
     let run = found
     if (run === undefined) {
-      const kind = kindOf(agent)
-      // Root-run bootstrap: a planner or orchestrator session calling any team
-      // tool becomes the main run, then continues through the normal gate.
-      // All other no-run calls keep the byte-exact E_NOT_ACTOR message.
-      if (kind.ok && (kind.kind === "planner" || kind.kind === "orchestrator")) {
+      // Root-run bootstrap: a chat of a member whose "Start a team run from a
+      // chat" row is on becomes that member's main run on its first team
+      // tool call, then continues through the normal gate. A member whose row
+      // is off hears E_NOT_ACTOR plus the row's own words; every other no-run
+      // call keeps the byte-exact E_NOT_ACTOR message.
+      const member = table?.teamMembers.has(agent) === true
+      const start = member ? rowState(table, agent, "team_get_context", "bootstrap.chat") : undefined
+      if (member && start?.on !== true) {
+        const words = start?.item.message ?? "you do not start a team run from a chat"
+        return yield* Effect.fail(
+          new Tool.Error({
+            message: `${notActorError(runIdOf(input) ?? "unknown").message} ${words.charAt(0).toUpperCase()}${words.slice(1)} (team_get_context → Team runs → Start a team run from a chat).`,
+          }),
+        )
+      }
+      if (start?.on === true) {
         const directory = pluginCtx.location?.directory ? String(pluginCtx.location.directory) : ""
         if (!directory)
           return yield* Effect.fail(
@@ -626,7 +646,6 @@ function runGatedInner<A>(
       }
     }
     const owned = yield* requireActor(run, input, agent)
-    yield* requireRole(owned, name)
     const caller: TeamCaller = { sessionID, agent, run: owned }
     const result = yield* Effect.promise(() => call(input, caller))
     if (!result.ok) {
@@ -650,15 +669,6 @@ function requireActor(
   return Effect.succeed(run)
 }
 
-function requireRole(run: RunRecord, name: TeamTool): Effect.Effect<void, Tool.Error> {
-  const kind = kindOf(run.role)
-  if (!kind.ok) return Effect.fail(new Tool.Error({ message: `E_ROLE: ${kind.reason}` }))
-  const ceiling = toolsByServer(kind.kind)
-  const allowed = [...ceiling.direct, ...ceiling.code]
-  if (!allowed.includes(name)) return Effect.fail(roleError(run.role, name))
-  return Effect.void
-}
-
 function notActorError(id: string): Tool.Error {
   return new Tool.Error({
     message: `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`,
@@ -677,9 +687,6 @@ function codeOf(message: string): string | null {
   return code
 }
 
-function roleError(role: string, name: TeamTool): Tool.Error {
-  return new Tool.Error({ message: `E_ROLE: Role "${role}" may not call "team_${name}".` })
-}
 
 // The E_NOT_ACTOR message names the run the input names when it names one
 // (run, first of runs, or parent), so the model sees which id was rejected.

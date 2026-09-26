@@ -7,13 +7,23 @@ import {
   excludedAttributes,
   excludedRanges,
   isExcludedOffset,
+  linkLine,
+  matchLines,
   parentItemTitle,
   provenanceLine,
   resolvedText,
   sectionExcluded,
   sectionRows,
 } from "../src/tui/instructions/detail-pane.js"
-import { badgeColor, badgeLabels, hasVisibleChildren, isExpandableRow, isReviewLabel, rowMarker } from "../src/tui/instructions/tree-pane.js"
+import {
+  badgeColor,
+  badgeLabels,
+  hasVisibleChildren,
+  isExpandableRow,
+  isReviewLabel,
+  provenanceSuffix,
+  rowMarker,
+} from "../src/tui/instructions/tree-pane.js"
 import type { Snapshot } from "../src/rpc.js"
 
 const UPDATED = "2026-09-14T00:00:00.000Z"
@@ -27,6 +37,8 @@ function agents(): AgentSource[] {
 }
 
 function items(): Item[] {
+  // A Role/persona item belongs to its agents (discovery sets `agents`), and
+  // an agent's own prompt falls back to its upstream state (DESIGN §3.3).
   const role: Item = {
     id: "system:role",
     kind: "system",
@@ -35,6 +47,7 @@ function items(): Item[] {
     text: ROLE_TEXT,
     enabled: true,
     fingerprint: fingerprint(ROLE_TEXT),
+    agents: ["Implementer", "Helper"],
   }
   const bash: Item = {
     id: "tool:bash",
@@ -119,6 +132,7 @@ function snapshot(records: Snapshot["records"]): Snapshot {
               text: item.text,
               enabled: item.enabled,
               fingerprint: item.fingerprint,
+              ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
             },
           ],
     ),
@@ -134,8 +148,9 @@ function yellowOnly(label: string): boolean {
 
 test("roots render with depth, badges, and collapsed review roll-up", () => {
   const nodes = tree({ items: items(), records: [], agents: agents(), expanded: new Set() })
-  expect(nodes.map((node) => node.id)).toEqual(["root:project", "root:global", "root:defaults"])
-  expect(nodes.map((node) => node.depth)).toEqual([0, 0, 0])
+  expect(nodes.map((node) => node.id)).toEqual(["root:project", "root:global", "root:defaults", "root:preset"])
+  expect(nodes.map((node) => node.depth)).toEqual([0, 0, 0, 0])
+  expect(nodes.at(-1)?.label).toBe("Presets")
   // Roots render only the roots while collapsed; the two catalogue groups
   // appear once their root expands, and each catalogue's shared Defaults
   // groups appear once that catalogue expands.
@@ -185,7 +200,10 @@ test("review rolls up to collapsed ancestors as a count", () => {
   const full = tree({ ...input, expanded: new Set(allIds(input)) })
   const item = full.find((node) => node.id === "item:project:Implementer:tool:bash")
   expect(item?.badges.review).toBe(true)
-  expect(badgeLabels(item!)).toContain("review")
+  // The row's own text review reads through reviewLabel (from-label.ts).
+  expect(badgeLabels(item!)).toContain("to review")
+  expect(yellowOnly("to review")).toBe(true)
+  expect(yellowOnly("to review (state)")).toBe(true)
 })
 
 test("full subtree rows carry indentation order, markers, and addressable badges", () => {
@@ -203,10 +221,13 @@ test("full subtree rows carry indentation order, markers, and addressable badges
   expect(badgeLabels(role!)).toContain("on")
   const gpt = nodes.find((node) => node.id === "item:project:Implementer:base:gpt")
   expect(badgeLabels(gpt!)).toContain("active")
+  // Implementer stands for an agent created from Native `build`, so its tool
+  // keeps its native "on" while the text record marks it modified (DESIGN §3.3).
   const modified = tree({
     items: items(),
     records: [record({ item: "tool:bash", text: "mine" })],
     agents: agents(),
+    links: [{ type: "link", level: "project", agent: "Implementer", preset: { kind: "agent", id: "build" }, updated: UPDATED }],
     expanded: new Set(["root:project", "group:project:agents", "group:project:agents:user", "agent:project:Implementer", "group:project:Implementer:tools", "group:project:Implementer:tools:native"]),
   })
   const bash = modified.find((node) => node.id === "item:project:Implementer:tool:bash")
@@ -248,41 +269,56 @@ test("sections list include and exclude with visible representation", () => {
   expect(sectionExcluded(purpose!, snap)).toBe(false)
 })
 
+// The detail pane names where state and text come from in the tree's words
+// (from-label.ts), separately when they differ (DESIGN §2).
 test("provenance wording and resolved text through resolve", () => {
+  const roleOf = (records: CustomizationRecord[]) =>
+    tree({ items: items(), records, agents: agents(), expanded: new Set(allIds({ items: items(), records, agents: agents() })) }).find(
+      (node) => node.id === "item:project:Implementer:system:role",
+    )!
   const snap = snapshot([])
-  const full = expandAll()
-  const role = full.find((node) => node.id === "item:project:Implementer:system:role")
-  expect(provenanceLine(role!, snap)).toBe("inherited from: upstream")
-  expect(resolvedText(role!, snap)).toBe(ROLE_TEXT)
-  const overridden = snapshot([
-    {
-      type: "customization",
-      level: "project",
-      agent: "Implementer",
-      item: "system:role",
-      section: null,
-      text: "mine",
-      basedOn: fingerprint(ROLE_TEXT),
-      basedOnText: ROLE_TEXT,
-      updated: UPDATED,
-    },
-  ])
-  expect(provenanceLine(role!, overridden)).toBe("overridden here: Project")
-  expect(resolvedText(role!, overridden)).toBe("mine")
-  const shared = snapshot([
-    {
-      type: "customization",
-      level: "defaults",
-      agent: null,
-      item: "system:role",
-      section: null,
-      text: "shared",
-      basedOn: fingerprint(ROLE_TEXT),
-      updated: UPDATED,
-    },
-  ])
-  expect(provenanceLine(role!, shared)).toBe("inherited from: Defaults")
+  expect(provenanceLine(roleOf([]), snap)).toBe("state and text: upstream")
+  expect(resolvedText(roleOf([]), snap)).toBe(ROLE_TEXT)
+  const mine: CustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "Implementer",
+    item: "system:role",
+    section: null,
+    text: "mine",
+    basedOn: fingerprint(ROLE_TEXT),
+    basedOnText: ROLE_TEXT,
+    updated: UPDATED,
+  }
+  const overridden = snapshot([mine])
+  expect(provenanceLine(roleOf([mine]), overridden)).toBe("state: upstream · text: set here (Project)")
+  expect(resolvedText(roleOf([mine]), overridden)).toBe("mine")
+  const everyone: CustomizationRecord = {
+    type: "customization",
+    level: "defaults",
+    agent: null,
+    item: "system:role",
+    section: null,
+    text: "shared",
+    basedOn: fingerprint(ROLE_TEXT),
+    updated: UPDATED,
+  }
+  expect(provenanceLine(roleOf([everyone]), snapshot([everyone]))).toBe("state: upstream · text: from Defaults (every agent)")
+  // A value set at this level and inherited state and text alike.
+  const off: CustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "Implementer",
+    item: "system:role",
+    section: null,
+    state: "off",
+    basedOn: fingerprint(ROLE_TEXT),
+    updated: UPDATED,
+  }
+  expect(provenanceLine(roleOf([{ ...mine, state: "off" }]), snapshot([{ ...mine, state: "off" }]))).toBe("state and text: set here (Project)")
+  expect(provenanceLine(roleOf([off]), snapshot([off]))).toBe("state: set here (Project) · text: upstream")
   expect(displayLevel("global")).toBe("Global")
+  expect(displayLevel("preset")).toBe("Preset")
 })
 
 test("review and unsupported badges own yellow and nothing else borrows it", () => {
@@ -381,4 +417,51 @@ test("whole-item detail strikes the excluded section range", () => {
   expect(isExcludedOffset(ranges, usageStart + 2)).toBe(true)
   expect(isExcludedOffset(ranges, 1)).toBe(false)
   expect(excludedAttributes(true)).toBe(TextAttributes.STRIKETHROUGH)
+})
+
+// DESIGN §2: an inheriting row shows where its value comes from as a dim
+// suffix; a row that sets its value itself shows none.
+test("tree rows carry the from-label suffix only when inherited, and the review label names state", () => {
+  const linked = { type: "link" as const, level: "project" as const, agent: "Implementer", preset: { kind: "agent" as const, id: "orchestrator" }, updated: UPDATED }
+  const input = { items: items(), records: [] as CustomizationRecord[], agents: agents(), links: [linked] }
+  const nodes = tree({ ...input, expanded: new Set(allIds(input)) })
+  const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")!
+  expect(provenanceSuffix(bash)).toBe("from preset Orchestrator")
+  const own = record({ item: "tool:bash", state: "on" })
+  const set = tree({ ...input, records: [own], expanded: new Set(allIds({ ...input, records: [own] })) })
+  expect(provenanceSuffix(set.find((node) => node.id === "item:project:Implementer:tool:bash")!)).toBeUndefined()
+  // Off here, recorded against "off" above; the preset now answers "on":
+  // the state is to review.
+  const stale = record({ item: "tool:bash", state: "off", basedOnState: "off" })
+  const review = tree({ ...input, records: [stale], expanded: new Set(allIds({ ...input, records: [stale] })) })
+  const row = review.find((node) => node.id === "item:project:Implementer:tool:bash")!
+  expect(row.badges.reviewOf).toEqual(["state"])
+  expect(badgeLabels(row)).toContain("to review (state)")
+  const yellow = RGBA.fromHex("#ffff00")
+  const gray = RGBA.fromHex("#888888")
+  const context = { theme: { text: { feedback: { warning: { default: yellow } }, subdued: gray } } } as unknown as Parameters<typeof badgeColor>[0]
+  expect(badgeColor(context, "to review (state)")).toBe(yellow)
+})
+
+test("detail pane names an owner's link and what a Defaults entry matches", () => {
+  const linked = { type: "link" as const, level: "project" as const, agent: "Implementer", preset: { kind: "agent" as const, id: "orchestrator" }, updated: UPDATED }
+  const entry = { type: "entry" as const, level: "defaults" as const, catalogue: "agents" as const, name: "*IMPL*", updated: UPDATED }
+  const teamEntry = { type: "entry" as const, level: "defaults" as const, catalogue: "teams" as const, team: "cr*", name: "*mate", updated: UPDATED }
+  const teams = [{ level: "project" as const, team: "crew", enabled: false, agents: ["CrewMate", "Lead"] }]
+  const input = { items: items(), records: [] as CustomizationRecord[], agents: agents(), links: [linked], entries: [entry, teamEntry], teams }
+  const nodes = tree({ ...input, expanded: new Set(allIds(input)) })
+  const snap: Snapshot = { ...snapshot([]), links: [linked], entries: [entry, teamEntry], teams }
+  expect(linkLine(nodes.find((node) => node.id === "agent:project:Implementer")!, snap)).toBe("Created from preset: Orchestrator (Plus)")
+  expect(linkLine(nodes.find((node) => node.id === "agent:global:Helper")!, snap)).toBe("No preset")
+  // Shipped presets are what others link to; a Native preset shows no line.
+  expect(linkLine(nodes.find((node) => node.id === "agent:preset:build")!, snap)).toBeUndefined()
+  const agentsEntry = nodes.find((node) => node.id === "agent:defaults:*IMPL*")!
+  expect(linkLine(agentsEntry, snap)).toBe("No preset")
+  expect(matchLines(agentsEntry, snap)).toEqual(["matches agents named: *IMPL*", "matching now: Implementer"])
+  expect(matchLines(nodes.find((node) => node.id === "team:defaults:cr*")!, snap)).toEqual(["matches teams named: cr*", "matching now: crew"])
+  expect(matchLines(nodes.find((node) => node.id === "team:defaults:cr*:*mate")!, snap)).toEqual([
+    "matches members named: *mate in teams named: cr*",
+    "matching now: crew › CrewMate",
+  ])
+  expect(matchLines(nodes.find((node) => node.id === "agent:project:Implementer")!, snap)).toEqual([])
 })

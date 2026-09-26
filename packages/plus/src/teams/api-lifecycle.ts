@@ -12,6 +12,8 @@ import { StopInput, SupersedeInput } from "./schema.js"
 import { readJson } from "./store.js"
 import { setState } from "./tasks.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
+import type { PermissionTable } from "../instructions/permission-enforce.js"
+import { mayReach, relationOf } from "./reach.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
@@ -29,6 +31,14 @@ function notChild(parent: RunRecord, runID: string): TeamApiResult {
     `Run ${runID} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
     parent.children,
   )
+}
+
+// A run the caller may stop or supersede: a direct child always, a deeper
+// descendant or any other run only when the member's Runs rows allow it.
+async function reachable(root: string, caller: RunRecord, target: RunRecord, agent: string, tool: "stop" | "supersede", table?: PermissionTable): Promise<boolean> {
+  const relation = await relationOf(root, caller, target)
+  if (relation === "self") return false
+  return mayReach(table, agent, tool, relation)
 }
 
 async function interruptSession(ctx: Context, sessionID: string | null): Promise<void> {
@@ -105,12 +115,12 @@ export async function stopRun(ctx: Context, runID: string): Promise<TeamApiResul
   return succeeded({ run: run.id, state: updated.state })
 }
 
-export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCaller): Promise<TeamApiResult> {
+export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const child = await loadRun(root, args.run)
-  if (child === undefined || child.parent !== parent.id) return notChild(parent, args.run)
+  if (child === undefined || !(await reachable(root, parent, child, caller.agent, "stop", table))) return notChild(parent, args.run)
   if (child.state === "stopped") return succeeded({ run: child.id, state: "stopped" })
   if (child.state === "stopping") return succeeded({ run: child.id, state: "stopping" })
   if (child.state === "idle") {
@@ -130,14 +140,21 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
   return succeeded({ run: child.id, state: "stopping" })
 }
 
-export async function supersedeHandler(ctx: Context, args: SupersedeInput, caller: TeamCaller): Promise<TeamApiResult> {
+export async function supersedeHandler(
+  ctx: Context,
+  args: SupersedeInput,
+  caller: TeamCaller,
+  table?: PermissionTable,
+): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const waitMs = args.waitMs ?? 30000
   const reason = args.reason
   const stored = await loadRun(root, caller.run.id)
-  const parent = stored ?? caller.run
+  const self = stored ?? caller.run
   const child = await loadRun(root, args.run)
-  if (child === undefined || child.parent !== parent.id) return notChild(parent, args.run)
+  if (child === undefined || !(await reachable(root, self, child, caller.agent, "supersede", table))) return notChild(self, args.run)
+  // A descendant's own parent owns its task and hears about it.
+  const parent = child.parent === self.id || child.parent === null ? self : ((await loadRun(root, child.parent)) ?? self)
   if (child.state === "superseded" || child.state === "reaped") {
     const info = await headInfo(child)
     return succeeded({ run: child.id, state: child.state, hadUncommitted: info.hadUncommitted, head: info.head })

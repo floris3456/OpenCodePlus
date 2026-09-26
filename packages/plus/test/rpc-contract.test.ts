@@ -46,6 +46,15 @@ test("every method and event is declared", () => {
     "rule.add",
     "rule.remove",
     "rule.update",
+    "team.runs.list",
+    "team.runs.stop",
+    "entry.create",
+    "entry.delete",
+    "entry.rename",
+    "preset.create",
+    "preset.addMember",
+    "preset.delete",
+    "link.set",
   ]
 
   for (const name of expectedMethods) {
@@ -104,6 +113,15 @@ test("every declared error is reachable through the definition", () => {
     "rule.exists",
     "rule.missing",
     "rule.invalid",
+    "entry.invalid",
+    "entry.exists",
+    "entry.missing",
+    "preset.invalid",
+    "preset.exists",
+    "preset.readonly",
+    "preset.inUse",
+    "link.invalid",
+    "link.cycle",
   ]
 
   const reachableErrors = new Set<string>()
@@ -151,6 +169,13 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "rule.add",
     "rule.remove",
     "rule.update",
+    "entry.create",
+    "entry.delete",
+    "entry.rename",
+    "preset.create",
+    "preset.addMember",
+    "preset.delete",
+    "link.set",
   ] as const satisfies readonly (keyof typeof Plus.Definition.methods)[]
 
   for (const method of instructionsAndMutatingMethods) {
@@ -229,6 +254,21 @@ test("error schemas are correctly bound to their corresponding methods", () => {
   expect("rule.invalid" in errorsOf("rule.remove")).toBe(true)
 
   expect("rule.invalid" in errorsOf("rule.update")).toBe(true)
+
+  expect("preset.invalid" in errorsOf("agent.create")).toBe(true)
+  expect("preset.invalid" in errorsOf("team.addAgent")).toBe(true)
+  expect("entry.exists" in errorsOf("team.addAgent")).toBe(true)
+  expect("entry.exists" in errorsOf("entry.create")).toBe(true)
+  expect("entry.invalid" in errorsOf("entry.create")).toBe(true)
+  expect("entry.missing" in errorsOf("entry.delete")).toBe(true)
+  expect("entry.missing" in errorsOf("entry.rename")).toBe(true)
+  expect("preset.exists" in errorsOf("preset.create")).toBe(true)
+  expect("preset.readonly" in errorsOf("preset.addMember")).toBe(true)
+  expect("preset.inUse" in errorsOf("preset.delete")).toBe(true)
+  expect("preset.readonly" in errorsOf("preset.delete")).toBe(true)
+  expect("link.cycle" in errorsOf("link.set")).toBe(true)
+  expect("link.invalid" in errorsOf("link.set")).toBe(true)
+  expect("agent.protected" in errorsOf("link.set")).toBe(true)
 })
 
 function errorsOf(method: keyof typeof Plus.Definition.methods): Record<string, unknown> {
@@ -594,42 +634,67 @@ test("MutateInput with actor and Log schemas round-trip without undefined keys",
   expect(Schema.decodeUnknownSync(Plus.LogInput)(encodedEmpty)).toEqual(empty)
 })
 
-test("agent.create input with template round-trips correctly", () => {
-  const withTemplate: Plus.CreateAgentInput = {
+test("agent.create input with a preset round-trips correctly", () => {
+  const withPreset: Plus.CreateAgentInput = {
     scope: "project",
     id: "specialist",
-    template: "general",
-    prompt: "Custom prompt",
+    preset: { kind: "member", team: "review", id: "editor" },
   }
-  const encodedWith = Schema.encodeSync(Plus.CreateAgentInput)(withTemplate)
-  expect(Schema.decodeUnknownSync(Plus.CreateAgentInput)(encodedWith)).toEqual(withTemplate)
+  const encodedWith = Schema.encodeSync(Plus.CreateAgentInput)(withPreset)
+  expect(Schema.decodeUnknownSync(Plus.CreateAgentInput)(encodedWith)).toEqual(withPreset)
 
-  const withoutTemplate: Plus.CreateAgentInput = {
+  const withoutPreset: Plus.CreateAgentInput = {
     scope: "global",
     id: "general-agent",
-    prompt: "Prompt",
   }
-  const encodedWithout = Schema.encodeSync(Plus.CreateAgentInput)(withoutTemplate)
-  expect("template" in encodedWithout).toBe(false)
-  expect(Schema.decodeUnknownSync(Plus.CreateAgentInput)(encodedWithout)).toEqual(withoutTemplate)
+  const encodedWithout = Schema.encodeSync(Plus.CreateAgentInput)(withoutPreset)
+  expect("preset" in encodedWithout).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.CreateAgentInput)(encodedWithout)).toEqual(withoutPreset)
+  // The Defaults-template fields are gone from the create path.
+  expect(() => Schema.decodeUnknownSync(Plus.CreateAgentInput)({ scope: "project", id: "x", preset: { kind: "agent" } })).toThrow()
 })
 
-test("team.create input with template round-trips correctly", () => {
-  const withTemplate: Plus.CreateTeamInput = {
+test("team.create input with a team preset round-trips correctly", () => {
+  const withPreset: Plus.CreateTeamInput = {
     level: "project",
     team: "mine",
-    template: "review",
+    preset: "review",
   }
-  const encodedWith = Schema.encodeSync(Plus.CreateTeamInput)(withTemplate)
-  expect(Schema.decodeUnknownSync(Plus.CreateTeamInput)(encodedWith)).toEqual(withTemplate)
+  const encodedWith = Schema.encodeSync(Plus.CreateTeamInput)(withPreset)
+  expect(Schema.decodeUnknownSync(Plus.CreateTeamInput)(encodedWith)).toEqual(withPreset)
 
-  const withoutTemplate: Plus.CreateTeamInput = {
+  const withoutPreset: Plus.CreateTeamInput = {
     level: "global",
     team: "ops",
   }
-  const encodedWithout = Schema.encodeSync(Plus.CreateTeamInput)(withoutTemplate)
-  expect("template" in encodedWithout).toBe(false)
-  expect(Schema.decodeUnknownSync(Plus.CreateTeamInput)(encodedWithout)).toEqual(withoutTemplate)
+  const encodedWithout = Schema.encodeSync(Plus.CreateTeamInput)(withoutPreset)
+  expect("preset" in encodedWithout).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.CreateTeamInput)(encodedWithout)).toEqual(withoutPreset)
+})
+
+test("entry, preset and link inputs and results round-trip without undefined keys", () => {
+  const cases: [Schema.Codec<unknown, unknown>, unknown][] = [
+    [Plus.EntryCreateInput as Schema.Codec<unknown, unknown>, { catalogue: "teams", name: "*orch*", team: "crew*", preset: { kind: "agent", id: "orchestrator" } }],
+    [Plus.EntryCreateInput as Schema.Codec<unknown, unknown>, { catalogue: "agents", name: "Opus-%" }],
+    [Plus.EntryDeleteInput as Schema.Codec<unknown, unknown>, { catalogue: "teams", team: "*" }],
+    [Plus.EntryRenameInput as Schema.Codec<unknown, unknown>, { catalogue: "agents", name: "a*", to: "b*" }],
+    [Plus.EntryRef as Schema.Codec<unknown, unknown>, { id: "agent:defaults:a*", catalogue: "agents", name: "a*" }],
+    [Plus.PresetCreateInput as Schema.Codec<unknown, unknown>, { kind: "agent", id: "mine", from: { kind: "agent", id: "planner" } }],
+    [Plus.PresetCreateInput as Schema.Codec<unknown, unknown>, { kind: "team", id: "crew", from: "starter" }],
+    [Plus.PresetAddMemberInput as Schema.Codec<unknown, unknown>, { team: "crew", id: "lead" }],
+    [Plus.PresetDeleteInput as Schema.Codec<unknown, unknown>, { ref: { kind: "team", id: "crew" } }],
+    [Plus.PresetResult as Schema.Codec<unknown, unknown>, { id: "agent:preset:mine", ref: { kind: "agent", id: "mine" } }],
+    [Plus.LinkSetInput as Schema.Codec<unknown, unknown>, { level: "project", agent: "alice", team: { level: "project", team: "crew" }, preset: null }],
+    [Plus.LinkResult as Schema.Codec<unknown, unknown>, { level: "preset", agent: null, team: { level: "preset", team: "crew" }, preset: { kind: "team", id: "starter" } }],
+    [Plus.PresetInUse as Schema.Codec<unknown, unknown>, { ref: { kind: "agent", id: "mine" }, users: ["agent:project:alice"] }],
+    [Plus.LinkCycle as Schema.Codec<unknown, unknown>, { preset: { kind: "agent", id: "b" }, through: ["agent:b", "agent:a"] }],
+  ]
+  for (const [schema, value] of cases) {
+    const encoded = Schema.encodeUnknownSync(schema)(value)
+    expectRpcBody(encoded)
+    assertNoUndefinedValues(encoded)
+    expect(Schema.decodeUnknownSync(schema)(encoded)).toEqual(value)
+  }
 })
 
 test("MCP and Skill input/output schemas round-trip correctly", () => {

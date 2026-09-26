@@ -2,11 +2,12 @@ import { readdir } from "node:fs/promises"
 import path from "node:path"
 import { teamsDataDir } from "../instructions/paths.js"
 import { git } from "./git.js"
-import { kindOf } from "./policy.js"
 import { isTerminal, loadRun, type RunRecord } from "./run.js"
 import { ListInput, toolError } from "./schema.js"
 import { readJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
+import type { PermissionTable } from "../instructions/permission-enforce.js"
+import { mayReach, relationOf } from "./reach.js"
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -32,11 +33,11 @@ export async function resolveHead(record: RunRecord): Promise<string> {
 // Read-only listing: planners see every run in the namespace, every other
 // role sees its own run plus its direct children. Never writes, never
 // acknowledges, never transitions anything.
-export async function listHandler(args: ListInput, caller: TeamCaller): Promise<TeamApiResult> {
+export async function listHandler(args: ListInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const self = stored ?? caller.run
-  const visible = visibleTo(await listRuns(root), self)
+  const visible = await visibleTo(root, await listRuns(root), self, caller.agent, table)
   const showAll = args.all ?? false
   const filtered = visible.filter((record) => {
     if (!showAll && (record.state === "superseded" || record.state === "reaped")) return false
@@ -51,10 +52,13 @@ export async function listHandler(args: ListInput, caller: TeamCaller): Promise<
   return succeeded(entries)
 }
 
-function visibleTo(all: RunRecord[], self: RunRecord): RunRecord[] {
-  const kind = kindOf(self.role)
-  if (kind.ok && kind.kind === "planner") return all
-  return all.filter((record) => record.id === self.id || record.parent === self.id)
+// Runs a member lists: its own and its direct children always, deeper
+// descendants and every other run by its team_list Runs rows (a planner's
+// ship on, the old "planners see every run" rule).
+async function visibleTo(root: string, all: RunRecord[], self: RunRecord, agent: string, table?: PermissionTable): Promise<RunRecord[]> {
+  const out: RunRecord[] = []
+  for (const record of all) if (mayReach(table, agent, "list", await relationOf(root, self, record))) out.push(record)
+  return out
 }
 
 // Output field names follow docs/team-v2/03-tools.md §list (run IS the id,

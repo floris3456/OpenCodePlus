@@ -5,6 +5,7 @@ import {
   type AgentSource,
   type CustomizationRecord,
   type Item,
+  type LinkRecord,
   type SplitRecord,
 } from "../src/instructions/model.js"
 import { buildMemo, type TeamInput } from "../src/instructions/resolve-memo.js"
@@ -106,12 +107,28 @@ function records(): (CustomizationRecord | SplitRecord)[] {
   ]
 }
 
+// DESIGN §3.3: a user agent's shared rows fall back to off unless a preset
+// sets them. The fixture agents stand for agents created from the Native
+// `build` preset (linked where each is addressed), so the rows the filters
+// are about keep their native state unless a record changes them.
+function linksFor(fixture: readonly AgentSource[]): LinkRecord[] {
+  return fixture.map((agent) => ({
+    type: "link",
+    level: agent.scope,
+    agent: agent.id,
+    preset: { kind: "agent", id: "build" },
+    updated: OLD,
+  }))
+}
+
 function input(overrides?: { items?: Item[]; records?: (CustomizationRecord | SplitRecord)[]; agents?: AgentSource[]; teams?: TeamInput[] }) {
+  const fixture = overrides?.agents ?? agents()
   return {
     items: overrides?.items ?? items(),
     records: overrides?.records ?? records(),
-    agents: overrides?.agents ?? agents(),
+    agents: fixture,
     teams: overrides?.teams ?? teams(),
+    links: linksFor(fixture),
   }
 }
 
@@ -125,8 +142,11 @@ const sharedPlus = "item:defaults::tool:plus-one"
 test("kind filters by row kind", () => {
   expect(ids("kind:item")).toContain(bash)
   expect(ids("kind:item").some((id) => id.startsWith("group:"))).toBe(false)
-  expect(ids("kind:root")).toHaveLength(3)
-  expect(ids("kind:team", { teams: [] })).toHaveLength(0)
+  // Project, Global, Defaults and Presets (DESIGN §2).
+  expect(ids("kind:root")).toEqual(["root:project", "root:global", "root:defaults", "root:preset"])
+  expect(ids("kind:team !level:preset", { teams: [] })).toHaveLength(0)
+  // The Plus team presets and their member presets are team rows.
+  expect(ids("kind:team level:preset", { teams: [] })).toContain("team:preset:review")
 })
 
 test("item filters by upstream item kind", () => {
@@ -232,7 +252,12 @@ test("review matches the tree review badge", () => {
 
 test("source names the winning level", () => {
   expect(ids("source:project")).toContain(bash)
-  expect(ids("source:upstream")).toContain("item:project:Implementer:tool:odd-name")
+  // The fixture agents are linked to Native `build`, whose shipped content is
+  // now the winning level of every row it answers (DESIGN §3.4); a row no
+  // node answers (Helper's own prompt: `build`'s role is not in this
+  // inventory) still reads upstream.
+  expect(ids("source:preset")).toContain("item:project:Implementer:tool:odd-name")
+  expect(ids("source:upstream")).toContain("item:global:Helper:system:role")
   expect(ids("source:upstream")).not.toContain(bash)
 })
 
@@ -553,8 +578,9 @@ test("negation, OR, quotes, and combined terms", () => {
   expect(ids("kind:item,section")).not.toContain("root:project")
   expect(ids('label:"Code Review"')).toContain("item:project:Implementer:skill:review")
   // Two catalogues means two shared rows and, for a team member, one row per
-  // catalogue: the stand-alone id and the `<team>/:<member>` id.
-  expect(ids("kind:item label:bash").sort()).toEqual(
+  // catalogue: the stand-alone id and the `<team>/:<member>` id. Presets carry
+  // their own rows (presets-tree.test.ts), so they are left out here.
+  expect(ids("kind:item label:bash !level:preset").sort()).toEqual(
     [
       "item:project:Implementer:tool:bash",
       "item:project:CrewMate:tool:bash",
@@ -565,7 +591,7 @@ test("negation, OR, quotes, and combined terms", () => {
       "item:defaults:/teams:tool:bash",
     ].sort(),
   )
-  expect(ids("kind:item label:bash catalogue:teams").sort()).toEqual(
+  expect(ids("kind:item label:bash catalogue:teams !level:preset").sort()).toEqual(
     ["item:project:crew/:CrewMate:tool:bash", "item:defaults:/teams:tool:bash"].sort(),
   )
 })
@@ -574,10 +600,12 @@ test("sort directive, explicit sort, and ordering", () => {
   expect(query(input(), { where: "kind:root sort:label" }).rows.map((row) => row.id)).toEqual([
     "root:defaults",
     "root:global",
+    "root:preset",
     "root:project",
   ])
   expect(query(input(), { where: "kind:root sort:label", sort: "-label" }).rows.map((row) => row.id)).toEqual([
     "root:project",
+    "root:preset",
     "root:global",
     "root:defaults",
   ])
@@ -606,7 +634,7 @@ test("projection defaults and opt-in fields", () => {
   expect(Object.keys(row ?? {}).sort()).toEqual(["badges", "id", "source", "tokens"].sort())
   expect(row).toMatchObject({ id: bash, badges: "on modified", source: "project", tokens: 3 })
   const [reviewed] = query(input(), { where: "id:item:project:Implementer:tool:plus-one" }).rows
-  expect(reviewed?.badges).toBe("on modified review")
+  expect(reviewed?.badges).toBe("on modified to review")
   const full = query(input(), {
     where: `id:${bash}`,
     fields: ["id", "label", "text", "upstream", "record", "path", "updated", "sections"],
@@ -679,7 +707,8 @@ test("badge-backed queries resolve each address at most once through the shared 
 test("structural misses resolve nothing", () => {
   const noTeams = input({ teams: [] })
   const noTeamsMemo = buildMemo(noTeams)
-  const teamsMissed = query(noTeams, { where: "kind:team" }, noTeamsMemo)
+  // Team presets are team rows too; this miss is about the levels' teams.
+  const teamsMissed = query(noTeams, { where: "kind:team !level:preset" }, noTeamsMemo)
   expect(teamsMissed.rows).toHaveLength(0)
   expect(noTeamsMemo.whole.size).toBe(0)
   expect(noTeamsMemo.section.size).toBe(0)
@@ -732,6 +761,14 @@ test("ordinary tool sections still enumerate with real counts", () => {
   expect(coderRow?.sections?.slice().sort()).toEqual(["section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
 })
 
+test("kind:group lists a tool's Description group, which exists only once its sections are known", () => {
+  const snap = executeSectionsSnap()
+  const groups = query(snap, { where: "kind:group", fields: ["id"], limit: 1000 }).rows.map((row) => row.id)
+  expect(groups).toContain("group:project:Implementer:tool:coder:description")
+  // A one-section tool has no Description group: its section is the row.
+  expect(groups).not.toContain("group:project:Implementer:tool:bash:description")
+})
+
 function permSnap() {
   return input({
     items: [
@@ -753,21 +790,28 @@ function permSnap() {
   })
 }
 
-test("perm rows hang directly off the tool with item:perm and tool filters and no group", () => {
+test("perm rows list under the tool's Permissions and category groups, and item:perm and tool filters find them", () => {
   const snap = permSnap()
   const tree = expandedTree(snap)
-  expect(tree.some((node) => node.label === "Permissions")).toBe(false)
-  expect(tree.some((node) => node.id.includes(":perms"))).toBe(false)
   const toolRow = tree.find((node) => node.id === "item:project:Implementer:tool:shell")
   if (!toolRow) throw new Error("missing shell tool row")
   const index = tree.findIndex((node) => node.id === toolRow.id)
-  const depth = tree[index]?.depth ?? 0
-  const direct: string[] = []
+  const depth = toolRow.depth
+  const below: { id: string; label: string; depth: number }[] = []
   for (const node of tree.slice(index + 1)) {
     if (node.depth <= depth) break
-    if (node.depth === depth + 1) direct.push(node.id)
+    below.push({ id: node.id, label: node.label, depth: node.depth - depth })
   }
-  expect(direct).toContain("item:project:Implementer:perm:shell:git-push")
+  // A one-section text is the Description row itself; the rule sits under
+  // Permissions → its tool's category.
+  expect(below).toEqual([
+    { id: "section:project:Implementer:tool:shell:whole", label: "Description", depth: 1 },
+    { id: "group:project:Implementer:tool:shell:permissions", label: "Permissions", depth: 1 },
+    { id: "group:project:Implementer:tool:shell:permissions:commands", label: "Commands", depth: 2 },
+    { id: "item:project:Implementer:perm:shell:git-push", label: "Git push", depth: 3 },
+  ])
+  const groups = query(snap, { where: "id:group:project:Implementer:tool:shell:permissions", fields: ["id"] }).rows.map((row) => row.id)
+  expect(groups).toEqual(["group:project:Implementer:tool:shell:permissions", "group:project:Implementer:tool:shell:permissions:commands"])
   const byItem = query(snap, { where: "item:perm", fields: ["id"] }).rows.map((row) => row.id)
   expect(byItem).toContain("item:project:Implementer:perm:shell:git-push")
   const byTool = query(snap, { where: "item:perm tool:shell", fields: ["id"] }).rows.map((row) => row.id)

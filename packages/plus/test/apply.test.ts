@@ -20,7 +20,10 @@ import { discover } from "../src/instructions/discover.js"
 import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
 import { seedSystemInstruction } from "../src/instructions/teaching.js"
 import { catalogPath, fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
-import type { CustomizationRecord, Level, RuleRecord } from "../src/instructions/model.js"
+import type { AgentSource, CustomizationRecord, EntryRecord, Item, Level, LinkRecord, ModelRecord, PresetRecord, RuleRecord, Scopes } from "../src/instructions/model.js"
+import { chainContext } from "../src/instructions/presets.js"
+import { query } from "../src/instructions/query.js"
+import { expandedTree } from "../src/instructions/tree.js"
 import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 // Plus cannot depend on @opencode/core (core depends on Plus), so this
@@ -60,6 +63,19 @@ function makeRecord(overrides: Partial<CustomizationRecord> & { item: string; ty
     ...overrides,
     item: overrides.item,
   }
+}
+
+// DESIGN §3.3: a user agent's shared rows fall back to off unless a preset
+// sets them. The fixture agents here stand for agents created from the Native
+// `build` preset (linked at Project), so every row a test does not customize
+// keeps its native value and each test keeps its own subject.
+function fromBuild(discovered: { agents: readonly AgentSource[]; items: readonly Item[] }, ...extra: string[]): Scopes {
+  const ids = [...new Set([...discovered.agents.map((agent) => agent.id), ...extra])]
+  return chainContext({
+    agents: discovered.agents,
+    items: discovered.items,
+    links: ids.map((id) => ({ type: "link", level: "project", agent: id, preset: { kind: "agent", id: "build" }, updated: UPDATED })),
+  })
 }
 
 function makeInput(overrides: Partial<ApplyInput> & { items: ApplyInput["items"] }): ApplyInput {
@@ -176,7 +192,7 @@ test("per-agent role applies assembled text to the owning agent only", async () 
     makeInput({
       items: discovered.items,
       agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -192,7 +208,7 @@ test("section exclusion removes that text from what is installed", async () => {
   const ctx = context({ agent: agents.domain })
   const discovered = await discoverFor(ctx)
   const records = [makeRecord({ item: "system:role", agent: "alpha", level: "project", section: "two", state: "off" })]
-  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: fromBuild(discovered), records }))
   expect(applied.registrations).toHaveLength(1)
   const installed = agents.state.get("alpha")?.system ?? ""
   expect(installed).toContain("a")
@@ -221,7 +237,7 @@ test("section text edit installs for that agent, including an inherited Defaults
     makeInput({
       items: discovered.items,
       agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -313,7 +329,7 @@ test("an uncustomized skill with lossy assemble output installs nothing", async 
     makeInput({
       items: discovered.items,
       agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -337,7 +353,7 @@ test("skill content registers a private copy and denial, and disablement only de
     makeInput({
       items: discovered.items,
       agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -378,7 +394,7 @@ test("a section-only skill exclusion installs a private copy for that agent only
     makeInput({
       items: discovered.items,
       agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -402,7 +418,7 @@ test("a disabled skill only denies without a copy", async () => {
   const ctx = context({ agent: agents.domain, skill: skills.domain })
   const discovered = await discoverFor(ctx)
   const records = [makeRecord({ item: "skill:notes", agent: "alpha", level: "project", state: "off" })]
-  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: fromBuild(discovered), records }))
   expect(applied.registrations).toHaveLength(1)
   expect(skills.added).toEqual([])
   expect(agents.state.get("alpha")?.permissions.slice(-1)).toEqual([{ action: "skill", resource: "notes", effect: "deny" }])
@@ -1084,7 +1100,7 @@ test("an active model sets the host agent model and no active installs nothing",
   ]
   const applied = await apply(
     ctx,
-    makeInput({ items: discovered.items, records: [], models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }),
+    makeInput({ items: discovered.items, records: [], models, scopes: fromBuild(discovered), agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }),
   )
   expect(applied.registrations).toHaveLength(1)
   expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
@@ -1107,7 +1123,7 @@ test("a model update for a current team agent missing from the registry still la
   ]
   const applied = await apply(
     ctx,
-    makeInput({ items: discovered.items, records: [], models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: ["ghost"] }),
+    makeInput({ items: discovered.items, records: [], models, scopes: fromBuild(discovered, "ghost"), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: ["ghost"] }),
   )
   expect(applied.registrations).toHaveLength(1)
   expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
@@ -1127,7 +1143,7 @@ test("a model update for an agent missing from the registry and outside the team
   ]
   const applied = await apply(
     ctx,
-    makeInput({ items: discovered.items, records: [], models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: [] }),
+    makeInput({ items: discovered.items, records: [], models, scopes: fromBuild(discovered, "ghost"), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: [] }),
   )
   expect(applied.registrations).toHaveLength(1)
   expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
@@ -1160,7 +1176,7 @@ test("the base template follows the switched model family per request", async ()
   const records = [makeRecord({ item: "base:kimi", agent: "alpha", level: "project", text: "custom kimi" })]
   const applied = await apply(
     ctx,
-    makeInput({ items: discovered.items, records, models, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
+    makeInput({ items: discovered.items, records, models, scopes: fromBuild(discovered), agents: [{ id: "alpha", level: "project", base: "gpt" }] }),
   )
   expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "moonshot", id: "kimi-k2" })
   const run = callbacks[0]
@@ -1489,14 +1505,14 @@ test("a Defaults-scope agent resolves perm rows project -> global -> defaults ->
   expect(agents.state.get("build")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
 })
 
-test("only perm rows widen: a Defaults-scope agent's tool row keeps the discovered scope", async () => {
+test("every kind resolves from Project: a Defaults-scope agent's tool row saved off at project level is enforced", async () => {
   const agents = agentHarness([agentInfo("build", "upstream")])
   const ctx = context({
     agent: agents.domain,
     tool: toolDomainFor([codemodeTool("coder", "code mode tool")]),
   })
   const discovered = await discoverFor(ctx)
-  const applied = await apply(
+  await apply(
     ctx,
     makeInput({
       items: discovered.items,
@@ -1505,8 +1521,112 @@ test("only perm rows widen: a Defaults-scope agent's tool row keeps the discover
       scopes: { global: new Set<string>(), defaults: new Set(["build"]) },
     }),
   )
-  expect(applied.registrations).toEqual([])
-  expect(agents.state.get("build")?.permissions.some((rule) => rule.action === "coder")).toBe(false)
+  expect(agents.state.get("build")?.permissions.some((rule) => rule.action === "coder" && rule.effect === "deny")).toBe(true)
+})
+
+// The tree's Project row of a native agent and what apply installs read one
+// chain for every item kind: a Defaults entry, the agent's Global row and the
+// active model included (DESIGN §3.1).
+test("a Defaults entry `*` turning tool:shell off: build's Project row and what apply installs agree", async () => {
+  const items: Item[] = [
+    { id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "Execute shell commands.", enabled: true, fingerprint: fingerprint("Execute shell commands.") },
+    { id: "skill:lint", kind: "skill", group: "project", title: "lint", text: "Lint the code.", enabled: true, fingerprint: fingerprint("Lint the code.") },
+  ]
+  const sources: AgentSource[] = [{ id: "build", scope: "defaults", origin: "native" }]
+  const entries: EntryRecord[] = [{ type: "entry", level: "defaults", catalogue: "agents", name: "*", updated: UPDATED }]
+  const records = [
+    makeRecord({ item: "tool:shell", level: "defaults", agent: "*", state: "off" }),
+    makeRecord({ item: "skill:lint", level: "global", agent: "build", state: "off" }),
+  ]
+  const models: ModelRecord[] = [
+    { type: "model", level: "defaults", agent: "*", providerID: "anthropic", modelID: "claude", active: true, updated: UPDATED },
+  ]
+  const nodes = expandedTree({ items, records: [...records, ...models], agents: sources, entries, teams: [] })
+  const shown = (id: string) => nodes.find((node) => node.id === id)?.badges
+  expect(shown("item:project:build:tool:shell")?.state).toBe("off")
+  expect(shown("item:project:build:tool:shell")?.fromLabel).toBe("from default *")
+  expect(shown("item:project:build:skill:lint")?.state).toBe("off")
+  expect(shown("item:project:build:model:anthropic/claude")?.active).toBe(true)
+  // The tools' `list` answers from the same resolution.
+  expect(query({ items, records: [...records, ...models], agents: sources, entries, teams: [] }, { where: "id:item:project:build:tool:shell state:off", fields: ["id", "from"] }).rows).toEqual([
+    { id: "item:project:build:tool:shell", from: "from default *" },
+  ])
+
+  const agents = agentHarness([agentInfo("build", "upstream")])
+  const ctx = context({ agent: agents.domain, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
+  const applied = await apply(
+    ctx,
+    makeInput({ items, records, models, agents: [{ id: "build", level: "defaults" }], scopes: chainContext({ agents: sources, items, entries }) }),
+  )
+  expect(applied.tools).toContainEqual(expect.objectContaining({ agent: "build", tool: "shell", enabled: false }))
+  expect(agents.state.get("build")?.permissions).toContainEqual({ action: "skill", resource: "lint", effect: "deny" })
+  expect(agents.state.get("build")?.model).toMatchObject({ providerID: "anthropic", id: "claude" })
+})
+
+// Two Project teams share the member id `m`, each linking it to its own
+// preset. Apply runs the enabled team's member with that team; each member
+// row resolves with its own team, so the enabled team's row shows what apply
+// enforces and the disabled team's row shows its own link. A team-scoped
+// override (`project/m@alpha`) is in the displayed chain too.
+test("a member row resolves with its own team: the enabled team's row shows what apply enforces", async () => {
+  const items: Item[] = [
+    { id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "Execute shell commands.", enabled: true, fingerprint: fingerprint("Execute shell commands.") },
+    { id: "tool:read", kind: "tool", group: "native", title: "read", text: "Read files.", enabled: true, fingerprint: fingerprint("Read files.") },
+  ]
+  const alpha = { level: "project" as const, team: "alpha" }
+  const beta = { level: "project" as const, team: "beta" }
+  const sources: AgentSource[] = [{ id: "m", scope: "project", origin: "user" }]
+  const presets: PresetRecord[] = [
+    { type: "preset", level: "preset", kind: "agent", id: "shell-on", updated: UPDATED },
+    { type: "preset", level: "preset", kind: "agent", id: "shell-off", updated: UPDATED },
+  ]
+  // The disabled team's link is stored first, so a lookup that ignores the
+  // row's team finds it for both rows.
+  const links: LinkRecord[] = [
+    { type: "link", level: "project", agent: "m", team: beta, preset: { kind: "agent", id: "shell-on" }, updated: UPDATED },
+    { type: "link", level: "project", agent: "m", team: alpha, preset: { kind: "agent", id: "shell-off" }, updated: UPDATED },
+  ]
+  const records = [
+    makeRecord({ item: "tool:shell", level: "preset", agent: "shell-on", state: "on" }),
+    makeRecord({ item: "tool:read", level: "preset", agent: "shell-on", state: "on" }),
+    makeRecord({ item: "tool:shell", level: "preset", agent: "shell-off", state: "off" }),
+    makeRecord({ item: "tool:read", level: "preset", agent: "shell-off", state: "on" }),
+    // alpha's own override of its member: read off.
+    makeRecord({ item: "tool:read", level: "project", agent: "m", team: alpha, state: "off" }),
+  ]
+  const teams = [
+    { level: "project" as const, team: "alpha", enabled: true, agents: ["m"] },
+    { level: "project" as const, team: "beta", enabled: false, agents: ["m"] },
+  ]
+  const nodes = expandedTree({ items, records, agents: sources, links, presets, teams })
+  const shown = (id: string) => nodes.find((node) => node.id === id)?.badges
+
+  const agents = agentHarness([agentInfo("m", "upstream")])
+  const ctx = context({ agent: agents.domain, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items,
+      records,
+      agents: [{ id: "m", level: "project", team: alpha }],
+      scopes: chainContext({ agents: sources, items, links, presets, teams }),
+      teamAgents: ["m"],
+    }),
+  )
+  const disabled = (tool: string) => applied.tools.some((entry) => entry.agent === "m" && entry.tool === tool && !entry.enabled)
+  expect(disabled("shell")).toBe(true)
+  expect(disabled("read")).toBe(true)
+  expect(shown("item:project:alpha/:m:tool:shell")?.state).toBe("off")
+  expect(shown("item:project:alpha/:m:tool:shell")?.from).toEqual({ kind: "preset", id: "shell-off", shipped: false })
+  expect(shown("item:project:alpha/:m:tool:read")?.state).toBe("off")
+  expect(shown("item:project:alpha/:m:tool:read")?.from).toEqual({ kind: "level", level: "project" })
+  // The disabled team's row shows its own link and never alpha's override.
+  expect(shown("item:project:beta/:m:tool:shell")?.state).toBe("on")
+  expect(shown("item:project:beta/:m:tool:shell")?.from).toEqual({ kind: "preset", id: "shell-on", shipped: false })
+  expect(shown("item:project:beta/:m:tool:read")?.state).toBe("on")
+  // The member's own edits stay per-agent records: the row's own node is `project/m`.
+  const row = nodes.find((node) => node.id === "item:project:alpha/:m:tool:shell")
+  expect(row?.address).toEqual({ level: "project", agent: "m", item: "tool:shell", section: null, catalogue: "teams", memberOf: alpha })
 })
 
 test("a team-scoped agent keeps its established chain and the Teams catalogue", async () => {
@@ -1759,7 +1879,7 @@ test("a Code Mode tool switched off for one agent installs a deny rule on that a
         { id: "alpha", level: "project" },
         { id: "beta", level: "project" },
       ],
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -1795,7 +1915,11 @@ test("a Defaults-level off cascades to the agents that inherit it", async () => 
         { id: "alpha", level: "project" },
         { id: "beta", level: "project" },
       ],
-      scopes: scopesOf(discovered.agents),
+      // A preset beats Defaults "for every agent" (DESIGN §3.1), so agents
+      // linked to `build` would not inherit this row. alpha and beta stand for
+      // native agents here: nothing but the Defaults record sets the row and
+      // everything else keeps its native value.
+      scopes: { ...scopesOf(discovered.agents), native: new Set(["alpha", "beta"]) },
       records,
     }),
   )
@@ -1822,7 +1946,7 @@ test("the execute row switched off installs a deny for execute", async () => {
         { id: "alpha", level: "project" },
         { id: "beta", level: "project" },
       ],
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -1857,7 +1981,7 @@ test("the catalog hook rewrites description and pinned for the right agent only"
         { id: "alpha", level: "project" },
         { id: "beta", level: "project" },
       ],
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -1927,7 +2051,7 @@ test("a namespaced tool joins the catalog by dotted path, not registry id", asyn
   expect(item.title).toBe("read:file")
   expect(catalogPath(item)).toBe("my.server.read_file")
   const records = [makeRecord({ item: "tool:my_server_read_file", agent: "alpha", level: "project", text: "custom namespaced" })]
-  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: fromBuild(discovered), records }))
   expect(applied.tools).toEqual([
     {
       agent: "alpha",
@@ -1971,7 +2095,7 @@ test("a catalog failure unwinds the denial installed earlier in the pass", async
   // same pass. The catalog hook then fails, so the denial must unwind rather
   // than leaving the agent denied.
   const before = agents.state.get("alpha")?.permissions.length ?? 0
-  await expect(apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))).rejects.toThrow(
+  await expect(apply(ctx, makeInput({ items: discovered.items, scopes: fromBuild(discovered), records }))).rejects.toThrow(
     "catalog hook failed",
   )
   expect(agents.state.get("alpha")?.permissions).toHaveLength(before)
@@ -2003,7 +2127,7 @@ test("a pin-only change installs a catalog plan that sets pinned without touchin
         { id: "alpha", level: "project" },
         { id: "beta", level: "project" },
       ],
-      scopes: scopesOf(discovered.agents),
+      scopes: fromBuild(discovered),
       records,
     }),
   )
@@ -2045,7 +2169,7 @@ test("a pin matching the registry default installs no catalog plan", async () =>
   // The registry default pin is false and the record pins false: text and
   // enabled are untouched, so there is nothing to install.
   const records = [makeRecord({ item: "tool:coder", agent: "alpha", level: "project", pin: false })]
-  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }))
+  const applied = await apply(ctx, makeInput({ items: discovered.items, scopes: fromBuild(discovered), records }))
   expect(applied.registrations).toEqual([])
   expect(applied.tools).toEqual([])
 })

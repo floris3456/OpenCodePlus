@@ -19,30 +19,44 @@ import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFiel
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
-import { apply, roleUpdates, type ToolPlan } from "./instructions/apply.js"
+import { apply, roleUpdates, type ApplyAgent, type ToolPlan } from "./instructions/apply.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
-import { byDirectory } from "./teams/run.js"
+import { byDirectory, bySession } from "./teams/run.js"
 import { SessionRunEvents, onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
+import { enforcementState, type EnforcementState, type PermissionTable } from "./instructions/permission-enforce.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
-import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, resolve, resolveActiveModel, sameTeam, scopesOf, type AgentSource, type CustomizationRecord, type Item, type Level, type ModelRecord, type RuleRecord, type Scopes, type SplitRecord } from "./instructions/model.js"
+import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
-import { globalConfigDir, globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
-import { canonical, ensureCatalogues, load, save, stable, type StoredRecord } from "./instructions/store.js"
-import { builtinBody, defaultsOverlayTeamDir, discoverAllTeams, discoverBuiltinTeams, discoverTeams, globalDefaultsTeamsPath, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
-import { builtinTeams, type BuiltinTeam } from "./instructions/builtin-teams.js"
+import { globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
+import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
+import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
+import type { BuiltinTeam } from "./instructions/builtin-teams.js"
+import {
+  chainContext,
+  linkCycle,
+  nativePresetIds,
+  ownerRowId,
+  presetListing,
+  presetOwner,
+  presetStateOf,
+  presetUsers,
+  teamPresetMembers,
+  validateEntryName,
+  type PresetEntry,
+} from "./instructions/presets.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
 import { disable, enable, read } from "./project.js"
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
-import { CreateAgentFields, Definition, type Plus } from "./rpc.js"
+import { Definition, type Plus } from "./rpc.js"
 
 export interface TeamOwnership {
   readonly team: string
@@ -65,6 +79,10 @@ export interface PlusState {
   cachedScopes: Scopes
   teamOutputIds: Map<string, TeamOwnership>
   semaphore: Semaphore.Semaphore
+  /** Every agent's resolved permission rows from the last publish; the team tools read their rows here. */
+  permissions: PermissionTable | undefined
+  /** Hook-side permission state that outlives one publish (pending approvals, "always" answers). */
+  enforcement: EnforcementState
 }
 
 export function createState(): PlusState {
@@ -83,6 +101,8 @@ export function createState(): PlusState {
     cachedAgents: [],
     cachedScopes: { global: new Set(), defaults: new Set() },
     teamOutputIds: new Map(),
+    permissions: undefined,
+    enforcement: enforcementState(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
 }
@@ -143,6 +163,59 @@ export type CreateAgentResult =
         | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+        | { code: "preset.invalid"; message: string; data: Plus.PresetInvalid }
+    }
+
+type ProjectDisabledError = { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
+type PresetInvalidError = { code: "preset.invalid"; message: string; data: Plus.PresetInvalid }
+type EntryInvalidError = { code: "entry.invalid"; message: string; data: Plus.EntryInvalid }
+type EntryExistsError = { code: "entry.exists"; message: string; data: Plus.EntryExists }
+type EntryMissingError = { code: "entry.missing"; message: string; data: Plus.EntryMissing }
+type PresetExistsError = { code: "preset.exists"; message: string; data: Plus.PresetExists }
+type PresetReadonlyError = { code: "preset.readonly"; message: string; data: Plus.PresetReadonly }
+
+export type CreateEntryResult =
+  | { ok: true; value: Plus.EntryRef }
+  | { ok: false; error: ProjectDisabledError | EntryInvalidError | EntryExistsError | PresetInvalidError }
+
+export type DeleteEntryResult =
+  | { ok: true; value: Plus.EntryRef }
+  | { ok: false; error: ProjectDisabledError | EntryInvalidError | EntryMissingError }
+
+export type RenameEntryResult =
+  | { ok: true; value: Plus.EntryRef }
+  | { ok: false; error: ProjectDisabledError | EntryInvalidError | EntryExistsError | EntryMissingError }
+
+export type CreatePresetResult =
+  | { ok: true; value: Plus.PresetResult }
+  | { ok: false; error: ProjectDisabledError | PresetInvalidError | PresetExistsError }
+
+export type AddPresetMemberResult =
+  | { ok: true; value: Plus.PresetResult }
+  | { ok: false; error: ProjectDisabledError | PresetInvalidError | PresetExistsError | PresetReadonlyError }
+
+export type DeletePresetResult =
+  | { ok: true; value: Plus.PresetResult }
+  | {
+      ok: false
+      error:
+        | ProjectDisabledError
+        | PresetInvalidError
+        | PresetReadonlyError
+        | { code: "preset.inUse"; message: string; data: Plus.PresetInUse }
+    }
+
+export type SetLinkResult =
+  | { ok: true; value: Plus.LinkResult }
+  | {
+      ok: false
+      error:
+        | ProjectDisabledError
+        | PresetInvalidError
+        | PresetReadonlyError
+        | { code: "link.invalid"; message: string; data: Plus.LinkInvalid }
+        | { code: "link.cycle"; message: string; data: Plus.LinkCycle }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
@@ -287,6 +360,9 @@ export type AddTeamAgentResult =
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+        | PresetInvalidError
+        | EntryInvalidError
+        | EntryExistsError
     }
 
 export type RemoveTeamAgentResult =
@@ -404,14 +480,22 @@ export interface PlusApi {
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
   readonly removeRule: (input: Plus.RuleRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveRuleResult>
   readonly updateRule: (input: Plus.RuleUpdateInput & { readonly actor?: Plus.Actor }) => Promise<UpdateRuleResult>
+  readonly createEntry: (input: Plus.EntryCreateInput) => Promise<CreateEntryResult>
+  readonly deleteEntry: (input: Plus.EntryDeleteInput) => Promise<DeleteEntryResult>
+  readonly renameEntry: (input: Plus.EntryRenameInput) => Promise<RenameEntryResult>
+  readonly createPreset: (input: Plus.PresetCreateInput) => Promise<CreatePresetResult>
+  readonly addPresetMember: (input: Plus.PresetAddMemberInput) => Promise<AddPresetMemberResult>
+  readonly deletePreset: (input: Plus.PresetDeleteInput) => Promise<DeletePresetResult>
+  readonly setLink: (input: Plus.LinkSetInput) => Promise<SetLinkResult>
 }
 
 export interface PlusApiOptions {
+  /** Defaults-tier teams. None ship (the shipped teams are Plus team presets); tests inject fixtures. */
   readonly builtins?: readonly BuiltinTeam[]
 }
 
 export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiOptions): PlusApi {
-  const builtins = options?.builtins ?? builtinTeams
+  const builtins = options?.builtins ?? []
   return {
     snapshot: async () => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -423,7 +507,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
       const teams = await snapshotTeams(directory, loaded.records, builtins)
       const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds, await serverListing(ctx, loaded.records)) }
     },
     refresh: async () => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -435,7 +519,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
       const teams = await snapshotTeams(directory, loaded.records, builtins)
       const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds) }
+      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds, await serverListing(ctx, loaded.records)) }
     },
     mutate: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -444,17 +528,28 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
+      // Links, Defaults entries and presets are not snapshot rows yet either:
+      // carried over like teams so a snapshot mutate cannot drop them.
       const records: StoredRecord[] = [
         ...input.records.map(toRecord),
-        ...loaded.records.filter((record) => record.type === "team"),
+        ...loaded.records.filter(
+          (record) =>
+            record.type === "team" || record.type === "link" || record.type === "entry" || record.type === "preset",
+        ),
       ]
       // T3: a tool actor may not change a protected agent's row through a
       // mutate either, no matter which level or row kind it addresses. Only
       // changed rows count: a caller that carries a protected agent's records
       // back unchanged (the normal full-snapshot mutate) is not refused.
       const protectedRow = deltaRows(loaded.records, records).find(
-        (record): record is Exclude<StoredRecord, TeamRecord> =>
-          record.type !== "team" && record.agent !== null && config.protectedAgents.includes(record.agent),
+        (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord> =>
+          record.type !== "team" &&
+          record.type !== "entry" &&
+          record.type !== "preset" &&
+          // A preset's rows are not an agent's, whatever its id.
+          record.level !== "preset" &&
+          record.agent !== null &&
+          config.protectedAgents.includes(record.agent),
       )
       const refusal = refuseProtectedForTool(input.actor, protectedRow?.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
@@ -470,7 +565,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
         return {
           ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds) },
+          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds, await serverListing(ctx, loaded.records)) },
         }
       }
       const saved = await save(directory, {
@@ -485,7 +580,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const outputIds = await snapshotOutputIds(directory, discovered, refreshed, builtins, state.teamOutputIds)
         return {
           ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams, outputIds) },
+          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams, outputIds, await serverListing(ctx, refreshed.records)) },
         }
       }
       await logMutate({
@@ -503,7 +598,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
       const teams = await snapshotTeams(directory, next.records, builtins)
       const outputIds = await snapshotOutputIds(directory, discovered, next, builtins, state.teamOutputIds)
-      const snapshot = toSnapshot(discovered, next, teams, outputIds)
+      const snapshot = toSnapshot(discovered, next, teams, outputIds, await serverListing(ctx, next.records))
       return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
     },
     log: async (input) => {
@@ -526,14 +621,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
+      // The agents and context a publish applies: a team member (and an
+      // enabled team's Special agent) resolves with its team, as apply ran it.
+      const chain = await publishChain(discovered, loaded.records, directory, builtins, state.teamOutputIds)
       const result = await assembled({
         ctx,
         agent: input.agent,
         items: discovered.items,
-        agents: discovered.agents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+        agents: applyAgentsOf(chain.publishAgents),
         records: customizationsOf(loaded.records),
         splits: splitsOf(loaded.records),
-        scopes: scopesOf(discovered.agents),
+        scopes: chain.publishScopes,
         installedTools: state.installedTools,
       })
       if ("ok" in result)
@@ -556,22 +654,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const refusal = refuseProtectedForTool(input.actor, validated.id, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
-      const seed = input.template === undefined ? undefined : await readTemplate(ctx, directory, input.template as string)
-      if (input.template !== undefined && seed === undefined)
-        return {
-          ok: false as const,
-          error: {
-            code: "agent.invalid" as const,
-            message: `Unknown template ${input.template}`,
-            data: { id: input.id, reason: `Unknown template ${input.template}` },
-          },
-        }
+      // DESIGN §5: the preset's mode and description (core reads them from
+      // the file), an empty body, and a link that makes everything else
+      // follow the preset. No preset: an empty file and no link (off).
+      const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
+      if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
       const created = await create({
         scope: input.scope,
         projectDirectory: directory,
         id: validated.id,
-        fields: seed?.fields ?? toAgentFields(input.fields),
-        prompt: seed?.prompt ?? input.prompt,
+        fields: presetFields(preset ?? {}),
+        prompt: "",
       })
       if (!created.ok)
         return {
@@ -582,6 +675,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { path: created.path },
           },
         }
+      // A link left behind by a deleted agent of the same id is replaced (or,
+      // with no preset, dropped) so the new agent starts where it was asked to.
+      await setOwnerLink(directory, { level: input.scope, agent: validated.id }, input.preset ?? null)
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
@@ -590,7 +686,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: input.scope,
         op: "agent.create",
         target: created.path,
-        summary: `agent.create ${validated.id} (${input.scope})`,
+        summary: `agent.create ${validated.id} (${input.scope})${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
       })
       return { ok: true as const, value: { id: validated.id, path: created.path } }
     },
@@ -626,6 +722,24 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.exists" as const, message: `Agent ${to.id} already exists at ${renamed.path}`, data: { path: renamed.path } },
         }
+      // The agent's link and its own records (row edits, splits, models,
+      // rules) move with its file; anything a deleted agent of the new id left
+      // behind gives way. A member of the same id (team-scoped) and the agent
+      // at another level are not this agent's and stay.
+      const source = { level: input.scope, agent: from.id }
+      const target = { level: input.scope, agent: to.id }
+      const moved = await updateRecords(directory, (current) =>
+        current.flatMap((record): StoredRecord[] => {
+          if (record.type === "team" || record.type === "entry" || record.type === "preset") return [record]
+          if (scopedTo(record, target)) return []
+          return [scopedTo(record, source) ? { ...record, agent: to.id } : record]
+        }),
+      )
+      if (!moved.ok) {
+        await rename({ scope: input.scope, projectDirectory: directory, from: to.id, to: from.id })
+        const reason = "the store changed concurrently; retry"
+        return { ok: false as const, error: { code: "agent.invalid" as const, message: `Could not rename ${from.id}: ${reason}`, data: { id: input.from, reason } } }
+      }
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
@@ -945,18 +1059,22 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.invalid" as const, message: reason, data: { team: input.team, reason } },
         }
       }
-      const templateName = input.template === undefined || input.template === "" ? undefined : input.template
-      const template = templateName === undefined ? undefined : builtins.find((entry) => entry.name === templateName)
+      // `preset` names a team preset, Plus or User (DESIGN §5): the team is
+      // created with the preset's members, each linked to its member preset,
+      // and records its own link to the team preset.
+      const templateName = input.preset === undefined || input.preset === "" ? undefined : input.preset
+      const presetRecords = presetStateOf((await load(directory)).records).presets
+      const template = templateName === undefined ? undefined : teamPresetMembers(templateName, presetRecords)
       if (templateName !== undefined && template === undefined) {
-        const reason = `Unknown team template ${templateName}`
+        const reason = `Unknown team preset ${templateName}`
         return {
           ok: false as const,
           error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
         }
       }
-      // Seeding from a template copies every member file, so a tool actor may
-      // not clone a protected member into a new team.
-      const protectedMember = template?.members.find((member) => config.protectedAgents.includes(member.id))
+      // Creating from a preset writes every member file, so a tool actor may
+      // not create a protected member in a new team.
+      const protectedMember = template?.find((member) => config.protectedAgents.includes(member.id))
       const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
@@ -988,9 +1106,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
         }
       }
-      if (template !== undefined) {
+      if (template !== undefined && templateName !== undefined) {
         const teamDir = path.join(root, validated.team)
-        for (const member of template.members) {
+        for (const member of template) {
           if (member.id === "special") {
             const reason = 'Member id "special" is reserved'
             return {
@@ -1007,7 +1125,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             }
           }
           const target = path.join(teamDir, `${memberId.id}.md`)
-          const content = formatMarkdown(toSeedFields(member.fields), member.body)
+          // Core reads mode and description from the file; the body stays
+          // empty so the role text, like everything else, follows the link.
+          const content = formatMarkdown(presetFields(member), "")
           const seeded = await fs.mkdir(path.dirname(target), { recursive: true }).then(
             () => fs.writeFile(target, content).then(
               () => ({ ok: true as const }),
@@ -1021,6 +1141,28 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
               ok: false as const,
               error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
             }
+          }
+        }
+        const owner = { level: input.level, team: validated.team }
+        const updated = new Date().toISOString()
+        const linked = await saveLinks(directory, [
+          { type: "link", level: input.level, agent: null, team: owner, preset: { kind: "team", id: templateName }, updated },
+          ...template.map(
+            (member): LinkRecord => ({
+              type: "link",
+              level: input.level,
+              agent: member.id,
+              team: owner,
+              preset: { kind: "member", team: templateName, id: member.id },
+              updated,
+            }),
+          ),
+        ])
+        if (!linked.ok) {
+          const reason = "the store changed concurrently while linking the members; retry"
+          return {
+            ok: false as const,
+            error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
           }
         }
       }
@@ -1089,6 +1231,19 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "team.invalid" as const, message: validatedTeam.reason, data: { team: input.team, reason: validatedTeam.reason } },
         }
+      // DESIGN §4: a Defaults team takes member ENTRIES, named by patterns.
+      if (input.level === "defaults") {
+        const made = await createEntryRecord(ctx, state, directory, builtins, {
+          catalogue: "teams",
+          team: validatedTeam.team,
+          name: input.id,
+          ...(input.preset === undefined ? {} : { preset: input.preset }),
+          ...(input.actor === undefined ? {} : { actor: input.actor }),
+        })
+        if (!made.ok) return made
+        await Effect.runPromise(emitTeamsChanged(state))
+        return { ok: true as const, value: { id: made.value.name ?? input.id, path: made.value.id } }
+      }
       const validated = validateAgentId(input.id)
       if (!validated.ok)
         return {
@@ -1116,9 +1271,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const teamDir =
         input.level === "project"
           ? path.join(projectTeamsPath(directory), validatedTeam.team)
-          : input.level === "global"
-            ? path.join(globalTeamsPath(), validatedTeam.team)
-            : defaultsOverlayTeamDir(validatedTeam.team)
+          : path.join(globalTeamsPath(), validatedTeam.team)
       const target = teamMemberPath(teamDir, validated.id)
       if (target === undefined)
         return {
@@ -1140,27 +1293,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.exists" as const, message: `Agent ${validated.id} already exists at ${target}`, data: { path: target } },
         }
-      const templateName = input.template === undefined || input.template === "" ? undefined : input.template
-      const seed = templateName === undefined ? undefined : await readTemplate(ctx, directory, templateName)
-      if (templateName !== undefined && seed === undefined)
-        return {
-          ok: false as const,
-          error: {
-            code: "agent.invalid" as const,
-            message: `Unknown template ${templateName}`,
-            data: { id: input.id, reason: `Unknown template ${templateName}` },
-          },
-        }
-      const override = toAgentFields(input.fields)
-      const fields =
-        seed?.fields === undefined
-          ? override
-          : override === undefined
-            ? seed.fields
-            : { ...seed.fields, ...override }
-      const content = formatMarkdown(fields, seed?.prompt ?? input.prompt)
+      // The member file carries its preset's mode and description with an
+      // empty body; a team-scoped link makes the rest follow the preset.
+      const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
+      if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
       await fs.mkdir(path.dirname(target), { recursive: true })
-      await fs.writeFile(target, content)
+      await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      await setOwnerLink(
+        directory,
+        { level: input.level, agent: validated.id, team: { level: input.level, team: validatedTeam.team } },
+        input.preset ?? null,
+      )
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await Effect.runPromise(emitTeamsChanged(state))
@@ -1170,7 +1313,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: input.level === "project" ? "project" : "global",
         op: "team.addAgent",
         target,
-        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})`,
+        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
       })
       return { ok: true as const, value: { id: validated.id, path: target } }
     },
@@ -1206,7 +1349,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "agent.invalid" as const, message: `Agent "${validated.id}" not found in team "${validatedTeam.team}"`, data: { id: input.id, reason: `Agent "${validated.id}" not found in team "${validatedTeam.team}"` } },
         }
-      if (input.level === "defaults" && existing.path === undefined)
+      // Defaults team members are registry entries with no file (no overlay is read).
+      if (input.level === "defaults")
         return {
           ok: false as const,
           error: {
@@ -1218,9 +1362,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const teamDir =
         input.level === "project"
           ? path.join(projectTeamsPath(directory), validatedTeam.team)
-          : input.level === "global"
-            ? path.join(globalTeamsPath(), validatedTeam.team)
-            : defaultsOverlayTeamDir(validatedTeam.team)
+          : path.join(globalTeamsPath(), validatedTeam.team)
       const target = existing.path ?? teamMemberPath(teamDir, validated.id)
       if (target === undefined)
         return {
@@ -1399,7 +1541,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
+      // A preset's rows are not an agent's, whatever its id.
+      const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
       const validated = validateModelRef(input.providerID, input.modelID, input.variant)
       if (!validated.ok)
@@ -1492,7 +1635,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
+      // A preset's rows are not an agent's, whatever its id.
+      const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
       const validated = validateModelRef(input.providerID, input.modelID, input.variant)
       if (!validated.ok)
@@ -1558,7 +1702,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const config = await read(directory)
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const refusal = refuseProtectedForTool(input.actor, input.agent, config)
+      // A preset's rows are not an agent's, whatever its id.
+      const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
       const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
       if (!validated.ok)
@@ -1744,7 +1889,661 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { level: next.level, agent: next.agent, tool: next.tool, id: next.id, label: next.label } }
     },
+    createEntry: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      return createEntryRecord(ctx, state, directory, builtins, input)
+    },
+    deleteEntry: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      const team = input.catalogue === "teams" ? (input.team?.trim() || "*") : undefined
+      if (input.catalogue === "agents" && input.name === undefined)
+        return { ok: false as const, error: entryInvalid("", "An Agents entry is deleted by name") }
+      const name = input.name?.trim()
+      const matches = (entry: EntryRecord) =>
+        entry.catalogue === input.catalogue && (entry.team ?? "*") === (team ?? "*") && (name === undefined || entry.name === name)
+      const found = presetStateOf((await load(directory)).records).entries.filter(matches)
+      if (found.length === 0) {
+        const reason = `No Defaults ${input.catalogue} entry ${entryLabel({ catalogue: input.catalogue, team, name })}`
+        return {
+          ok: false as const,
+          error: {
+            code: "entry.missing" as const,
+            message: reason,
+            data: { catalogue: input.catalogue, ...(team === undefined ? {} : { team }), ...(name === undefined ? {} : { name }) },
+          },
+        }
+      }
+      // The entries go with their own settings and links (DESIGN §8 keeps
+      // orphans of removed rows, but an entry re-created later must start
+      // clean, not resurrect the old one's rows).
+      const nodes = found.map(entryNode)
+      const saved = await updateRecords(directory, (records) =>
+        records.filter(
+          (record) =>
+            !(record.type === "entry" && matches(record)) &&
+            !(record.type !== "team" && record.type !== "entry" && record.type !== "preset" && nodes.some((node) => scopedTo(record, node))),
+        ),
+      )
+      if (!saved.ok) return { ok: false as const, error: entryInvalid(name ?? team ?? "", "the store changed concurrently; retry") }
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: "global",
+        op: "entry.delete",
+        target: entryRowId(input.catalogue, team, name),
+        summary: `entry.delete ${entryLabel({ catalogue: input.catalogue, team, name })} (${found.length} removed)`,
+      })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return {
+        ok: true as const,
+        value: {
+          id: entryRowId(input.catalogue, team, name),
+          catalogue: input.catalogue,
+          ...(team === undefined ? {} : { team }),
+          ...(name === undefined ? {} : { name }),
+          removed: found.length,
+        },
+      }
+    },
+    renameEntry: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      const team = input.catalogue === "teams" ? (input.team?.trim() || "*") : undefined
+      const to = validateEntryName(input.to)
+      if (!to.ok) return { ok: false as const, error: entryInvalid(input.to, to.reason) }
+      if (input.catalogue === "teams" && to.name === "special")
+        return { ok: false as const, error: entryInvalid(to.name, 'Member id "special" is reserved') }
+      const name = input.name.trim()
+      const entries = presetStateOf((await load(directory)).records).entries
+      const same = (entry: EntryRecord, entryName: string) =>
+        entry.catalogue === input.catalogue && (entry.team ?? "*") === (team ?? "*") && entry.name === entryName
+      if (!entries.some((entry) => same(entry, name)))
+        return {
+          ok: false as const,
+          error: {
+            code: "entry.missing" as const,
+            message: `No Defaults ${input.catalogue} entry ${entryLabel({ catalogue: input.catalogue, team, name })}`,
+            data: { catalogue: input.catalogue, ...(team === undefined ? {} : { team }), name },
+          },
+        }
+      if (entries.some((entry) => same(entry, to.name))) return { ok: false as const, error: entryExists(input.catalogue, team, to.name) }
+      const from = entryNode({ catalogue: input.catalogue, ...(team === undefined ? {} : { team }), name })
+      const updated = new Date().toISOString()
+      // The entry's own records and link move with it.
+      const saved = await updateRecords(directory, (records) =>
+        records.map((record): StoredRecord => {
+          if (record.type === "entry") return same(record, name) ? { ...record, name: to.name, updated } : record
+          if (record.type === "team" || record.type === "preset") return record
+          return scopedTo(record, from) ? { ...record, agent: to.name } : record
+        }),
+      )
+      if (!saved.ok) return { ok: false as const, error: entryInvalid(name, "the store changed concurrently; retry") }
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: "global",
+        op: "entry.rename",
+        target: entryRowId(input.catalogue, team, to.name),
+        summary: `entry.rename ${entryLabel({ catalogue: input.catalogue, team, name })} to ${to.name}`,
+      })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return {
+        ok: true as const,
+        value: { id: entryRowId(input.catalogue, team, to.name), catalogue: input.catalogue, ...(team === undefined ? {} : { team }), name: to.name },
+      }
+    },
+    createPreset: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      const records = (await load(directory)).records
+      const listing = await serverListing(ctx, records)
+      const updated = new Date().toISOString()
+      if (input.kind === "agent") {
+        const validated = validateAgentId(input.id)
+        if (!validated.ok) return { ok: false as const, error: presetInvalid(input.id, validated.reason) }
+        const ref = { kind: "agent" as const, id: validated.id }
+        if (listed(listing, ref) !== undefined) return { ok: false as const, error: presetExists(ref) }
+        const from = input.from === undefined ? undefined : listed(listing, input.from)
+        if (input.from !== undefined && (from === undefined || input.from.kind === "team")) return { ok: false as const, error: unknownPreset(input.from) }
+        const saved = await updateRecords(directory, (current) => [
+          ...current,
+          { type: "preset", level: "preset", kind: "agent", id: validated.id, ...presetRecordFields(from), updated },
+          ...(input.from === undefined ? [] : [linkRecord(presetOwner(ref), input.from, updated)]),
+        ])
+        if (!saved.ok) return { ok: false as const, error: presetInvalid(validated.id, "the store changed concurrently; retry") }
+        return presetCreated(ctx, state, directory, builtins, ref, input.actor, input.from)
+      }
+      const validated = validateTeamName(input.id)
+      if (!validated.ok) return { ok: false as const, error: presetInvalid(input.id, validated.reason) }
+      const ref = { kind: "team" as const, id: validated.team }
+      if (listed(listing, ref) !== undefined) return { ok: false as const, error: presetExists(ref) }
+      const source = input.from === undefined || input.from === "" ? undefined : input.from
+      const members = source === undefined ? [] : teamPresetMembers(source, presetStateOf(records).presets)
+      if (members === undefined) return { ok: false as const, error: presetInvalid(source ?? "", `Unknown team preset ${source}`) }
+      // A team preset from a team preset copies the member list; each member
+      // links to the source member, the team to the source team.
+      const saved = await updateRecords(directory, (current) => [
+        ...current,
+        { type: "preset", level: "preset", kind: "team", id: validated.team, updated },
+        ...members.flatMap((member): StoredRecord[] => [
+          { type: "preset", level: "preset", kind: "agent", id: member.id, team: validated.team, ...presetRecordFields(member), updated },
+          linkRecord(presetOwner({ kind: "member", team: validated.team, id: member.id }), { kind: "member", team: source ?? "", id: member.id }, updated),
+        ]),
+        ...(source === undefined ? [] : [linkRecord(presetOwner(ref), { kind: "team", id: source }, updated)]),
+      ])
+      if (!saved.ok) return { ok: false as const, error: presetInvalid(validated.team, "the store changed concurrently; retry") }
+      return presetCreated(ctx, state, directory, builtins, ref, input.actor, source === undefined ? undefined : { kind: "team", id: source })
+    },
+    addPresetMember: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      const records = (await load(directory)).records
+      const listing = await serverListing(ctx, records)
+      const team = listed(listing, { kind: "team", id: input.team.trim() })
+      if (team === undefined) return { ok: false as const, error: presetInvalid(input.team, `Unknown team preset ${input.team}`) }
+      if (team.origin !== "user") return { ok: false as const, error: presetReadonly(team.ref) }
+      const validated = validateAgentId(input.id)
+      if (!validated.ok) return { ok: false as const, error: presetInvalid(input.id, validated.reason) }
+      if (validated.id === "special") return { ok: false as const, error: presetInvalid(validated.id, 'Member id "special" is reserved') }
+      const ref = { kind: "member" as const, team: team.ref.id, id: validated.id }
+      if (listed(listing, ref) !== undefined) return { ok: false as const, error: presetExists(ref) }
+      const from = input.from === undefined ? undefined : listed(listing, input.from)
+      if (input.from !== undefined && (from === undefined || input.from.kind === "team")) return { ok: false as const, error: unknownPreset(input.from) }
+      const updated = new Date().toISOString()
+      const saved = await updateRecords(directory, (current) => [
+        ...current,
+        { type: "preset", level: "preset", kind: "agent", id: validated.id, team: team.ref.id, ...presetRecordFields(from), updated },
+        ...(input.from === undefined ? [] : [linkRecord(presetOwner(ref), input.from, updated)]),
+      ])
+      if (!saved.ok) return { ok: false as const, error: presetInvalid(validated.id, "the store changed concurrently; retry") }
+      return presetCreated(ctx, state, directory, builtins, ref, input.actor, input.from)
+    },
+    deletePreset: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      const records = (await load(directory)).records
+      const found = listed(await serverListing(ctx, records), input.ref)
+      if (found === undefined) return { ok: false as const, error: unknownPreset(input.ref) }
+      if (found.origin !== "user") return { ok: false as const, error: presetReadonly(input.ref) }
+      // Links here (this project and the global store) always refuse: relink
+      // them first. Links other projects hold refuse unless `confirm`; after a
+      // confirmed delete they read as a missing preset there. The check and
+      // the commit share one write gate, so a link any in-process save adds
+      // meanwhile is either seen here or written after the preset is gone.
+      const decided = await updateGated(directory, async (loaded, gate) => {
+        const users = presetUsers(presetStateOf(loaded.records).links, input.ref)
+        const elsewhere = await presetUsersElsewhere(directory, input.ref, gate.forget)
+        if (users.length > 0 || (elsewhere.length > 0 && input.confirm !== true)) return { result: { users, elsewhere } }
+        // The preset goes with its members (a team preset), their own edits
+        // and their links.
+        const members =
+          input.ref.kind === "team"
+            ? presetStateOf(loaded.records).presets.filter((record) => record.kind === "agent" && record.team === input.ref.id).map((record) => record.id)
+            : []
+        const owners = [presetOwner(input.ref), ...members.map((id) => presetOwner({ kind: "member", team: input.ref.id, id }))]
+        const removed = (record: StoredRecord) => {
+          if (record.type === "preset") return owners.some((owner) => presetRecordOwns(record, owner))
+          if (record.type === "team" || record.type === "entry") return false
+          return owners.some((owner) => scopedTo(record, owner))
+        }
+        return { result: { users, elsewhere }, records: loaded.records.filter((record) => !removed(record)) }
+      })
+      const users = decided.result.users
+      const elsewhere = decided.result.elsewhere
+      if (decided.saved === undefined) {
+        const all = [...users, ...elsewhere.flatMap((project) => project.users.map((user) => `${project.directory} › ${user}`))]
+        const hint =
+          users.length > 0
+            ? "relink or delete them first"
+            : "relink them there, or delete with confirm (their links then show as a missing preset)"
+        return {
+          ok: false as const,
+          error: {
+            code: "preset.inUse" as const,
+            message: `Preset ${presetKey(input.ref)} is in use by ${all.join(", ")}; ${hint}`,
+            data: { ref: input.ref, users: all, ...(elsewhere.length === 0 ? {} : { elsewhere }) },
+          },
+        }
+      }
+      if (!decided.saved.ok) return { ok: false as const, error: presetInvalid(input.ref.id, "the store changed concurrently; retry") }
+      const id = ownerRowId(presetOwner(input.ref))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: "global",
+        op: "preset.delete",
+        target: id,
+        summary: `preset.delete ${presetKey(input.ref)}${elsewhere.length === 0 ? "" : ` (confirmed over links in ${elsewhere.map((project) => project.directory).join(", ")})`}`,
+      })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return { ok: true as const, value: { id, ref: input.ref } }
+    },
+    setLink: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
+      const owner: RecordScope = {
+        level: input.level,
+        agent: input.agent,
+        ...(input.team === undefined ? {} : { team: input.team }),
+      }
+      // A tool may not relink a protected agent (presets are not agents).
+      const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
+      const records = (await load(directory)).records
+      const listing = await serverListing(ctx, records)
+      const invalid = await linkOwnerProblem(ctx, state, directory, builtins, records, listing, owner)
+      if (invalid !== undefined) return { ok: false as const, error: invalid }
+      const preset = input.preset
+      if (preset !== null) {
+        const known = listed(listing, preset)
+        const wantsTeam = input.agent === null
+        if (known === undefined || (preset.kind === "team") !== wantsTeam)
+          return {
+            ok: false as const,
+            error: presetInvalid(
+              presetKey(preset),
+              known === undefined ? `Unknown preset ${presetKey(preset)}` : wantsTeam ? "A team links to a team preset" : "An agent links to an agent or member preset",
+            ),
+          }
+      }
+      // A team relinked to team preset TP relinks every member TP has a
+      // counterpart for to `TP › member`; members without one keep their link,
+      // and unlinking a team touches no member.
+      const members =
+        preset !== null && preset.kind === "team" && owner.agent === null && owner.team !== undefined
+          ? await memberRelinks(directory, builtins, records, owner.level, owner.team, preset.id)
+          : []
+      // Relinking a team rewrites its members' links, so a tool may not
+      // relink a team while any member it would relink is protected.
+      const memberRefusal = members
+        .map((member) => refuseProtectedForTool(input.actor, member.owner.level === "preset" ? null : member.owner.agent, config))
+        .find((found) => found !== undefined)
+      if (memberRefusal !== undefined) return { ok: false as const, error: memberRefusal }
+      const updated = new Date().toISOString()
+      const replaced = [owner, ...members.map((member) => member.owner)]
+      const written = [
+        ...(preset === null ? [] : [linkRecord(owner, preset, updated)]),
+        ...members.map((member) => linkRecord(member.owner, member.preset, updated)),
+      ]
+      // §3.2: no preset may come back to itself through its links. The batch
+      // is checked as a whole: every new link against the graph with all the
+      // others already applied, so two member relinks cannot close a cycle
+      // between them.
+      if (owner.level === "preset") {
+        const proposed = [...presetStateOf(records).links.filter((record) => !replaced.some((node) => scopedTo(record, node))), ...written]
+        for (const link of written) {
+          const self = presetOfOwner(link)
+          const through = self === undefined ? undefined : linkCycle(proposed, self, link.preset)
+          if (self !== undefined && through !== undefined)
+            return {
+              ok: false as const,
+              error: {
+                code: "link.cycle" as const,
+                message: `Linking ${presetKey(self)} to ${presetKey(link.preset)} would make it reach itself (${through.join(" → ")})`,
+                data: { preset: link.preset, through },
+              },
+            }
+        }
+      }
+      const saved = await updateRecords(directory, (current) => [
+        ...current.filter((record) => record.type !== "link" || !replaced.some((node) => scopedTo(record, node))),
+        ...written,
+      ])
+      if (!saved.ok) return { ok: false as const, error: { code: "link.invalid" as const, message: "The store changed concurrently; retry", data: { reason: "The store changed concurrently; retry" } } }
+      const target = ownerRowId(owner)
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: input.level === "project" ? "project" : "global",
+        op: "link.set",
+        target,
+        summary: `link.set ${target} ${preset === null ? "unlinked" : `to ${presetKey(preset)}`}${members.length === 0 ? "" : `; members ${members.map((member) => `${member.owner.agent} to ${presetKey(member.preset)}`).join(", ")}`}`,
+      })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return {
+        ok: true as const,
+        value: {
+          level: input.level,
+          agent: input.agent,
+          ...(input.team === undefined ? {} : { team: input.team }),
+          preset,
+          ...(owner.agent === null && owner.team !== undefined
+            ? { members: members.map((member) => ({ agent: member.owner.agent ?? "", preset: member.preset })) }
+            : {}),
+        },
+      }
+    },
   }
+}
+
+// The members of team `team` (at `level`) that team preset `id` has a member
+// of the same id for, each with its new link `id › member`, in id order. A
+// preset-level team's members are its member presets.
+async function memberRelinks(
+  directory: string,
+  builtins: readonly BuiltinTeam[],
+  records: readonly StoredRecord[],
+  level: Level,
+  team: TeamRef,
+  id: string,
+): Promise<{ owner: RecordScope; preset: PresetRef }[]> {
+  const counterparts = new Set((teamPresetMembers(id, presetStateOf(records).presets) ?? []).map((member) => member.id))
+  const members =
+    level === "preset"
+      ? presetStateOf(records).presets.filter((record) => record.kind === "agent" && record.team === team.team).map((record) => record.id)
+      : level === "defaults"
+        ? []
+        : ((await discoverTeams(level, directory, builtins)).find((candidate) => candidate.team === team.team)?.agents.map((agent) => agent.id) ?? [])
+  return [...new Set(members)]
+    .filter((member) => counterparts.has(member))
+    .toSorted()
+    .map((member) => ({ owner: { level, agent: member, team }, preset: { kind: "member" as const, team: id, id: member } }))
+}
+
+function disabledError(directory: string): ProjectDisabledError {
+  return { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } }
+}
+
+function presetInvalid(id: string, reason: string): PresetInvalidError {
+  return { code: "preset.invalid" as const, message: reason, data: { id, reason } }
+}
+
+function unknownPreset(ref: PresetRef): PresetInvalidError {
+  return presetInvalid(presetKey(ref), `Unknown preset ${presetKey(ref)}${ref.kind === "team" ? " (an agent is created from an agent or member preset)" : ""}`)
+}
+
+function presetExists(ref: PresetRef): PresetExistsError {
+  return { code: "preset.exists" as const, message: `Preset ${presetKey(ref)} already exists`, data: { ref } }
+}
+
+function presetReadonly(ref: PresetRef): PresetReadonlyError {
+  const reason = `Preset ${presetKey(ref)} ships with the release and is read-only; create a User preset from it`
+  return { code: "preset.readonly" as const, message: reason, data: { ref, reason } }
+}
+
+function entryInvalid(name: string, reason: string): EntryInvalidError {
+  return { code: "entry.invalid" as const, message: reason, data: { name, reason } }
+}
+
+function entryExists(catalogue: Catalogue, team: string | undefined, name: string): EntryExistsError {
+  return {
+    code: "entry.exists" as const,
+    message: `Defaults ${catalogue} entry ${entryLabel({ catalogue, team, name })} already exists`,
+    data: { catalogue, ...(team === undefined ? {} : { team }), name },
+  }
+}
+
+function entryLabel(entry: { catalogue: Catalogue; team?: string | undefined; name?: string | undefined }): string {
+  if (entry.catalogue === "agents") return `"${entry.name ?? ""}"`
+  return entry.name === undefined ? `team "${entry.team ?? "*"}"` : `"${entry.team ?? "*"} › ${entry.name}"`
+}
+
+function entryRowId(catalogue: Catalogue, team: string | undefined, name: string | undefined): string {
+  if (catalogue === "agents") return `agent:defaults:${name ?? ""}`
+  return name === undefined ? `team:defaults:${team ?? "*"}` : `team:defaults:${team ?? "*"}:${name}`
+}
+
+// The chain node an entry's own records and link are stored under.
+function entryNode(entry: Pick<EntryRecord, "catalogue" | "team" | "name">): RecordScope {
+  if (entry.catalogue === "agents") return { level: "defaults", agent: entry.name }
+  return { level: "defaults", agent: entry.name, team: { level: "defaults", team: entry.team ?? "*" } }
+}
+
+// entry.create and team.addAgent at defaults (DESIGN §4): validate, refuse a
+// duplicate (same catalogue, team pattern and name) and a native agent's own
+// Defaults row, store the entry and its link in one save.
+async function createEntryRecord(
+  ctx: Context,
+  state: PlusState,
+  directory: string,
+  builtins: readonly BuiltinTeam[],
+  input: Plus.EntryCreateInput,
+): Promise<CreateEntryResult> {
+  const validated = validateEntryName(input.name)
+  if (!validated.ok) return { ok: false as const, error: entryInvalid(input.name, validated.reason) }
+  const name = validated.name
+  if (input.catalogue === "agents" && input.team !== undefined)
+    return { ok: false as const, error: entryInvalid(name, "An Agents entry takes no team pattern") }
+  const teamPattern = input.catalogue === "teams" ? validateTeamName(input.team ?? "*") : undefined
+  if (teamPattern !== undefined && !teamPattern.ok) return { ok: false as const, error: entryInvalid(input.team ?? "", teamPattern.reason) }
+  const team = teamPattern?.ok === true ? teamPattern.team : undefined
+  if (input.catalogue === "teams" && name === "special") return { ok: false as const, error: entryInvalid(name, 'Member id "special" is reserved') }
+  const stored = await load(directory)
+  const records = stored.records
+  const duplicate = presetStateOf(records).entries.some(
+    (entry) => entry.catalogue === input.catalogue && (entry.team ?? "*") === (team ?? "*") && entry.name === name,
+  )
+  if (duplicate) return { ok: false as const, error: entryExists(input.catalogue, team, name) }
+  // A native agent's Defaults row already is the exact entry of its name.
+  if (input.catalogue === "agents") {
+    const discovered = await discoverAll(ctx, { ...stored, protectedAgents: [] }, state, builtins, directory)
+    if (discovered.agents.some((agent) => agent.scope === "defaults" && agent.id === name))
+      return { ok: false as const, error: entryExists(input.catalogue, team, name) }
+  }
+  if (input.preset !== undefined) {
+    const known = listed(await serverListing(ctx, records), input.preset)
+    if (known === undefined || input.preset.kind === "team") return { ok: false as const, error: unknownPreset(input.preset) }
+  }
+  const updated = new Date().toISOString()
+  const entry: EntryRecord = {
+    type: "entry",
+    level: "defaults",
+    catalogue: input.catalogue,
+    ...(team === undefined ? {} : { team }),
+    name,
+    updated,
+  }
+  const preset = input.preset
+  // A link left behind at this entry's node (a deleted entry of the same name)
+  // gives way to the one asked for now.
+  const saved = await updateRecords(directory, (current) => [
+    ...current.filter((record) => record.type !== "link" || !scopedTo(record, entryNode(entry))),
+    entry,
+    ...(preset === undefined ? [] : [linkRecord(entryNode(entry), preset, updated)]),
+  ])
+  if (!saved.ok) return { ok: false as const, error: entryInvalid(name, "the store changed concurrently; retry") }
+  const id = entryRowId(input.catalogue, team, name)
+  await logFileOp({
+    directory,
+    actor: normalizeActor(input.actor),
+    scope: "global",
+    op: "entry.create",
+    target: id,
+    summary: `entry.create ${entryLabel({ catalogue: input.catalogue, team, name })}${preset === undefined ? "" : ` from ${presetKey(preset)}`}`,
+  })
+  await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+  return { ok: true as const, value: { id, catalogue: input.catalogue, ...(team === undefined ? {} : { team }), name } }
+}
+
+// What stops `owner` from taking a link: it does not exist, or it is a
+// Native/Plus preset (read-only) or a Teams entry pattern.
+async function linkOwnerProblem(
+  ctx: Context,
+  state: PlusState,
+  directory: string,
+  builtins: readonly BuiltinTeam[],
+  records: readonly StoredRecord[],
+  listing: readonly PresetEntry[],
+  owner: RecordScope,
+): Promise<PresetReadonlyError | { code: "link.invalid"; message: string; data: Plus.LinkInvalid } | undefined> {
+  const invalid = (reason: string) => ({ code: "link.invalid" as const, message: reason, data: { reason } })
+  if (owner.level === "preset") {
+    const ref = presetOfOwner(owner)
+    const known = ref === undefined ? undefined : listed(listing, ref)
+    if (ref === undefined || known === undefined) return invalid(`No preset at ${ownerRowId(owner)}`)
+    if (known.origin !== "user") return presetReadonly(ref)
+    return undefined
+  }
+  if (owner.level === "defaults") {
+    if (owner.agent === null) return invalid("A Teams entry pattern takes no link; link its member entries")
+    const agent = owner.agent
+    const exists = presetStateOf(records).entries.some((entry) =>
+      owner.team === undefined
+        ? entry.catalogue === "agents" && entry.name === agent
+        : entry.catalogue === "teams" && entry.name === agent && (entry.team ?? "*") === owner.team.team,
+    )
+    return exists ? undefined : invalid(`No Defaults entry at ${ownerRowId(owner)}; a native agent's own Defaults row takes no link`)
+  }
+  const level = owner.level
+  if (owner.team !== undefined) {
+    const team = (await discoverTeams(level, directory, builtins)).find((candidate) => candidate.team === owner.team?.team)
+    if (team === undefined) return invalid(`No ${level} team ${owner.team.team}`)
+    if (owner.agent !== null && !team.agents.some((member) => member.id === owner.agent))
+      return invalid(`No member ${owner.agent} in ${level} team ${owner.team.team}`)
+    return undefined
+  }
+  if (owner.agent === null) return invalid("A link names an agent, a member or a team")
+  const discovered = await discoverAll(ctx, { ...(await load(directory)), protectedAgents: [] }, state, builtins, directory)
+  if (!discovered.agents.some((agent) => agent.scope === level && agent.id === owner.agent)) return invalid(`No ${level} agent ${owner.agent}`)
+  return undefined
+}
+
+// The preset a `preset`-level owner is.
+function presetOfOwner(owner: RecordScope): PresetRef | undefined {
+  if (owner.level !== "preset") return undefined
+  if (owner.agent === null) return owner.team === undefined ? undefined : { kind: "team", id: owner.team.team }
+  if (owner.team === undefined) return { kind: "agent", id: owner.agent }
+  return { kind: "member", team: owner.team.team, id: owner.agent }
+}
+
+function presetRecordOwns(record: PresetRecord, owner: RecordScope): boolean {
+  const ref = presetOfOwner(owner)
+  if (ref === undefined) return false
+  if (ref.kind === "team") return record.kind === "team" && record.id === ref.id
+  if (ref.kind === "member") return record.kind === "agent" && record.team === ref.team && record.id === ref.id
+  return record.kind === "agent" && record.team === undefined && record.id === ref.id
+}
+
+// Who links to `ref` from other projects' stores (the global index lists the
+// projects; each project's own store is read for the truth). A listed project
+// whose store is gone, or that no longer holds a link, is dropped from the
+// index here: a stale entry never blocks a deletion. Runs under the global
+// write gate (`forget` writes the index in place).
+async function presetUsersElsewhere(
+  directory: string,
+  ref: PresetRef,
+  forget: (projectDirs: readonly string[]) => Promise<void>,
+): Promise<{ directory: string; users: string[] }[]> {
+  const here = path.resolve(directory)
+  const projects = (await linkedProjects()).filter((project) => project !== here)
+  const read = await Promise.all(projects.map(async (project) => ({ directory: project, links: await projectLinks(project) })))
+  await forget(read.filter((project) => project.links === undefined || project.links.length === 0).map((project) => project.directory))
+  return read.flatMap((project) => {
+    const users = presetUsers(project.links ?? [], ref).filter((user) => user.startsWith("agent:project:") || user.startsWith("team:project:"))
+    return users.length === 0 ? [] : [{ directory: project.directory, users }]
+  })
+}
+
+function listed(listing: readonly PresetEntry[], ref: PresetRef): PresetEntry | undefined {
+  return listing.find((entry) => presetKey(entry.ref) === presetKey(ref))
+}
+
+function linkRecord(owner: RecordScope, preset: PresetRef, updated: string): LinkRecord {
+  return {
+    type: "link",
+    level: owner.level,
+    agent: owner.agent,
+    ...(owner.team === undefined ? {} : { team: owner.team }),
+    preset,
+    updated,
+  }
+}
+
+// The mode and description a user preset copies from its base, so an agent
+// later created from it can copy them in turn.
+function presetRecordFields(from: { readonly mode?: string; readonly description?: string } | undefined): Pick<PresetRecord, "fields"> {
+  if (from === undefined) return {}
+  const fields = {
+    ...(from.mode === undefined ? {} : { mode: from.mode }),
+    ...(from.description === undefined ? {} : { description: from.description }),
+  }
+  return Object.keys(fields).length === 0 ? {} : { fields }
+}
+
+async function presetCreated(
+  ctx: Context,
+  state: PlusState,
+  directory: string,
+  builtins: readonly BuiltinTeam[],
+  ref: PresetRef,
+  actor: Plus.Actor | undefined,
+  from: PresetRef | undefined,
+): Promise<{ ok: true; value: Plus.PresetResult }> {
+  const id = ownerRowId(presetOwner(ref))
+  await logFileOp({
+    directory,
+    actor: normalizeActor(actor),
+    scope: "global",
+    op: "preset.create",
+    target: id,
+    summary: `preset.create ${presetKey(ref)}${from === undefined ? "" : ` from ${presetKey(from)}`}`,
+  })
+  await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+  return { ok: true as const, value: { id, ref } }
+}
+
+// Every preset with what a created file copies from it; Native presets read
+// their mode and description from the host's own agent.
+async function serverListing(ctx: Context, records: readonly StoredRecord[]): Promise<PresetEntry[]> {
+  const listed = await Effect.runPromise(
+    ctx.agent.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Agent.Info[] }))),
+  )
+  const native = new Map(
+    listed.data
+      .filter((agent) => (nativePresetIds as readonly string[]).includes(String(agent.id)))
+      .map((agent) => [
+        String(agent.id),
+        {
+          ...(agent.mode === undefined ? {} : { mode: String(agent.mode) }),
+          ...(agent.description === undefined ? {} : { description: agent.description }),
+        },
+      ]),
+  )
+  return presetListing(presetStateOf(records).presets, native)
+}
+
+// The agent or member preset an agent file is created from; undefined for an
+// unknown preset or a team preset.
+async function agentPresetEntry(ctx: Context, directory: string, ref: PresetRef): Promise<PresetEntry | undefined> {
+  if (ref.kind === "team") return undefined
+  return listed(await serverListing(ctx, (await load(directory)).records), ref)
+}
+
+// Load, change and save the store, retrying once against a fresh read when
+// it changed concurrently. `attempt` answers the next record list.
+async function updateRecords(
+  directory: string,
+  attempt: (records: readonly StoredRecord[]) => readonly StoredRecord[],
+): Promise<{ ok: boolean }> {
+  const once = async () => {
+    const loaded = await load(directory)
+    const saved = await save(directory, {
+      expectedProjectRevision: loaded.projectRevision,
+      expectedGlobalRevision: loaded.globalRevision,
+      records: attempt(loaded.records),
+    })
+    return saved.ok
+  }
+  if (await once()) return { ok: true }
+  return { ok: await once() }
+}
+
+// Replace (or with null drop) the one link `owner` has.
+async function setOwnerLink(directory: string, owner: RecordScope, preset: PresetRef | null): Promise<{ ok: boolean }> {
+  const updated = new Date().toISOString()
+  return updateRecords(directory, (records) => [
+    ...records.filter((record) => record.type !== "link" || !scopedTo(record, owner)),
+    ...(preset === null ? [] : [linkRecord(owner, preset, updated)]),
+  ])
 }
 
 export function createHandlers(ctx: Context, state: PlusState, options?: PlusApiOptions): RpcHandlers<typeof Definition> {
@@ -1840,6 +2639,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
             return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+          if (result.error.code === "preset.invalid")
+            return yield* Effect.fail(context.error("preset.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -2038,19 +2839,88 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.addTeamAgent(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
-          if (result.error.code === "team.unknown")
-            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
-          if (result.error.code === "team.invalid")
-            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
-          if (result.error.code === "agent.exists")
-            return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
-          if (result.error.code === "agent.protected")
-            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
-          return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
+          const error = result.error
+          if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "team.unknown") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "team.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "agent.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "agent.protected") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "preset.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "entry.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "entry.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          return yield* Effect.fail(context.error("agent.invalid", error.message, error.data))
         }
         return result.value
+      }),
+    "entry.create": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.createEntry(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "entry.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("entry.invalid", error.message, error.data))
+      }),
+    "entry.delete": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.deleteEntry(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "entry.missing") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("entry.invalid", error.message, error.data))
+      }),
+    "entry.rename": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.renameEntry(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "entry.missing") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "entry.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("entry.invalid", error.message, error.data))
+      }),
+    "preset.create": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.createPreset(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("preset.invalid", error.message, error.data))
+      }),
+    "preset.addMember": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.addPresetMember(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.readonly") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("preset.invalid", error.message, error.data))
+      }),
+    "preset.delete": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.deletePreset(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.readonly") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.inUse") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("preset.invalid", error.message, error.data))
+      }),
+    "link.set": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.setLink(input))
+        if (result.ok) return result.value
+        const error = result.error
+        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "preset.readonly") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "link.cycle") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        if (error.code === "agent.protected") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+        return yield* Effect.fail(context.error("link.invalid", error.message, error.data))
       }),
     "team.removeAgent": (input, context) =>
       Effect.gen(function* () {
@@ -2270,6 +3140,60 @@ async function saveTeamRecord(
   return { ok: false }
 }
 
+// Stores links, each replacing the link its owner had (one link per owner),
+// retrying once on a concurrent change like the team records above.
+async function saveLinks(directory: string, links: readonly LinkRecord[]): Promise<{ ok: boolean }> {
+  const attempt = (records: readonly StoredRecord[]): StoredRecord[] => [
+    ...records.filter((record) => record.type !== "link" || !links.some((link) => scopedTo(record, link))),
+    ...links,
+  ]
+  const loaded = await load(directory)
+  const saved = await save(directory, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: attempt(loaded.records),
+  })
+  if (saved.ok) return { ok: true }
+  const fresh = await load(directory)
+  const retried = await save(directory, {
+    expectedProjectRevision: fresh.projectRevision,
+    expectedGlobalRevision: fresh.globalRevision,
+    records: attempt(fresh.records),
+  })
+  return { ok: retried.ok }
+}
+
+// The fields a file created from a preset copies (DESIGN §5): core reads
+// mode and description from the file, everything else follows the link.
+// Without a mode (None, or a preset that names none) the file states core's
+// own default, `primary` (Agent.Info.default): core skips an empty agent file
+// (config/plugin/agent.ts decodes only a file with content), so a file with
+// no frontmatter and an empty body would never register.
+function presetFields(preset: { readonly mode?: string; readonly description?: string }): AgentFields {
+  const mode = preset.mode === "subagent" || preset.mode === "primary" || preset.mode === "all" ? preset.mode : "primary"
+  return {
+    mode,
+    ...(preset.description === undefined ? {} : { description: preset.description }),
+  }
+}
+
+// The full chain context (DESIGN §3) every production resolution reads: the
+// agents' scopes, the stored links, Defaults entries and user presets, the
+// preset catalogue built from the discovered items, and each member's teams.
+function contextFor(
+  agents: readonly AgentSource[],
+  items: readonly Item[],
+  records: readonly StoredRecord[],
+  teams: readonly DiscoveredTeam[],
+): Scopes {
+  return chainContext({
+    agents,
+    items,
+    ...presetStateOf(records),
+    teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
+  })
+}
+
 async function removeTeamRecord(
   directory: string,
   loaded: LoadedStores,
@@ -2316,8 +3240,11 @@ async function removeAgentRecords(
   agent: string,
   level: Level,
 ): Promise<{ ok: true; changed: boolean } | { ok: false }> {
+  // The agent's own link goes with it: an agent created later under the same
+  // id starts from the preset it is created from, not this one's.
   const isTarget = (record: StoredRecord) =>
-    (record.type === "customization" || record.type === "split") && record.agent === agent && record.level === level
+    ((record.type === "customization" || record.type === "split") && record.agent === agent && record.level === level) ||
+    (record.type === "link" && record.agent === agent && record.level === level && record.team === undefined)
   const attempt = (records: readonly StoredRecord[]) => {
     const existing = records.find(isTarget)
     if (existing === undefined) return undefined
@@ -2674,6 +3601,11 @@ function normalizeActor(actor: Plus.Actor | undefined): Plus.Actor {
 // teams address team:<level>:<name>.
 function recordTarget(record: StoredRecord): string {
   if (record.type === "team") return `team:${record.level}:${record.team}`
+  if (record.type === "entry")
+    return record.team === undefined ? `agent:defaults:${record.name}` : `team:defaults:${record.team}:${record.name}`
+  if (record.type === "preset")
+    return record.team === undefined ? `${record.kind}:preset:${record.id}` : `team:preset:${record.team}:${record.id}`
+  if (record.type === "link") return `link:${record.level}:${record.agent ?? ""}`
   if (record.type === "model")
     return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
   if (record.type === "rule") return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
@@ -2882,6 +3814,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       modelID: record.modelID,
       ...(record.variant === undefined ? {} : { variant: record.variant }),
       ...(record.active === undefined ? {} : { active: record.active }),
+      ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
       updated: record.updated,
     }
   if (record.type === "rule")
@@ -2913,6 +3846,8 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
     basedOn: record.basedOn,
     ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
     ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+    ...(record.basedOnState === undefined ? {} : { basedOnState: record.basedOnState }),
+    ...(record.basedOnPin === undefined ? {} : { basedOnPin: record.basedOnPin }),
     updated: record.updated,
   }
 }
@@ -3023,6 +3958,7 @@ async function discoverAll(
   directory: string = ctx.location.directory,
 ): Promise<Discovered> {
   const resolved = await resolveBaseTemplates(ctx)
+  const teams = await discoverAllTeams(directory, builtins)
   const discovered = await discover({
     ctx,
     records: customizationsOf(loaded.records),
@@ -3032,6 +3968,8 @@ async function discoverAll(
     modelRecords: modelsOf(loaded.records),
     ruleRecords: rulesOf(loaded.records),
     modelBaselines: state.modelBaselines,
+    presetState: presetStateOf(loaded.records),
+    teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
   })
   return {
     ...discovered,
@@ -3039,7 +3977,7 @@ async function discoverAll(
   }
 }
 
-// Team role rules join the inventory here, where the enabled teams are
+// Per-member team rows (Delegate to, run edit scopes) join the inventory here, where the enabled teams are
 // already resolvable: the tree lists them, the query engine filters them and
 // apply installs whatever they resolve to, exactly like a discovered row.
 //
@@ -3065,7 +4003,7 @@ async function teamPolicyRows(
     builtins,
   )
   if (members.length === 0) return []
-  return teamPolicyItems(policyMembersOf(members.map((agent) => agent.id)), await liveRunScopes(teamsDataDir()))
+  return teamPolicyItems(policyMembersOf(members.map((agent) => ({ id: agent.id, team: agent.team }))), await liveRunScopes(teamsDataDir()))
 }
 
 function scopeLevel(scope: "project" | "global" | "defaults"): Level {
@@ -3089,12 +4027,14 @@ export function buildActiveModels(
     ...agents.filter((agent) => agent.team === undefined),
   ]
   for (const agent of dedupeAgents(ordered)) {
+    const team = agent.team === undefined ? undefined : { level: scopeLevel(agent.scope), team: agent.team }
+    const runtime = runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, scopes)
     const winner = resolveActiveModel({
       models,
-      scopes,
-      level: scopeLevel(agent.scope),
+      scopes: runtime.scopes,
+      level: runtime.level,
       agent: agent.id,
-      ...(agent.team !== undefined ? { team: { level: scopeLevel(agent.scope), team: agent.team } } : {}),
+      ...(team === undefined ? {} : { team }),
     })
     if (winner === undefined) continue
     if (winner.source === "upstream") continue
@@ -3105,74 +4045,6 @@ export function buildActiveModels(
     })
   }
   return next
-}
-
-async function readTemplate(
-  ctx: Context,
-  directory: string,
-  template: string,
-): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
-  const validated = validateAgentId(template)
-  if (!validated.ok) return undefined
-  const candidates = [
-    path.join(directory, ".opencode", "agent", `${validated.id}.md`),
-    path.join(directory, ".opencode", "agents", `${validated.id}.md`),
-    path.join(globalConfigDir(), "agent", `${validated.id}.md`),
-    path.join(globalConfigDir(), "agents", `${validated.id}.md`),
-  ]
-  for (const candidate of candidates) {
-    const file = Bun.file(candidate)
-    if (!(await file.exists())) continue
-    const text = await file.text()
-    return { fields: templateFields(text), prompt: agentBody(text) }
-  }
-  return readDefaultsTemplate(ctx, validated.id)
-}
-
-// Defaults-tree agents are built-ins with no backing file, so seeding from
-// one reads the discovered host view: prompt from the live system text and
-// frontmatter fields from the same data discover reports for that agent.
-// Records are never copied; the new agent inherits through the chain.
-async function readDefaultsTemplate(
-  ctx: Context,
-  id: string,
-): Promise<{ fields?: AgentFields; prompt: string; model?: string } | undefined> {
-  const listed = await Effect.runPromise(ctx.agent.list())
-  const current = listed.data.find((entry) => String(entry.id) === id) as Agent.Info | undefined
-  if (current === undefined) return undefined
-  const fields: AgentFields = {
-    ...(current.model === undefined ? {} : { model: formatModel(current.model) }),
-    ...(current.description === undefined ? {} : { description: current.description }),
-    ...(current.mode === undefined ? {} : { mode: current.mode }),
-  }
-  return {
-    ...(Object.keys(fields).length === 0 ? {} : { fields }),
-    prompt: current.system ?? "",
-  }
-}
-
-function formatModel(model: { readonly providerID: string; readonly id: string; readonly variant?: string }): string {
-  if (model.variant === undefined) return `${model.providerID}/${model.id}`
-  return `${model.providerID}/${model.id}#${model.variant}`
-}
-
-function templateFields(markdown: string): AgentFields | undefined {
-  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
-  if (!match) return undefined
-  try {
-    const data = Bun.YAML.parse(match[1] ?? "")
-    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
-    const fields = data as Record<string, unknown>
-    const picked: AgentFields = {
-      ...(typeof fields.model === "string" ? { model: fields.model } : {}),
-      ...(typeof fields.description === "string" ? { description: fields.description } : {}),
-      ...(fields.mode === "subagent" || fields.mode === "primary" || fields.mode === "all" ? { mode: fields.mode } : {}),
-    }
-    if (Object.keys(picked).length === 0) return undefined
-    return picked
-  } catch {
-    return undefined
-  }
 }
 
 interface BaseTemplateSuccess {
@@ -3351,7 +4223,7 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
 // Team tools only. Team rules are instructions rows applied by apply.ts, so
 // there is no permission hook to install here.
 async function installTeamTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
-  return [await registerTeamTools(ctx, createTeamApi(ctx, state))]
+  return [await registerTeamTools(ctx, createTeamApi(ctx, state), () => state.permissions)]
 }
 
 function disposeTeamTooling(state: PlusState): Effect.Effect<void> {
@@ -3391,7 +4263,7 @@ function refreshAfterFileChange(
   ctx: Context,
   state: PlusState,
   directory: string,
-  builtins: readonly BuiltinTeam[] = builtinTeams,
+  builtins: readonly BuiltinTeam[] = [],
   force = false,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
@@ -3423,22 +4295,28 @@ function computeSpecialOverrides(
   winningEnabled: readonly { level: TeamLevel; team: string }[],
   discovered: Discovered,
   records: readonly StoredRecord[],
+  scopes: Scopes,
 ): {
-  specialModelAgents: AgentSource[]
+  specialAgents: AgentSource[]
   specialRoleOverrides: Map<string, string>
 } {
   const customizations = customizationsOf(records)
   const splits = splitsOf(records)
   const modelRecords = modelsOf(records)
-  const specialModelAgents: AgentSource[] = []
+  const specialAgents: AgentSource[] = []
   const specialRoleOverrides = new Map<string, string>()
 
   for (const team of winningEnabled) {
     for (const specialId of specialAgentIds) {
+      // Every Special agent the host runs (or one the team gives an active
+      // model) resolves with the enabled team's chain — its tool, permission
+      // and skill rows under Teams → <team> → Special included — not only when
+      // the team sets its model. The discovered fields (base, model) stay.
       const teamAddress = { level: team.level, agent: specialId, team: { level: team.level, team: team.team } }
-      const hasActiveModel = hasModelActiveAt(modelRecords, teamAddress)
-      if (hasActiveModel) {
-        specialModelAgents.push({
+      const host = discovered.agents.find((agent) => agent.id === specialId)
+      if (host !== undefined || hasModelActiveAt(modelRecords, teamAddress)) {
+        specialAgents.push({
+          ...host,
           id: specialId,
           scope: team.level,
           team: team.team,
@@ -3468,7 +4346,7 @@ function computeSpecialOverrides(
           upstream: roleItem,
           records: customizations,
           splits,
-          scopes: scopesOf(discovered.agents),
+          scopes,
           address: {
             level: team.level,
             agent: specialId,
@@ -3483,7 +4361,72 @@ function computeSpecialOverrides(
       }
     }
   }
-  return { specialModelAgents, specialRoleOverrides }
+  return { specialAgents, specialRoleOverrides }
+}
+
+/**
+ * The agents a publish applies and the chain context it applies them with:
+ * the team winners (members and the enabled team's Special agents, each with
+ * its team) ahead of the discovered agents, deduplicated, and the full
+ * context over all of them. publishFresh installs from this; the assembled
+ * readback resolves from the same answer, so both read one chain per agent.
+ */
+async function publishChain(
+  discovered: Discovered,
+  records: readonly StoredRecord[],
+  directory: string,
+  builtins: readonly BuiltinTeam[],
+  owned: ReadonlyMap<string, TeamOwnership>,
+) {
+  const view = await stablePublishView(discovered, records, directory, builtins, owned)
+  const teamRecords = records.filter(isTeamRecord)
+  const allDiscoveredTeams = await discoverAllTeams(directory, builtins)
+  const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
+  const { specialAgents, specialRoleOverrides } = computeSpecialOverrides(
+    winningEnabled,
+    discovered,
+    records,
+    contextFor(discovered.agents, discovered.items, records, allDiscoveredTeams),
+  )
+
+  // Team-provided agents are not host upstream on the first publish
+  // after enable or restart: discovered.agents lacks team-only ids, so
+  // the model cache and apply would never see them. When an id is both
+  // host-discovered (unbacked defaults) and a current team winner, the team
+  // winner's scope is authoritative for model resolution and state.activeModels:
+  // order team winners first so dedupe keeps the team winner's scope,
+  // preserving discovered fields (such as base and model) on the team winner entry.
+  // Retaining discovered.agents in mergedAgents ensures the chain context
+  // still sees defaults for fallback inheritance. The context is the full
+  // one (links, entries, presets, member teams): the model cache, apply
+  // and the refresh-time model rebuild all read it.
+  const teamMerged = [
+    ...specialAgents,
+    ...view.teamAgents.map((teamAgent) => {
+      const discoveredAgent = discovered.agents.find((agent) => agent.id === teamAgent.id)
+      return discoveredAgent !== undefined
+        ? { ...discoveredAgent, ...teamAgent, scope: teamAgent.scope }
+        : teamAgent
+    }),
+  ]
+  const mergedAgents = [...teamMerged, ...discovered.agents]
+  return {
+    view,
+    teams: allDiscoveredTeams,
+    specialRoleOverrides,
+    publishAgents: dedupeAgents(mergedAgents),
+    publishScopes: contextFor(mergedAgents, discovered.items, records, allDiscoveredTeams),
+  }
+}
+
+// What apply receives per published agent: a team winner carries its team.
+function applyAgentsOf(agents: readonly AgentSource[]): ApplyAgent[] {
+  return agents.map((agent) => ({
+    id: agent.id,
+    level: scopeLevel(agent.scope),
+    base: agent.base,
+    ...(agent.team !== undefined ? { team: { level: scopeLevel(agent.scope), team: agent.team } } : {}),
+  }))
 }
 
 // Only publishFresh and deactivate acquire the semaphore, and neither calls the
@@ -3492,7 +4435,7 @@ function publishFresh(
   ctx: Context,
   state: PlusState,
   stored: LoadedStores,
-  builtins: readonly BuiltinTeam[] = builtinTeams,
+  builtins: readonly BuiltinTeam[] = [],
   force = false,
 ): Effect.Effect<Discovered> {
   return state.semaphore.withPermits(1)(
@@ -3510,43 +4453,17 @@ function publishFresh(
       const customizations = customizationsOf(stored.records)
       const splits = splitsOf(stored.records)
       const modelRecords = modelsOf(stored.records)
-      const view = yield* Effect.promise(() =>
-        stablePublishView(discovered, stored.records, directory, builtins, state.teamOutputIds),
+      const { view, teams, specialRoleOverrides, publishAgents, publishScopes } = yield* Effect.promise(() =>
+        publishChain(discovered, stored.records, directory, builtins, state.teamOutputIds),
       )
-      const teamRecords = stored.records.filter(isTeamRecord)
-      const allDiscoveredTeams = yield* Effect.promise(() => discoverAllTeams(directory, builtins))
-      const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
-      const { specialModelAgents, specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, stored.records)
-
-      // Team-provided agents are not host upstream on the first publish
-      // after enable or restart: discovered.agents lacks team-only ids, so
-      // the model cache and apply would never see them. When an id is both
-      // host-discovered (unbacked defaults) and a current team winner, the team
-      // winner's scope is authoritative for model resolution and state.activeModels:
-      // order team winners first so dedupe keeps the team winner's scope,
-      // preserving discovered fields (such as base and model) on the team winner entry.
-      // Retaining discovered.agents in mergedAgents ensures scopesOf still sees
-      // defaults for fallback inheritance.
-      const teamMerged = [
-        ...specialModelAgents,
-        ...view.teamAgents.map((teamAgent) => {
-          const discoveredAgent = discovered.agents.find((agent) => agent.id === teamAgent.id)
-          return discoveredAgent !== undefined
-            ? { ...discoveredAgent, ...teamAgent, scope: teamAgent.scope }
-            : teamAgent
-        }),
-      ]
-      const mergedAgents = [...teamMerged, ...discovered.agents]
-      const publishAgents = dedupeAgents(mergedAgents)
-      const publishScopes = scopesOf(mergedAgents)
       state.activeModels = buildActiveModels(publishAgents, modelRecords, publishScopes)
       state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
-      state.cachedScopes = { global: new Set(publishScopes.global), defaults: new Set(publishScopes.defaults) }
+      state.cachedScopes = publishScopes
       const fingerprint = JSON.stringify({
         // Mined perm rows are view-time only and stay out, but team policy
         // rows are derived state that must move the fingerprint: a run
         // starting or settling changes what a member may edit.
-        items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined),
+        items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined || item.agents !== undefined),
         agents: view.agents,
         servers: discovered.servers,
         records: stored.records,
@@ -3579,18 +4496,15 @@ function publishFresh(
           // iterate agents in order with last write winning — applying every
           // identity would let the shadowed copy overwrite the effective one.
           // Discovery keeps the shadows for scope resolution and the UI.
-          agents: publishAgents.map((agent) => ({
-            id: agent.id,
-            level: scopeLevel(agent.scope),
-            base: agent.base,
-            ...(agent.team !== undefined ? { team: { level: scopeLevel(agent.scope), team: agent.team } } : {}),
-          })),
+          agents: applyAgentsOf(publishAgents),
           records: customizations,
           splits,
           scopes: publishScopes,
           models: modelRecords,
           rules: rulesOf(stored.records),
           teamAgents: view.teamAgents.map((agent) => agent.id),
+          enforcement: state.enforcement,
+          enforcementDeps: { headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w" },
         })
       })
       // Enabled teams become real core-visible agents: resolve the enabled
@@ -3626,10 +4540,23 @@ function publishFresh(
       const teamOwnershipChanged = !sameTeamOwnership(state.teamOutputIds, ownership)
       state.teamOutputIds = ownership
       state.installedTools = applied.tools
+      state.permissions = applied.permissions
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
-      captureBaselines(ctx, state, discovered, customizations, splits, modelRecords, teamAgents, view.overrides, view.teamBodies, specialRoleOverrides)
+      captureBaselines(
+        ctx,
+        state,
+        discovered,
+        customizations,
+        splits,
+        modelRecords,
+        teamAgents,
+        view.overrides,
+        view.teamBodies,
+        specialRoleOverrides,
+        contextFor(discovered.agents, discovered.items, stored.records, teams),
+      )
       yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       if (teamOwnershipChanged) yield* emitTeamsChanged(state)
@@ -3663,11 +4590,14 @@ export function captureBaselines(
   teamOverrides?: ReadonlyMap<string, string>,
   teamBodies?: readonly { id: string; scope: AgentSource["scope"]; body: string | undefined }[],
   specialOverrides?: ReadonlyMap<string, string>,
+  // The full chain context of this publish; callers without one (unit tests of
+  // the baseline itself) resolve through the discovered agents' scopes.
+  context?: Scopes,
 ): void {
   void ctx
   void splits
   const next = new Map<string, PromptBaseline>()
-  const scopes = scopesOf(discovered.agents)
+  const scopes = context ?? scopesOf(discovered.agents)
   const winnerScope = new Map((teamAgents ?? []).map((agent) => [agent.id, agent.scope] as const))
   for (const item of discovered.items) {
     const key = baselineKey(item)
@@ -3687,9 +4617,13 @@ export function captureBaselines(
       // misses project/global edits, so the next discovery mistakes the
       // installed edit for upstream and the override silently reverts. Resolve
       // at the winner's scope so the existing unmask path reports upstream.
+      // Any other agent resolves where apply resolved it (runtimeScope).
       const winner = winnerScope.get(owner)
-      const level = winner !== undefined ? scopeLevel(winner) : scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults")
-      const resolved = resolve({ upstream: item, records, splits, scopes, address: { level, agent: owner, item: item.id, section: null } })
+      const runtime =
+        winner !== undefined
+          ? { level: scopeLevel(winner), scopes }
+          : runtimeScope({ id: owner, level: scopeLevel(discovered.agents.find((agent) => agent.id === owner)?.scope ?? "defaults") }, scopes)
+      const resolved = resolve({ upstream: item, records, splits, scopes: runtime.scopes, address: { level: runtime.level, agent: owner, item: item.id, section: null } })
       if (resolved.assembled === item.text) continue
       const source = discovered.agents.find((agent) => agent.id === owner)
       const fileBacked = source?.path !== undefined
@@ -3752,12 +4686,12 @@ export function captureBaselines(
   const modelNext = new Map<string, ModelBaseline>()
   const effective = dedupeAgents(discovered.agents)
   for (const agent of effective) {
-    const level = scopeLevel(agent.scope)
+    const runtime = runtimeScope({ id: agent.id, level: scopeLevel(agent.scope) }, scopes)
     const upstream = discovered.modelUpstream.get(agent.id)
     const active = state.activeModels.get(agent.id)
     const winner = active !== undefined
-      ? { providerID: active.providerID, modelID: active.modelID, ...(active.variant === undefined ? {} : { variant: active.variant }), source: level }
-      : resolveActiveModel({ models, scopes, level, agent: agent.id })
+      ? { providerID: active.providerID, modelID: active.modelID, ...(active.variant === undefined ? {} : { variant: active.variant }), source: runtime.level }
+      : resolveActiveModel({ models, scopes: runtime.scopes, level: runtime.level, agent: agent.id })
     if (winner === undefined) continue
     if (winner.source === "upstream") continue
     if (sameModelRef(winner, upstream)) continue
@@ -3861,16 +4795,6 @@ async function enabledTeamApplied(
       place(member.id, { team: team.name, level: "defaults", body: agentBody(member.body), fields: member.fields ?? { permissions: [] } })
     }
   }
-  const builtinDiscovered = discoverBuiltinTeams(builtins)
-  for (const team of builtinDiscovered) {
-    if (!isTeamEnabled(teamRecords, "defaults", team.team)) continue
-    for (const member of team.agents) {
-      if (member.path === undefined) continue
-      const text = await readTeamBody(member.path)
-      if (text === undefined) continue
-      place(member.id, { team: team.team, level: "defaults", body: agentBody(text), fields: parseTeamFields(text) })
-    }
-  }
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
   for (const discovered of [...disk[0], ...disk[1]]) {
     if (!isTeamEnabled(teamRecords, discovered.level, discovered.team)) continue
@@ -3926,7 +4850,13 @@ function teamRoleOverrides(
   return new Map(
     roleUpdates({
       items: [...discovered.items, ...synthesized],
-      agents: teamAgents.map((agent) => ({ id: agent.id, level: scopeLevel(agent.scope) })),
+      // Addressed as apply addresses members (with their team), so a member
+      // created from a preset reads its role text through its link.
+      agents: teamAgents.map((agent) => ({
+        id: agent.id,
+        level: scopeLevel(agent.scope),
+        ...(agent.team === undefined ? {} : { team: { level: scopeLevel(agent.scope), team: agent.team } }),
+      })),
       records,
       splits,
       scopes,
@@ -4025,7 +4955,8 @@ async function stablePublishView(
   const outputIds = plusTeamOutputIds(discovered, applied, owned)
   const agents = filteredPublishAgents(discovered.agents, outputIds)
   const items = filteredPublishItems(discovered.items, outputIds)
-  const scopes = scopesOf(agents)
+  const teams = await discoverAllTeams(directory, builtins)
+  const scopes = contextFor(agents, items, records, teams)
   const teamAgents = await resolveAllTeamAgents(directory, teamRecords, agents, builtins)
   const teamBodies = await Promise.all(
     teamAgents.map(async (agent) => ({
@@ -4039,7 +4970,14 @@ async function stablePublishView(
             : builtinBody(builtins, agent.team, agent.id),
     })),
   )
-  const overrides = teamRoleOverrides(discovered, teamAgents, customizations, splits, scopesOf(discovered.agents), teamBodies)
+  const overrides = teamRoleOverrides(
+    discovered,
+    teamAgents,
+    customizations,
+    splits,
+    contextFor(discovered.agents, discovered.items, records, teams),
+    teamBodies,
+  )
   return { agents, items, scopes, teamAgents, teamBodies, outputIds, overrides }
 }
 
@@ -4047,16 +4985,21 @@ async function fingerprintPublish(
   discovered: Discovered,
   records: readonly StoredRecord[],
   directory: string,
-  builtins: readonly BuiltinTeam[] = builtinTeams,
+  builtins: readonly BuiltinTeam[] = [],
   owned: ReadonlyMap<string, TeamOwnership> = new Map(),
 ): Promise<string> {
   const view = await stablePublishView(discovered, records, directory, builtins, owned)
   const teamRecords = records.filter(isTeamRecord)
   const allDiscoveredTeams = await discoverAllTeams(directory, builtins)
   const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
-  const { specialRoleOverrides } = computeSpecialOverrides(winningEnabled, discovered, records)
+  const { specialRoleOverrides } = computeSpecialOverrides(
+    winningEnabled,
+    discovered,
+    records,
+    contextFor(discovered.agents, discovered.items, records, allDiscoveredTeams),
+  )
   return JSON.stringify({
-    items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined),
+    items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined || item.agents !== undefined),
     agents: view.agents,
     servers: discovered.servers,
     records,
@@ -4078,7 +5021,7 @@ async function resolveAllTeamAgents(
   directory: string,
   records: readonly TeamRecord[],
   regular: readonly AgentSource[],
-  builtins: readonly BuiltinTeam[] = builtinTeams,
+  builtins: readonly BuiltinTeam[] = [],
 ): Promise<readonly AgentSource[]> {
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
   const builtin = discoverBuiltinTeams(builtins)
@@ -4236,7 +5179,14 @@ async function refreshActiveModelsIfStale(directory: string, state: PlusState): 
   const stored = await load(directory).catch(() => undefined)
   if (stored === undefined) return
   if (stored.projectRevision === state.projectRevision && stored.globalRevision === state.globalRevision) return
-  state.activeModels = buildActiveModels(state.cachedAgents, modelsOf(stored.records), state.cachedScopes)
+  // Links and Defaults entries may have changed with the store: the cached
+  // context keeps its agents and preset catalogue and takes the fresh ones.
+  const fresh = presetStateOf(stored.records)
+  state.activeModels = buildActiveModels(state.cachedAgents, modelsOf(stored.records), {
+    ...state.cachedScopes,
+    links: fresh.links,
+    entries: fresh.entries,
+  })
   state.projectRevision = stored.projectRevision
   state.globalRevision = stored.globalRevision
 }
@@ -4298,7 +5248,8 @@ function toSnapshot(
   discovered: Discovered,
   loaded: LoadedStores,
   teams: readonly Plus.TeamEntry[],
-  outputIds?: ReadonlySet<string>,
+  outputIds: ReadonlySet<string> | undefined,
+  listing: readonly PresetEntry[],
 ): Plus.Snapshot {
   return {
     revision: loaded.projectRevision,
@@ -4360,6 +5311,7 @@ function toSnapshot(
         ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
         ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
         ...(item.custom === undefined ? {} : { custom: item.custom }),
+        ...(item.ownedBy === undefined ? {} : { ownedBy: item.ownedBy }),
         ...(item.policy === undefined
           ? {}
           : {
@@ -4369,6 +5321,16 @@ function toSnapshot(
               },
             }),
         ...(item.runID === undefined ? {} : { runID: item.runID }),
+        ...(item.category === undefined ? {} : { category: item.category }),
+        ...(item.permKind === undefined ? {} : { permKind: item.permKind }),
+        ...(item.field === undefined ? {} : { field: item.field }),
+        ...(item.value === undefined ? {} : { value: item.value }),
+        ...(item.allow === undefined ? {} : { allow: item.allow }),
+        ...(item.measure === undefined ? {} : { measure: item.measure }),
+        ...(item.mode === undefined ? {} : { mode: item.mode }),
+        ...(item.message === undefined ? {} : { message: item.message }),
+        ...(item.fallback === undefined ? {} : { fallback: item.fallback }),
+        ...(item.alsoUnder === undefined ? {} : { alsoUnder: [...item.alsoUnder] }),
       }
     }),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {
@@ -4397,6 +5359,7 @@ function toSnapshot(
             modelID: record.modelID,
             ...(record.variant === undefined ? {} : { variant: record.variant }),
             ...(record.active === undefined ? {} : { active: record.active }),
+            ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
             updated: record.updated,
           },
         ]
@@ -4419,8 +5382,11 @@ function toSnapshot(
         ]
       // Team records stay out of `records`: clients read enablement through
       // `teams` instead, and instructions.mutate re-merges stored team
-      // records so a client that cannot see them cannot delete them.
-      if (record.type === "team") return []
+      // records so a client that cannot see them cannot delete them. Links,
+      // Defaults entries and presets are handled the same way: they cross in
+      // their own fields below.
+      if (record.type === "team" || record.type === "link" || record.type === "entry" || record.type === "preset")
+        return []
       return [
         {
           type: "customization" as const,
@@ -4436,10 +5402,22 @@ function toSnapshot(
           basedOn: record.basedOn,
           ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
           ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+          ...(record.basedOnState === undefined ? {} : { basedOnState: record.basedOnState }),
+          ...(record.basedOnPin === undefined ? {} : { basedOnPin: record.basedOnPin }),
           updated: record.updated,
         },
       ]
     }),
+    ...snapshotPresetState(loaded.records),
+    listing: listing.map((entry) => ({
+      ref: entry.ref.kind === "member" ? { kind: "member" as const, team: entry.ref.team, id: entry.ref.id } : { kind: entry.ref.kind, id: entry.ref.id },
+      origin: entry.origin,
+      kind: entry.kind,
+      label: entry.label,
+      ...(entry.description === undefined ? {} : { description: entry.description }),
+      ...(entry.mode === undefined ? {} : { mode: entry.mode }),
+      ...(entry.members === undefined ? {} : { members: [...entry.members] }),
+    })),
     teams: teams.map((team) => ({
       level: team.level,
       team: team.team,
@@ -4449,6 +5427,50 @@ function toSnapshot(
     })),
     servers: discovered.servers.map((server) => ({ name: server.name, enabled: server.enabled })),
     protectedAgents: [...loaded.protectedAgents],
+  }
+}
+
+// Links, Defaults entries and user presets, in the Snapshot's own fields: the
+// chain reads them client-side, and shipped preset content is computed there
+// from the items (instructions/presets.ts) instead of crossing.
+function snapshotPresetState(
+  records: readonly StoredRecord[],
+): Required<Pick<Plus.Snapshot, "links" | "entries" | "presets">> {
+  const state = presetStateOf(records)
+  return {
+    links: state.links.map((record) => ({
+      type: "link" as const,
+      level: record.level,
+      agent: record.agent,
+      ...(record.team === undefined ? {} : { team: { level: record.team.level, team: record.team.team } }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      preset: record.preset.kind === "member" ? { kind: "member" as const, team: record.preset.team, id: record.preset.id } : { kind: record.preset.kind, id: record.preset.id },
+      updated: record.updated,
+    })),
+    entries: state.entries.map((record) => ({
+      type: "entry" as const,
+      level: "defaults" as const,
+      catalogue: record.catalogue,
+      ...(record.team === undefined ? {} : { team: record.team }),
+      name: record.name,
+      updated: record.updated,
+    })),
+    presets: state.presets.map((record) => ({
+      type: "preset" as const,
+      level: "preset" as const,
+      kind: record.kind,
+      id: record.id,
+      ...(record.team === undefined ? {} : { team: record.team }),
+      ...(record.fields === undefined
+        ? {}
+        : {
+            fields: {
+              ...(record.fields.mode === undefined ? {} : { mode: record.fields.mode }),
+              ...(record.fields.description === undefined ? {} : { description: record.fields.description }),
+            },
+          }),
+      updated: record.updated,
+    })),
   }
 }
 
@@ -4472,7 +5494,7 @@ async function snapshotOutputIds(
 async function snapshotTeams(
   directory: string,
   records: readonly StoredRecord[],
-  builtins: readonly BuiltinTeam[] = builtinTeams,
+  builtins: readonly BuiltinTeam[] = [],
 ): Promise<Plus.TeamEntry[]> {
   const teamRecords = records.filter((record): record is TeamRecord => record.type === "team")
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
@@ -4494,7 +5516,7 @@ async function snapshotTeams(
 async function listTeams(
   directory: string,
   records: readonly StoredRecord[],
-  builtins: readonly BuiltinTeam[] = builtinTeams,
+  builtins: readonly BuiltinTeam[] = [],
 ): Promise<Plus.TeamListOutput> {
   const teamRecords = records.filter((record): record is TeamRecord => record.type === "team")
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
@@ -4547,44 +5569,6 @@ function compareTeams(
   if (left.level !== right.level) return left.level < right.level ? -1 : 1
   if (left.team !== right.team) return left.team < right.team ? -1 : 1
   return 0
-}
-
-function toAgentFields(fields: CreateAgentFields | undefined): AgentFields | undefined {
-  if (fields === undefined) return undefined
-  return {
-    ...(fields.model === undefined ? {} : { model: fields.model }),
-    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
-    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
-    ...(fields.description === undefined ? {} : { description: fields.description }),
-    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
-    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
-    ...(fields.color === undefined ? {} : { color: fields.color }),
-    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
-    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
-    ...(fields.permissions === undefined ? {} : { permissions: fields.permissions }),
-  }
-}
-
-// Team template seeding writes member files through the frontmatter+body
-// format files.ts owns. Only `request` needs conversion: TeamRequest is an
-// interface (no implicit index signature) while AgentFields.request is a
-// Record, so it is re-spread into a plain object. Every other field is
-// already assignable; the keys are spelled out (mirroring toAgentFields) so
-// nothing passes through a cast.
-function toSeedFields(fields: TeamFields | undefined): AgentFields | undefined {
-  if (fields === undefined) return undefined
-  return {
-    ...(fields.model === undefined ? {} : { model: fields.model }),
-    ...(fields.variant === undefined ? {} : { variant: fields.variant }),
-    ...(fields.request === undefined ? {} : { request: { ...fields.request } }),
-    ...(fields.description === undefined ? {} : { description: fields.description }),
-    ...(fields.mode === undefined ? {} : { mode: fields.mode }),
-    ...(fields.hidden === undefined ? {} : { hidden: fields.hidden }),
-    ...(fields.color === undefined ? {} : { color: fields.color }),
-    ...(fields.steps === undefined ? {} : { steps: fields.steps }),
-    ...(fields.disabled === undefined ? {} : { disabled: fields.disabled }),
-    permissions: [...fields.permissions],
-  }
 }
 
 // Confined member path inside a team directory: validated ids can never

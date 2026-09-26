@@ -418,7 +418,7 @@ test("file operations log to the owning store, team toggles log their level, fai
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "router", prompt: "Be helpful." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "router" }, throwingContext({})),
   )
   expect(await projectLines(project)).toHaveLength(1)
   expect(JSON.parse((await projectLines(project))[0] ?? "")).toMatchObject({ op: "agent.create", target: created.path })
@@ -457,11 +457,11 @@ test("file operations log to the owning store, team toggles log their level, fai
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   expect(await projectLines(project)).toHaveLength(5)
   // Failures and refusals log nothing.
-  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "dup", prompt: "x" }, throwingContext({})))
+  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "dup" }, throwingContext({})))
   expect(await projectLines(project)).toHaveLength(6)
   const duplicate: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["agent.create"]({ scope: "project", id: "dup", prompt: "y" }, throwingContext(duplicate)),
+    handlers["agent.create"]({ scope: "project", id: "dup" }, throwingContext(duplicate)),
     duplicate,
     "agent.exists",
   )
@@ -475,8 +475,8 @@ test("instructions.log returns entries newest-first and honours where, limit, an
   await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "v1" })] }, throwingContext({})),
   )
-  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "first", prompt: "First." }, throwingContext({})))
-  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "second", prompt: "Second." }, throwingContext({})))
+  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "first" }, throwingContext({})))
+  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "second" }, throwingContext({})))
   await Effect.runPromise(
     handlers["instructions.mutate"]({
       expectedRevision: 1,

@@ -1,4 +1,6 @@
+import { fromLabel } from "./from-label.js"
 import {
+  acknowledgeActiveModel,
   addModelRecord,
   applies,
   catalogueField,
@@ -8,9 +10,12 @@ import {
   fingerprint,
   hasModelRecordAt,
   merge,
+  modelKey,
+  ownAndAbove,
   parseModelItemId,
   removeModelRecord,
   resolve,
+  resolveActiveModel,
   resolveResolution,
   resolveSplit,
   scopedTo,
@@ -22,13 +27,16 @@ import type {
   Item,
   Level,
   ModelRecord,
+  PresetRef,
   RecordScope,
+  ReviewPart,
   RuleRecord,
   SplitRecord,
+  TeamRef,
 } from "./model.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
-import { expandedTree, findLazy, materialize } from "./tree.js"
+import { collectSkeleton, findLazy, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { manual, slice } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -112,6 +120,25 @@ export type RemovalPlan =
       readonly confirmMessage: string
       readonly successStatus: string
     }
+  | {
+      // A user preset; the server refuses it while anything links to it.
+      readonly kind: "preset.delete"
+      readonly ref: PresetRef
+      readonly confirmTitle: string
+      readonly confirmMessage: string
+      readonly successStatus: string
+    }
+  | {
+      // A Defaults entry; a Teams team pattern row (no `name`) deletes every
+      // member entry of the pattern.
+      readonly kind: "entry.delete"
+      readonly catalogue: Catalogue
+      readonly team?: string
+      readonly name?: string
+      readonly confirmTitle: string
+      readonly confirmMessage: string
+      readonly successStatus: string
+    }
 
 export type TeamPlan =
   | OpFailure
@@ -146,15 +173,21 @@ function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode
   return { memo, node: materialize(lazy) }
 }
 
+/** One row by id, found by descending the lazy tree (no full expansion). */
+export function findRow(input: MemoInput, rowId: string): TreeNode | undefined {
+  return findNode(input, rowId)?.node
+}
+
 // ---------------------------------------------------------------------------
 // Created-row resolution
 //
 // create returns the row id the TUI shows for the record it just wrote, so
 // show, set and delete accept it without a row.unknown detour. Every id below
-// is read from that same tree; nothing here formats a row id, and a create
-// whose row is missing resolves undefined so the caller can fail instead of
-// inventing one. `item` names the created thing inside its row kind: the
-// `<itemId>` of an item row, or the agent/team/member id of an entity row.
+// is read from that same tree: entity rows are looked up by their documented
+// id form and returned only when the tree holds them, so a create whose row
+// is missing resolves undefined and the caller fails instead of inventing
+// one. `item` names the created thing inside its row kind: the `<itemId>` of
+// an item row, or the agent/team/member/entry/preset id of an entity row.
 
 export interface CreatedRow {
   readonly id: string
@@ -168,8 +201,11 @@ export interface CreatedItemAddress {
   readonly catalogue?: Catalogue
 }
 
+// Only the root of the written level is walked: the row lives under it, and
+// the other roots (the Presets root above all) never need resolving here.
 export function createdItemRow(input: MemoInput, address: CreatedItemAddress): CreatedRow | undefined {
-  const node = expandedTree(input).find(
+  const memo = memoOfInput(input)
+  const lazy = collectSkeleton(skeletonOf(memo).filter((root) => root.id === `root:${address.level}`)).find(
     (candidate) =>
       candidate.address !== undefined &&
       candidate.address.level === address.level &&
@@ -178,41 +214,39 @@ export function createdItemRow(input: MemoInput, address: CreatedItemAddress): C
       candidate.address.section === null &&
       catalogueOf(candidate.address.catalogue) === catalogueOf(address.catalogue),
   )
-  if (node?.address === undefined) return undefined
-  return { id: node.id, item: node.address.item }
+  if (lazy?.address === undefined) return undefined
+  return { id: lazy.id, item: lazy.address.item }
 }
 
 export function createdAgentRow(input: MemoInput, scope: "project" | "global", id: string): CreatedRow | undefined {
-  const node = expandedTree(input).find(
-    (candidate) => candidate.kind === "agent" && candidate.label === id && candidate.id.split(":")[1] === scope,
-  )
-  return node === undefined ? undefined : { id: node.id, item: id }
+  return createdEntityRow(input, `agent:${scope}:${id}`, "agent", id)
 }
 
 export function createdTeamRow(input: MemoInput, level: Level, team: string): CreatedRow | undefined {
-  const teams = (input.teams ?? memoOfInput(input).ctx.teams) as readonly TeamInput[]
-  if (!teams.some((candidate) => candidate.level === level && candidate.team === team)) return undefined
-  const node = expandedTree(input).find(
-    (candidate) =>
-      candidate.kind === "team" && candidate.depth === 2 && candidate.label === team && candidate.id.split(":")[1] === level,
-  )
-  return node === undefined ? undefined : { id: node.id, item: team }
+  return createdEntityRow(input, `team:${level}:${team}`, "team", team)
 }
 
 export function createdMemberRow(input: MemoInput, level: Level, team: string, member: string): CreatedRow | undefined {
-  const entry = ((input.teams ?? memoOfInput(input).ctx.teams) as readonly TeamInput[]).find(
-    (candidate) => candidate.level === level && candidate.team === team,
-  )
-  if (entry === undefined || !entry.agents.includes(member)) return undefined
-  const node = expandedTree(input).find(
-    (candidate) =>
-      candidate.kind === "team" &&
-      candidate.depth === 3 &&
-      candidate.label === member &&
-      candidate.id.split(":")[1] === level &&
-      candidate.id.split(":").slice(2, -1).join(":") === team,
-  )
-  return node === undefined ? undefined : { id: node.id, item: member }
+  return createdEntityRow(input, `team:${level}:${team}:${member}`, "team", member)
+}
+
+/** A Defaults entry row: `agent:defaults:<name>`, or `team:defaults:<pattern>:<name>` for a Teams entry. */
+export function createdEntryRow(input: MemoInput, entry: { catalogue: Catalogue; team?: string; name: string }): CreatedRow | undefined {
+  if (entry.catalogue === "agents") return createdEntityRow(input, `agent:defaults:${entry.name}`, "agent", entry.name)
+  return createdEntityRow(input, `team:defaults:${entry.team ?? "*"}:${entry.name}`, "team", entry.name)
+}
+
+/** A preset row: `agent:preset:<id>`, `team:preset:<team>:<member>` or `team:preset:<team>`. */
+export function createdPresetRow(input: MemoInput, ref: PresetRef): CreatedRow | undefined {
+  if (ref.kind === "agent") return createdEntityRow(input, `agent:preset:${ref.id}`, "agent", ref.id)
+  if (ref.kind === "member") return createdEntityRow(input, `team:preset:${ref.team}:${ref.id}`, "team", ref.id)
+  return createdEntityRow(input, `team:preset:${ref.id}`, "team", ref.id)
+}
+
+function createdEntityRow(input: MemoInput, rowId: string, kind: "agent" | "team", item: string): CreatedRow | undefined {
+  const lazy = findLazy(memoOfInput(input), rowId)
+  if (lazy === undefined || lazy.kind !== kind) return undefined
+  return { id: lazy.id, item }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,7 +392,9 @@ function customizationsEqualWithoutUpdated(left: CustomizationRecord, right: Cus
     left.pin === right.pin &&
     left.basedOn === right.basedOn &&
     left.basedOnText === right.basedOnText &&
-    left.acknowledged === right.acknowledged
+    left.acknowledged === right.acknowledged &&
+    left.basedOnState === right.basedOnState &&
+    left.basedOnPin === right.basedOnPin
   )
 }
 
@@ -389,7 +425,15 @@ export function toggle(input: MemoInput, rowId: string): OpResult {
     scopes: memo.ctx.scopes,
     address: chain.address,
   })
-  const next = merge(chain.customizations, chain.address, { state: resolved.enabled ? "off" : "on" }, chain.upstream)
+  // The chain context makes merge record what the chain above resolves
+  // (`basedOnState`), so a later change above raises review (§3.6).
+  const next = merge(
+    chain.customizations,
+    chain.address,
+    { state: resolved.enabled ? "off" : "on" },
+    chain.upstream,
+    memo.ctx.scopes,
+  )
   return {
     records: next,
     splits: chain.splits,
@@ -407,7 +451,7 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpR
   if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream)
+  const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream, memo.ctx.scopes)
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
   const created = next.find((record) => sameAddress(record, chain.address))
   if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
@@ -436,7 +480,7 @@ export function setPin(input: MemoInput, rowId: string, value: boolean): OpResul
   if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  const next = merge(chain.customizations, chain.address, { pin: value }, chain.upstream)
+  const next = merge(chain.customizations, chain.address, { pin: value }, chain.upstream, memo.ctx.scopes)
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
   const created = next.find((record) => sameAddress(record, chain.address))
   if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
@@ -463,7 +507,10 @@ export function saveText(input: MemoInput, rowId: string, text: string): OpResul
   if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  const next = merge(chain.customizations, chain.address, { text }, chain.upstream)
+  // The chain context and splits make the baseline the text above this row
+  // (a preset's or a default's), not the raw upstream: an agent whose preset
+  // supplies the text is not "to review" the moment it saves its own.
+  const next = merge(chain.customizations, chain.address, { text }, chain.upstream, memo.ctx.scopes, chain.splits)
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
   const created = next.find((record) => sameAddress(record, chain.address))
   if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
@@ -624,6 +671,7 @@ export function resolveReview(
   rowId: string,
   resolution: "keep" | "take" | "edit",
   edited?: string,
+  only?: readonly ReviewPart[],
 ): OpResult {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
@@ -646,6 +694,7 @@ export function resolveReview(
     },
     resolution,
     edited,
+    only,
   )
   if (resolution === "keep") {
     return {
@@ -671,14 +720,144 @@ export function resolveReview(
   }
 }
 
+/**
+ * The two sides of a state/pin review (§3.6), in the words the TUI's choice
+ * shows: "Keep yours (off)" / "Take from preset Orchestrator (on)". Undefined
+ * when the row has no state or pin under review.
+ */
+export interface StateReviewChoice {
+  /** The parts the choice resolves (state and/or pin; never text). */
+  readonly parts: readonly ReviewPart[]
+  readonly mine: string
+  readonly above: string
+  /** Where the value above comes from ("from preset Orchestrator", "native", …). */
+  readonly from: string
+}
+
+export function stateReviewChoice(input: MemoInput, rowId: string): StateReviewChoice | undefined {
+  const found = findNode(input, rowId)
+  if (found === undefined) return undefined
+  const parts = (found.node.badges.reviewOf ?? []).filter((part) => part !== "text")
+  if (parts.length === 0) return undefined
+  const chain = chainFor(found.memo, found.node)
+  if (chain === undefined) return undefined
+  const pair = ownAndAbove({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: found.memo.ctx.scopes,
+    address: chain.address,
+  })
+  if (pair === undefined) return undefined
+  const describe = (state: "on" | "off" | undefined, pin: boolean | undefined) =>
+    [
+      ...(parts.includes("state") && state !== undefined ? [state] : []),
+      ...(parts.includes("pin") ? [pin === true ? "pinned" : "not pinned"] : []),
+    ].join(", ")
+  return {
+    parts,
+    mine: describe(pair.own.state, pair.own.pin),
+    above: describe(pair.above.enabled ? "on" : "off", pair.above.pinned),
+    from: fromLabel(parts.includes("state") ? pair.above.from : pair.above.pinFrom, {
+      labels: found.memo.ctx.labels,
+      level: chain.address.level,
+    }),
+  }
+}
+
+/** A model row's active-model review (§3.6): this row, and the active model the chain above resolves now. */
+export interface ModelReviewChoice {
+  readonly mine: string
+  /** Undefined when nothing above is active and the agent has no model of its own. */
+  readonly above?: string
+  readonly from?: string
+}
+
+export function modelReviewChoice(input: MemoInput, rowId: string): ModelReviewChoice | undefined {
+  const found = findNode(input, rowId)
+  const address = found?.node.address
+  if (found === undefined || address === undefined || modelTargetOf(address) === undefined) return undefined
+  const scope = modelScopeOf(address)
+  const upstream = modelUpstreamOf(found.memo, address)
+  const above = resolveActiveModel({
+    models: modelsOfInput(input).filter((record) => !scopedTo(record, scope)),
+    scopes: found.memo.ctx.scopes,
+    level: address.level,
+    agent: address.agent,
+    ...(address.team === undefined ? {} : { team: address.team }),
+    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
+    ...(upstream === undefined ? {} : { upstream }),
+  })
+  if (above === undefined) return { mine: found.node.label }
+  return {
+    mine: found.node.label,
+    above: modelKey(above),
+    from: fromLabel(above.from, { labels: found.memo.ctx.labels, level: address.level }),
+  }
+}
+
+// Keep: the own active model re-records the active model above it now, so the
+// review clears and yours stays. Take: the own active flag goes, so the model
+// above wins again.
+export function resolveModelReview(input: MemoInput, rowId: string, resolution: "keep" | "take"): ModelOpResult {
+  const found = findNode(input, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || modelTargetOf(address) === undefined) return { refusal: resolveRefusalForLabel(node.label) }
+  const models = modelsOfInput(input)
+  const scope = modelScopeOf(address)
+  const upstream = modelUpstreamOf(found.memo, address)
+  const next =
+    resolution === "keep"
+      ? acknowledgeActiveModel(models, scope, { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) })
+      : clearModelActive(models, scope)
+  const status = resolution === "keep" ? `Kept "${node.label}"` : `Took the model above for "${node.label}"`
+  return { models: next, status, retryHint: `resolved "${node.label}" against a stale revision; retry` }
+}
+
+// The agent's own model, as the tree and activation read it.
+function modelUpstreamOf(memo: Memo, address: Address) {
+  const owner = address.agent
+  if (owner === null) return undefined
+  const agents = memo.ctx.agents
+  return agents.find((entry) => entry.id === owner && entry.scope === address.level)?.model ?? agents.find((entry) => entry.id === owner)?.model
+}
+
 export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
+  const preset = node.owner?.preset
+  if (preset !== undefined) {
+    if (preset.origin !== "user")
+      return { refusal: `"${node.label}" cannot be deleted: ${preset.origin === "native" ? "Native" : "Plus"} presets are read-only` }
+    return {
+      kind: "preset.delete",
+      ref: preset.ref,
+      confirmTitle: `Delete preset ${node.label}?`,
+      confirmMessage: `Delete preset "${node.label}"? Anything created from it must be relinked first. This cannot be undone.`,
+      successStatus: `Deleted preset ${node.label}`,
+    }
+  }
+  const entry = node.owner?.entry
+  if (entry !== undefined) {
+    const named = entry.name === undefined ? `team entry "${entry.team}" and its member entries` : `entry "${node.label}"`
+    return {
+      kind: "entry.delete",
+      catalogue: entry.catalogue,
+      ...(entry.team === undefined ? {} : { team: entry.team }),
+      ...(entry.name === undefined ? {} : { name: entry.name }),
+      confirmTitle: `Delete Defaults entry ${node.label}?`,
+      confirmMessage: `Delete Defaults ${named}? Its own settings go with it. This cannot be undone.`,
+      successStatus: `Deleted Defaults entry ${node.label}`,
+    }
+  }
   if (node.kind === "agent") {
     if (node.actions?.remove !== true) return { refusal: `"${node.label}" cannot be deleted` }
-    const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
+    const match = node.id.match(/^agent:(project|global|defaults|preset):(.+)$/)
     const agentId = match?.[2]
     const scope = match?.[1]
     if (!agentId || !scope) return { refusal: `"${node.label}" cannot be deleted` }
@@ -696,7 +875,7 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
   if (node.kind === "team") {
     if (node.id.includes(":special")) return { refusal: `"${node.label}" cannot be deleted` }
     const teams = ((input.teams ?? memo.ctx.teams) as readonly TeamInput[])
-    const match = node.id.match(/^team:(project|global|defaults):(.+)$/s)
+    const match = node.id.match(/^team:(project|global|defaults|preset):(.+)$/s)
     const level = match?.[1]
     if (level) {
       const levelTeams = teams.filter((candidate) => candidate.level === level)
@@ -822,7 +1001,7 @@ export function teamPlan(input: MemoInput, rowId: string, desired?: boolean): Te
   const memo = found.memo
   if (node.kind !== "team") return { refusal: `"${node.label}" cannot be toggled` }
   if (node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
-  const match = node.id.match(/^team:(project|global|defaults):(.+)$/)
+  const match = node.id.match(/^team:(project|global|defaults|preset):(.+)$/)
   const level = match?.[1]
   const team = match === null || match === undefined ? undefined : match[2]
   if (level !== "project" && level !== "global" && level !== "defaults")
@@ -883,12 +1062,15 @@ function modelTargetOf(address: Address): { providerID: string; modelID: string;
   return parseModelItemId(address.item)
 }
 
-function modelScopeOf(address: Address): RecordScope {
+// The row's own node (a member row's is per-agent) plus the team it resolves
+// with, which activation reads for the active model above.
+function modelScopeOf(address: Address): RecordScope & { readonly memberOf?: TeamRef } {
   return {
     level: address.level,
     agent: address.agent,
     ...(address.team !== undefined ? { team: address.team } : {}),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
   }
 }
 
@@ -905,7 +1087,19 @@ export function activateModelRow(input: MemoInput, rowId: string): ModelOpResult
   const target = modelTargetOf(address)
   if (target === undefined) return { refusal: `"${node.label}" cannot be toggled` }
   const models = modelsOfInput(input)
-  const next = ensureActivateModel(models, modelScopeOf(address), target, now())
+  // With the chain context the active record stores the active model above
+  // it (`basedOn`), so a later change above raises review (§3.6).
+  const agents = found.memo.ctx.agents
+  const owner = address.agent
+  const upstream =
+    owner === null
+      ? undefined
+      : (agents.find((entry) => entry.id === owner && entry.scope === address.level)?.model ??
+        agents.find((entry) => entry.id === owner)?.model)
+  const next = ensureActivateModel(models, modelScopeOf(address), target, now(), {
+    scopes: found.memo.ctx.scopes,
+    ...(upstream === undefined ? {} : { upstream }),
+  })
   if (JSON.stringify(next) === JSON.stringify(models))
     return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
   return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }

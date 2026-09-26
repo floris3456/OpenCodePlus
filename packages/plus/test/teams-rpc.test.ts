@@ -4,13 +4,16 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { loadRun, saveRun, type RunRecord } from "../src/teams/run.js"
-import { formatMarkdown, parseFrontmatter } from "../src/agents/files.js"
+import { formatMarkdown } from "../src/agents/files.js"
 import { agentBody } from "../src/instructions/discover.js"
 import { parseTeamFields } from "../src/instructions/teams-apply.js"
 import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
-import { discoverBuiltinTeams, globalDefaultsTeamsPath } from "../src/instructions/teams.js"
+import { plusTeamPresets } from "../src/instructions/presets.js"
+import { memoInputOf } from "../src/instructions/snapshot.js"
+import { discoverBuiltinTeams } from "../src/instructions/teams.js"
+import { expandedTree } from "../src/instructions/tree.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
 import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
@@ -534,38 +537,36 @@ test("team.create refuses defaults with team.invalid", async () => {
   expect((await load(project)).records).toEqual([])
 })
 
-test("team.create with a Defaults template seeds member files from the registry", async () => {
+// DESIGN §5: `template` names a team preset (Plus or User), no longer a
+// Defaults template. Each member file carries only the preset's mode and
+// description with an empty body; links make the member follow its member
+// preset and the team its team preset.
+test("team.create from a team preset writes linked member files", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const registry = [
-    {
-      name: "review",
-      members: [
-        {
-          id: "editor",
-          body: "You are an editor. Tighten the wording without changing the meaning.",
-          fields: { description: "editor desc", mode: "primary" as const, permissions: [] },
-        },
-        { id: "reviewer", body: "You are a reviewer. Check the change for correctness and list issues first." },
-      ],
-    },
-  ]
-  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "mine", template: "review" }, throwingContext({})),
+    handlers["team.create"]({ level: "project", team: "mine", preset: "review" }, throwingContext({})),
   )
   expect(created).toEqual({ level: "project", team: "mine", enabled: false })
   expectRpcBody(created)
   const teamDir = path.join(projectTeamsPath(project), "mine")
-  const editorText = await fs.readFile(path.join(teamDir, "editor.md"), "utf8")
-  const reviewerText = await fs.readFile(path.join(teamDir, "reviewer.md"), "utf8")
-  const [editorMember, reviewerMember] = registry[0]!.members
-  expect(editorText).toBe(formatMarkdown(editorMember!.fields as never, editorMember!.body))
-  expect(agentBody(editorText)).toBe(editorMember!.body)
-  expect(parseTeamFields(editorText)).toEqual(editorMember!.fields!)
-  expect(reviewerText).toBe(formatMarkdown(undefined, reviewerMember!.body))
-  expect(agentBody(reviewerText)).toBe(reviewerMember!.body)
-  expect(parseFrontmatter(reviewerText)).toBeUndefined()
+  for (const id of ["editor", "reviewer"]) {
+    const text = await fs.readFile(path.join(teamDir, `${id}.md`), "utf8")
+    expect(agentBody(text)).toBe("")
+    expect(parseTeamFields(text).mode).toBe("primary")
+    expect((parseTeamFields(text).description ?? "").length).toBeGreaterThan(0)
+  }
+  const links = (await load(project)).records.filter((record) => record.type === "link")
+  const owner = { level: "project", team: "mine" }
+  expect(links).toHaveLength(3)
+  expect(links).toContainEqual(expect.objectContaining({ level: "project", agent: null, team: owner, preset: { kind: "team", id: "review" } }))
+  expect(links).toContainEqual(
+    expect.objectContaining({ level: "project", agent: "editor", team: owner, preset: { kind: "member", team: "review", id: "editor" } }),
+  )
+  expect(links).toContainEqual(
+    expect.objectContaining({ level: "project", agent: "reviewer", team: owner, preset: { kind: "member", team: "review", id: "reviewer" } }),
+  )
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams?.find((team) => team.team === "mine")).toEqual({
     level: "project",
@@ -573,13 +574,14 @@ test("team.create with a Defaults template seeds member files from the registry"
     enabled: false,
     agents: ["editor", "reviewer"],
   })
+  expect(snapshot.links).toHaveLength(3)
   const unknown: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["team.create"]({ level: "project", team: "other", template: "ghost" }, throwingContext(unknown)),
+    handlers["team.create"]({ level: "project", team: "other", preset: "ghost" }, throwingContext(unknown)),
     unknown,
     "team.invalid",
   )
-  expect(unknown.current?.data).toEqual({ team: "other", reason: "Unknown team template ghost" })
+  expect(unknown.current?.data).toEqual({ team: "other", reason: "Unknown team preset ghost" })
 })
 
 test("team.addAgent on a project team writes the member file and the next snapshot lists it", async () => {
@@ -591,13 +593,21 @@ test("team.addAgent on a project team writes the member file and the next snapsh
   await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
+  // DESIGN §5: the member file carries the preset's mode and description
+  // with an empty body; its role text follows the member preset live.
   const added = await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "newbie", prompt: "newbie role" }, throwingContext({})),
+    handlers["team.addAgent"](
+      { level: "project", team: "crew", id: "newbie", preset: { kind: "member", team: "review", id: "editor" } },
+      throwingContext({}),
+    ),
   )
   const teamDir = path.join(projectTeamsPath(project), "crew")
   expect(added).toEqual({ id: "newbie", path: path.join(teamDir, "newbie.md") })
   expectRpcBody(added)
-  expect(await Bun.file(path.join(teamDir, "newbie.md")).text()).toContain("newbie role")
+  const written = await Bun.file(path.join(teamDir, "newbie.md")).text()
+  expect(written).toStartWith("---\n")
+  expect(written).toEndWith("---\n")
+  expect(written).toContain("mode: primary")
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams?.find((team) => team.team === "crew")).toEqual({
     level: "project",
@@ -606,34 +616,33 @@ test("team.addAgent on a project team writes the member file and the next snapsh
     agents: ["newbie"],
   })
   const listed = await Effect.runPromise(ctx.agent.list())
-  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe("newbie role")
+  const editor = plusTeamPresets.find((team) => team.id === "review")?.members.find((member) => member.id === "editor")
+  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe(editor?.role)
 })
 
-test("team.addAgent on a fixture defaults team writes the overlay and discover lists it with path", async () => {
+// DESIGN §2/§4: the Defaults teams overlay directory is no longer read, so a
+// file left there is no member; team.addAgent at defaults adds a member
+// ENTRY instead, and never writes a file.
+test("team.addAgent on a fixture defaults team adds a member entry and an overlay file is not read", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
-  const added = await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "defaults", team: "ship", id: "rookie", prompt: "rookie role" }, throwingContext({})),
-  )
-  const overlayDir = path.join(globalDefaultsTeamsPath(), "ship")
-  expect(added).toEqual({ id: "rookie", path: path.join(overlayDir, "rookie.md") })
-  expectRpcBody(added)
-  expect(await Bun.file(path.join(overlayDir, "rookie.md")).text()).toContain("rookie role")
-  const discovered = discoverBuiltinTeams(registry)
-  const ship = discovered.find((team) => team.team === "ship")
-  expect(ship?.level).toBe("defaults")
-  expect(ship?.agents.map((agent) => agent.id).toSorted()).toEqual(["mate", "rookie"])
-  expect(ship?.agents.find((agent) => agent.id === "rookie")?.path).toBe(path.join(overlayDir, "rookie.md"))
+  const added = await Effect.runPromise(handlers["team.addAgent"]({ level: "defaults", team: "ship", id: "rookie" }, throwingContext({})))
+  expect(added).toEqual({ id: "rookie", path: "team:defaults:ship:rookie" })
+  const overlayFile = path.join(process.env.OPENCODE_CONFIG_DIR ?? "", "opencodeplus", "teams-defaults", "ship", "rookie.md")
+  expect(await Bun.file(overlayFile).exists()).toBe(false)
+  await fs.mkdir(path.dirname(overlayFile), { recursive: true })
+  await Bun.write(overlayFile, "rookie role")
+  expect(discoverBuiltinTeams(registry).find((team) => team.team === "ship")?.agents.map((agent) => agent.id)).toEqual(["mate"])
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams?.find((team) => team.team === "ship")).toEqual({
     level: "defaults",
     team: "ship",
     enabled: false,
-    agents: ["mate", "rookie"],
-    overlay: ["rookie"],
+    agents: ["mate"],
   })
+  expect(snapshot.entries).toEqual([expect.objectContaining({ catalogue: "teams", team: "ship", name: "rookie" })])
 })
 
 test("team.addAgent refuses a duplicate member id with agent.exists", async () => {
@@ -642,11 +651,11 @@ test("team.addAgent refuses a duplicate member id with agent.exists", async () =
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
   )
   const duplicate: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "again" }, throwingContext(duplicate)),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext(duplicate)),
     duplicate,
     "agent.exists",
   )
@@ -942,12 +951,12 @@ test("team.removeAgent on a project team unlinks the file and on an enabled team
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "newbie", prompt: "newbie role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "newbie" }, throwingContext({})),
   )
   const teamDir = path.join(projectTeamsPath(project), "crew")
   expect(await Bun.file(path.join(teamDir, "newbie.md")).exists()).toBe(true)
   const listedBefore = await Effect.runPromise(ctx.agent.list())
-  expect(listedBefore.data.find((entry) => String(entry.id) === "newbie")?.system).toBe("newbie role")
+  expect(listedBefore.data.find((entry) => String(entry.id) === "newbie")).toBeDefined()
 
   const removed = await Effect.runPromise(
     handlers["team.removeAgent"]({ level: "project", team: "crew", id: "newbie" }, throwingContext({})),
@@ -984,31 +993,22 @@ test("team.removeAgent on a shipped built-in member raises team.invalid", async 
   expect(captured.current?.message).toContain('"mate" cannot be deleted: shipped member of built-in team "ship"')
 })
 
-test("team.removeAgent on an overlay member unlinks the overlay file", async () => {
+// DESIGN §2: an overlay file is no member any more, so there is nothing to remove.
+test("team.removeAgent does not know a file left in the old overlay directory", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
-  await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "defaults", team: "ship", id: "rookie", prompt: "rookie role" }, throwingContext({})),
+  const overlayFile = path.join(process.env.OPENCODE_CONFIG_DIR ?? "", "opencodeplus", "teams-defaults", "ship", "rookie.md")
+  await fs.mkdir(path.dirname(overlayFile), { recursive: true })
+  await Bun.write(overlayFile, "rookie role")
+  const captured: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["team.removeAgent"]({ level: "defaults", team: "ship", id: "rookie" }, throwingContext(captured)),
+    captured,
+    "agent.invalid",
   )
-  const overlayFile = path.join(globalDefaultsTeamsPath(), "ship", "rookie.md")
   expect(await Bun.file(overlayFile).exists()).toBe(true)
-
-  const removed = await Effect.runPromise(
-    handlers["team.removeAgent"]({ level: "defaults", team: "ship", id: "rookie" }, throwingContext({})),
-  )
-  expect(removed).toEqual({ id: "rookie", path: overlayFile })
-  expectRpcBody(removed)
-  expect(await Bun.file(overlayFile).exists()).toBe(false)
-
-  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expect(snapshot.teams?.find((team) => team.team === "ship")).toEqual({
-    level: "defaults",
-    team: "ship",
-    enabled: false,
-    agents: ["mate"],
-  })
 })
 
 test("team.delete on a project team unlinks directory, drops record, updates snapshot, and logs actor tui", async () => {
@@ -1019,7 +1019,7 @@ test("team.delete on a project team unlinks directory, drops record, updates sna
 
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
   )
   await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
@@ -1063,14 +1063,14 @@ test("team.delete on an enabled team unregisters member agents from host", async
 
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "alpha role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
   )
   await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})),
   )
 
   const listedBefore = await Effect.runPromise(ctx.agent.list())
-  expect(listedBefore.data.find((entry) => String(entry.id) === "alpha")?.system).toBe("alpha role")
+  expect(listedBefore.data.find((entry) => String(entry.id) === "alpha")).toBeDefined()
 
   await Effect.runPromise(
     handlers["team.delete"]({ level: "project", team: "crew" }, throwingContext({})),
@@ -1088,7 +1088,7 @@ test("team.delete on a global team removes the directory under global teams root
 
   await Effect.runPromise(handlers["team.create"]({ level: "global", team: "globalcrew" }, throwingContext({})))
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "global", team: "globalcrew", id: "beta", prompt: "beta role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "global", team: "globalcrew", id: "beta" }, throwingContext({})),
   )
 
   const globalTeamDir = path.join(globalTeamsPath(), "globalcrew")
@@ -1199,7 +1199,7 @@ test("team.addAgent refuses member id special with team.invalid", async () => {
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   const captured: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "special", prompt: "special prompt" }, throwingContext(captured)),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "special" }, throwingContext(captured)),
     captured,
     "team.invalid",
   )
@@ -1314,6 +1314,49 @@ test("enable team with special override reaches host agent.system and agent.mode
   expect(exploreRestored?.system).toBe("upstream explore text")
   expect(exploreRestored?.model).toBeUndefined()
   expect(state.activeModels.get("explore")).toBeUndefined()
+})
+
+// A Special agent under an enabled team resolves with the team's chain even
+// when that team sets no active model for it: its tool row turned off under
+// Teams → crew → Special → general is what apply enforces.
+test("a Special agent's tool row turned off under the enabled team is enforced without a team-scoped model", async () => {
+  const { project } = await tempRoot()
+  await enable(project)
+  const general = { ...agentInfo("general", "upstream general text"), origin: "special" as const }
+  const ctx = fullContext({
+    directory: project,
+    agents: [general],
+    tools: [{ id: "shell", description: "Execute shell commands.", options: { codemode: false } }],
+    hooks: { current: 0 },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const records: Plus.SnapshotRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "general",
+      item: "tool:shell",
+      section: null,
+      team: { level: "project", team: "crew" },
+      state: "off",
+      basedOn: "fp",
+      updated: UPDATED,
+    },
+  ]
+  await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: before.revision, expectedGlobalRevision: before.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const shown = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:project:crew/:special:general:tool:shell")
+  expect(shown?.badges.state).toBe("off")
+  expect(state.installedTools).toContainEqual(expect.objectContaining({ agent: "general", tool: "shell", enabled: false }))
 })
 
 function makeRunRecord(overrides: Partial<RunRecord> & { id: string }): RunRecord {
@@ -1496,7 +1539,7 @@ test("team.addAgent and team.removeAgent refuse a tool actor on a protected memb
 
   const addRefused: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role", actor: { type: "tool" } }, throwingContext(addRefused)),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", actor: { type: "tool" } }, throwingContext(addRefused)),
     addRefused,
     "agent.protected",
   )
@@ -1504,7 +1547,7 @@ test("team.addAgent and team.removeAgent refuse a tool actor on a protected memb
   expect(await Bun.file(memberFile).exists()).toBe(false)
 
   const added = await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
   )
   expect(added.id).toBe("alpha")
   expect(await Bun.file(memberFile).exists()).toBe(true)
@@ -1534,7 +1577,7 @@ test("team.delete refuses a tool actor when the team contains a protected member
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha", prompt: "role" }, throwingContext({})),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})),
   )
   const teamDir = path.join(projectTeamsPath(project), "crew")
 
@@ -1554,39 +1597,33 @@ test("team.delete refuses a tool actor when the team contains a protected member
   expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
 })
 
+// The template is a team preset now (DESIGN §5): the Plus `review` preset's
+// members are reviewer and editor, and a tool actor may not create a
+// protected one.
 test("team.create with a template refuses a tool actor cloning a protected member and seeds for the TUI", async () => {
   const { project } = await tempRoot()
   await enable(project)
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
-    JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
+    JSON.stringify({ version: 1, protectedAgents: ["reviewer"] }),
   )
-  const registry = [
-    {
-      name: "review",
-      members: [
-        { id: "alpha", body: "alpha body" },
-        { id: "editor", body: "editor body" },
-      ],
-    },
-  ]
-  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const teamDir = path.join(projectTeamsPath(project), "mine")
 
   const refused: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["team.create"]({ level: "project", team: "mine", template: "review", actor: { type: "tool" } }, throwingContext(refused)),
+    handlers["team.create"]({ level: "project", team: "mine", preset: "review", actor: { type: "tool" } }, throwingContext(refused)),
     refused,
     "agent.protected",
   )
-  expect(refused.current?.message).toContain('protected agent "alpha"')
-  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
+  expect(refused.current?.message).toContain('protected agent "reviewer"')
+  expect(await Bun.file(path.join(teamDir, "reviewer.md")).exists()).toBe(false)
   expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(false)
 
   const created = await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "mine", template: "review" }, throwingContext({})),
+    handlers["team.create"]({ level: "project", team: "mine", preset: "review" }, throwingContext({})),
   )
   expect(created).toEqual({ level: "project", team: "mine", enabled: false })
-  expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(true)
+  expect(await Bun.file(path.join(teamDir, "reviewer.md")).exists()).toBe(true)
   expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(true)
 })

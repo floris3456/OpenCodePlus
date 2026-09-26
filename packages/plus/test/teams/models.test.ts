@@ -4,6 +4,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { applySessionModel, createHandlers, createState } from "../../src/index.js"
+import { builtinTeams } from "../../src/instructions/builtin-teams.js"
 import { load, save, type StoredRecord } from "../../src/instructions/store.js"
 import { enable } from "../../src/project.js"
 import {
@@ -50,6 +51,11 @@ function throwingContext(captured: { current?: unknown }): {
 const ORCHESTRATOR = { providerID: "cliproxyapi", modelID: "claude-opus-5", variant: "high" } as const
 const IMPLEMENTER = { providerID: "acme", modelID: "nova-2" } as const
 const IMPLEMENTER_DESCRIPTION = "Muse implementer: executes the brief inside scope and finishes"
+
+// No team ships at Defaults any more (DESIGN §2: the shipped teams are Plus
+// team presets); these tests are about a Defaults-tier team's first publish,
+// so they inject the shipped roster as the Defaults registry.
+const defaultsRegistry = { builtins: builtinTeams }
 
 function teamRecord(): StoredRecord {
   return { type: "team", level: "defaults", team: "opencodeplus-team", enabled: true, updated: UPDATED }
@@ -102,7 +108,7 @@ async function publishOnce(project: string, records: readonly StoredRecord[]): P
     },
   })
   const state = createState()
-  const handlers = createHandlers(ctx, state)
+  const handlers = createHandlers(ctx, state, defaultsRegistry)
   const stored = await load(project)
   await save(project, {
     expectedProjectRevision: stored.projectRevision,
@@ -245,7 +251,7 @@ test("disabling a pinned team removes its roles even with the model record retai
     },
   })
   const state = createState()
-  const handlers = createHandlers(ctx, state)
+  const handlers = createHandlers(ctx, state, defaultsRegistry)
   const throwing = throwingContext({})
   const stored0 = await load(project)
   await save(project, {

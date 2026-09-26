@@ -109,6 +109,10 @@ function baseInput(overrides?: Partial<MemoInput>): MemoInput {
     ],
     records: [],
     agents: [{ id: "alpha", scope: "project" }],
+    // DESIGN §3.3: a user agent's shared rows fall back to off unless a preset
+    // sets them. alpha stands for an agent created from the Native `build`
+    // preset, so its rows keep their native value unless a test changes them.
+    links: [{ type: "link", level: "project", agent: "alpha", preset: { kind: "agent", id: "build" }, updated: "2026-01-01T00:00:00.000Z" }],
     teams: [
       { level: "project", team: "crew", enabled: false, agents: ["alpha"] },
       { level: "project", team: "my:team", enabled: false, agents: [] },
@@ -834,4 +838,31 @@ test("reset refusal distinguishes stored override on non-resettable row from abs
   const cleanResult = reset(withExecute, execute.id)
   if (!("refusal" in cleanResult)) throw new Error("expected refusal for clean non-resettable row")
   expect(cleanResult.refusal).toBe(`"${execute.label}" has no override to reset`)
+})
+
+// An agent whose preset supplies its text saves its own text against that
+// text, not against the raw upstream: its first edit is not "to review".
+test("saveText records the text above the row (the preset's) as its baseline, so a first own edit is not to review", async () => {
+  const { plusAgentPresets } = await import("../src/instructions/presets.js")
+  const orchestratorRole = plusAgentPresets.find((preset) => preset.id === "orchestrator")?.role ?? ""
+  const base = baseInput()
+  const input: MemoInput = {
+    ...base,
+    items: [
+      ...base.items,
+      { id: "system:role", kind: "system", group: "none", title: "Role", text: "", enabled: true, fingerprint: fingerprint(""), agents: ["beta"] },
+    ],
+    agents: [...base.agents, { id: "beta", scope: "project" }],
+    links: [...(base.links ?? []), { type: "link", level: "project", agent: "beta", preset: { kind: "agent", id: "orchestrator" }, updated: "2026-01-01T00:00:00.000Z" }],
+  }
+  const rowId = exactId(input, "item:project:beta:system:role")
+  const saved = saveText(input, rowId, "my own role")
+  if ("refusal" in saved) throw new Error(saved.refusal)
+  const record = saved.records.find((entry) => entry.type === "customization" && entry.agent === "beta" && entry.item === "system:role") as CustomizationRecord | undefined
+  expect(record?.basedOn).toBe(fingerprint(orchestratorRole))
+  expect(record?.basedOnText).toBe(orchestratorRole)
+  const after: MemoInput = { ...input, records: [...saved.records, ...saved.splits] }
+  const row = expandedTree(after).find((node) => node.id === rowId)
+  expect(row?.badges.review).toBe(false)
+  expect(row?.badges.modified).toBe(true)
 })

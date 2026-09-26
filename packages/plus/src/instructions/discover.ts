@@ -16,13 +16,15 @@ import {
   modelItemId,
   permItemId,
   resolveActiveModel,
-  scopesOf,
+  runtimeScope,
   type AgentSource,
   type CustomizationRecord,
   type Item,
   type ModelRecord,
   type RuleRecord,
 } from "./model.js"
+import { catalogItems, categoryOfRow } from "./permission-catalog.js"
+import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 
@@ -60,6 +62,10 @@ export interface DiscoverInput {
   readonly modelRecords?: readonly ModelRecord[]
   readonly modelBaselines?: ReadonlyMap<string, ModelBaseline>
   readonly ruleRecords?: readonly RuleRecord[]
+  /** Stored links, Defaults entries and user presets: the model chain reads them. */
+  readonly presetState?: PresetState
+  /** Teams and their member ids, for members addressed without a team. */
+  readonly teams?: ContextInput["teams"]
 }
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
@@ -99,12 +105,27 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   // frontmatter or baseline-unmasked host, possibly absent) is stable, but the
   // Plus-active model wins when a stored record selects one: the badge answers
   // for the model Plus will install, not just the upstream file/host value.
-  const scopes = scopesOf(withModels)
+  // The active model walks presets and Defaults entries like every row.
+  // Items are not discovered yet; the preset catalogue only needs them for
+  // role text, which no model lookup reads.
+  const scopes = chainContext({ agents: withModels, items: [], ...input.presetState, teams: input.teams ?? [] })
   const withBase = withModels.map((source) => {
     const host = agents.find((agent) => String(agent.id) === source.id)
     if (host === undefined) return source
     const unmasked = upstream.get(source.id)
-    const winner = resolveActiveModel({ models: modelRecords, scopes, level: source.scope, agent: source.id, upstream: unmasked })
+    // The chain applyModels installs from (runtimeScope): a native agent
+    // discovered at Defaults runs its Project row, so a Project, Global or
+    // Defaults-entry active model is the one the badge must describe.
+    const team = source.team === undefined ? undefined : { level: source.scope, team: source.team }
+    const runtime = runtimeScope({ id: source.id, level: source.scope, ...(team === undefined ? {} : { team }) }, scopes)
+    const winner = resolveActiveModel({
+      models: modelRecords,
+      scopes: runtime.scopes,
+      level: runtime.level,
+      agent: source.id,
+      ...(team === undefined ? {} : { team }),
+      upstream: unmasked,
+    })
     const effective = winner === undefined ? unmasked : { providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }
     const synthetic = {
       ...host,
@@ -895,7 +916,9 @@ function permItems(input: {
       .filter((item) => (item.group === "native" || item.group === "plus") && item.codemode !== true && item.execute !== true)
       .map((item) => item.id),
   )
-  if (eligible.size === 0 && input.ruleRecords.length === 0) return []
+  // Every tool, Code Mode and MCP included, lists its catalog categories.
+  const catalog = catalogItems(input.toolRows, (tool) => permActionForTool(input.tools, tool))
+  if (eligible.size === 0 && input.ruleRecords.length === 0) return catalog
   const agentIds = [...new Set(input.agents.map((agent) => String(agent.id)))].toSorted()
   const skillIds = [...new Set(input.skills.map((skill) => String(skill.id)).filter((id) => !id.startsWith("plus/")))].toSorted()
   const texts: { item: string; text: string }[] = [
@@ -931,6 +954,7 @@ function permItems(input: {
         return
       }
       const text = `${merged.label}\n${merged.patterns.join("\n")}`
+      const isCurated = curated.some((rule) => rule.id === merged.id)
       byId.set(id, {
         id,
         kind: "perm",
@@ -945,14 +969,36 @@ function permItems(input: {
         patterns: [...merged.patterns],
         keywords: [...merged.keywords],
         provenance: [...merged.provenance],
+        category: categoryOfRow({ permTool: toolId, provenance: merged.provenance, ruleId: merged.id }, isCurated),
+        // edit's curated file rows guard patch too (one "edit" action), so
+        // patch lists them; write keeps its own curated copies.
+        ...(toolId === "edit" && isCurated ? { alsoUnder: ["patch"] } : {}),
         ...(toolAction === undefined ? {} : { permAction: toolAction }),
       })
     })
   }
+  const catalogById = new Map(catalog.map((item) => [item.id, item] as const))
   for (const record of input.ruleRecords) {
     const id = permItemId(record.tool, record.id)
     const text = `${record.label}\n${record.patterns.join("\n")}`
     const action = permActionForTool(input.tools, record.tool)
+    // A user's edit of a catalog row keeps what the row is (its category,
+    // kind, input field, fallback or allow role) and replaces only its label,
+    // patterns, keywords and refusal text.
+    const shipped = catalogById.get(id)
+    if (shipped !== undefined) {
+      byId.set(id, {
+        ...shipped,
+        title: record.label,
+        text,
+        fingerprint: fingerprint(text),
+        patterns: [...record.patterns],
+        keywords: [...record.keywords],
+        custom: true,
+        ...(record.message === undefined ? {} : { message: record.message }),
+      })
+      continue
+    }
     byId.set(id, {
       id,
       kind: "perm",
@@ -967,10 +1013,15 @@ function permItems(input: {
       keywords: [...record.keywords],
       provenance: [],
       custom: true,
+      // The agent the rule was created for owns it (§3.3 fallback: upstream).
+      ...(record.agent === null ? {} : { ownedBy: record.agent }),
+      category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }, false),
       ...(action === undefined ? {} : { permAction: action }),
     })
   }
-  return [...byId.values()].toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+  const legacy = [...byId.values()]
+  const taken = new Set(legacy.map((item) => item.id))
+  return [...legacy, ...catalog.filter((item) => !taken.has(item.id))].toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
 }
 
 function permActionForTool(tools: readonly (Tool.Info & { readonly id: string })[], toolId: string): string | undefined {

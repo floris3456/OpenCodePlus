@@ -5,12 +5,13 @@ import os from "node:os"
 import path from "node:path"
 import { formatMarkdown } from "../src/agents/files.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
-import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
+import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
 import { enable } from "../src/project.js"
+import { saveRun } from "../src/teams/run.js"
 import { fullContext } from "./harness.js"
 
 const teamRoots: string[] = []
@@ -359,9 +360,11 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(base?.address?.catalogue).toBe("teams")
 })
 
-test("a team member's rules are rows under a Policy group, and team tools never reach the Agents catalogue", () => {
+test("a team member's own rows list under the tools they govern, rows for absent tools under Other permissions, and team tools never reach the Agents catalogue", () => {
   const member = "gemini-implementer"
-  const policy = teamPolicyItems(policyMembersOf([member]))
+  const peer = "sol-orchestrator"
+  const run = { id: "w-0000000000000001", role: member, paths: ["src/*"] }
+  const policy = teamPolicyItems(policyMembersOf([{ id: member, team: "crew" }, { id: peer, team: "crew" }]), [run])
   const teamTool = makeItem({
     id: "tool:team_delegate",
     kind: "tool",
@@ -373,27 +376,31 @@ test("a team member's rules are rows under a Policy group, and team tools never 
   const nodes = expandAll({
     items: [...items(), teamTool, ...policy],
     records: [],
-    agents: [...agents(), { id: member, scope: "project", origin: "plus" }],
-    teams: [{ level: "project", team: "crew", enabled: true, agents: [member] }],
+    agents: [...agents(), { id: member, scope: "project", origin: "plus" }, { id: peer, scope: "project", origin: "plus" }],
+    teams: [{ level: "project", team: "crew", enabled: true, agents: [member, peer] }],
   })
-  const group = nodes.find((node) => node.id === `group:project:crew/:${member}:tools:policy`)
-  expect(group?.kind).toBe("group")
-  expect(group?.label).toBe("Policy")
-  const rows = childrenOf(nodes, `group:project:crew/:${member}:tools:policy`)
-  expect(rows.map((node) => node.id)).toContain(`item:project:crew/:${member}:perm:shell:team-role`)
-  expect(rows.map((node) => node.id)).toContain(`item:project:crew/:${member}:perm:team_supersede:role-ceiling`)
-  const shell = rows.find((node) => node.id === `item:project:crew/:${member}:perm:shell:team-role`)
-  expect(shell?.badges.state).toBe("off")
-  expect(shell?.actions?.toggle).toBe(true)
-  expect(shell?.address).toEqual({ level: "project", agent: member, item: "perm:shell:team-role", section: null, catalogue: "teams" })
-  // Policy rows live in one group per owner, never duplicated under the tool
-  // they govern. The member's stand-alone Agents-catalogue row reads the same
-  // records, so it carries its own single copy.
-  expect(nodes.filter((node) => node.id === `item:project:crew/:${member}:perm:shell:team-role`)).toHaveLength(1)
-  expect(nodes.filter((node) => node.id === `item:project:${member}:perm:shell:team-role`)).toHaveLength(1)
-  expect(childrenOf(nodes, `item:project:crew/:${member}:tool:bash`).map((node) => node.id)).not.toContain(
-    `item:project:crew/:${member}:perm:shell:team-role`,
-  )
+  // Its "Delegate to" rows list under team_delegate → Permissions → Delegate to.
+  const to = `group:project:crew/:${member}:tool:team_delegate:permissions:to`
+  expect(nodes.find((node) => node.id === to)?.label).toBe("Delegate to")
+  const rows = childrenOf(nodes, to)
+  expect(rows.map((node) => node.id)).toEqual([
+    `item:project:crew/:${member}:perm:team_delegate:to.${peer}`,
+    `item:project:crew/:${member}:perm:team_delegate:to.other-teams`,
+  ])
+  expect(rows[0]?.label).toBe(peer)
+  expect(rows[0]?.badges.state).toBe("off")
+  expect(rows[0]?.actions?.toggle).toBe(true)
+  expect(rows[0]?.address).toEqual({ level: "project", agent: member, item: `perm:team_delegate:to.${peer}`, section: null, catalogue: "teams", memberOf: { level: "project", team: "crew" } })
+  // A row whose tool this inventory lacks (edit, for the run's edit scope)
+  // stays reachable in one Other permissions group.
+  const other = `group:project:crew/:${member}:tools:policy`
+  expect(nodes.find((node) => node.id === other)?.label).toBe("Other permissions")
+  const orphans = childrenOf(nodes, other).map((node) => node.id)
+  expect(orphans).toContain(`item:project:crew/:${member}:perm:edit:run:${run.id}`)
+  expect(orphans).not.toContain(`item:project:crew/:${member}:perm:team_delegate:to.${peer}`)
+  // One copy per owner. The member's stand-alone Agents-catalogue row reads
+  // the same records, so it carries its own single copy.
+  expect(nodes.filter((node) => node.id === `item:project:crew/:${member}:perm:team_delegate:to.${peer}`)).toHaveLength(1)
   // The Agents catalogue lists no team tool, for the member or for anyone else.
   expect(nodes.some((node) => node.id === `item:project:${member}:tool:team_delegate`)).toBe(false)
   expect(nodes.some((node) => node.id === "item:project:Implementer:tool:team_delegate")).toBe(false)
@@ -404,7 +411,7 @@ test("a team member's rules are rows under a Policy group, and team tools never 
 // The in-memory tree above proves policyGroup; this proves the rows still
 // read as policy rows after the server encodes them and a consumer decodes
 // them, which is the only path the Instructions screen and the tools ever see.
-test("a team member's policy rows survive the snapshot boundary into the Policy group", async () => {
+test("a team member's own rows survive the snapshot boundary into the Policy group", async () => {
   const member = "gemini-implementer"
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-tree-team-policy-"))
@@ -423,21 +430,49 @@ test("a team member's policy rows survive the snapshot boundary into the Policy 
     },
   }
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwing))
+  // A live delegated run of the member contributes its edit-scope row.
+  const now = new Date().toISOString()
+  await saveRun(teamsDataDir(), {
+    id: "w-0000000000000009",
+    role: member,
+    kind: "w",
+    repo: "opencode",
+    repoKey: "opencode",
+    directory: project,
+    paths: ["src/*"],
+    branch: "team/test",
+    base: "0123456789abcdef0123456789abcdef01234567",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    state: "working",
+    attempts: [],
+    task: null,
+    parent: "main-0123456789abcdef",
+    children: [],
+    briefSha: "abc",
+    bundle: "tree-test",
+    budget: {},
+    createdAt: now,
+    lastUsed: now,
+    sessionID: null,
+    configDigest: null,
+    history: [],
+  })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))
   const shipped = snapshot.items.filter((item) => item.kind === "perm" && (item.agents ?? []).includes(member))
   expect(shipped.length).toBeGreaterThan(0)
-  expect(shipped.filter((item) => item.policy === undefined)).toEqual([])
+  // Every member row crosses with what makes it enforceable: core rules
+  // (policy) or the enforcer that reads it (permKind), and its category.
+  expect(shipped.filter((item) => item.policy === undefined && item.permKind === undefined)).toEqual([])
+  expect(shipped.filter((item) => item.category === undefined)).toEqual([])
   const nodes = expandedTree(memoInputOf(snapshot))
-  expect(nodes.find((node) => node.id === `group:project:crew/:${member}:tools:policy`)?.label).toBe("Policy")
+  // This inventory registers none of the tools the rows govern, so every one
+  // of them stays reachable in Other permissions.
+  expect(nodes.find((node) => node.id === `group:project:crew/:${member}:tools:policy`)?.label).toBe("Other permissions")
   const rows = childrenOf(nodes, `group:project:crew/:${member}:tools:policy`).map((node) => node.id)
-  expect(rows).toContain(`item:project:crew/:${member}:perm:shell:team-role`)
-  expect(rows).toContain(`item:project:crew/:${member}:perm:team_supersede:role-ceiling`)
-  // The actions with no tool row to hang under: only the Policy group lists
-  // them, so dropping `policy` at the boundary makes them unreachable.
-  expect(rows).toContain(`item:project:crew/:${member}:perm:external_directory:team-role`)
-  expect(rows).toContain(`item:project:crew/:${member}:perm:question:team-role`)
-  expect(rows).toContain(`item:project:crew/:${member}:perm:subagent:team-role`)
-  expect(rows).toContain(`item:project:crew/:${member}:perm:task:team-role`)
+  // The run's edit scope installs its own rules; edit is not registered here.
+  expect(rows).toEqual([`item:project:crew/:${member}:perm:edit:run:w-0000000000000009`])
+  // The member's Delegate to row crossed with its enforcer and category.
+  expect(shipped.find((item) => item.id === "perm:team_delegate:to.other-teams")).toMatchObject({ permKind: "team", category: "to" })
 })
 
 test("registered team member yields its Role/persona under System", () => {
@@ -455,6 +490,8 @@ test("registered team member yields its Role/persona under System", () => {
     item: "system:role",
     section: null,
     catalogue: "teams",
+    // Resolved as a member of crew; its own record stays `project/CrewMate`.
+    memberOf: { level: "project", team: "crew" },
   })
   // The stand-alone row addresses the same record through the Agents chain.
   expect(nodes.find((node) => node.id === "item:project:CrewMate:system:role")?.address).toEqual({
@@ -706,7 +743,10 @@ test("active badge marks exactly one base template per agent", () => {
 })
 
 test("section rows carry section addresses, stable ids, and nested depths", () => {
-  const nodes = expandAll({ items: items(), records: [], agents: agents() })
+  // A Role/persona item belongs to its agent (discovery sets `agents`), and an
+  // agent's own prompt falls back to its upstream state (DESIGN §3.3).
+  const owned = items().map((item) => (item.id === "system:role" ? { ...item, agents: ["Implementer"] } : item))
+  const nodes = expandAll({ items: owned, records: [], agents: agents() })
   const sections = nodes.filter((node) => node.id.startsWith("section:project:Implementer:system:role:"))
   expect(sections.map((node) => node.id)).toEqual([
     "section:project:Implementer:system:role:purpose",
@@ -849,6 +889,7 @@ test("expansion emits only expanded children", () => {
     "root:project",
     "root:global",
     "root:defaults",
+    "root:preset",
   ])
   const roots = tree({ ...input, expanded: new Set(["root:project"]) })
   expect(roots.map((node) => node.id)).toEqual([
@@ -857,6 +898,7 @@ test("expansion emits only expanded children", () => {
     "group:project:teams",
     "root:global",
     "root:defaults",
+    "root:preset",
   ])
   const agentsGroup = tree({ ...input, expanded: new Set(["root:project", "group:project:agents"]) })
   expect(agentsGroup.map((node) => node.id)).toEqual([
@@ -868,6 +910,7 @@ test("expansion emits only expanded children", () => {
     "group:project:teams",
     "root:global",
     "root:defaults",
+    "root:preset",
   ])
   const userGroup = tree({
     ...input,
@@ -883,6 +926,7 @@ test("expansion emits only expanded children", () => {
     "group:project:teams",
     "root:global",
     "root:defaults",
+    "root:preset",
   ])
   const agent = tree({
     ...input,
@@ -903,6 +947,7 @@ test("expansion emits only expanded children", () => {
     "group:project:teams",
     "root:global",
     "root:defaults",
+    "root:preset",
   ])
   const defaults = tree({ ...input, expanded: new Set(["root:defaults"]) })
   expect(defaults.map((node) => node.id)).toEqual([
@@ -911,6 +956,7 @@ test("expansion emits only expanded children", () => {
     "root:defaults",
     "group:defaults:agents",
     "group:defaults:teams",
+    "root:preset",
   ])
   const agentsCatalogue = tree({ ...input, expanded: new Set(["root:defaults", "group:defaults:agents"]) })
   expect(agentsCatalogue.map((node) => node.id)).toEqual([
@@ -928,6 +974,7 @@ test("expansion emits only expanded children", () => {
     "group:defaults::system",
     "group:defaults::mcp",
     "group:defaults:teams",
+    "root:preset",
   ])
 })
 
@@ -1218,8 +1265,10 @@ test("badges carry state, modified, and source from resolution", () => {
   expect(bash?.badges.state).toBe("off")
   expect(bash?.badges.modified).toBe(true)
   expect(bash?.badges.source).toBe("project")
+  // An unset shared row of a user agent no preset sets falls back to off,
+  // not to its upstream state (DESIGN §3.3); nothing supplied it.
   const plus = nodes.find((node) => node.id === "item:project:Implementer:tool:plus-one")
-  expect(plus?.badges.state).toBe("on")
+  expect(plus?.badges.state).toBe("off")
   expect(plus?.badges.modified).toBe(false)
   expect(plus?.badges.source).toBe("upstream")
 })
@@ -1275,7 +1324,7 @@ test("model union shows chain candidates with source badges and one active winne
   ])
 })
 
-test("native tool rows list perm rows directly after sections with editable rule rows", () => {
+test("a native tool row lists its Description and a Permissions group whose categories hold editable rule rows", () => {
   const shellText = "shell tool"
   const all = [
     makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
@@ -1305,26 +1354,34 @@ test("native tool rows list perm rows directly after sections with editable rule
       custom: true,
     }),
   ]
-  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  // Implementer stands for an agent created from the Native `build` preset,
+  // so its rule rows keep their native state (DESIGN §3.3).
+  const nodes = expandAll({
+    items: all,
+    records: [],
+    agents: agents(),
+    links: [{ type: "link", level: "project", agent: "Implementer", preset: { kind: "agent", id: "build" }, updated: UPDATED }],
+  })
   const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:shell")
   if (!toolRow) throw new Error("expected shell tool row")
-  // No intermediate Permissions group: perm rows hang directly off the tool.
-  expect(nodes.some((node) => node.id === "group:project:Implementer:tool:shell:perms")).toBe(false)
-  expect(nodes.some((node) => node.label === "Permissions")).toBe(false)
   // The tool row hosts both sections and rules, so `a` offers the choice
   // instead of a direct section add.
   expect(toolRow.add).toBeUndefined()
+  // A one-section text is the Description row itself, then Permissions.
   const kids = childrenOf(nodes, toolRow.id)
-  expect(kids.map((node) => node.id).sort()).toEqual(
-    ["item:project:Implementer:perm:shell:custom", "item:project:Implementer:perm:shell:git-push"].sort().concat(kids.filter((node) => node.kind === "section").map((node) => node.id)).sort(),
-  )
-  // Perm rows come after section rows, ordered among themselves by title.
-  const permKids = kids.filter((node) => node.address?.item.startsWith("perm:"))
-  expect(permKids.map((node) => node.id).sort()).toEqual(
-    ["item:project:Implementer:perm:shell:custom", "item:project:Implementer:perm:shell:git-push"].sort(),
-  )
-  const sectionCount = kids.length - permKids.length
-  for (const perm of permKids) expect(kids.indexOf(perm)).toBeGreaterThanOrEqual(sectionCount)
+  expect(kids.map((node) => [node.id, node.kind, node.label])).toEqual([
+    ["section:project:Implementer:tool:shell:whole", "section", "Description"],
+    ["group:project:Implementer:tool:shell:permissions", "group", "Permissions"],
+  ])
+  expect(kids[0]?.actions?.toggle).toBe(true)
+  // The curated and the user rule share shell's Commands category, by title.
+  expect(childrenOf(nodes, "group:project:Implementer:tool:shell:permissions").map((node) => [node.id, node.label])).toEqual([
+    ["group:project:Implementer:tool:shell:permissions:commands", "Commands"],
+  ])
+  expect(childrenOf(nodes, "group:project:Implementer:tool:shell:permissions:commands").map((node) => node.id)).toEqual([
+    "item:project:Implementer:perm:shell:custom",
+    "item:project:Implementer:perm:shell:git-push",
+  ])
   const curated = nodes.find((node) => node.id === "item:project:Implementer:perm:shell:git-push")
   expect(curated?.actions).toEqual({ toggle: true, edit: true, reset: false, remove: false, split: false, pin: false })
   expect(curated?.badges.state).toBe("on")
@@ -1332,6 +1389,24 @@ test("native tool rows list perm rows directly after sections with editable rule
   expect(custom?.actions?.remove).toBe(true)
   expect(custom?.actions?.edit).toBe(true)
   expect(custom?.actions?.pin).toBe(false)
+})
+
+test("a tool text with several sections hangs them under a Description group that shows the whole text", () => {
+  const all = [makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", text: "# Alpha\n\na\n\n# Beta\n\nb\n" })]
+  const nodes = expandAll({ items: all, records: [], agents: agents() })
+  const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:coder")
+  if (!toolRow) throw new Error("expected coder tool row")
+  const description = childrenOf(nodes, toolRow.id).find((node) => node.label === "Description")
+  expect(description?.kind).toBe("group")
+  expect(description?.id).toBe("group:project:Implementer:tool:coder:description")
+  // The group carries the tool's address so its detail shows every section
+  // combined, but it offers no action of its own.
+  expect(description?.address).toEqual({ level: "project", agent: "Implementer", item: "tool:coder", section: null })
+  expect(description?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(childrenOf(nodes, "group:project:Implementer:tool:coder:description").map((node) => node.id)).toEqual([
+    "section:project:Implementer:tool:coder:alpha",
+    "section:project:Implementer:tool:coder:beta",
+  ])
 })
 
 test("agents split into Native, Special, Plus and User origin subgroups", () => {
@@ -1503,22 +1578,22 @@ test("empty rule sets emit no perm rows but the tool still offers the add choice
   expect(nodes.some((node) => node.label === "Permissions")).toBe(false)
 })
 
-test("perm rows order most-mentioned first, not title order", () => {
+test("mined rows list under Mentioned in instructions, most-mentioned first, not title order", () => {
   const shellText = "shell tool"
   const all = [
     makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
     makeItem({
-      id: "perm:shell:aaa-generic",
+      id: "perm:shell:aaa-mentioned",
       kind: "perm",
       group: "none",
-      title: "Aaa generic",
-      text: "Aaa generic\naaa *",
+      title: "Aaa mentioned",
+      text: "Aaa mentioned\naaa *",
       order: 1,
       permTool: "shell",
-      ruleId: "aaa-generic",
+      ruleId: "aaa-mentioned",
       patterns: ["aaa *"],
       keywords: ["aaa"],
-      provenance: [],
+      provenance: ["tool:shell"],
     }),
     makeItem({
       id: "perm:shell:zzz-mentioned",
@@ -1533,12 +1608,26 @@ test("perm rows order most-mentioned first, not title order", () => {
       keywords: ["zzz"],
       provenance: ["tool:shell", "skill:notes", "base:general"],
     }),
+    makeItem({
+      id: "perm:shell:git-push",
+      kind: "perm",
+      group: "none",
+      title: "Git push",
+      text: "Git push\ngit push *",
+      permTool: "shell",
+      ruleId: "git-push",
+      patterns: ["git push *"],
+      keywords: ["git push"],
+      provenance: ["tool:shell"],
+    }),
   ]
   const nodes = expandAll({ items: all, records: [], agents: agents() })
-  const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:shell")
-  if (!toolRow) throw new Error("expected shell tool row")
-  const rows = childrenOf(nodes, toolRow.id).filter((node) => node.address?.item.startsWith("perm:"))
-  expect(rows.map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa generic"])
+  const permissions = "group:project:Implementer:tool:shell:permissions"
+  // A curated rule keeps its tool's category even when mentioned; what only
+  // instructions text suggested is kept apart from it.
+  expect(childrenOf(nodes, permissions).map((node) => node.label)).toEqual(["Commands", "Mentioned in instructions"])
+  expect(childrenOf(nodes, `${permissions}:commands`).map((node) => node.label)).toEqual(["Git push"])
+  expect(childrenOf(nodes, `${permissions}:suggested`).map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa mentioned"])
 })
 
 test("nested agent id and team member group ids never collide", async () => {

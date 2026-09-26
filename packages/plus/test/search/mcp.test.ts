@@ -81,33 +81,41 @@ test(
 test(
   "search MCP server spawns over stdio, lists tools, and reports missing keys",
   async () => {
-    await withSearchServer({ ...process.env, TAVILY_API_KEY: "", EXA_API_KEY: "" }, async (client) => {
-      const list = await client.listTools()
-      const toolNames = list.tools.map((t) => t.name)
-      expect(toolNames).toContain("exa_code_search")
-      expect(toolNames).toContain("tavily_search")
-      expect(toolNames).toContain("tavily_extract")
+    await withSearchServer(
+      {
+        ...process.env,
+        OPENCODEPLUS_SEARCH_KEYS_DIR: await makeTempDir("plus-mcp-missing-"),
+        TAVILY_API_KEY: "",
+        EXA_API_KEY: "",
+      },
+      async (client) => {
+        const list = await client.listTools()
+        const toolNames = list.tools.map((t) => t.name)
+        expect(toolNames).toContain("exa_code_search")
+        expect(toolNames).toContain("tavily_search")
+        expect(toolNames).toContain("tavily_extract")
 
-      const noKeyTavily = (await client.callTool({
-        name: "tavily_search",
-        arguments: { query: "test query" },
-      })) as { isError?: boolean; content: Array<{ type: string; text: string }> }
+        const noKeyTavily = (await client.callTool({
+          name: "tavily_search",
+          arguments: { query: "test query" },
+        })) as { isError?: boolean; content: Array<{ type: string; text: string }> }
 
-      expect(noKeyTavily.isError).toBe(true)
-      expect(noKeyTavily.content.length).toBeGreaterThan(0)
-      const parsedTavily = JSON.parse(noKeyTavily.content[0].text)
-      expect(parsedTavily.error).toBe("TAVILY_API_KEY is not set in the host environment")
+        expect(noKeyTavily.isError).toBe(true)
+        expect(noKeyTavily.content.length).toBeGreaterThan(0)
+        const parsedTavily = JSON.parse(noKeyTavily.content[0].text)
+        expect(parsedTavily.error).toBe("TAVILY_API_KEY is not set in the host environment")
 
-      const noKeyExa = (await client.callTool({
-        name: "exa_code_search",
-        arguments: { query: "function test()" },
-      })) as { isError?: boolean; content: Array<{ type: string; text: string }> }
+        const noKeyExa = (await client.callTool({
+          name: "exa_code_search",
+          arguments: { query: "function test()" },
+        })) as { isError?: boolean; content: Array<{ type: string; text: string }> }
 
-      expect(noKeyExa.isError).toBe(true)
-      expect(noKeyExa.content.length).toBeGreaterThan(0)
-      const parsedExa = JSON.parse(noKeyExa.content[0].text)
-      expect(parsedExa.error).toBe("EXA_API_KEY is not set in the host environment")
-    })
+        expect(noKeyExa.isError).toBe(true)
+        expect(noKeyExa.content.length).toBeGreaterThan(0)
+        const parsedExa = JSON.parse(noKeyExa.content[0].text)
+        expect(parsedExa.error).toBe("EXA_API_KEY is not set in the host environment")
+      },
+    )
   },
   30_000,
 )

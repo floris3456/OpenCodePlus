@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
-import { createState } from "../../src/index.js"
+import { teamState } from "../teams/preset-table.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
@@ -127,6 +127,9 @@ function makeSessionDouble(opts?: {
   return { created, prompted, switched, domain }
 }
 
+// Each api runs on the shipped team's permission table (every member linked to
+// its member preset), so opus-orchestrator may delegate to muse-implementer
+// and the call reaches model pinning; without a table every team row is off.
 describe("model and attempt pinning", () => {
   test("persists requested and loaded identities as distinct fields", async () => {
     await withIsolatedTeamsRoot(async (root) => {
@@ -145,7 +148,7 @@ describe("model and attempt pinning", () => {
         const resolved = { providerID: "cliproxyapi", id: "model-alpha-1.0", variant: "high" }
 
         const sessions = makeSessionDouble({ resolvedModel: resolved })
-        const state = createState()
+        const state = teamState()
         state.activeModels.set("muse-implementer", requested)
 
         const api = createTeamApi(context({ session: sessions.domain }), state)
@@ -193,7 +196,7 @@ describe("model and attempt pinning", () => {
         await saveRun(root, parent)
 
         const sessions = makeSessionDouble({ switchFail: true, switchError: "Provider quota exceeded" })
-        const state = createState()
+        const state = teamState()
         state.activeModels.set("muse-implementer", {
           providerID: "anthropic",
           modelID: "claude-3-5-sonnet",
@@ -231,7 +234,7 @@ describe("model and attempt pinning", () => {
         const degraded = { providerID: "anthropic", id: "claude-3-haiku", variant: "default" }
 
         const sessions = makeSessionDouble({ resolvedModel: degraded })
-        const state = createState()
+        const state = teamState()
         state.activeModels.set("muse-implementer", requested)
 
         const api = createTeamApi(context({ session: sessions.domain }), state)
@@ -265,7 +268,7 @@ describe("model and attempt pinning", () => {
         const resolved = { providerID: "openai", id: "gpt-4o", variant: "high" }
 
         const sessions = makeSessionDouble({ resolvedModel: resolved })
-        const state = createState()
+        const state = teamState()
         state.activeModels.set("muse-implementer", requested)
 
         const api = createTeamApi(context({ session: sessions.domain }), state)

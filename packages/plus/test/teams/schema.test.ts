@@ -39,7 +39,6 @@ import {
   WorktreeState,
   WorktreeStates,
   budgetExhaustion,
-  delegatedRoles,
   parseDuration,
   toolError,
   validateChecks,
@@ -74,11 +73,12 @@ test("identity primitives accept and reject", () => {
   expect(Schema.decodeUnknownSync(TaskID)("T3.rework.1")).toBe("T3.rework.1")
 })
 
-test("delegatedRoles pins the nine delegatable roles", () => {
-  expect(delegatedRoles.length).toBe(9)
-  expect(delegatedRoles).toContain("muse-implementer")
-  expect(delegatedRoles).toContain("opus-implementer")
-  expect(delegatedRoles).toContain("scout")
+// Who may be delegated to is each member's "Delegate to" rows; the team
+// schema names no role and no member.
+test("the policy defaults carry no roles and no member names", () => {
+  const policy = Schema.decodeUnknownSync(Policy)({})
+  expect("roles" in policy).toBe(false)
+  expect(JSON.stringify(policy)).not.toMatch(/implementer|orchestrator|planner|reviewer|scout/)
 })
 
 const briefBase = {

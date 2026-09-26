@@ -11,7 +11,7 @@ import { userBaseFile } from "../src/agents/base.js"
 import { itemOf, recordOf } from "../src/instructions/snapshot.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type SplitRecord } from "../src/instructions/model.js"
 import { globalRecordsPath, projectLogPath, projectRecordsPath } from "../src/instructions/paths.js"
-import { load } from "../src/instructions/store.js"
+import { load, save } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
@@ -149,6 +149,33 @@ function expectRpcBody(value: unknown) {
   expect(() => Schema.encodeUnknownSync(RpcBody)({ output: value })).not.toThrow()
 }
 
+// DESIGN §3.3: a user agent's shared rows fall back to off unless a preset
+// sets them. Where a test is about something else, its fixture agents stand
+// for agents created from the Native `build` preset, so every row they do not
+// customize keeps its native value.
+async function linkToBuild(
+  project: string,
+  ids: readonly string[],
+  level: "project" | "global" | "defaults" = "project",
+): Promise<void> {
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records,
+      ...ids.map((id) => ({
+        type: "link" as const,
+        level,
+        agent: id,
+        preset: { kind: "agent" as const, id: "build" },
+        updated: UPDATED,
+      })),
+    ],
+  })
+  if (!saved.ok) throw new Error("linkToBuild: stale save")
+}
+
 function record(item: string, overrides?: Partial<Plus.SnapshotCustomizationRecord>): Plus.SnapshotCustomizationRecord {
   return {
     type: "customization",
@@ -216,7 +243,7 @@ test("gated methods fail with project.disabled when project mode is off", async 
     "project.disabled",
   )
   await expectDeclaredError(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "hi" }, throwingContext(captured)), captured, "project.disabled")
+  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["agent.rename"]({ scope: "project", from: "a", to: "b" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["agent.delete"]({ scope: "project", id: "a" }, throwingContext(captured)), captured, "project.disabled")
   await expectDeclaredError(handlers["skill.create"]({ name: "x", body: "y" }, throwingContext(captured)), captured, "project.disabled")
@@ -402,6 +429,7 @@ test("instructions.assembled reads the host after application and reflects an ex
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
   await Bun.write(alphaPath, text)
+  await linkToBuild(project, ["alpha"])
   const agents = agentHarness([agentInfo("alpha", text)])
   const tools = toolHarness([{ id: "reader", description: "read things", options: { codemode: false } }])
   const location = fullContext({ directory: project }).location
@@ -455,6 +483,7 @@ test("a records-only mutate re-applies to the host", async () => {
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
   await Bun.write(alphaPath, upstream)
+  await linkToBuild(project, ["alpha"])
   const agents = agentHarness([agentInfo("alpha", upstream)])
   const tools = toolHarness([{ id: "reader", description: "read things", options: { codemode: false } }])
   const location = fullContext({ directory: project }).location
@@ -765,6 +794,8 @@ test("two publishes with discovered perm candidates keep an identical fingerprin
 test("instructions.assembled reports the registry tool description for a per-agent override", async () => {
   const { project } = await tempRoot()
   await enable(project)
+  // alpha has no agent file, so it is addressed at Defaults.
+  await linkToBuild(project, ["alpha"], "defaults")
   const agents = agentHarness([agentInfo("alpha", "upstream role")])
   const tools = toolHarness([{ id: "reader", description: "read things", options: { codemode: false } }])
   const location = fullContext({ directory: project }).location
@@ -809,6 +840,7 @@ test("instructions.assembled prefers the agent's private skill copy over the ori
     await fs.mkdir(path.dirname(agentPath), { recursive: true })
     await Bun.write(agentPath, "upstream role")
   }
+  await linkToBuild(project, ["alpha", "beta"])
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([skillInfo("notes", "upstream body")])
   const tools = toolHarness([])
@@ -865,15 +897,19 @@ test("instructions.assembled prefers the agent's private skill copy over the ori
   expectRpcBody(forAlpha)
 })
 
-test("agent.create from a non-file-backed Defaults template seeds prompt and fields without copying records", async () => {
+// DESIGN §5: an agent created from the Native `build` preset copies the
+// native agent's mode and description (core reads them from the file), keeps
+// an empty body and links to the preset: its role text follows `build` live
+// and no record is copied.
+test("agent.create from the Native build preset copies mode and description, links, and copies no records", async () => {
   const { project } = await tempRoot()
   await enable(project)
-  const template = {
+  const native = {
     ...agentInfo("build", "Build the thing."),
     description: "The default agent.",
     mode: "primary" as const,
   }
-  const agents = agentHarness([template])
+  const agents = agentHarness([native])
   const skillState = skillHarness([])
   const location = fullContext({ directory: project }).location
   const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
@@ -885,16 +921,25 @@ test("agent.create from a non-file-backed Defaults template seeds prompt and fie
   const entry = snapshot.agents.find((agent) => agent.id === "build")
   expect(entry?.scope).toBe("defaults")
   expect(entry?.fileBacked).toBe(false)
+  expect(snapshot.listing?.find((preset) => preset.ref.kind === "agent" && preset.ref.id === "build")).toMatchObject({
+    origin: "native",
+    mode: "primary",
+    description: "The default agent.",
+  })
   const created = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "from-defaults", template: "build", prompt: "ignored" }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "from-build", preset: { kind: "agent", id: "build" } }, throwingContext({})),
   )
-  expect(created).toEqual({ id: "from-defaults", path: path.join(project, ".opencode", "agent", "from-defaults.md") })
+  expect(created).toEqual({ id: "from-build", path: path.join(project, ".opencode", "agent", "from-build.md") })
   const written = await Bun.file(created.path).text()
-  expect(written).toContain("Build the thing.")
+  expect(written).not.toContain("Build the thing.")
   expect(written).toContain("The default agent.")
+  expect(written).toContain("mode: primary")
   expectRpcBody(created)
   const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(after.records).toEqual([])
+  expect(after.links).toEqual([
+    expect.objectContaining({ type: "link", level: "project", agent: "from-build", preset: { kind: "agent", id: "build" } }),
+  ])
 })
 
 test("snapshot reports built-in agents with defaults scope once without project or global duplication", async () => {
@@ -928,23 +973,24 @@ test("snapshot reports built-in agents with defaults scope once without project 
   }
 })
 
-test("agent create/rename/delete work at both scopes and create accepts a template seed", async () => {
+test("agent create/rename/delete work at both scopes and create accepts a preset", async () => {
   const { project, config } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
+  // No preset: "None — everything off", a file with core's default mode only.
   const createdProject = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "Be helpful." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})),
   )
   expect(createdProject).toEqual({ id: "alpha", path: path.join(project, ".opencode", "agent", "alpha.md") })
-  expect(await Bun.file(createdProject.path).text()).toContain("Be helpful.")
+  expect(await Bun.file(createdProject.path).text()).toBe("---\nmode: primary\n---\n")
   const createdGlobal = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "global", id: "beta", prompt: "Global prompt." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "global", id: "beta" }, throwingContext({})),
   )
   expect(createdGlobal).toEqual({ id: "beta", path: path.join(config, "agent", "beta.md") })
   const seeded = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "gamma", template: "alpha", prompt: "ignored" }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "gamma", preset: { kind: "agent", id: "orchestrator" } }, throwingContext({})),
   )
-  expect(await Bun.file(seeded.path).text()).toContain("Be helpful.")
+  expect(await Bun.file(seeded.path).text()).toBe('---\ndescription: "Owns work, delegates by task, verifies and integrates"\nmode: primary\n---\n')
   const renamed = await Effect.runPromise(handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2" }, throwingContext({})))
   expect(renamed).toEqual({ from: "alpha", to: "alpha2", path: path.join(project, ".opencode", "agent", "alpha2.md") })
   const deleted = await Effect.runPromise(handlers["agent.delete"]({ scope: "global", id: "beta" }, throwingContext({})))
@@ -956,11 +1002,17 @@ test("agent methods raise every declared error", async () => {
   const { project } = await tempRoot()
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
-  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "x" }, throwingContext({})))
+  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})))
   const exists: { current?: CapturedError } = {}
-  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "y" }, throwingContext(exists)), exists, "agent.exists")
+  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext(exists)), exists, "agent.exists")
   const invalid: { current?: CapturedError } = {}
-  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "../../x", prompt: "y" }, throwingContext(invalid)), invalid, "agent.invalid")
+  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "../../x" }, throwingContext(invalid)), invalid, "agent.invalid")
+  const unknownPreset: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["agent.create"]({ scope: "project", id: "gamma", preset: { kind: "agent", id: "ghost" } }, throwingContext(unknownPreset)),
+    unknownPreset,
+    "preset.invalid",
+  )
   const missing: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["agent.rename"]({ scope: "project", from: "ghost", to: "b" }, throwingContext(missing)), missing, "agent.missing")
   const missingDelete: { current?: CapturedError } = {}
@@ -1010,9 +1062,13 @@ test("skill delete removes the project SKILL.md directory and raises declared er
 test("rule remove drops customizations so re-adding the rule reads enabled:true", async () => {
   const { project } = await tempRoot()
   await enable(project)
+  // The row is read under the native `build` agent: Defaults "for every
+  // agent" itself falls back to off (DESIGN §3.3), a native agent to its
+  // native value, so only a leftover customization could turn it off.
   const handlers = createHandlers(
     fullContext({
       directory: project,
+      agents: [agentInfo("build", "")],
       tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
     }),
     createState(),
@@ -1083,7 +1139,7 @@ test("rule remove drops customizations so re-adding the rule reads enabled:true"
     items: snapshotAfterReAdd.items.map(itemOf),
     records: snapshotAfterReAdd.records.map(recordOf),
     agents: snapshotAfterReAdd.agents,
-  }).find((node) => node.address?.item === "perm:shell:custom")
+  }).find((node) => node.address?.item === "perm:shell:custom" && node.address.agent === "build")
   expect(row).toBeDefined()
   expect(row?.badges.state).toBe("on")
 })
@@ -1206,6 +1262,7 @@ test("skill delete drops item-addressed customizations so re-created skill resol
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role")
+  await linkToBuild(project, ["alpha"])
 
   const location = fullContext({ directory: project }).location
   const agents = agentHarness([agentInfo("alpha", "upstream role")])
@@ -1934,7 +1991,7 @@ test("agent delete removes customization records so re-created agent does not in
   const handlers = createHandlers(fullContext({ directory: project }), createState())
 
   await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "First prompt." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})),
   )
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -1979,11 +2036,13 @@ test("agent delete removes customization records so re-created agent does not in
   expect(remainingSnapshotRecords).toHaveLength(0)
 
   await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "Different second prompt." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})),
   )
 
+  // The re-created agent has its own (empty, DESIGN §5) body, not the deleted
+  // agent's override.
   const assembledAfter = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
-  expect(assembledAfter.system).toEqual(["Different second prompt."])
+  expect(assembledAfter.system).toEqual([""])
   expectRpcBody(assembledAfter)
 })
 
@@ -1993,10 +2052,10 @@ test("agent delete shadowing guard keeps global records when project agent is de
   const handlers = createHandlers(fullContext({ directory: project }), createState())
 
   await Effect.runPromise(
-    handlers["agent.create"]({ scope: "global", id: "alpha", prompt: "Global prompt." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "global", id: "alpha" }, throwingContext({})),
   )
   await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "Project prompt." }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})),
   )
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -2359,7 +2418,7 @@ test("protected agents refuse tool-actor agent writes at the RPC boundary and al
   // agent.create: a tool actor is refused and writes nothing.
   const createRefused: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "role", actor: { type: "tool" } }, throwingContext(createRefused)),
+    handlers["agent.create"]({ scope: "project", id: "alpha", actor: { type: "tool" } }, throwingContext(createRefused)),
     createRefused,
     "agent.protected",
   )
@@ -2373,12 +2432,12 @@ test("protected agents refuse tool-actor agent writes at the RPC boundary and al
 
   // The TUI writes the same agent through the same boundary.
   const created = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alpha", prompt: "role" }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})),
   )
   expect(created.id).toBe("alpha")
   expect(await Bun.file(agentFile("alpha")).exists()).toBe(true)
   const other = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "beta", prompt: "role" }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "beta" }, throwingContext({})),
   )
   expect(other.id).toBe("beta")
 

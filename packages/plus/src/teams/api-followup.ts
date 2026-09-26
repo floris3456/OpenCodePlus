@@ -5,7 +5,8 @@ import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { put } from "./inbox.js"
-import { kindOf } from "./policy.js"
+import type { PermissionTable } from "../instructions/permission-enforce.js"
+import { bound, mayReach, relationOf, row } from "./reach.js"
 import {
   attemptTransition,
   isAttemptTerminal,
@@ -50,16 +51,31 @@ function signatureOf(input: unknown): string {
   return createHash("sha256").update(stable(rest), "utf8").digest("hex")
 }
 
-export async function followupHandler(ctx: Context, args: FollowupInput, caller: TeamCaller): Promise<TeamApiResult> {
+export async function followupHandler(
+  ctx: Context,
+  args: FollowupInput,
+  caller: TeamCaller,
+  table?: PermissionTable,
+): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const child = await loadRun(root, args.run)
-  if (child === undefined || child.parent !== parent.id)
+  // A direct child always; a deeper descendant or any other run only when the
+  // member's Runs rows for team_followup allow it.
+  const relation = child === undefined ? undefined : await relationOf(root, parent, child)
+  if (child === undefined || relation === "self" || relation === undefined || !mayReach(table, caller.agent, "followup", relation))
     return fail(
       "E_NOT_CHILD",
       `Run ${args.run} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
       parent.children,
+    )
+  const rounds = bound(table, caller.agent, "followup", "limits.rounds")
+  if (rounds !== undefined && child.attempts.length > rounds)
+    return fail(
+      "E_ROUNDS",
+      `Run ${child.id} has had ${child.attempts.length - 1} corrections (limit ${rounds}, Permissions → Limits). Supersede it and delegate a fresh run.`,
+      "supersede and delegate a fresh run",
     )
   if (isTerminal(child.state))
     return fail(
@@ -68,12 +84,14 @@ export async function followupHandler(ctx: Context, args: FollowupInput, caller:
       "delegate a fresh run",
     )
 
-  const childKind = kindOf(child.role)
-  if (childKind.ok && childKind.kind === "reviewer")
+  // Whether the child takes corrections is the child's own row (Briefs it
+  // accepts → Corrections by followup), read for the child, not the caller.
+  const corrections = row(table, child.role, "get_context", "accepts.followup")
+  if (corrections === undefined || !corrections.on)
     return fail(
-      "E_REVIEWER",
-      `Reviewers take re-review via team_review(previous:"latest"), not followups.`,
-      { previous: "latest" },
+      "E_NO_FOLLOWUP",
+      `${child.role} ${corrections?.item.message ?? "takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report"} (Briefs it accepts → Corrections by followup).`,
+      "delegate a fresh run",
     )
 
   const signature = signatureOf(args)
@@ -107,7 +125,7 @@ async function followupQueue(
   budget: FollowupBudgetInput,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
-  if (current === undefined || current.parent !== parent.id)
+  if (current === undefined)
     return fail(
       "E_NOT_CHILD",
       `Run ${childID} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
@@ -151,7 +169,7 @@ async function followupNow(
   budget: FollowupBudgetInput,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
-  if (current === undefined || current.parent !== parent.id)
+  if (current === undefined)
     return fail(
       "E_NOT_CHILD",
       `Run ${childID} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,

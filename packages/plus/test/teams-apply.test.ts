@@ -175,6 +175,24 @@ test("a failure mid-install unwinds the agents installed earlier in the pass", a
   const teamDir = path.join(projectTeamsPath(project), "crew")
   await writeTeamAgent(teamDir, "one", "one body")
   await writeTeamAgent(teamDir, "two", "two body")
+  // DESIGN §3.3: a member's shared rows fall back to off unless a preset sets
+  // them. The members stand for members created from Native `build`, so apply
+  // installs nothing of its own and the two transforms counted here are the
+  // team installs this test is about.
+  const loaded = await load(project)
+  const linked = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: ["one", "two"].map((id) => ({
+      type: "link" as const,
+      level: "project" as const,
+      agent: id,
+      team: { level: "project" as const, team: "crew" },
+      preset: { kind: "agent" as const, id: "build" },
+      updated: UPDATED,
+    })),
+  })
+  if (!linked.ok) throw new Error("link save was stale")
   const base = fullContext({ directory: project })
   let calls = 0
   const ctx = {

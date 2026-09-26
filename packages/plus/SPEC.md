@@ -7,8 +7,9 @@ migration (`src/instructions/store.ts`, `src/instructions/paths.ts`).
 
 ## Tree shape
 
-Three top-level roots in this order: `Project`, `Global`, `Defaults`. Each
-root holds exactly two **catalogues**, `Agents` (`group:<level>:agents`,
+Four top-level roots in this order: `Project`, `Global`, `Defaults`,
+`Presets` (DESIGN §2; §"Presets root" below). Each of the first three
+roots holds exactly two **catalogues**, `Agents` (`group:<level>:agents`,
 `[a: add agent]`) and `Teams` (`group:<level>:teams`, `[a: add team]`). A
 catalogue owns its population and, at `Defaults`, its own shared inventory, and
 a row resolved through one catalogue never reads the other's inventory
@@ -38,23 +39,30 @@ keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the
 agents with the identical subtree. The `Teams` catalogue holds that level's
 teams, whose team rows (`team:<level>:<team>`, `add: "agent"`) hold member
 rows (`team:<level>:<team>:<member>`, `add: "agent"`) expanding to the same
-five agent groups. At `Defaults` the `Agents` catalogue's agents are template
-agents (`[a: add agent template]`) and the `Teams` catalogue's teams are the
-built-in shipped teams with working toggles (`[a: add team]` still creates at
-project or global, never defaults). Built-in Native and Special agents
-project under every root with row id `agent:<level>:<id>` and are not
+five agent groups. At `Defaults` the `Agents` catalogue's `User` subgroup
+holds the Agents **entries** (`agent:defaults:<name-or-pattern>`, `[a: add
+entry]` on the Agents group and its User subgroup) and the `Teams` catalogue
+holds the Teams entries: one row per team pattern (`team:defaults:<pattern>`,
+`[a: add member entry]`, removable = every member entry of the pattern) with
+its member entries (`team:defaults:<pattern>:<name>`); an injected Defaults
+team registry (tests only; none ships) lists its teams with working toggles
+and the entries of a pattern equal to its name. `[a]` on the Defaults Teams
+group adds a team entry (team pattern, member pattern, preset: §"TUI create,
+link and review" below). Entry rows address `defaults/<name>` (Teams:
+`defaults/<name>@<pattern>`, catalogue teams) and are removable
+(`entry.delete`). Built-in Native and Special agents
+project under the Project, Global and Defaults roots with row id `agent:<level>:<id>` and are not
 removable (`actions.remove === false`). Ancestor-backed project agents are
 discovered through core's upward `.opencode` walk, are file-backed, and are not
 removable (`AgentEntry.ancestor: true` suppresses deletion because deletion is
 confined to the local project). Team member rows carry `add: "agent"` and are
-removable when on-disk (project/global, or a Defaults overlay file, invoking
-`team.removeAgent`) while shipped Defaults members are refused
-(`actions.remove === false`). Team create from a `group:<level>:teams` row takes
-that level (creating directly at project or global without a scope dialog;
-Defaults prompts for project or global) and prefills the name from the chosen
-template.
+removable when on-disk (project/global, invoking `team.removeAgent`) while
+Defaults registry members are refused (`actions.remove === false`). Team
+create from a `group:<level>:teams` row takes that level (name, then team
+preset; no scope dialog); on the Defaults Teams group `a` creates a team entry
+instead.
 
-Every agent in all three roots has the identical subtree:
+Every agent in the three level roots, every Defaults entry and every preset has the identical subtree:
 
 ```
 <Agent>
@@ -63,18 +71,21 @@ Every agent in all three roots has the identical subtree:
   Tools
     Native / OpenCodePlus
       <tool>
-        <section>
-        <rule>                 (permission rules after sections; native/plus non-Code-Mode non-execute tools only)
+        Description            (its one section, relabelled; several sections hang under a Description group)
+        Permissions            (omitted when the tool lists no row for this owner)
+          <category>
+            <row>
       Code Mode                (only when that origin has Code Mode rows)
         <namespace>
           <tool>
-            <section>
+            Description · Permissions
     MCP > <server>
       <tool>
-        <section>
+        Description · Permissions
       Code Mode                (rows directly, no namespace level)
         <tool>
-          <section>
+          Description · Permissions
+    Other permissions        (team members only: role rows whose tool this inventory lacks)
   Base                     [a: add base prompt]
     <Template>.txt         (the one matching the agent's Plus-active model is marked "active")
       <section>
@@ -91,8 +102,8 @@ Every agent in all three roots has the identical subtree:
 Team member rows (`tree.ts` `lazyTeamMember`): under Teams → `<team>` at
 every level, each member row (`team:<level>:<team>:<member>`, kind `"team"`,
 no address, no toggle) carries `add: "agent"` and is removable when on-disk
-(project/global, or a Defaults overlay file, invoking `team.removeAgent`) while
-shipped Defaults members are refused (`actions.remove === false`). Each member
+(project/global, invoking `team.removeAgent`) while Defaults registry members
+are refused (`actions.remove === false`). Each member
 row expands to the same five groups an Agents-group agent renders (Models,
 Tools, Base, Skills, System, in that order) with working toggle/edit/reset on
 their rows, whether or not the team is enabled and whether or not the host
@@ -109,11 +120,132 @@ catalogues, so they carry their own ids under the member's owner path:
 groups (with nested Tools/Skills subgroup ids extending those prefixes) and
 `item:<level>:<team>/:<member>:<itemId>` /
 `section:<level>:<team>/:<member>:<itemId>:<id>` for their rows, whose address
-carries `catalogue: "teams"`. The flat `item:<level>:<member>:<itemId>` id
+carries `catalogue: "teams"` and `memberOf: { level, team }`. `memberOf` makes
+the row resolve with its own team exactly as apply resolves that member
+(`L/A@T` first, the team-scoped link of T, T's Teams entries), so a member of an
+enabled team never shows a same-id disabled team's link, and team-scoped
+overrides are in the displayed chain; the address's own node (what edits,
+resets and model activations write) stays the per-agent `L/A`. The flat `item:<level>:<member>:<itemId>` id
 still resolves: it is the stand-alone Agents-catalogue row for the same agent.
 `dialogs.tsx` `scopeFromModelsGroup` accepts the `<team>/:<member>` owner form
 and strips the `<team>/:` prefix so `a` on a member's Models group adds for the
-member id.
+member id; for a member preset, a Teams entry member and a team's Special agent
+(whose records are team-scoped) it also passes `team: {level, team}`, so `a` on
+a member preset's Models group adds `model.add {level: "preset", agent,
+team: {level: "preset", team}}` with no prompts.
+
+### Presets root (`tree.ts` `lazyPresetRoot`)
+
+```
+Presets                               root:preset
+  Agents                              group:preset:agents
+    Native / Plus / User              group:preset:agents:native|plus|user   (User: [a: add preset])
+      <preset>                        agent:preset:<id>   (label: the preset's label; five groups)
+  Teams                               group:preset:teams
+    Native / Plus / User              group:preset:teams:native|plus|user    (User: [a: add team preset])
+      <team preset>                   team:preset:<team>  (User: [a: add member preset])
+        <member preset>               team:preset:<team>:<member>  (five groups)
+```
+
+Agent preset rows address `preset/<id>`; member preset rows
+`preset/<member>@<team>` (`team: {level:"preset", team}`, catalogue teams)
+under the owner path `<team>/:<member>`. Only User presets carry `remove`
+(`preset.delete`, refused while in use). A live run's edit-scope rows never
+list under a preset of the same id. Presets and Defaults entries get the
+Role/persona row discovery gives every agent (`presets.ts` `withOwnerRoles`).
+
+Every agent, member, team, entry and preset row carries `owner`: the link
+owner (`level`, `agent`, `team?`) `link.set` addresses, the preset
+(`{ref, origin}`) or entry (`{catalogue, team?, name?}`) it is, and `link`, the
+preset it is linked to now. Item, perm, section and model rows carry
+`badges.from` (where the on/off state came from, `model.ts` `From`),
+`badges.textFrom` (when the text came from elsewhere), `badges.fromLabel`
+(`from-label.ts`: "from preset Orchestrator", "from default *orchestrator*",
+"from Defaults (every agent)", "native", "upstream", "off by default", "set
+here", "from global") and `badges.reviewOf` (the parts to review). A model row
+whose own active record recorded an active model above that has since changed
+is to review.
+
+### TUI create, link and review (`tui/instructions/dialogs.tsx`, `route.tsx`, `tui/preset-picker.ts`)
+
+The human's flow everywhere (DESIGN §5): `a` → a name → a preset → done; no
+template, prompt, model or mode step. The preset picker (`pickAgentPreset`,
+title `Preset`) groups its options by `category`: `Agent presets · Native`,
+`Agent presets · Plus`, `Agent presets · User`, `Team preset members` (titles
+`<team> › <member>`), then `None — everything off` (no category, value
+`__none__` → no `preset`). The team preset picker (`pickTeamPreset`, title
+`Team preset`) groups `Native` / `Plus` / `User` and ends with `Empty team`
+(value `""` → no `preset`).
+
+| cursor | dialogs | call |
+| --- | --- | --- |
+| Project/Global `Agents` or its `User` subgroup (any row under Project/Global via the generic `Add` → Agent) | prompt `Create agent` → `Preset` | `agent.create {scope: the row's root, id, preset?}`; the new row is revealed and selected |
+| Project/Global `Teams` | prompt `Team name` → `Team preset` | `team.create {level: the row's root, team, preset?}`; row revealed |
+| a team row or member row at Project/Global | prompt `Member name` → `Preset` | `team.addAgent {level, team, id, preset?}` |
+| Defaults `Agents` or its `User` subgroup | prompt `Agent name or pattern` (`* and % match any text, case-insensitive (e.g. *orchestrator*)`) → `Preset` | `entry.create {catalogue: "agents", name, preset?}` |
+| Defaults `Teams` | prompts `Team name or pattern` → `Member name or pattern` → `Preset` | `team.addAgent {level: "defaults", team: pattern, id: pattern, preset?}` (a team pattern is a row only while it has a member entry) |
+| a Defaults team entry row or member entry row | prompt `Member name or pattern` → `Preset` | `team.addAgent {level: "defaults", team: the row's team PATTERN (its owner), id, preset?}` |
+| Presets → Agents → `User` | prompt `Preset name` → `Base preset` (the agent picker, incl. None) | `preset.create {kind: "agent", id, from?}` |
+| Presets → Teams → `User` | prompt `Team preset name` → `Team preset` (incl. `Empty team`) | `preset.create {kind: "team", id, from?}` |
+| a User team preset row | prompt `Member name` → `Preset` | `preset.addMember {team, id, from?}` |
+| any Models group (agent, member, entry, preset, member preset) | `Model provider` → `Model` (→ `Variant`) | `model.add` at the group's owner, team-scoped where its rows are |
+| outside Project/Global (generic `Add` → Agent/Team) | … then `Agent scope` / `Team scope` last | as above |
+
+A created row is revealed (`state.reveal`: its ancestors expand and it is
+selected as soon as a snapshot carries it; moving the cursor drops the wish).
+
+The palette `Create agent` (`tui/agents/create.tsx`) has no cursor: prompt
+`Create agent` → `Agent scope` (Project / Global) → `Preset` → `agent.create`,
+then navigates to the new agent.
+
+**`l` relink.** Bound on every row whose `owner` is linkable (`isLinkable`: an
+agent, member or team at Project/Global, a Defaults entry, a User preset or
+member preset; never a Teams entry pattern row, a Native/Plus preset or a
+native agent's Defaults row). An agent-like owner gets `pickAgentPreset` with
+title `Link to preset`, the current link as `current`, and `None — unlink`; a
+team owner (`agent: null`) gets `pickTeamPreset` with title `Link to team
+preset` and `None — unlink`. The choice calls `link.set {level, agent, team?,
+catalogue?, preset | null}`; success toasts `Linked <row> to <Label> (<Origin>)`
+or `Unlinked <row>`, a refusal (`link.cycle`, `agent.protected`,
+`preset.readonly`, `link.invalid`) toasts the server's message.
+
+**`d` on a User preset or entry** calls `preset.delete {ref}` /
+`entry.delete`; a refusal is toasted, and a `preset.inUse` refusal names the
+users (`data.users`, appended when the message does not already name them).
+When every user is in another project (`data.elsewhere`), a second confirm
+(`Delete preset <name> anyway?`) names them and, on yes, calls
+`preset.delete {ref, confirm: true}`. An owner linked to a deleted preset shows
+the warning badge `missing preset`.
+
+**Tree pane.** An inheriting row shows its `badges.fromLabel` as a dim suffix
+after its badges (`shell [on] · from preset Orchestrator`), never when the row
+sets the value itself (`set here`). The review badge reads through
+`reviewLabel`: `to review`, `to review (state)`, `to review (text, state)`; a
+model row's review reads `review`. Both colours follow the theme role: the
+suffix is secondary text (`text.subdued`), every review label the warning
+feedback token it always had.
+
+**Detail pane.** The provenance line names state and text sources in the same
+words: `state and text: from preset Orchestrator`, or `state: from preset
+Orchestrator · text: upstream` when they differ; a value this level sets reads
+`set here (Project)`; model rows `active model: …` / `candidate: …`. Owner rows
+add `Created from preset: Orchestrator (Plus)` or `No preset` (nothing for a
+shipped preset of its own). Defaults entry rows add what they match: `matches
+agents named: <pattern>` / `matches members named: <m> in teams named: <t>` /
+`matches teams named: <t>`, then `matching now: …` computed from the snapshot's
+agents and teams with `matchesName`.
+
+**Review (§3.6).** Enter on a review row whose `reviewOf` holds `state` or
+`pin` opens a choice (title `Review "<row>"`): `Keep yours (<yours>)` →
+`resolveReview keep` limited to those parts (the value above is re-recorded),
+`Take <from label> (<above>)` (e.g. `Take from preset Orchestrator (on)`) →
+`take` limited to those parts; values read `on`/`off` and `pinned`/`not
+pinned`. With `text` under review too, the three-way diff opens after the
+choice for the text. A text-only review opens the diff as before. A model row
+under review offers `Keep yours (<model>)` (`acknowledgeActiveModel`: your
+active model re-records the model above) and `Take <from label> (<model
+above>)` (`clearModelActive`). The hint line shows `enter review` on review
+rows and `l link` where `l` is bound.
 
 ### Catalogues (`model.ts`, `tree.ts`, `store.ts`)
 
@@ -163,6 +295,8 @@ never emitted: the caller skips the group when there are no rows, and every
 namespace group comes from a row so it is non-empty by construction. The
 synthetic `execute` row (`tool:execute`) is a plain Native row, toggle-only:
 its text is host-owned and not editable, and it carries no other affordance.
+It has no Description; its only child is its Permissions group (Limits →
+Tool calls per run).
 
 Models group (`tree.ts` `lazyModels`): first child of every agent subtree
 and first shared Defaults inventory. The group id is
@@ -175,24 +309,82 @@ remove deletes the row at this level only; no edit, split, or pin. `active`
 marks the resolved winner down the chain (or upstream when nothing is
 active).
 
-Permission rows (`tree.ts` `toolPermRows`): direct children of a
-native/plus tool row after its section rows, sorted by `order` then title
-(`byOrderTitle`, carrying the miner's most-mentioned-first rank). No group
-wrapper is ever emitted: empty rule sets emit nothing at all. Only
-native/plus, non-Code-Mode, non-`execute` tools host rows
-(`canHostPermRules`): MCP resources are always `"*"` and Code Mode denies
-are whole-tool, so per-resource rules there would never match core
-evaluation. A tool row that can host rules carries no direct `add`: `a`
-presents the Section / Permission rule choice (`dialogs.tsx` `addFor`);
-every other splittable row keeps `add: "section"`. Scope and tool derive
-from the tool or perm row address (`scopeFromToolOrPermRow` /
-`toolFromToolOrPermRow`). `enter` on a perm row opens the rule editor
-(label → patterns → keywords → message, each prefilled; tool and rule id come
-from the snapshot item's `permTool`/`ruleId`, the message from the rule
-record, level and agent from the row address), persisting through
-`rule.update`, which upserts a `RuleRecord`
-by `tool` + `id` — so editing a curated or mined row materialises a custom
-override of the same identity.
+Tool rows (`tree.ts` `lazyItem`, `toolPermissions`): every tool row, Code
+Mode and MCP included, expands into Description and Permissions.
+
+- **Description** is the tool's text. A text that splits into one section is
+  that section row itself, relabelled `Description` (its id is unchanged, e.g.
+  `section:<level>:<owner>:tool:<id>:whole`, and it keeps the section
+  toggle/edit/reset). A text with several sections hangs them under a
+  `Description` group (`group:<level>:<owner>:tool:<id>:description`) that
+  carries the tool's own address, so its detail shows every section combined,
+  and offers no action of its own. Other item kinds keep their sections as
+  direct children. The `execute` row has no Description.
+- **Permissions** (`group:<level>:<owner>:tool:<id>:permissions`) holds one
+  group per category (`…:permissions:<category>`, labelled by
+  `permission-catalog.ts` `categoryLabel`), each holding that category's rows
+  (`toolPermissionRows`). `<owner>` is the owner segment of the tool's row id
+  (`''`, `/teams`, an agent id, `<team>/:<member>`, `<team>/:special:<id>`).
+  The group is omitted when the tool lists no row for this owner: a shared
+  (owner-less) row lists only rows with no `agents`, an owner's row the rows
+  that apply to it. A row lists under `hostOf(permTool)` — its own tool, except
+  `external_directory` (under read), `task` (under subagent) and `search`
+  (under search_tavily_search) — and a row whose category carries `alsoUnder`
+  lists again under each of those tools with the row id
+  `item:<level>:<owner>:perm:<tool>:<rule>@<alias>` (edit's Protected files and
+  Where under write and patch): one permission, one address and one record, a
+  distinct row id per listing. Categories follow `categoryOrder(tool)`:
+  Delegate to, Runs, Access, Team role, the tool's legacy category, the
+  categories shared into it (under write and patch: edit's Files, Protected
+  files and Where, with edit's labels), the catalog's categories in catalog
+  order, Approval, Rules, Mentioned in instructions, then any other category
+  by id (Run edit scopes).
+  Inside a category the fallback
+  ("Everything else") row comes first, then `byOrderTitle` (mined rows keep the
+  miner's most-mentioned-first rank; catalog rows carry `1000 + categoryIndex *
+  100 + rowIndex`, so they follow curated rows). Building the groups resolves
+  nothing; `toolPermRows` returns the same rows flat.
+- **Other permissions** (`group:<level>:<owner>:tools:policy`, the id the old
+  `Policy` group had) sits last in the `Tools` group of an owner with team role
+  rows and holds only the role rows (`policy`) whose host tool this owner's
+  inventory lacks; it is omitted when every row found its tool.
+
+Only native/plus, non-Code-Mode, non-`execute` tool rows offer a user rule
+(`canHostPermRules`): MCP resources are always `"*"` and Code Mode denies are
+whole-tool, so a user rule — a core rule — there would never match core
+evaluation. The other tools' Permissions list catalog rows, which the tool
+hook enforces on the call's input (Permission rules, below). A tool row that can host rules
+carries no direct `add`: `a` presents the Section / Permission rule choice
+(`dialogs.tsx` `addFor`); every other splittable row keeps `add: "section"`.
+Scope and tool derive from the tool or perm row address
+(`scopeFromToolOrPermRow` / `toolFromToolOrPermRow`). A user rule lists in its
+tool's legacy category (below), else in Rules.
+
+`enter` on a perm row (`route.tsx`) depends on the row:
+
+- a limit or bound row (`permission-catalog.ts` `isValueRow`: `permKind:
+  "limit"`, or a `team` row of a `limits` category whose text holds a number)
+  prompts for the number (titled with the row label, `A number. Space switches
+  the cap off and on.`, prefilled with the resolved text) and saves the first
+  integer of the answer as the row's text through `saveText`; an answer with no
+  number toasts `"<label>" takes a number`. Space still switches the cap off
+  and on, and the number stays for when it is switched back on;
+- a row with no patterns (values, parameters, approvals, team switches) toasts
+  `"<label>" is a switch: space turns it on or off`;
+- every other perm row opens the rule editor (label → patterns → keywords →
+  message, each prefilled; tool and rule id come from the snapshot item's
+  `permTool`/`ruleId`, the message from the rule record, level and agent from
+  the row address), persisting through `rule.update`, which upserts a
+  `RuleRecord` by `tool` + `id` — so editing a curated, mined or catalog row
+  materialises a custom override of the same identity.
+
+The hint line says `enter edit number`, `space switch` or `enter edit rule`
+accordingly. The detail pane (`detail-pane.tsx`) prints `enforced by:
+<enforcementLine>` under a perm row's `tool: … · rule: …` line (the kinds
+table under Permission rules gives each line), `Every permission of <tool>,
+one group per category. Rows are on/off; enter edits a rule's patterns or a
+limit's number.` on a Permissions group, and `categorySummary` on a category
+group.
 
 Agent sources and scopes (`model.ts`)
 
@@ -272,7 +464,7 @@ export function slice(text: string, section: Section): string
 ## Level-aware model (`model.ts`)
 
 ```ts
-export type Level = "defaults" | "global" | "project"
+export type Level = "defaults" | "global" | "project" | "preset"
 export interface Address {
   readonly level: Level
   readonly agent: string | null // null = Defaults shared-inventory row; only valid at "defaults"
@@ -314,8 +506,32 @@ export interface Item {
   readonly provenance?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
+  /** Perm rows only: the Permissions category of the tool the row is listed under (e.g. "commands", "files", "to"). */
+  readonly category?: string
+  /** Perm rows only: how the row is enforced. Absent means "rule": core rules on `permAction`. */
+  readonly permKind?: PermKind
+  /** input/value/param/limit/approval rows: the input field the row reads (dotted path; `[]` walks an array). */
+  readonly field?: string
+  /** value rows: the literal the row allows. param rows: the value that counts as using the parameter (absent: any value). */
+  readonly value?: string | number | boolean | null
+  /** An allow-list row: while on it lets its patterns through a category whose fallback is off. */
+  readonly allow?: boolean
+  /** limit rows: what the number in the row's text caps, and what a call above it gets. */
+  readonly measure?: "value" | "length" | "count"
+  readonly mode?: "clamp" | "refuse"
+  /** Refusal text of catalog and team rows; curated and user rules keep theirs in tool-permissions.ts and RuleRecords. */
+  readonly message?: string
+  /** True for a category's "Everything else" row. */
+  readonly fallback?: boolean
+  /** Other tool ids whose Permissions list this same row. */
+  readonly alsoUnder?: readonly string[]
 }
+export type PermKind = "rule" | "input" | "value" | "param" | "limit" | "approval" | "env" | "team"
 ```
+
+`Item` also carries `permAction`, `policy` and `runID` on perm rows (team
+rules, below). What each `PermKind` means and who enforces it is under
+Permission rules.
 
 Item id forms (documented, not enforced): `tool:<toolId>`,
 `base:<templateId>` (gpt|claude|muse|gemini|general|kimi|trinity), `skill:<skillId>`,
@@ -325,41 +541,87 @@ Item id forms (documented, not enforced): `tool:<toolId>`,
 `perm:<toolId>:<ruleId>` (the rule id keeps any extra `:` it contains; row
 ids address the whole row by concatenation and match by exact string
 equality, so `/`, `@`, and extra `:` inside the item segment need no
-escaping; the parsers split on the first `/` and the first `:` only).
+escaping; the parsers split on the first `/` and the first `:` only). A
+catalog row's rule id is `<category>.<row>` (`perm:shell:commands.git-changes`,
+`perm:team_delegate:limits.inflight`, `perm:team_status:runs.others`), a
+team member's own `to.<member>` and `run:<runID>` (Teams without kinds).
 
-Resolution chain, most specific first, resolving `text`, `state`, and `pin`
-independently — first level supplying that field wins:
+Resolution chain (`resolutionChain(address, ctx)`, DESIGN §3), most specific
+first, resolving `text`, `state`, `pin` and the active model independently —
+the first node supplying that field wins, else the fallback:
 
 | node | chain |
 | ---- | ----- |
-| project/A | project/A → global/A (only when a Global agent A exists) → defaults/A (only when a Defaults template A exists) → defaults/null → upstream |
-| global/A | global/A → defaults/A → defaults/null → upstream |
-| defaults/A | defaults/A → defaults/null → upstream |
-| defaults/null | defaults/null → upstream |
+| project/A (team T optional) | project/A@T → project/A → global/A (Global A exists) → expand(nearest link among those) → matching Defaults entries, most specific first, each followed by expand(its link) → defaults/null → fallback |
+| global/A | global/A → expand(link) → entries → defaults/null → fallback |
+| defaults/E (entry or native agent) | defaults/E → expand(link of E) → defaults/null → fallback |
+| preset/P | expand(P) → defaults/null → fallback |
+| defaults/null | defaults/null → fallback |
 
-Scopes are explicit input: `export interface Scopes {
-readonly global: ReadonlySet<string>; readonly defaults:
-ReadonlySet<string> }`.
+`expand(P)` = `preset/P` (the human's edits) → `shipped/P` (Native and Plus
+presets only: content from the catalogue, never stored) → expand(link of P).
+A member preset `M@TP` is `preset/M@{level:"preset",team:TP}` and never falls
+through to a stand-alone agent preset `M`. A preset already in the chain is
+not expanded again (cycles are cut). An agent in `ctx.defaults` (native agents
+shown at Defaults) has its own exact Defaults node `defaults/A`, ordered as an
+exact Agents entry. Agents-catalogue entries match stand-alone agents;
+Teams-catalogue entries (`defaults/<member pattern>@{level:"defaults",
+team:<team pattern>}`) match a member whose team (from the address, else
+`ctx.memberTeams`) matches. `matchesName(pattern, name)`: `*`/`%` = any run,
+whole name, case-insensitive, everything else literal. `entrySpecificity`:
+exact first, more literal characters first, then name order (Teams: member
+exactness, team exactness, member literals, team literals).
+
+Fallback (§3.3): `state` falls back to the item's upstream state only for an
+agent in `ctx.native` (origin native/special, a team's Special agents
+included), an item the agent owns (`item.agents` includes it — its Role/persona
+— or `item.ownedBy` names it: a user-created rule row carries its RuleRecord's
+agent there, without limiting which agents the row applies to) and a Native
+preset; everything else — user agents, members, Defaults entries,
+`defaults/null`, other presets — falls back to **off**. `text` and `pin`
+always fall back to upstream. A context without `native` (a bare
+`{ global, defaults }`) keeps the pre-preset rule: everything falls back to
+upstream.
 
 ```ts
+export interface ChainContext {
+  readonly global: ReadonlySet<string>
+  readonly defaults: ReadonlySet<string>
+  readonly native?: ReadonlySet<string>
+  readonly links?: readonly LinkRecord[]
+  readonly entries?: readonly EntryRecord[]
+  readonly presets?: PresetCatalog // presets (ref, origin), shipped links, shipped(ref, item, section), model(ref)
+  readonly memberTeams?: ReadonlyMap<string, readonly string[]>
+}
+export type Scopes = ChainContext // scopesOf(agents) fills global, defaults and native (origin native|special)
+
 export interface Resolved {
   readonly text: string
   readonly assembled: string // text with excluded sections dropped (whole items only)
   readonly enabled: boolean
-  readonly pinned: boolean // nearest record carrying `pin` down the chain, else the upstream registry default
+  readonly pinned: boolean // nearest node carrying `pin` down the chain, else the upstream registry default
   readonly source: Level | "upstream"
+  readonly from: From // where the state came from
+  readonly textFrom: From
+  readonly pinFrom: From
   readonly overriddenHere: boolean
   readonly modified: boolean
-  readonly review: boolean
+  readonly review: boolean // reviewOf is not empty
+  readonly reviewOf: readonly ("text" | "state" | "pin")[]
 }
+// From: level | preset (id, team?, shipped) | default (name, team?) | defaults-everyone | native | upstream | off
 ```
 
 - `modified` is **text-only**: a state-only override never marks a node
   modified and never raises review, so a disabled-but-otherwise-unmodified copy
   keeps taking upstream text silently.
-- `review` (yellow) is true when the node is `modified` at this level AND the
-  current upstream fingerprint (resolved from the chain **above** this level)
-  differs from BOTH the record's `basedOn` and its `acknowledged`.
+- Text review (yellow) is raised when the node is `modified` at this level
+  AND the current upstream fingerprint (resolved from the chain **above**
+  this level) differs from BOTH the record's `basedOn` and its `acknowledged`.
+- State and pin review (§3.6): `merge(..., scopes)` setting `state` or `pin`
+  stores what the chain above resolves at that moment (`basedOnState`,
+  `basedOnPin`); the part is under review when the value above now differs.
+  Records without them never flag.
 - Sections warn independently: a modified section raises review on itself
   without raising it on sibling sections.
 - Roll-up: `countReview(entries, prefix)` counts reviewable descendants under
@@ -376,10 +638,12 @@ export type Resolution = "keep" | "take" | "edit"
 ```
 
 - **keep**: set `acknowledged` to the current upstream fingerprint; text
-  unchanged; still modified.
-- **take**: remove `text`, `basedOnText`, `acknowledged` (drop the record
-  entirely if it then carries no state), so live propagation resumes and the
-  node is unmodified again.
+  unchanged; still modified. A tracked state/pin re-records the value above
+  (`basedOnState`, `basedOnPin`).
+- **take**: remove the parts under review — `text`, `basedOnText`,
+  `acknowledged` for text (also when nothing is under review), `state` +
+  `basedOnState`, `pin` + `basedOnPin` — and drop the record entirely if it
+  then carries no text, state or pin, so live propagation resumes.
 - **edit**: set `text` to the new text and set `basedOn`, `basedOnText`,
   `acknowledged` to the current upstream; still modified, review cleared.
 
@@ -417,9 +681,15 @@ export function removeModelRecord(models: readonly ModelRecord[], address: { lev
   agent's upstream model appended last when not already present. Shared rows
   (`agent: null`) contribute only at `defaults`; upstream contributes only
   when `agent !== null`.
-- The effective model is the first `active === true` record down the chain,
-  else upstream. No active record and no upstream means Plus installs
-  nothing for that agent.
+- The effective model is the first `active === true` record down the chain
+  (presets and Defaults entries included; a shipped preset's
+  `presets.model(ref)` counts as active), else upstream. No active record and
+  no upstream means Plus installs nothing for that agent.
+- Active-model review: `activateModel`/`ensureActivateModel` with a
+  `ModelContext { scopes, upstream? }` store `basedOn` = the key of the active
+  model above (`aboveActiveModelKey`, "" when none); `resolveActiveModel`
+  marks the own winner `review: true` when that key has changed.
+  `acknowledgeActiveModel` is keep; `clearModelActive` is take.
 - Invariant: at most one record per (level, agent) carries `active`.
   `activateModel` clears `active` from only that pair's other records;
   activating the already-active record (with no stray actives) or a target
@@ -470,8 +740,84 @@ export interface SplitRecord {
   readonly boundaries: readonly Boundary[]
   readonly updated: string
 }
-export type StoredRecord = CustomizationRecord | SplitRecord | TeamRecord | ModelRecord | RuleRecord
+export type StoredRecord =
+  | CustomizationRecord | SplitRecord | TeamRecord | ModelRecord | RuleRecord
+  | LinkRecord | EntryRecord | PresetRecord
 ```
+
+Preset records (DESIGN §7): `LinkRecord {type:"link", level, agent|null,
+team?, catalogue?, preset: {kind:"agent",id} | {kind:"member",team,id} |
+{kind:"team",id}, updated}`; `EntryRecord {type:"entry", level:"defaults",
+catalogue, team?, name, updated}`; `PresetRecord {type:"preset",
+level:"preset", kind:"agent"|"team", id, team?, fields?: {mode?,
+description?}, updated}`. `CustomizationRecord` gains `basedOnState?`,
+`basedOnPin?` (after `acknowledged`); `ModelRecord` gains `basedOn?` (after
+`active`). Level `preset` routes to the global file; team records never carry
+it. Sort keys: links `["link", agent, team, catalogue, level, preset kind,
+preset team, preset id, updated]`, entries `["entry", catalogue, team, name,
+updated]`, presets `["preset", kind, team, id, updated]`. The catalogue
+migration considers only customization, split, model and rule records.
+The snapshot carries links, entries and user presets in their own fields
+(`Snapshot.links`, `.entries`, `.presets`), never in `records`, and
+`instructions.mutate` re-merges the stored ones like team records, so a client
+that resubmits only inventory records cannot drop them.
+
+### Presets and the chain context (`presets.ts`)
+
+`presets.ts` holds what ships as presets and builds the full chain context.
+It is pure data and functions (no filesystem), shared by the server, the TUI
+and the tools, so shipped content never crosses the wire: every side builds
+the same catalogue from the snapshot's `items` and preset records.
+
+- **Native agent presets** (`nativePresetIds`: build, plan, general, explore,
+  title, summary, compaction). `shipped(ref, item, null, upstream)` answers
+  every item with the resolving item's upstream `{ text, state, pin? }` and
+  `system:role` with the native agent's own role item text.
+- **Plus agent presets** (`plusAgentPresets`: planner, orchestrator,
+  implementer, reviewer, scout, build-seat; mode `primary`). Each ships every
+  item's upstream value, overlaid by `plusAgentOverrides[id]` (the former
+  role rules, DESIGN §6; see Teams without kinds), and `system:role` = `shared` +
+  the role block (`builtin-teams.ts` `teamRoles`; build-seat has its own).
+- **Plus team presets** (`plusTeamPresets`, from `builtin-teams.ts`:
+  opencodeplus-team, starter, review). A member preset ships its own role body
+  as `system:role` and `plusMemberOverrides[team][member]`; everything else
+  follows its shipped link (`shippedLinks`: `preset/<member>@<team>` →
+  its Plus agent preset).
+- **User presets** are `PresetRecord`s (a member preset is `kind:"agent"`
+  with `team`); they ship nothing, their content is ordinary `preset`-level
+  records and their links.
+- No preset ships an active model yet (`model()` is always undefined).
+
+`presetListing(presets)` lists every preset as data `{ ref, origin, kind,
+label, description?, mode?, members? }` (Native, Plus, User agent presets,
+then Plus and User team presets each followed by their member presets).
+`presetCatalog({ items, presets })` builds the `PresetCatalog`;
+`chainContext({ agents, items, links, entries, presets, teams })` builds the
+full `ChainContext` (`scopesOf(agents)` plus links, entries, the catalogue and
+`memberTeams`). `presetStateOf(records)` picks links, entries and presets out
+of any record list. Every production resolution reads the full context:
+publish (`buildActiveModels`, apply, specials, team role overrides, baselines,
+the fingerprint view), discovery's base badge, `instructions.assembled`, the
+memo behind the tree/query/ops, the tools' `show`, and the TUI state and
+detail pane (`snapshot.ts` `contextOfSnapshot`, `memoInputOf`).
+
+A member's link carries its team (`L/A@T`). The tree's member rows carry
+`memberOf` (the row's own team), so their chain is apply's team-scoped chain
+for that team; an address without a team or `memberOf` in the Teams catalogue
+reads a link of `L/A@T` for any team `memberTeams` names. Both pick
+the nearest link among the member's own nodes with the team-scoped node first:
+`L/A@T`, then `L/A`, then `global/A` — a Global link of the same id never
+beats the member's team-scoped link.
+
+Apply installs nothing without records only while every agent is *plain*
+(no Defaults entry exists, no link names it, and its fallback is upstream);
+any other agent's untouched rows follow a preset or fall back to off, so they
+install. An MCP server row (`kind:"mcp"`) is server configuration, not an
+agent setting, and keeps its upstream state at every address.
+
+Ops that set `state`/`pin` pass the context to `merge` (recording
+`basedOnState`/`basedOnPin`), and activating a model passes it to
+`ensureActivateModel` (recording `basedOn`).
 
 ```ts
 // Per-agent model selection: which provider model an agent uses. `active`
@@ -567,7 +913,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instructions.refresh` | `void` | `Snapshot` | `project.disabled` |
 | `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `project.disabled`, `agent.protected` |
 | `instructions.assembled` | `{ agent }` | `Assembled` | `project.disabled`, `agent.unknown` |
-| `agent.create` | `{ scope, id, template?, fields?, prompt, actor? }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `agent.create` | `{ scope, id, preset?: PresetRef, actor? }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid` |
 | `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
 | `agent.delete` | `{ scope, id, actor? }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` |
 | `skill.create` | `{ name, body }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
@@ -579,9 +925,9 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
 | `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
 | `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
-| `team.create` | `{ level, team, template?, actor? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` |
+| `team.create` | `{ level, team, preset?: team preset id, actor? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` |
 | `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
-| `team.addAgent` | `{ level, team, id, template?, fields?, prompt, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `team.addAgent` | `{ level, team, id, preset?: PresetRef, actor? }` | `AgentRef` (at defaults `path` is the entry's row id) | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid`, `entry.invalid`, `entry.exists` |
 | `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
 | `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` |
 | `team.list` | `void` | `TeamListOutput` | `project.disabled` |
@@ -593,6 +939,85 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` |
 | `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` |
 | `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` |
+| `entry.create` | `{ catalogue, name, team?, preset?: PresetRef, actor? }` | `EntryRef` | `project.disabled`, `entry.invalid`, `entry.exists`, `preset.invalid` |
+| `entry.delete` | `{ catalogue, name?, team?, actor? }` | `EntryRef` (`removed`) | `project.disabled`, `entry.invalid`, `entry.missing` |
+| `entry.rename` | `{ catalogue, name, team?, to, actor? }` | `EntryRef` | `project.disabled`, `entry.invalid`, `entry.exists`, `entry.missing` |
+| `preset.create` | `{ kind: "agent", id, from?: PresetRef, actor? }` or `{ kind: "team", id, from?: team preset id, actor? }` | `PresetResult` | `project.disabled`, `preset.invalid`, `preset.exists` |
+| `preset.addMember` | `{ team, id, from?: PresetRef, actor? }` | `PresetResult` | `project.disabled`, `preset.invalid`, `preset.exists`, `preset.readonly` |
+| `preset.delete` | `{ ref: PresetRef, confirm?, actor? }` | `PresetResult` | `project.disabled`, `preset.invalid`, `preset.readonly`, `preset.inUse` |
+| `link.set` | `{ level, agent, team?, catalogue?, preset: PresetRef \| null, actor? }` | `LinkResult` | `project.disabled`, `link.invalid`, `link.cycle`, `preset.invalid`, `preset.readonly`, `agent.protected` |
+
+Presets, entries and links (DESIGN §4, §5, §7). `agent.create` and
+`team.addAgent` write the preset's `mode` and `description` (Native presets:
+what the host reports for the native agent) and an EMPTY body, and store a
+link at the created owner (members: team-scoped); no preset is "None —
+everything off" (no link, and a stale link at that owner is dropped). A file
+never goes out without a mode: None (or a preset that names no mode) writes
+`mode: primary`, core's own default for an agent (`Agent.Info.default`), so the
+minimal file is `---\nmode: primary\n---\n`. Core skips an empty agent file
+(`core/src/config/plugin/agent.ts` decodes only a file with content), so an
+empty file would never register with the host. Ids keep their case
+(`Opus-Orchestrator-Max` registers as written). `agent.rename` moves the
+agent's link and its own records (customizations, splits, models, rules at
+`{level: scope, agent: from}`, no team) to the new id with the file; records a
+deleted agent of the new id left behind give way, while a member of the same
+id and the agent at another level keep theirs. If the store cannot be saved,
+the file is moved back and the call answers `agent.invalid`.
+`team.addAgent` at `defaults` stores a Teams member entry (`team`, `id` are
+patterns) instead of a file. Entry names may hold `*`/`%`, never `:`, NUL or a
+line break (`presets.ts` `validateEntryName`); team patterns follow
+`validateTeamName`; a Teams entry always stores its team pattern (default
+`*`) and may not be named `special`. A duplicate (same catalogue, team pattern
+and name) or an Agents entry named like a native agent's own Defaults row is
+`entry.exists`. Deleting or renaming an entry takes its own records and link
+with it. `preset.create` checks the id against every preset of that kind
+(`preset.exists`); an agent preset copies its base's mode/description into
+`fields` and links to it; a team preset from a team preset copies the member
+list (each member preset linked to the source member, the team linked to the
+source team). `preset.addMember` takes User team presets only
+(`preset.readonly`). `preset.delete` refuses Native/Plus presets and, while
+any stored or shipped link points to the preset (or, for a team preset, to one
+of its members from outside it), answers `preset.inUse { users, elsewhere? }`
+with the owners' row ids; it removes the preset's records, its members' and
+their links. User presets live in the global store but a project's links live
+in that project's store, and projects are not enumerable, so every save that
+writes a project store keeps a global index of the projects whose store holds
+a link (`linked-projects.json` next to the global records; `store.ts`
+`linkedProjects`). A delete reads each listed project's own store for the
+truth: links in this project or the global store always refuse (relink them
+here first); links other projects hold are listed as `<directory> › <row id>`
+in `users` and per project in `elsewhere`, and refuse unless the call passes
+`confirm: true` (the TUI asks a second time; the `instructions_delete` tool
+takes `force: true`). A listed project whose store is gone or holds no link
+never blocks and is dropped from the index. The reference check (this store,
+the index and every listed store) and the deletion commit run under one write
+gate (`store.ts` `updateGated`, the gate every save takes), so a link another
+project commits meanwhile is either seen and refuses, or is written after the
+preset is gone. A link whose preset no longer
+exists never breaks resolution: its node contributes nothing and the rows fall
+through to the rest of the chain; the owner row carries `owner.linkMissing`,
+the badge `missing preset` (warning), and the detail line `Created from
+preset: <id> — missing (deleted)…`, until it is relinked (`l`). `link.set` validates the owner (an existing project/global agent, team
+or member, a Defaults entry, or a User preset — Native/Plus presets are
+`preset.readonly`), the preset's kind (an agent takes an agent or member
+preset, a team a team preset) and, at `preset` level, refuses a link that
+would bring the preset back to itself (`link.cycle { through }`). A team's
+link names the team preset its members come from (resolution never expands a
+team preset itself): relinking a team to team preset TP also relinks every
+member whose id TP has a member of to `TP › member` (a member without a
+counterpart keeps its link) in the same save, and `LinkResult.members` lists
+them (`{ agent, preset }`, id order); unlinking a team touches no member
+(`members: []`). At `preset` level the relink is cycle-checked as one batch
+(each new link against the graph with every other new link applied, so two
+member relinks cannot close a cycle between them) and a cycle refuses the
+whole relink. The TUI toast and the tool's `status` add
+`relinked <members>`. A tool actor
+is refused for a protected agent's link (presets are not agents: their owners
+and rows are never protected), and for a team relink that would relink a
+protected member (the refusal names it; the TUI is never refused). Every write logs one line (`entry.*`,
+`preset.*`, `link.set`) to the store the records live in. `Snapshot.listing`
+carries every preset (`PresetListEntry`: ref, origin, kind, label,
+description?, mode?, members?).
 
 `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
 `RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
@@ -641,7 +1066,14 @@ New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
 `provenance`, `custom`, `policy?` (`{ on, off }`, each an array of
 `{ action, resource, effect: "allow" | "deny" | "ask" }`) and `runID?`, the two
-fields that make a team policy row read as a policy row on the client side;
+fields that make a team policy row read as a policy row on the client side,
+and the per-tool permission fields `category?`, `permKind?`
+(`"rule" | "input" | "value" | "param" | "limit" | "approval" | "env" | "team"`),
+`field?`, `value?` (string, number, boolean or null), `allow?`, `measure?`
+(`"value" | "length" | "count"`), `mode?` (`"clamp" | "refuse"`), `message?`,
+`fallback?` and `alsoUnder?` (string array) — `index.ts` `toSnapshot` sends and
+`snapshot.ts` `itemOf` reads every one, so the TUI and the tools list the same
+rows the server enforces;
 `SnapshotCustomizationRecord` carries `pin`, `team?` (`{ level, team }`);
 `SnapshotSplitRecord` carries `team?` (`{ level, team }`);
 `AssembledTool` carries `codemode`, `pinned`. `SnapshotRecord` is the union
@@ -656,7 +1088,9 @@ agent file), and `fileBacked`. `ModelAddInput` and `ModelRemoveInput` carry opti
 Every team row expands to its member rows followed by a `Special` row (`team:<level>:<team>:special`),
 which expands to `general`, `explore`, `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`),
 each carrying the five groups (`group:<level>:<team>/:special:<id>:<group>`). Their overrides carry `team: { level, team }`
-and apply only while the team is enabled. Optional keys are omitted
+and apply only while the team is enabled. While it is the enabled winner, every Special agent the host runs is published
+with that team (`computeSpecialOverrides` in `index.ts`), so apply resolves its tools, permissions, skills and model through
+the same team-scoped chain its Special rows show — whether or not the team sets an active model for it. Optional keys are omitted
 when unset: never send an optional key whose value is `undefined` across
 the RPC boundary, because results are validated as JSON and the whole call
 fails with HTTP 400.
@@ -671,6 +1105,11 @@ context hook, which is session-scoped for a specific agent, so `assembled`
 cannot produce a session-scoped tool view for an arbitrary agent without
 creating a session and reports the registry (upstream) description even when
 the override applies correctly inside that agent's sessions.
+
+The permission scrub and the stored skill desire it reads resolve each row
+exactly as apply does (`apply.ts` `resolvedFor`), over the agents and context
+a publish applies (`index.ts` `publishChain`): a team member, and an enabled
+team's Special agent, resolves with its team.
 
 ```ts
 export interface Assembled {
@@ -722,15 +1161,15 @@ export interface AssembledTool {
 A team is a named set of agents toggled as a unit. When a team is enabled
 its agents become visible to core as real agents. Teams have three tiers:
 `"project" | "global" | "defaults"`. Project and global teams are
-user-authored directories on disk; defaults teams are shipped source data
-from `builtin-teams.ts` editable through the Defaults overlay directory
-(`<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`). Built-in
-teams as named units cannot be created or deleted via `team.create`, but
-they can be enabled and disabled like any other team, and member agents can
-be added or customized through the overlay. Their enablement records carry
-level `defaults` and route to the global store, and precedence is project
-over global over defaults. Created teams are always stored at project or
-global level, never defaults.
+user-authored directories on disk. No team ships at Defaults any more
+(DESIGN §2): the shipped teams in `builtin-teams.ts` are Plus team presets
+(`presets.ts`) a project or global team is created from, and the old Defaults
+overlay directory (`teams-defaults/`) is not read. The `defaults` tier remains
+an injectable registry (`PlusApiOptions.builtins`, empty in production) so the
+Defaults Teams machinery keeps one input until Defaults team entries replace
+it; its teams can be enabled and disabled but take no members. Precedence is
+project over global over defaults. Created teams are always stored at project
+or global level, never defaults.
 
 ```ts
 export type TeamLevel = "project" | "global" | "defaults"
@@ -786,14 +1225,8 @@ globalConfigDir())` → `<globalConfigDir()>/opencodeplus/teams`. A project or
 global team is one directory `<root>/<team>/`; agent files are
 `<team>/<agentId>.md` in the same frontmatter+body format `agents/files.ts`
 `formatMarkdown` writes, including nested ids (`sub/agent.md` →
-`sub/agent`). Defaults teams are shipped source data
-(`builtin-teams.ts` exports the registry: name plus member agents with id
-and markdown body, kept separate from the logic so what is shipped is
-obvious) plus an editable on-disk overlay
-(`teams.ts` `globalDefaultsTeamsPath()` →
-`<globalConfigDir()>/opencodeplus/teams-defaults`, one directory
-`<root>/<team>/` with `<team>/<agentId>.md` member files in the same
-format); they have no team-level filesystem path, only member overlay files.
+`sub/agent`). The defaults tier is the injected registry only (name plus
+member agents with id and markdown body); it has no filesystem path.
 
 Validation (`validateTeamName`, same confinement style as
 `validateAgentId`/`resolveInstructionPath`): rejects empty names, NUL,
@@ -804,12 +1237,8 @@ Discovery: project and global tiers list one entry per immediate
 subdirectory, sorted by name; a team directory with no agent files is still
 a team; a missing teams directory means no teams, not an error. Only `*.md`
 files are members (other files are ignored), listed as `{ id, path }`
-sorted by id. The defaults tier merges the built-in registry with the
-overlay: a member file with the same id REPLACES the built-in member, a new
-id is APPENDED, still `level: "defaults"` with `body` read from the file and
-`path` set so the installer reads it, sorted by team name and member id.
-The registry is injectable so behaviour tests supply fixtures instead of
-coupling to the shipped roster.
+sorted by id. The defaults tier lists the injected registry's teams and
+members (no overlay), sorted by team name and member id.
 
 Membership: `isTeamEnabled` returns the matching record's `enabled`, and a
 team with no record at all is DISABLED. `resolveTeams` reports each team's
@@ -854,24 +1283,26 @@ RPC surface (`rpc.ts`, `index.ts`):
 - `team.create` (`CreateTeamInput` → `TeamRef`): creates the team directory
   under the matching teams root (`projectTeamsPath` for `"project"`,
   `globalTeamsPath` for `"global"`); `level: "defaults"` is refused with
-  `team.invalid` (shipped teams cannot be created). An optional `template`
-  names a built-in Defaults team from the injected registry; each member is
-  written as `<team>/<member>.md` through `formatMarkdown` (body and fields,
-  with a present `fields.permissions` written verbatim). Unknown template
-  names fail with `team.invalid` (`Unknown team template <name>`); an omitted
-  template creates an empty team. Creation does NOT enable:
+  `team.invalid` (shipped teams cannot be created). An optional `preset`
+  names a team preset, Plus or User (DESIGN §5): each member is written as `<team>/<member>.md` with only the
+  member preset's `mode` and `description` and an empty body, then links are
+  stored at the team's level — each member `{agent: member, team: {level,
+  team}}` → `{kind:"member", team: preset, id: member}` and the team `{agent:
+  null, team}` → `{kind:"team", id: preset}` — so role text, tools and every
+  other row follow the preset live. Unknown names fail with `team.invalid`
+  (`Unknown team preset <name>`); a tool actor may not create a protected
+  member (`agent.protected`); an omitted
+  preset creates an empty team. Creation does NOT enable:
   the new team has no record, so the next snapshot lists it as DISABLED until
   `team.setEnabled` toggles it. Gated by project mode (`project.disabled`).
   Fails with `team.invalid` on invalid name, `team.exists` when the directory
   already exists, or `team.create` when the write itself fails. Logs `team.create`
   to the owning store with the caller's actor on success only; the file write
-  never moves a revision. The TUI `a` on a `group:<level>:teams` row lists Blank
-  plus the Defaults teams from `instructions.snapshot` first (Blank default, so the
-  old two-prompt flow is unchanged when chosen). For `group:project:teams` and
-  `group:global:teams`, it takes that level directly without a scope dialog;
-  `group:defaults:teams` prompts for `project` or `global` scope. When a
-  template is chosen, the team name prompt is prefilled with the template name,
-  and `template` is passed to `team.create`.
+  never moves a revision. The TUI `a` on `group:project:teams` or
+  `group:global:teams` asks `Team name`, then the `Team preset` picker (Plus
+  and User team presets, `Empty team`), and creates at that level without a
+  scope dialog; `group:defaults:teams` creates a team entry instead
+  (§"TUI create, link and review").
 - `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
   any of the three tiers. Gated by project mode (`project.disabled`). Fails
   with `team.invalid` on invalid name, or `team.unknown` when the team is not
@@ -882,25 +1313,23 @@ RPC surface (`rpc.ts`, `index.ts`):
   stays a no-op without moving revisions. Retries once on concurrent conflict
   before raising `team.unknown`.
 - `team.addAgent` (`TeamAddAgentInput` → `AgentRef`): adds one agent to a team
-  at any tier. Project/global writes `<teamdir>/<id>.md`; defaults writes the
-  overlay `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`.
-  Reuses `validateAgentId`, `readTemplate`, and `formatMarkdown` (never the
-  regular-agent `create()`); an optional `template` names a Defaults agent
-  seeding fields and prompt, unknown names fail with `agent.invalid`. Optional
-  `fields` (`CreateAgentFields`) override template fields for explicit defined
-  keys while omitted keys inherit from the template. Refuses an existing member
+  at project or global level (`<teamdir>/<id>.md`) carrying the optional
+  `preset`'s `mode` and `description` and an empty body, and stores a
+  team-scoped link (`{agent: id, team: {level, team}}` → the preset); unknown
+  presets fail with `preset.invalid`. At `defaults` it adds a Teams member
+  ENTRY (`team` and `id` are patterns, no file; no overlay is read): see
+  `entry.create`. Reuses `validateAgentId` and `formatMarkdown` (never the
+  regular-agent `create()`). Refuses an existing member
   id with `agent.exists` (path in data) and invalid ids with `agent.invalid`. After the write calls `refreshAfterFileChange(...,
   true)` exactly as `createAgent` does, so an enabled team's new member
   installs without a restart. Both team rows and member rows carry `add: "agent"`;
   `a` on `team:<level>:<team>` or on `team:<level>:<team>:<member>` opens only
-  the Agent template → id → prompt flow with the team's level as scope, never
-  the generic picker.
+  the name → preset flow with the team's level as scope, never the generic
+  picker.
 - `team.removeAgent` (`TeamRemoveAgentInput` → `AgentRef`): removes one member
-  from a team at any tier. Bound to `d delete` on team member rows. Project/global
-  unlinks `<teamdir>/<id>.md`; defaults unlinks the overlay file
-  `<globalConfigDir>/opencodeplus/teams-defaults/<team>/<id>.md`. Shipped
-  built-in members without an overlay file fail with `team.invalid` (delete
-  refused). Removing the last member leaves an empty team directory. After unlink
+  from a project or global team. Bound to `d delete` on team member rows.
+  Unlinks `<teamdir>/<id>.md`; a Defaults registry member fails with
+  `team.invalid` (delete refused). Removing the last member leaves an empty team directory. After unlink
   calls `refreshAfterFileChange(..., true)` so an enabled team's uninstalled
   member unregisters from the host immediately.
 - `team.delete` (`DeleteTeamInput` → `DeleteTeamResult`): deletes a team at
@@ -922,16 +1351,16 @@ RPC surface (`rpc.ts`, `index.ts`):
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
 with `[a: add team]` (the Defaults group lists real built-in rows with
-working toggles and member rows that expand to full agent subtrees; `add` there still creates at
-project or global scope, never defaults). Both team rows and member rows carry
+working toggles and member rows that expand to full agent subtrees; `add` there
+creates a Teams entry). Both team rows and member rows carry
 `add: "agent"`, so `a` on a team row or member row adds an agent to that team
-through `team.addAgent` with the Defaults overlay for `level: "defaults"`, and
+through `team.addAgent` (at `defaults` a member entry of the row's team pattern), and
 TUI wiring (`state.ts` `space` → real `team.setEnabled` + snapshot refresh, `a`
 → real `team.create` / `team.addAgent` + snapshot refresh, `d` on a team row
 → `team.delete` confirmation + snapshot refresh, `d` on a member row
 → `team.removeAgent` confirmation + snapshot refresh; `tree-pane.tsx` on/off
 badge). A created team starts disabled. Built-in teams cannot be created or
-deleted (though their members are editable through the Defaults overlay). Store
+deleted, and take no members (no Defaults overlay is read). Store
 persistence and the RPC surface are implemented.
 
 ### Run-backed Team composer tab (`tui/active-team.tsx`)
@@ -953,7 +1382,7 @@ fourteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
-Nine names are **not** in the namespace, not in any role ceiling and not named
+Nine names are **not** in the namespace, not in any team tool row and not named
 by any built-in prompt: `review`, `shutdown_request`, `resume`, `prepare`,
 `plan_handoff`, `metrics`, `exa_code_search`, `tavily_search` and
 `tavily_extract`. Web and code search are not team tools: they are delivered by
@@ -964,11 +1393,12 @@ one of its children. `from` is `base` (the default), `parent` (the parent
 run's HEAD) or a 40-hex commit; `paths` narrows the patch. Output is
 `{ run, from, head, bytes, truncated, patch }`, truncated to `maxBytes`
 (default 200000) with `truncated: true`. A run that is neither the caller's
-nor one of its children refuses with `E_NOT_VISIBLE`.
+nor one of its children refuses with `E_NOT_VISIBLE`, unless the caller's
+`team_diff` Runs rows reach it (below).
 
-A planner or orchestrator opening a fresh chat and calling any team tool
-creates the `main` root run bound to that session automatically and then
-answers normally. There is no `prepare`. All other no-run calls keep the exact
+A planner, orchestrator or build member opening a fresh chat and calling any
+team tool creates the `main` root run bound to that session automatically and
+then answers normally. There is no `prepare`. All other no-run calls keep the exact
 `E_NOT_ACTOR` message, as does a session whose run role differs from the
 calling agent. A session with no location / no repository directory that calls
 any team tool gets `E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.`
@@ -987,49 +1417,128 @@ default wrappers (`context: { interfaces: null }`,
 `followup({ budget: { turns: null } })`), while `null` on required fields
 strictly produces a schema validation error at any depth.
 
-### Team rules are instructions rows (`instructions/team-policy-rows.ts`)
+`Brief.role` (the member a `delegate` starts) is any member id of 1–128
+characters, not a fixed list: who may delegate to whom is the caller's
+Delegate to rows, and each agent's `team_delegate` schema lists the
+co-members whose rows are on (`session.context` narrowing, under Permission
+rules). `delegate` checks in this order, each refusal an `E_ROLE`: that some
+delegation is open to the caller (a Delegate to row on, or Members of other
+teams), the caller's Access row "Delegate from a delegated run" when the
+caller's own run is delegated, that the target is a member of an enabled team,
+the caller's Delegate to row for it (`teams/reach.ts` `mayDelegate`), then the
+Delegation depth bound. Then, after the repository, base and check shapes, the
+**target's** Briefs it accepts and Brief limits rows (below).
 
-There is one source of truth for what a team member may do, and it is the
-instructions system. No file under `src/teams` writes permissions onto an
-agent, registers a permission hook, or decides tool visibility:
-`teams/policy.ts` states the ceiling and the native answers as data,
-`instructions/team-policy-rows.ts` turns that data into ordinary rows under
-each member, and `instructions/apply.ts` installs whatever those rows resolve
-to. They are listable (`instructions.list`), showable, logged, and overridable
-at project or global level like any other row.
+### Teams without kinds: every team rule is a row (DESIGN §6)
 
-Every row is a `perm:` row carrying `agents: [<member>]` and both sides of its
-own answer: `policy.on` is installed when the row resolves enabled,
-`policy.off` when it resolves disabled. The shipped `enabled` state is the
-role's answer, so `on` reads as "permitted" exactly like every other row.
+An agent behaves exactly as its rows say; nothing is read from its id. There
+are no kinds: no id table, no `-planner`/`-orchestrator`/… suffix, no
+`delegatesTo`, `reachesByDefault`, `requiresCleanWorktree`, tool ceiling or
+native-permission table in code, and no `kind === …` branch. A team member is
+any agent of an enabled team. `teams/policy.ts` holds only the team tool lists.
 
-Row ids the producer emits, per member of an enabled team:
+Every former hidden rule is a **shared catalogue row** (`permission-catalog.ts`,
+no `agents`, so every agent has it). An agent that nothing sets resolves it to
+its fallback (§3.3: off, unless the agent is native). The **Plus presets**
+(`presets.ts` `plusAgentOverrides`, `plusMemberOverrides`) set them so an agent
+linked to a Plus preset behaves like the old role of that name, row for row.
+The team tools read the rows through the permission table
+(`PlusState.permissions`, rebuilt on every publish) for the right member — the
+caller, or the member a brief or correction names. **Without a table (bare unit
+tests, or before the first publish) and for an agent the table does not know,
+every team row reads off** (`teamAllows`, `teamLimit`): a permission is
+refused, a requirement demands nothing, a bound is absent.
 
-- `perm:shell:team-role`, `perm:question:team-role`,
-  `perm:external_directory:team-role`, `perm:subagent:team-role`,
-  `perm:task:team-role` — one per native permission action, `*` resource.
-  Shipped on for the roles that may (shell for orchestrators; question for
-  planners; external directories for planners and orchestrators), off for the
-  rest. On installs an explicit `allow`, off a `deny`.
-- `perm:read:team-role` — keys, env files and credentials (`*.key`, `*.env*`,
-  `*/auth.json`). Shipped off for every role.
-- `perm:team_<tool>:role-ceiling` — one per team tool **outside** the role's
-  ceiling, shipped off, denying `team.<tool>` on `*`. Tools inside the ceiling
-  carry no row: the member simply keeps them.
-- `perm:team_delegate:team-role` — shipped on for planner members, requesting
-  `team.delegate` on `*` with effect `ask` (the human-approval moment). Off
-  installs a `deny`.
-- `perm:search:team-tavily` — shipped off for implementers, reviewers and
-  scouts, denying `search_tavily_*` on `*`. Code search stays available.
-- `perm:edit:run:<runID>` — per-run edit scope, derived from `run.json` while
-  the run is non-terminal. On installs, in order, `deny edit *`, one
-  `allow edit <path>` per `scope.paths` entry (when paths are non-empty), then
+| former hidden rule | row now (id, category → label) | read for |
+| --- | --- | --- |
+| every team call needs a kind; caller/target must name one | gone: members are the enabled teams' agents | — |
+| team tool ceiling per kind | `tool:team_<tool>` (the tool rows; off installs the core deny `team.<tool>` `*` for a member, direct and Code Mode alike) | the caller (tool plans, Code Mode denies, core deny) |
+| root-run bootstrap only for planner/orchestrator/build | `perm:team_get_context:bootstrap.chat`, Team runs → Start a team run from a chat | the calling member |
+| delegated planner may not delegate | `perm:team_delegate:access.delegated`, Access → Delegate from a delegated run | the caller |
+| implementer target needs `scope.paths` | `perm:team_get_context:accepts.scope-paths`, Briefs it accepts → Scope paths for a commit (`E_PATHS`) | the target |
+| planner target only plan files | `perm:team_get_context:accepts.plan-files`, … → Plan files only (allow-list, patterns `docs/plans/*`, `docs/handoffs/*`, matched as given or under any directory; `E_PATHS`) | the target |
+| orchestrator target needs a reason; spark's reason | `perm:team_get_context:accepts.reason`, … → A reason (`E_REASON`; replaces the caller-side "Reason when delegating to an orchestrator") | the target |
+| spark: exactly one check, ≤5 paths | `accepts.check` → A check; `limits.paths` Brief limits → Paths per brief (5); `limits.checks` → Checks per brief (1) (`E_BRIEF`) | the target |
+| reviewer cannot be followed up | `perm:team_get_context:accepts.followup`, … → Corrections by followup (off: `E_NO_FOLLOWUP`) | the child |
+| Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, supersede, status, wait, diff, list; shipped off | the caller |
+| implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
+| read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `run-configs`, `databases`, and the curated `perm:read:env` | core rules |
+| subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
+| external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots | core rule / tool hook |
+| planner edits plan files only | edit → Files it may change: `allowed.*` "Every other file" (fallback) and `allowed.plans` (allow-list) for edit, write and patch | tool hook |
+| planner asks before delegating | `perm:team_delegate:approval.every` | tool hook |
+| orchestrator shell changes | shell curated rows `git-push`, `git-commit`, `git-rewrite`, `rm` and catalog Commands `git-changes`, `git-refs`, `file-writes` | core rules |
+| Tavily narrowing | `tool:search_tavily_search`, `tool:search_tavily_extract` | tool plans |
+| grep secret files | grep → Files rows (as read's) and Include filters `env`, `keys` | tool hook |
+
+What the Plus agent presets set (every other row is the catalogue's shipped value):
+
+- **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
+  `team_integrate`, `team_checkpoint`, `team_set_checks`, `team_check` off;
+  Runs on for status, wait, list; Approval on for team_delegate; Access
+  "Delegate from a delegated run" off; Files it may change: every other file
+  off, plan files on; Briefs it accepts: Plan files only on; Start a team run
+  from a chat on; `tool:question` on.
+- **orchestrator** — secrets off; `tool:question`, `tool:subagent` off;
+  `team_checkpoint` off; the seven shell change rows off; Runs on for status and
+  wait; A reason on; `tool:shell`, Start a team run and Delegate from a
+  delegated run on.
+- **implementer** — secrets off; outside-checkout rows off (read and edit
+  Where, `where.external`, glob/grep roots); `tool:shell`, `tool:question`,
+  `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
+  delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
+  `supersede`, `stop`, `wait`, `list` off; Worktree committed before done and
+  Scope paths for a commit on.
+- **reviewer** — as implementer's worker rows, with every team tool but
+  `finish`, `status`, `diff`, `get_context` off, and Corrections by followup off.
+- **scout** — as reviewer, taking corrections.
+- **build-seat** — Runs on for status, wait, list; `tool:shell`,
+  `tool:question`, `tool:subagent`, Start a team run and Delegate from a
+  delegated run on; every "Delegate to" row of its team on (not Members of
+  other teams).
+
+The shipped team presets' member presets add each member's "Delegate to" rows
+by its teammates' presets (planner → orchestrators; orchestrator →
+orchestrators, implementers, reviewers, scouts) and spark-implementer's A
+reason, A check, Paths per brief and Checks per brief on. They name teammates
+by the team preset's member ids: a teammate renamed after the team was created
+gets a new, off "Delegate to" row.
+
+#### Per-member rows (`instructions/team-policy-rows.ts`)
+
+Only rows that name something a member alone has are generated, for every
+member of an enabled team (`policyMembersOf` keeps every one):
+
+- `perm:team_delegate:to.<peer>` (Delegate to, `team`) — one per other member
+  of the same enabled team, labelled with its id (text = the id), shipped off;
+  plus `perm:team_delegate:to.other-teams` "Members of other teams", shipped
+  off; on, it opens every member of an enabled team that has no row of its
+  own. Their fallback is their own shipped state (off).
+- `perm:edit:run:<runID>` (Run edit scopes) — per-run edit scope, derived from
+  `run.json` while the run is non-terminal (a delegated run with no
+  `scope.paths` included: it may edit nothing). On installs, in order,
+  `deny edit *`, one `allow edit <path>` per `scope.paths` entry, then
   `deny edit .git/**` and `deny edit .opencodeplus/**` (core evaluates
-  last-match-wins, so the never-editable state wins over the scope allows). For
-  child runs (`w-...`), any `ask` effect carried by the member (e.g.
-  `team.delegate` for planners) is overridden to `deny` so headless children
-  never block on `ask`. The row carries `runID` and is filterable with
+  last-match-wins, so the never-editable state wins over the scope allows). It
+  carries edit rules only. The row carries `runID` and is filterable with
   `run:<id>`.
+
+The other catalog rows of the team tools (the per-tool table under Permission
+rules) are read by the same handlers: `team_delegate` Limits — Children
+working at once 4, Delegation depth 3, Brief size 6000 characters, Live team
+runs in total 12, all on (`E_BOUNDS`, `E_ROLE`, `E_TOO_LONG`; an off row
+removes the bound); `team_followup` Limits (Followups per child 5, shipped off;
+`E_ROUNDS`); `team_finish` Requirements for done (Assigned checks pass at HEAD,
+on, `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
+`E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
+`E_NOT_DONE`) and Branches it lands on (Protected branches `main`, `master`,
+`v2`, `ocp-main`, `release*`, shipped on; off refuses landing while the
+parent's branch matches, `E_BRANCH`); `team_get_context` Contents (Sibling
+runs of the same task); `team_check` Checks it may run (the assigned check's
+family: `bun test` files or `bun run` scripts; `E_PERMISSION`). Their other
+categories (Deliverables, Effort, Scope it may grant, Checks it may assign,
+Parameters, Approval, …) are value, input, param, limit and approval rows the
+tool hook enforces as it does for any tool.
 
 #### Rule messages
 
@@ -1041,28 +1550,20 @@ the TUI can say why it is asking. A rule with no message encodes exactly as it
 did before the field existed. A rule answers for a *pattern*, not for one call,
 so the quoted subject in these texts is the rule's own resource.
 
-Three kinds of team policy rule carry one:
-
-- Edit scope (`perm:edit:run:<runID>`), the two texts the round-1 permission
-  hook sent, word for word:
-  `"<resource>" is outside your scope.paths [<union of the role's live scopes>]. Report it in needs=[{kind:"path"...}].`
-  on the `deny edit *`, and
-  `"<resource>" is version-control or paused-tool state and is never editable, even inside scope.paths [<union>]. Report it in needs=[{kind:"path"...}].`
-  on `deny edit .git/**` and `deny edit .opencodeplus/**` (the `, even inside
-  scope.paths […]` clause is dropped when the run declares no paths).
-- Native denies (`perm:<action>:team-role`):
-  `<action> is not available to <member>` for a `*` resource,
-  `<action> "<resource>" is not available to <member>` for a narrower one, and
-  `shell is not available to <member>; run checks with team_check` for shell.
-- Ceiling denies (`perm:team_<tool>:role-ceiling`):
-  `team_<tool> is outside the <kind> ceiling`.
-
-The per-run `ask`→`deny` override and the `perm:search:team-tavily` narrowing
-carry no message. `Plus.PolicyRule` (`src/rpc.ts`) carries the field too, so a
-message survives the snapshot the TUI and the tools read: `instructions_show`
-on a `perm:` row returns the row's `policy` — the `on` and `off` rules it
-installs, each with its own message — beside the row's patterns and resolved
-state, so a reader sees what the rule says when it refuses.
+The per-run edit scope rules carry one — the two texts the round-1
+permission hook sent, word for word:
+`"<resource>" is outside your scope.paths [<union of the member's live scopes>]. Report it in needs=[{kind:"path"...}].`
+on the `deny edit *`, and
+`"<resource>" is version-control or paused-tool state and is never editable, even inside scope.paths [<union>]. Report it in needs=[{kind:"path"...}].`
+on `deny edit .git/**` and `deny edit .opencodeplus/**` (the `, even inside
+scope.paths […]` clause is dropped when the run declares no paths). The
+allows carry none. `Plus.PolicyRule` (`src/rpc.ts`) carries the field too, so
+a message survives the snapshot the TUI and the tools read:
+`instructions_show` on a `perm:` row returns the row's `policy` — the `on` and
+`off` rules it installs, each with its own message — beside the row's patterns
+and resolved state. Team rows the handlers read carry their refusal text as the
+row's `message` (the words after the member id in `E_ROLE`, `E_PATHS`,
+`E_REASON`, `E_BRIEF`, `E_NO_FOLLOWUP` and the bootstrap `E_NOT_ACTOR`).
 
 Tool permission rules carry the same field:
 
@@ -1077,11 +1578,18 @@ Tool permission rules carry the same field:
   never drops it. A matched record also keeps its stored `catalogue` and
   `team`, so changing the message of a shared Teams rule never rewrites it as
   an Agents rule; a first write takes the addressed row's catalogue.
+- Catalog and team preset rows carry their refusal text on the item
+  (`Item.message`, e.g. `reading outside this checkout is not allowed here`).
+  A rule row's denies carry it, and the tool hook refuses with `Permission
+  denied: <message>`; a row without one gets a generated text (`<label> is not
+  allowed here`, `<field> "<value>" (<label>) is not allowed here`, `<label>
+  is <n>; this call has <m>`).
 - `apply.ts` prefers the user record's message for a custom row and falls back
-  to the curated message for a curated row; a mined row has none and keeps the
-  generic refusal.
-- `instructions_show` on a perm row returns `message` when the row has one,
-  and the TUI detail pane prints it under `provenance`.
+  to the curated message, then the catalog row's own, for a shipped row
+  (`curatedRuleMessage(tool, rule) ?? item.message`); a mined row has none and
+  keeps the generic refusal.
+- `instructions_show` on a perm row returns `message` when the row has one
+  (the same fallback), and the TUI detail pane prints it under `provenance`.
 - Two whole-set resubmissions carry the same optional fields. A state-only
   write — `set` with `state` alone — goes through `tools.ts`
   `toSnapshotRecords`; every TUI write (`persist` in
@@ -1091,10 +1599,19 @@ Tool permission rules carry the same field:
   never drops another rule's message and never moves a Teams-catalogue rule
   into the Agents catalogue.
 
-Rows appear in a `Policy` group under the member's `Tools` group
-(`group:<level>:<team>/:<member>:tools:policy`), not under the tool each
-governs, because several of them govern an action with no tool row to hang
-under. The group is omitted for owners with no policy rows.
+There is no `Policy` group any more. Each row lists under the tool it governs,
+in that tool's Permissions (`hostOf`: external directories under read, task
+under subagent, the `search` row under search_tavily_search): Delegate to,
+Runs, Access and Team role come first, then the tool's other categories (tree
+shape, above). Only a role row whose tool this owner's inventory lacks goes to
+`Other permissions` (`group:<level>:<team>/:<member>:tools:policy`, the old
+group's id), which is omitted when every row found its tool.
+
+Role rows' core rules land with every other row's in `orderRules` order
+(Permission rules → Rule order): defaults, then what lets something through,
+then refusals. A role row's own order — `deny *`, the allowed paths, the
+never-editable state — is that order, so it survives unchanged, and a role's
+`allow shell *` can no longer undo a shell row that is off.
 
 Team tools appear only under the Teams catalogue's `Tools` inventory; the
 Agents catalogue never lists them. An agent that is not a member of an enabled
@@ -1102,14 +1619,22 @@ team receives one wildcard deny, `{ action: "team.*", resource: "*", effect:
 "deny" }`, which is the shape core drops a tool for
 (`packages/core/src/tool.ts` `whollyDisabled` matches the action by wildcard
 against `options.permission`). `E_NOT_ACTOR` is therefore never the answer to
-"why can't build call this": `build` never sees a `team_*` tool at all.
+"why can't build call this": `build` never sees a `team_*` tool at all, unless
+it is a member of an enabled team. A member's id says nothing about what it
+may do. A member whose `tool:team_<tool>` row resolves off gets one more
+refusal, `{ action: "team.<tool>", resource: "*", effect: "deny" }` on the
+tool's own permission (`apply.ts` `teamToolDenials`), whether the tool is
+direct (hidden from the model by the tool plan) or Code Mode (denied by its
+registry id): hiding is not refusing, and the registry-id deny never matches
+`team.<tool>`.
 
 A refusal renders as `${code}: ${message}`. When the error carries `accepted`,
 one more line follows: `accepted: ${JSON.stringify(accepted)}`. For example,
-an implementer delegate call with empty paths refuses with:
+a commit delegated with empty paths to a member whose Scope paths for a commit
+row is on (the implementer preset's) refuses with:
 
 ```
-E_PATHS: Implementers need scope.paths (files or dir/* they may edit).
+E_PATHS: muse-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).
 accepted: ["packages/plus/src/*","packages/plus/test/*"]
 ```
 
@@ -1118,19 +1643,25 @@ accepted: ["packages/plus/src/*","packages/plus/test/*"]
 filters, and both carry `accepted`.
 
 Error codes carrying `accepted` today:
-- `E_PATHS`: valid scope paths array (`["packages/plus/src/*","packages/plus/test/*"]`)
-- `E_ROLE`: allowed target role object (`{"role":"opus-orchestrator"}`)
+- `E_PATHS`: valid scope paths array (`["packages/plus/src/*","packages/plus/test/*"]`); for a target whose Plan files only row is on, `<target> accepts plan files only: every scope path must match one of its patterns [<patterns>]; outside them: [<paths>].` with the row's patterns
+- `E_ROLE`: the first member open to the caller (`{"role":"<member>"}`), present only when one is. The message ends in what is open — `You may delegate to: <members>.` or `No member is open to you for delegation.` — after `<agent> may not delegate.`, `"<role>" is not a member of an enabled team.` or `<agent> may not delegate to "<role>".`. A delegated run whose Delegate from a delegated run row is off gets `<agent>: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead` with `"report blocked with needs=[{kind:\"decision\"}]"`. The depth bound keeps `Depth limit <n> reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.` with `"report blocked with needs=[{kind:\"decision\"}]"`.
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
 - `E_SUMMARY`: summary length guidance (`"a summary of ≤15 lines"`)
 - `E_TIMEOUT_MIN`: `"timeoutMs <timeoutMs> is below the 10000ms floor."`; minimum timeout object (`{"timeoutMs":10000}`)
-- `E_SPARK`: spark delegation example (`{"reason":"...","paths":["src/a.ts"],"checks":1}`)
-- `E_REASON`: orchestrator reason example (`{"reason":"3 independent packages, each needs its own workers"}`)
+- `E_BRIEF`: the target's A check (`{"checks":1}`), Paths per brief (`{"paths":<n>}`) or Checks per brief (`{"checks":<n>}`) row refuses the brief: `<target> needs at least one check (Briefs it accepts → A check).`, `<target> accepts at most <n> scope paths per brief (Brief limits → Paths per brief); this brief has <m>.`, `<target> accepts at most <n> checks per brief (Brief limits → Checks per brief); this brief has <m>.`
+- `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
 - `E_MESSAGE`: conventional commit example (`"fix: apply agent filter in query"`)
 - `E_BASE`: valid base ref (`"ocp-main"`)
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
-- `E_BOUNDS`: bounds action guidance (`"call wait first"` or `"raise bounds.members in policy"`). In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
+- `E_BOUNDS`: `"call wait first"` for both bounds: `In-flight limit <n> reached (<runs>). Wait for a child to settle (tools.team.wait) first.` and `Live team runs limit <n> reached (<runs>). Wait for a run to settle (tools.team.wait) first.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
+- `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
+- `E_ROUNDS`: `"supersede and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
+- `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
+- `E_NO_COMMIT`: `{"status":"blocked","needs":[{"kind":"info","detail":"why nothing was committed"}]}` for `done` on a commit deliverable with no commit since the base, while its row is on
+- `E_PERMISSION` (from `team_check`): `{"status":"blocked","needs":[{"kind":"check","detail":"<check id>"}]}` when the caller's Checks it may run row for that check's family is off
+- `E_NOT_VISIBLE`: the caller's own run id when `status`, `wait` or `diff` names a run out of its reach; `"a run id from list{}"` when `wait` or `diff` names a run not in the namespace
 - `E_REQUEST_ID`: `"requestID \"<requestID>\" was used with different arguments; reuse only to retry the identical call, else pick a new requestID."`; reuse guidance (`"pick a new requestID"`)
 - `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
 - `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
@@ -1181,7 +1712,7 @@ Each `tool.call` audit entry contains:
 - `outcome`: Permission authorization outcome:
   - `"allowed"`: Tool call was permitted by the permission rules without requiring human approval (`ok: true` on success, or `ok: false` with handler error code)
   - `"asked:allow"`: Tool call required human confirmation (`ask`), human approved the request in the TUI, and the tool executed (`ok: true`)
-  - `"denied"`: Tool call was refused at call time by a `deny` rule (e.g. out-of-ceiling tool, child planner delegation, or native denial); `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
+  - `"denied"`: Tool call was refused at call time by a `deny` rule (e.g. a Code Mode team tool whose tool row is off, or a core rule a row installs); `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
   - `"asked:deny"`: Tool call required human confirmation (`ask`) and the human rejected it in the TUI, with or without feedback; `runGated` was never reached (`ok: false`, `code: "E_PERMISSION"`)
 
 Which component writes which outcome, and why exactly one line is written per gated call:
@@ -1384,18 +1915,24 @@ export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" 
 export type ToolResolve = "keep" | "take" | "edit"
 export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
 export interface ShowInput { readonly id: string; readonly view?: ToolView }
-export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string }
+// A preset as tools name it: "<id>" (agent preset), "<team>/<member>" (member preset), or the RPC PresetRef.
+export type PresetInput = string | PresetRef
+export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
 export interface ResetInput { readonly id: string }
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
-  | { readonly kind: "agent"; readonly id: string; readonly prompt: string; readonly scope?: "project" | "global"; readonly template?: string; readonly fields?: CreateAgentFields }
+  | { readonly kind: "agent"; readonly id: string; readonly scope?: "project" | "global"; readonly preset?: PresetInput }
   | { readonly kind: "skill"; readonly name: string; readonly body: string }
   | { readonly kind: "base"; readonly id: string; readonly title: string; readonly text: string }
   | { readonly kind: "instruction"; readonly name: string; readonly text: string }
   | { readonly kind: "mcp"; readonly name: string; readonly config: Record<string, unknown> }
-  | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global"; readonly template?: string }
-  | { readonly kind: "member"; readonly team: string; readonly level: "project" | "global" | "defaults"; readonly id: string; readonly prompt: string; readonly template?: string; readonly fields?: CreateAgentFields }
-  | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
+  | { readonly kind: "team"; readonly team: string; readonly level: "project" | "global"; readonly preset?: string }
+  | { readonly kind: "member"; readonly team: string; readonly level: "project" | "global" | "defaults"; readonly id: string; readonly preset?: PresetInput }
+  | { readonly kind: "entry"; readonly catalogue: "agents" | "teams"; readonly name: string; readonly team?: string; readonly preset?: PresetInput }
+  | { readonly kind: "preset"; readonly id: string; readonly from?: PresetInput }
+  | { readonly kind: "teamPreset"; readonly id: string; readonly from?: string }
+  | { readonly kind: "presetMember"; readonly team: string; readonly id: string; readonly from?: PresetInput }
+  | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults" | "preset"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
   | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
 // Every kind resolves to CreatedRow: { id, item }, where id is the row id
 // show/set/delete accept and item names the created thing inside its row kind
@@ -1408,12 +1945,17 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
 ```
 
 - `list` returns the matching row ids (default projection `id, badges,
-  source, tokens`; `limit` defaults to 40). Filters (`where`) support `server:<name>`, which matches both the `mcp:<name>` server row and its tool rows (e.g. `where: "server:search"` returns `mcp:search` and all search tools). `show` defaults to view
-  `resolved`. On a perm row any view returns the rule view (`tool`, `rule`,
-  `label`, `patterns`, `keywords`, `provenance`, `custom`, `enabled`,
-  `source`, plus a scrub preview: `scrub.hidden` lines would drop,
+  source, tokens`; `limit` defaults to 40, and since every tool lists its
+  catalog rows an agent's perm rows run well past it). Filters (`where`) support `server:<name>`, which matches both the `mcp:<name>` server row and its tool rows (e.g. `where: "server:search"` returns `mcp:search` and all search tools). `show` defaults to view
+  `resolved`. On a perm row every view but `record` returns the rule view
+  (`tool`, `rule`, `label`, `patterns`, `keywords`, `provenance`, `custom`,
+  `enabled`, `source`, `category`, `kind` — the row's `permKind`, `rule` when
+  absent — plus `field` and `value` when the row has them and `limit` — the
+  resolved number, `null` when the text holds none — on a limit or bound row;
+  plus a scrub preview: `scrub.hidden` lines would drop,
   `scrub.preview` shows up to 3; plus `message` when the rule has one — a
-  user rule's own text or the curated one it ships). Team and member rows
+  user rule's own text, or for a shipped row the curated text, else the
+  catalog row's own; plus `policy` on a team role row). Team and member rows
   carry no item address: `resolved` (default) returns the entity
   (`{ kind: "team", level, team, enabled, members, overlay? }` or
   `{ kind: "member", level, team, member, registered }`, where `registered`
@@ -1430,8 +1972,11 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   state, pin, and resolve); on a perm row `state` applies, or `label` +
   `patterns` (`keywords` optional) to update the rule through `rule.update`,
   or `message` alone to set the refusal text (a message-only edit derives
-  label and patterns from the rule it edits)
-  (no text, pin, active, or resolve). `set` with `resolve: "keep"`
+  label and patterns from the rule it edits), or `text` on a limit or bound
+  row (`isValueRow`) to set its number — `set({ id, text: "8" })` stores the
+  first integer in the text, anything without one fails with `"<label>" takes
+  a number (got "<text>")`, and `text` on any other perm row is still
+  refused (no pin, active, or resolve). `set` with `resolve: "keep"`
   acks upstream keeping text, `"take"` drops stored text and follows upstream,
   `"edit"` stores `text` against current upstream. `reset` deletes the
   override at that row (on a model row clears only that level's active flag).
@@ -1441,16 +1986,23 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   row id `show`, `set` and `delete` accept for that row, `item` names the
   created thing inside its row kind (`skill:…`, `base:…`, `mcp:…`, `model:…`,
   `perm:…`, or the agent/team/member id), and the RPC's own fields pass through
-  beside them. `create` with `kind: "agent"` needs `id` + `prompt` (`scope`
-  defaults to project, `template`/`fields` optional). `create` with
+  beside them. `create` with `kind: "agent"` needs `id` (`scope`
+  defaults to project, `preset` optional: no preset is everything off). `create` with
   `kind: "team"` creates the team directory DISABLED (enabling stays a
-  separate `set` on the team row) and passes an optional `template` through
-  `team.create`, so the members match the TUI's templated team create.
-  `create` with `kind: "member"` needs `team` + `level` + `id` + `prompt` and
-  calls `team.addAgent`, so `level: "defaults"` writes the same Defaults
-  overlay the TUI writes and `template`/`fields` are the agent fields
-  `kind: "agent"` takes; the team name is trimmed exactly as `team.addAgent`
-  trims it before the row is resolved. `create` with `kind: "model"` needs
+  separate `set` on the team row) and passes an optional team `preset` through
+  `team.create`, so the members match the TUI's team create.
+  `create` with `kind: "member"` needs `team` + `level` + `id` and
+  calls `team.addAgent` (`preset` optional); at `level: "defaults"` it adds a
+  Teams member entry and returns `team:defaults:<pattern>:<name>`; the team name
+  is trimmed exactly as `team.addAgent` trims it before the row is resolved.
+  `entry` calls `entry.create`, `preset`/`teamPreset` call `preset.create`,
+  `presetMember` calls `preset.addMember`, each returning its tree row id.
+  `set({ id, preset })` relinks the row's owner (`link.set`; `null` unlinks;
+  refused on rows with no owner). `delete` removes Defaults entries and User
+  presets through `removalPlan`'s `entry.delete` / `preset.delete` plans; an
+  in-use preset surfaces `preset.inUse` with the linked row ids. Presets are not
+  agents: `protectedAgents` never refuses a preset row, while an agent,
+  member or team member's link stays protected. `create` with `kind: "model"` needs
   `providerID` + `modelID` (`variant`/`level`/`agent` optional); `level`
   defaults to `project` and project/global levels require an `agent`, so a
   model with no `agent` is only the shared Defaults row when `level` is
@@ -1488,9 +2040,14 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   roots `group:<level>:agents` and `group:<level>:teams`, inventory groups
   `group:defaults::<category>` and `group:defaults:/teams:<category>`, member
   group prefixes `group:<level>:<team>/:<member>:<group>` and
-  `group:<level>:<team>/:special:<id>:<group>`, and item ids
+  `group:<level>:<team>/:special:<id>:<group>`, a tool row's
+  `group:<level>:<owner>:tool:<id>:description` and
+  `group:<level>:<owner>:tool:<id>:permissions[:<category>]`, a shared perm
+  row's listing under another tool `item:<level>:<owner>:perm:<tool>:<rule>@<tool>`
+  (the same address as the row itself), and item ids
   `model:<providerID>/<modelID>[@<variant>]` and
-  `perm:<toolId>:<ruleId>`. `<level>` is `project`,
+  `perm:<toolId>:<ruleId>` (a catalog row's rule id is `<category>.<row>`).
+  `<level>` is `project`,
   `global`, or `defaults`. Every id that resolved before the catalogue split
   still resolves and still means the Agents catalogue.
 - Guards: a write whose actor is a tool cannot change a row belonging to an
@@ -1519,9 +2076,12 @@ derived from the Item's namespace plus the normalized title
 registry id. The hook only mutates entries that already exist: an unknown
 path is skipped.
 
-### Permission rules (`tool-permissions.ts`, `discover.ts`, `apply.ts`, `assembled.ts`, `index.ts`)
+### Permission rules (`permission-catalog.ts`, `permission-enforce.ts`, `tool-permissions.ts`, `discover.ts`, `apply.ts`, `assembled.ts`, `index.ts`)
 
-- Rules come from two view-time sources merged by `mergeRules` (curated
+- Rows come from four sources. The per-tool catalog (`permission-catalog.ts`,
+  below) gives every tool, Code Mode and MCP included, its categories of
+  rows. Team rows come from `team-policy-rows.ts` (Team rules are instructions
+  rows). Two view-time sources are merged by `mergeRules` (curated
   label wins on a pattern-set collision; most-mentioned discovered first,
   then unmentioned curated generics): the curated registry (shell, edit,
   write, read, webfetch, glob, grep entries, plus one `idRules` row per
@@ -1529,33 +2089,47 @@ path is skipped.
   from text Plus already holds (tool/base/skill/role/file/teaching rows,
   with `provenance` naming the mentioning item ids). The merged rank carries
   through as `Item.order` so the tree shows most-mentioned first. User
-  `RuleRecord` customs overlay as `custom: true` rows. Mined candidates are
+  `RuleRecord` customs overlay as `custom: true` rows; a record whose
+  `tool` + `id` is a catalog row's keeps what that row is (its category, kind,
+  input field, fallback or allow role) and replaces only its label, patterns,
+  keywords and message (`discover.ts` `permItems`). Mined and catalog rows are
   view-time only: never persisted, and never part of the publish fingerprint
-  (`fingerprintPublish` filters out `kind === "perm"`; only a stored
-  off-state or a `RuleRecord` enters it via `records`). The TUI add-rule
+  (`fingerprintPublish` and the publish snapshot keep only the perm items
+  carrying `policy` or `agents` — team rows, so a run starting or settling
+  republishes; a stored state, number or `RuleRecord` enters via `records`).
+  The TUI add-rule
   flow prompts for scope (row scope when invoked on a tool or perm row,
   otherwise level then agent); custom rules are globally unique by `(tool, id)`,
   not per level/agent (`rule.add`/`rule.remove`/`rule.update` match by tool+id
   only, ownership and logging follow the record actually matched).
-- Perm rows resolve from the Project level for an agent whose discovered
-  scope is Defaults and that carries no team, so the chain is
-  `project/A → global/A → defaults/A → shared` (`resolvedFor` in `apply.ts`).
-  A Defaults-scope agent (every host built-in: `build`, `plan`, `explore`, …)
-  owns a visible row under Project, Global and Defaults alike
-  (`nativeAgentsForLevel`/`specialAgentsForLevel` in `tree.ts`) and ops writes
-  at the row's own address, so the record a user actually saves carries
-  `{level:"project", agent:"build"}`; resolving at the discovered Defaults
-  level reached neither that record nor a Global one and the saved OFF
-  installed no deny and no refusal message at all. Every other item kind
-  keeps the discovered scope, and a team-scoped agent keeps its established
-  chain and the Teams catalogue unchanged.
-- Toggling any rule is a `CustomizationRecord` with state on/off on the
+- Display and enforcement resolve one chain for every item kind (tools,
+  skills, base, system, perm) and the active model. A native built-in
+  (`build`, `plan`, `explore`, …: origin native or special, discovered at
+  Defaults, no team) owns a visible row under Project, Global and Defaults
+  alike (`nativeAgentsForLevel`/`specialAgentsForLevel` in `tree.ts`) and ops
+  writes at the row's own address; its runtime answer is its Project row's:
+  `project/A → global/A → link → Defaults entries → defaults/A →
+  defaults/null` (`runtimeScope` in `model.ts`, used by `apply.ts`
+  `resolvedFor`/`applyModels`, the active-model cache, the prompt baselines
+  and the assembled view). `scopesOf` lists these agents at Global, so the
+  tree's Project row reads the same chain. A Defaults entry `*` turning
+  `tool:shell` off therefore shows off under Project → build and removes
+  shell at runtime. Any other agent resolves at its own level, the row it is
+  shown on: a host agent the tree lists under Defaults only resolves at
+  Defaults, and a team-scoped agent keeps its chain and the Teams catalogue.
+  MCP server rows live at Defaults for every agent only and resolve there.
+- Toggling any row is a `CustomizationRecord` with state on/off on the
   `perm:<tool>:<rule>` item address, so `resolve()` already yields
-  `enabled`. Every perm item OFF for an agent installs one core deny per
-  pattern (`{ action, resource: pattern, effect: "deny" }`) through the
-  agent registration; because core permission evaluation is last-match-wins,
-  appending is always sufficient. The action comes from the per-rule
-  `permAction` carried on the perm item by discovery (the tool's own
+  `enabled`; a limit row's number is that record's `text`. Every rule-kind
+  perm item (`permKind` absent or `rule`) OFF for an agent installs one core
+  deny per pattern (`{ action, resource: pattern, effect: "deny" }`) through
+  the agent registration (`apply.ts` `permDenials`). Rule rows only ever
+  refuse: a category's fallback row and its allow-list rows are input rows,
+  checked on the call itself, so no core allow from one category can reopen
+  what another row or a role row closed. The denies land last in
+  `orderRules` order (below). Rows of every other kind install no core rule:
+  `permission-enforce.ts` answers them. The action comes from the
+  per-rule `permAction` carried on the perm item by discovery (the tool's own
   `options.permission`), falling back to `actionForToolId`: `edit`/`write`/
   `patch` share core's `edit` action, every other tool uses its own id.
 - Patterns are CORE RESOURCE WILDCARDS over the tool's permission resource,
@@ -1564,17 +2138,21 @@ path is skipped.
   (the curated head-only rules still carry both `git` and `git *`); for file
   tools the resource is the file path (project-relative inside the project,
   absolute outside it), for webfetch the URL, for glob/grep the user's
-  search pattern (PATH-scoped search restriction is NOT expressible: core
-  authorizes `input.pattern`, so `grep({ pattern: "HEAD", path: ".git" })`
-  evaluates resource `"HEAD"`), for subagent/skill the exact id. Operation-
-  scoped patch restriction is NOT expressible: core's permission resource for
-  patch is the file path only (core/src/tool/plugin/patch.ts asserts
-  `action: "edit"`), and the hunk type never reaches the permission layer.
-  Carrying it as an extra resource or an extra action both change decisions
-  for existing configurations that never enabled Plus, and a targeted opt-in
-  cannot be defined reliably against the wildcard matcher. So add/update/
-  delete cannot be distinguished; the `edit`-action path rules still apply to
-  patch. User
+  search pattern (a core rule cannot scope a directory walk: core authorizes
+  `input.pattern`, so `grep({ pattern: "HEAD", path: ".git" })` evaluates
+  resource `"HEAD"`; the Search roots rows and grep's Files rows read `path`
+  at the tool hook instead), for subagent/skill the exact id. Operation-scoped
+  patch restriction is not expressible as a core rule: core's permission
+  resource for patch is the file path only (core/src/tool/plugin/patch.ts
+  asserts `action: "edit"`), and the hunk type never reaches the permission
+  layer. Carrying it as an extra resource or an extra action both change
+  decisions for existing configurations that never enabled Plus, and a
+  targeted opt-in cannot be defined reliably against the wildcard matcher. So
+  core rules cannot tell add/update/delete apart; patch's Operations rows read
+  `patchText` at the tool hook instead (add, delete, move), and the
+  `edit`-action path rules still apply to patch. The tool-input rows match
+  with `wildcardMatch`, Plus's copy of core's wildcard (a trailing ` *` also
+  matches the bare head). User
   patterns validate through `validateRuleInput` (at least one non-empty
   pattern; keywords default through `keywordsForPattern` when omitted).
   `commandHeads` (Plus's own head-depth table: `git: 2`, `docker: 2`,
@@ -1586,13 +2164,305 @@ path is skipped.
 - Keywords derive only through the single `keywordsForPattern`: head word
   plus subcommand words, stopping at the first wildcard or flag (`git push
   *` → `["git push"]`); a pattern with no literal leading word falls back
-  to its first meaningful segment (`*.git*` → `[".git"]`).
+  to its first meaningful segment (`*.git*` → `[".git"]`). Catalog rows ship
+  no keywords — their patterns name common words (`cp`, `touch`, `tee`) that a
+  derived keyword would strip from unrelated guidance — so turning one off
+  scrubs no prompt line. Saving one through the rule editor or `rule.update`
+  makes it a user rule, whose blank keywords derive like any rule's.
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
   description plus every system part, after the text plans), the
   `session.catalog` hook (Code Mode catalog descriptions, after the
   text/pin plans), and the `assembled` view (registry descriptions, system,
   and skill content). Empty keyword sets install no extra hooks.
+
+#### The per-tool catalog (`permission-catalog.ts`)
+
+`catalogFor(tool, group)` names the categories a tool lists: native, team,
+instructions, release, search and opencode tools by their tables, `browser_*`
+tools by what each does to a page, any other tool of group `mcp` or `plus`
+the Approval category alone (an MCP leaf and the plugin gate both reach a
+permission check), every other tool nothing. `catalogItems` turns each
+category of each tool row into ordinary perm items, `perm:<tool>:<category>.<row>`,
+carrying `permTool`, `permAction`, `ruleId`, `patterns`, `category`,
+`permKind`, `field` (the row's, else the category's), `value`, `measure`,
+`mode`, `message`, `fallback`, `allow` and `alsoUnder`, and an empty
+`keywords`. A row's text is its label and patterns — a limit row's is just
+its number. The module is data plus the helpers every enforcer shares:
+`wildcardMatch` and `valuesAt` (a dotted field whose `[]` segments walk
+arrays: `scope.paths[]`, `questions[].multiple`).
+
+Row semantics, the same in every category:
+
+- The fallback ("Everything else") row — Every other file, Every other site,
+  Every other command, or Outside this checkout in read's and edit's Where —
+  is the category's default. On leaves the agent's own answer in place; off
+  refuses everything the category's allow-list rows do not let through
+  (Outside this checkout: only paths outside the Location directory). A
+  fallback is always an input row, checked on the call, even inside a rule
+  category (read's Every other file reads `path`, shell's Every other command
+  `command`).
+- A deny-list row, the default, refuses what it matches while it is off. It
+  ships on (nothing refused) unless what it guards is never wanted.
+- An allow-list row (`allow: true`: Temporary directories, `/tmp/*` and
+  `*/run/plus/tmp/*`, in read's and edit's Where) lets its patterns through
+  while it is on, and only matters once the fallback is off.
+- A limit or bound row carries its number as its text; on applies it, off
+  removes the cap.
+
+Shipped off in the catalog: every `limit` row, every Approval row, question's
+In delegated team runs, subagent's Team members (without a team run),
+team_finish's A commit deliverable has at least one commit, and
+team_followup's Followups per child. Every other catalog row ships on,
+team_delegate's four bounds included.
+
+How each kind is enforced (`model.ts` `PermKind`):
+
+| kind | enforced by | what the row does |
+| --- | --- | --- |
+| `rule` | core rules (`apply.ts` `permDenials`) on the tool's own permission resource | off denies what the patterns match (a refusal: it lands last) |
+| `input` | `tool.execute.before`, wildcards over every value at `field` | off refuses a call whose value matches; a fallback off refuses every value it covers that no on allow row lets through |
+| `value` | `tool.execute.before`, `session.context` | off refuses a call using the literal — supplied, or left to the tool's default (the category's `default`: webfetch `markdown`, effort `medium`, delivery `queue`, until `settled`, diff from `base`, Tavily depth `basic` and topic `general`, Exa type `fast`) — and drops it from the direct tool's schema |
+| `param` | `tool.execute.before`, `session.context` | off refuses a call that uses the parameter (at `value`, when set) and drops it from the schema (`timeout: 0` becomes `minimum: 1`, `approvalRef: null` loses `null`) |
+| `limit` | `tool.execute.before` (`session.context` sets `maximum` for a `value` cap) | on applies the number: `clamp` lowers a larger top-level number to it, `refuse` refuses above it; `measure` is the number itself, the longest string (`length`) or the count of entries (`count`; patch counts `*** Add/Update/Delete File:` headers) |
+| `approval` | `tool.execute.before`, `permission.evaluate`, the permission reply events | on asks the human before each call; a delegated run is refused instead |
+| `env` | `tool.execute.before`, `shell.create.before` | off strips the matching environment variables before the command starts |
+| `team` | the team handlers (`teams/reach.ts`) | as each row says (Team rules are instructions rows) |
+
+The detail pane's `enforced by:` line (`detail-pane.tsx` `enforcementLine`)
+says the same per row:
+
+```
+rule, role row  role rule: installs its own core rules on <action>
+rule            core rule on <action>: off refuses what the patterns match
+input, Where    tool input (<field>): off refuses paths outside this checkout unless an allowed row below matches
+input, fallback tool input (<field>): off refuses everything this category's allowed rows do not let through
+input, allow    tool input (<field>): on lets its patterns through while this category's first row is off
+input           tool input (<field>): off refuses a call whose value matches the patterns
+value           tool input (<field>): off removes "<value>" from the schema and refuses it
+param           tool input (<field>): off removes the parameter from the schema and refuses a call that uses it
+limit           limit on <field> (<measure>, lowered to the cap | refused above it): on applies the number
+approval        approval: on asks the human before the call; a delegated run is refused instead
+env             shell environment: off strips the matching variables before the command starts
+team            read by the team tools themselves
+```
+
+Rows whose meaning is not one pattern over one field (`permission-enforce.ts`
+`specialRefusal`, `paramUsed`): write's Operations tell create from overwrite
+by whether the path, resolved against the Location directory, exists; patch's
+by the `*** Add File:`, `*** Delete File:` and `*** Move to:` lines in
+`patchText`; subagent's Team members refuses an `agent` that is a member of an
+enabled team; an `instructions_*` tool's Its own rows refuses a row id that
+addresses the caller — owner segment `<agent>` (`item:<level>:<agent>:…`),
+a Teams-catalogue owner `<team>/:<agent>`, `agent:<level>:<agent>` or
+`team:<level>:<team>:<agent>` (`addressesAgent`) — while the other Rows it may
+change match the id; Secrets in rows never refuses (it masks results);
+browser_tabs_list's Use refuses every call while off; the Sites of a
+tab-scoped browser tool (`field: tabID`) judge the tab's current page as the
+browser tools' own results last reported it — a page not known yet passes
+unless the fallback is off (`the page of tab <id> is not known yet; open it
+with browser.tabs.open or browser.navigate first`). An Outside this checkout
+input row (`<category>.outside`) matches a value that resolves outside the
+Location directory (`~` expands), and the opencode session tools' Other
+sessions row a `sessionID` other than the caller's.
+
+Where a row lists (`categoryOfRow`, `categoryLabel`, `categoryOrder`,
+`hostOf`): a catalog or team row carries its own `category`; a mined row goes
+to `suggested`, "Mentioned in instructions"; curated, `idRules` and user rows
+take their tool's legacy category — shell Commands, edit/write/patch/read
+Files, webfetch Sites, glob/grep Search patterns, subagent Agents, skill
+Skills — else Rules. Shell's and read's legacy categories share the catalog's
+ids (`commands`, `files`), so their curated and catalog rows list together;
+edit's legacy Files sits beside Protected files. Row ids never changed, so
+stored overrides keep resolving; only where the rows list moved.
+
+Categories per tool (catalog and legacy; kinds in parentheses, numbers are
+the shipped limits):
+
+| tool | categories |
+| --- | --- |
+| `read` | Files (rule: secret files and the curated rows; fallback Every other file, input `path`) · Where (input `path`: fallback Outside this checkout, allow Temporary directories) · Content (input `path`: images, PDFs) · Limits (Lines per read 2000, clamp) · Approval |
+| `glob` | Search patterns (curated) · Search roots (input `path`: outside) · Parameters (`hidden`) · Limits (Results per call 100, clamp) · Approval |
+| `grep` | Search patterns (curated) · Files (input `path`, fallback: secret files; filters results) · Include filters (input `include`) · Search roots (input `path`) · Limits (Matches per call 100, clamp) · Approval |
+| `edit` | Files (curated; also under patch) · Protected files (rule: keys, credentials, `.opencodeplus/`, `.github/`, agent and team definitions, AGENTS.md, `release/`, tests; also under write and patch) · Where (input: fallback Outside this checkout, allow Temporary directories; also under write and patch, patch's paths read from its headers) · Parameters (`replaceAll`) · Approval |
+| `write` | Files (curated) · Protected files, Where (edit's) · Operations (input `path`: create, overwrite) · Limits (Largest file written 200000 characters, refuse) · Approval |
+| `patch` | Files, Protected files, Where (edit's) · Operations (input `patchText`: add, delete, move) · Limits (Files per patch 20, refuse) · Approval |
+| `shell` | Commands (rule; fallback Every other command, input `command`: curated rows, git working-tree changes, git refs and worktrees, file writes, stopping processes by name, inline interpreter code, registry runs, network tools, service control, database shells, GitHub CLI, printing secret files, workspace scripts) · Working directories (input `workdir`: outside) · Parameters (`background`, `timeout: 0`, `workdir`) · Environment (env: keys, tokens, passwords) · Limits (Longest timeout 600000 ms, clamp) · Approval |
+| `question` | Parameters (`questions[].multiple`) · Limits (Questions per call 4, refuse) · When (approval: In delegated team runs, off) |
+| `subagent` | Agents (one row per agent id) · Team members (input `agent`, off) · Parameters (`background`, `sessionID`) · Approval |
+| `skill` | Skills (one row per skill id) · Approval |
+| `webfetch` | Sites (curated) · More sites (rule: private networks, cloud metadata, paste and capture sites) · Formats (value `format`) · Limits (Longest timeout 60 s, clamp) · Approval |
+| `websearch` | Queries (rule: keys and tokens, local paths) · Approval |
+| `execute` | Limits (Tool calls per run 50, refuse: Code Mode inner calls per `execute` call) |
+| `opencode_session_move` | Sessions (param `sessionID`: other sessions) · Destinations (input `directory`: absolute paths, `../`) |
+| `opencode_session_rename` | Sessions (param `sessionID`) · Limits (Longest title 80 characters, refuse) |
+| `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 12, on) · Requirements (team: reason) · Approval |
+| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`) · Limits (team: Followups per child 5, off) · Approval |
+| `team_integrate` | Outcomes it lands (team) · Branches it lands on (team: protected branches) · Approval |
+| `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
+| `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |
+| `team_set_checks` | Check commands (input `checks[].argv`) · Approval |
+| `team_supersede`, `team_stop` | Approval |
+| `team_status` | — |
+| `team_wait` | Wait until (value `until`) · Parameters (`ack: false`) · Limits (Longest wait 600000 ms, clamp) |
+| `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |
+| `team_list` | Parameters (`all`) |
+| `team_get_context` | Contents (team: siblings) |
+| `team_check` | Checks it may run (team: test files, package scripts) |
+| `instructions_list`, `_show`, `_log` | Secrets in rows (input: Show secret values; off masks) · Approval |
+| `instructions_set` | Rows it may change (input `id`: its own rows, perm, model, team, Global and Defaults rows) · Changes (param: `text`, `state`, `pin`, `active`, `resolve`, `patterns`) · Approval |
+| `instructions_reset`, `_split`, `_delete` | Rows it may change · Approval |
+| `instructions_create` | Kinds (value `kind`) · Levels (value `level`) · Approval |
+| `release_request` | Kinds (value `kind`: build, promote) · Targets (value `artifact.target`) · Parameters (`approvalRef: null`) · Approval |
+| `release_status` | Approval |
+| `search_tavily_search` | Queries (input `query`) · Search depth (value `search_depth`) · Topics (value `topic`) · Limits (Results per search 10, clamp) · Approval |
+| `search_tavily_extract` | Sites (input `urls[]`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Extract depth (value `extract_depth`) · Limits (Pages per call 5, refuse) · Approval |
+| `search_exa_code_search` | Queries (input `query`) · Search types (value `type`) · Parameters (`contents.text`, `contents.summary`) · Limits (Results per search 10, clamp) · Approval |
+| `browser_navigate`, `browser_tabs_open` | Sites (input `url`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) |
+| `browser_tabs_list` | Use (List this session's tabs) |
+| every other `browser_*` | Sites (the tab's current page) and, by tool: `files_upload`/`files_drop` Files (input `paths[]`, fallback: secret files) · Limits (Files per call 2, refuse); `network_get` Parameters (`includeBody`) · Limits (Largest body 5000 characters, clamp); `dialog` Actions (value `action`: get, accept, dismiss); `evaluate` Parameters (`frameID`) · Limits (Longest script 4000 characters, refuse); `screenshot` Parameters (`fullPage`); `fill`/`fill_form` Limits (Longest text typed 2000 characters, refuse); `trace_start` Limits (Longest trace 10000 ms, clamp) |
+
+The team tools' catalog rows (Teams without kinds): `team_get_context` Team
+runs (Start a team run from a chat) · Contents · Briefs it accepts (Scope paths
+for a commit, Plan files only, A reason, A check, Corrections by followup) ·
+Brief limits (Paths per brief 5, Checks per brief 1, shipped off);
+`team_delegate` Access (Delegate from a delegated run) before its other
+categories; Runs (Deeper descendants, Any other run, shipped off) on
+`followup`, `stop`, `supersede`, `status`, `wait`, `diff` and `list`;
+`team_finish` Requirements for done gains Worktree committed before done
+(shipped off). read's Where gains `external` (a rule row on
+`external_directory`), edit gains Files it may change (listed under write and
+patch too). A team member also lists its own rows: Delegate to on
+`team_delegate` (first), and Run edit scopes last on edit. A category shared
+from another tool lists after the tool's own and takes its label from its id
+there: edit's Files, Protected files and Where list under write and patch right
+after the tool's own legacy category, with edit's labels.
+
+#### Enforcement (`permission-enforce.ts`)
+
+`apply.ts` builds every agent's resolved non-rule rows on each publish
+(`permissionTable`: lazily per agent; a row no record addresses resolves to
+its shipped state without a chain walk) and returns them as
+`Applied.permissions`, which `index.ts` keeps in `PlusState.permissions` for
+the team tools. `toolRows(agent, tool)` is an agent's rows listed under one
+tool, its own and the ones it shares (`alsoUnder`). `installEnforcement`
+answers them through the plugin seams:
+
+- `tool.execute.before` sees every call — direct tools, Code Mode inner calls
+  and MCP tools — with its full input before core authorizes it. `decide`
+  refuses (`Tool.Error`, `Permission denied: <message>`), clamps (rewrites the
+  input), queues an approval, or queues the environment patterns a shell
+  command must lose. It also counts Code Mode inner calls per `execute` call:
+  past Tool calls per run every further inner call is refused (`Permission
+  denied: Tool calls per run is <n>; this run made more`).
+- `permission.evaluate` runs when core authorizes that call, matched by
+  session, message and call id and by the permission action the entry
+  names (the tool's `permAction`); Code Mode inner calls share their
+  `execute` call's id. An entry is waiting, raised or answered: every
+  evaluation of its action under the key asks — with `<tool> asks the human
+  before each call (Permissions → Approval).` — while an entry is not
+  answered and its agent and tool have no `always`. So a sibling under
+  another action never takes an approval, a sibling under the same action is
+  asked too (the safe side), and core's re-evaluation of a pending request
+  after an `always` to something else still asks. The `permission.asked` and
+  `permission.replied` events map each question to its entry: `once` or
+  `always` marks it answered (the call's later checks of the same action
+  pass), `always` also stops asking for that agent and tool until the server
+  restarts (the row stays on) — unless the question was shared by Code Mode
+  siblings of the same action, which it then names together (`<tool> or
+  <tool> asks …`) and whose "always" exempts no tool, for as long as that
+  execute call runs. Entries go when their
+  direct call, or the `execute` call holding them, ends; what an interrupted
+  call leaves behind (an entry never asked, or already answered) is swept
+  after an hour, never a question still waiting for the human. An evaluation core already
+  denies stays denied.
+- `tool.execute.after` drops the files grep's Files rows hide from its result
+  (keeping core's text: absolute paths, and the truncation notice when core's
+  search hit its limit), masks secret values in `instructions_*` results while
+  Secrets in rows → Show secret values is off (strings under a key naming a
+  secret, every string inside `headers`, `environment` or `env`, the same
+  inside a string that is itself JSON and inside diffs, and token-shaped
+  strings anywhere; an MCP server row — its id names `mcp:` — is config
+  through and through, so every value of its config is masked — its JSON text
+  keeping its shape, numbers and booleans kept — while the row itself keeps
+  its naming fields: id, label, kind, view, source, status, summary), and
+  remembers each browser tab's page from browser results.
+- `shell.create.before` strips the registered variables. It carries no agent,
+  so every shell call registers its command text (stripping or not) and the
+  invocation takes the oldest registration of that text; while calls of one
+  command overlap, each gets the union of what any of them strips (stripping
+  more is the safe side). A registration whose command never started expires
+  after an hour.
+- `session.context` narrows each direct tool's JSON schema per agent
+  (`narrowTools`): an off value's literal and an off parameter disappear, an
+  on `value` limit sets `maximum`, and `team_delegate`'s `role` becomes an enum
+  of exactly the co-members whose Delegate to rows are on, with `Members you
+  may delegate to: <members>.` (or `No member of your team is open to you for
+  delegation.`) appended to its description. Code Mode tools are not narrowed;
+  the tool hook still refuses there.
+
+A delegated team run (a `w` run, found through `teams/run.ts` `bySession`)
+has nobody to ask,
+so an approval there is refused: `Permission denied: <tool> needs the human's
+approval before each call, and nobody watches a delegated run. Finish with
+needs=[{kind:"decision",detail:"…"}] instead.` Question's When → In delegated
+team runs row (off) refuses a question there with `no human watches a
+delegated run; finish with needs_context instead of asking`.
+
+A hook costs every tool call a lookup, so `apply` installs these hooks and the
+reply listener only when `tableActive`: some agent has a row doing something —
+an off row other than a team row, an on limit holding a number, an on
+approval row, and, only while an enabled team has members, question's
+delegated-run row or subagent's Team members row (both ship off).
+Narrowing rides the existing `session.context` hook, else installs its own,
+only when `tableNarrows`: an off value or parameter, an on `value` limit, or
+any Delegate to row. A host without a seam installs nothing for it (`plus
+permission hook not installed`); the rows still list and show their state.
+
+#### Rule order (`apply.ts` `orderRules`)
+
+Every Plus rule — rule-kind rows' denies (`permDenials`), role rows'
+`policy` (`policyRules`), the non-member `team.*` deny and a member's
+`team.<tool>` deny for a team tool row that is off — lands in one
+stable order: first a role row's whole-resource defaults (`*`; `allow`, then
+`ask`, then `deny`), then the role rules that let a specific resource through
+(a run's scope paths, a planner's plan files), then the role's own specific
+refusals, and last every refusal of a row that is off and the namespace deny
+(`refusal`), even one whose pattern is `*`. Core answers last-match-wins, so a
+row that is off always refuses what it matches and the most restrictive role
+default wins. This fixed a real bug: role rules used to be appended after
+every row's denies, so an orchestrator's role row `allow shell *` landed last
+and let `git push` through while the `git push` row was off.
+
+#### What cannot be enforced, and what is best effort
+
+- **No approval for browser tools or core's opencode session tools.** They
+  carry no plugin origin and reach no permission check, so there is nothing to
+  turn into a question: they list no Approval category, and their other rows
+  are refused at `tool.execute.before`.
+- **glob and grep path scoping is tool-input rows, not core rules.** Core
+  authorizes `input.pattern`, so the Search roots rows (and grep's Files and
+  Include filters) read `path`/`include` at `tool.execute.before`, and grep's
+  results are filtered afterwards. glob has no Files category: it returns
+  names, and its Search roots row only decides whether it may walk outside the
+  Location directory.
+- **Shell file writes and network use are pattern-based best effort.** The
+  Commands rows (and the orchestrator's role row) match each parsed command's
+  text: while off they refuse `>`, `tee`, `cp`, `nc`, `rsync` and the rest as
+  written, but a script, an interpreter running a file or any program no
+  pattern names can still write files or open connections.
+- **Patch operations are read from `patchText`.** Core's resource is the file
+  path only; the Operations rows parse the patch headers, and a plain update
+  has no row of its own.
+- **Code Mode schemas are not narrowed.** An off value or parameter of a Code
+  Mode tool stays in its catalog signature and is refused when called.
+- **A browser tab's page is what the browser last reported.** A tab whose page
+  is not known yet passes Sites unless the fallback is off.
+- **A limit caps what a call asks for, and what it leaves to the tool.** A
+  clamp row lowers a supplied number, and sets an omitted field to the cap
+  when the tool's own default is higher (read 2000 lines, glob and grep 100,
+  shell 120000 ms, webfetch 30 s, Tavily 5 and Exa 10 results, wait 60000 ms,
+  diff 200000 bytes).
 
 ### Log (`log.ts`, `rpc.ts`, `index.ts`)
 
@@ -1633,7 +2503,7 @@ export interface LogOutput { readonly entries: readonly LogEntry[]; readonly tot
 ### Query grammar (`query.ts`)
 
 ```ts
-export type Field = "id" | "badges" | "source" | "tokens" | "text" | "upstream" | "record" | "label" | "path" | "updated" | "sections"
+export type Field = "id" | "badges" | "source" | "tokens" | "text" | "upstream" | "record" | "label" | "path" | "updated" | "sections" | "from"
 export type Sort = "tokens" | "delta" | "updated" | "label" | "id" | "-tokens" | "-delta" | "-updated" | "-label" | "-id"
 export interface QueryOptions { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
 export interface QueryRow { readonly id: string; readonly badges?: string; readonly source?: Level | "upstream"; readonly tokens?: number; readonly text?: string; readonly upstream?: string; readonly record?: CustomizationRecord; readonly label?: string; readonly path?: string; readonly updated?: string; readonly sections?: readonly string[] }
@@ -1654,15 +2524,20 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   matches.
 - Key semantics: `kind` is `root|group|agent|team|item|section`;
   `item` is `tool|base|skill|system|mcp|model|perm`; `tool` is the parent
-  tool id on perm rows (e.g. `tool:shell`); `group` is
+  tool id on perm rows (e.g. `tool:shell`) — the row's own `permTool`, so a
+  shared row listed under write (`…@write`) answers `tool:edit` and a hosted
+  role row its action (`tool:external_directory`); `group` is
   `native|plus|mcp|project|none`; `server` is the exact (case-insensitive)
-  MCP server name; `level` is `project|global|defaults`; `catalogue` is
+  MCP server name; `level` is `project|global|defaults|preset`; `catalogue` is
   `agents|teams` (addressed rows answer from their address, structural rows
-  from their id; roots belong to neither and match nothing); `agent` is a
+  from their id — a `<team>/:<member>` group is teams; roots belong to neither
+  and match nothing); `agent` is a
   case-insensitive substring match, `_` is the shared (agent-less) row; `state`
   is `on|off`; `modified`/`overridden` read the row's own stored text;
-  `review` includes rolled-up descendant review; `source` is
-  `project|global|defaults|upstream`; `active` is the base template active
+  `review` includes rolled-up descendant review (the badges string is the
+  tree's badge words, `badgeLabels` in from-label.ts: `to review`,
+  `to review (state)`/`to review (pin)` when a part other than the text is
+  under review, `review` on a model row); `source` is `project|global|defaults|preset|upstream`; `active` is the base template active
   for the row's agent model (following the Plus-active model), or the resolved active model on model rows;
   `inactive` is a user base template that can
   never become active; `unsupported` is whole `system:role` and whole base
@@ -1670,7 +2545,9 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   namespace; `pinned` reads the resolved pin; `execute` reads the
   synthetic-row flag; `can` is `toggle|edit|reset|remove|split|pin`; `has` is
   `record|split|sections|text`; `id` is a case-insensitive prefix match;
-  `label` is a substring; `updated` compares the row's own override (or
+  `label` is a substring (a positive `id:` or `level:` term walks only the
+  roots its rows can live under, and an `id:` prefix skips splitting items
+  whose rows cannot match); `updated` compares the row's own override (or
   split) timestamp against an ISO date or a `<n><s|m|h|d|w>` age, where
   `>`/`<` on an age mean older/newer than; `team` is the exact
   (case-insensitive) team name on agent/team rows; `acked` reads
@@ -1702,6 +2579,16 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   to false). Candidates walk the lazy skeleton without resolving; resolved
   and upstream text are computed lazily per candidate and cached on it. A
   caller-supplied `memo` reuses those caches.
+- A tool row's structural groups list in tree order after it: the
+  Description group (when the text has several sections) before its sections,
+  then the Permissions group, each category group and its rows
+  (`toolPermissions`, walked without resolving anything). They are
+  `kind:group` candidates with no address and no badges, so `item:`, `tool:`,
+  `state:` and the other keys that read a row's item never match them — the
+  Description group, whose tree row carries the tool's address for the detail
+  pane, is never listed as the tool a second time — and a tool row's
+  `sections` field names its sections only. `id:group:<level>:<owner>:tool:<id>:permissions` lists a
+  tool's Permissions group and its category groups.
 - The TUI filter (`state.ts`) runs the same engine (`query` with
   `fields: ["id"]`) and reveals each match with its ancestor chain; Code
   Mode sections surface as rows like any other section; a `where` the
@@ -1793,5 +2680,5 @@ Built-in team prompts reference the search tools by their exact model-visible ID
 - `shared` prompt (all members): `search_exa_code_search` for external APIs.
 - `planner` prompt: `search_tavily_search` and `search_tavily_extract` for documentation.
 
-The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available.
+The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available. It lists under `search_tavily_search` → Permissions → Access; the three tools' own categories (Queries, Sites, depths, topics, types, limits, Approval) are in the per-tool table under Permission rules.
 

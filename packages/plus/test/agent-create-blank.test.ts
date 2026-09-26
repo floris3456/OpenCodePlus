@@ -32,7 +32,7 @@ function captureEmits(state: PlusState): Array<{ name: string; data: unknown }> 
   return emitted
 }
 
-test("blank-prompt agent create writes the file, emits one instructions.changed, and snapshots blank", async () => {
+test("blank-body agent create from a preset writes the file, emits one instructions.changed, and snapshots blank", async () => {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-agent-create-blank-"))
   roots.push(root)
@@ -48,11 +48,14 @@ test("blank-prompt agent create writes the file, emits one instructions.changed,
   if (!primed.ok) throw new Error(`priming refresh failed: ${primed.error.message}`)
   // Subscribe to the Plus event stream before the create call.
   const emitted = captureEmits(state)
-  const created = await api.createAgent({ scope: "project", id: "blank", fields: { mode: "primary" }, prompt: "" })
+  // DESIGN §5: the preset's mode and description, and an empty body.
+  const created = await api.createAgent({ scope: "project", id: "blank", preset: { kind: "agent", id: "orchestrator" } })
   if (!created.ok) throw new Error(`createAgent failed: ${created.error.message}`)
-  // (a) the agent file exists with the exact formatMarkdown bytes for a blank prompt.
+  // (a) the agent file exists with the exact formatMarkdown bytes for a blank body.
   expect(await Bun.file(created.value.path).exists()).toBe(true)
-  expect(await Bun.file(created.value.path).text()).toBe("---\nmode: primary\n---\n")
+  expect(await Bun.file(created.value.path).text()).toBe(
+    '---\ndescription: "Owns work, delegates by task, verifies and integrates"\nmode: primary\n---\n',
+  )
   // (b) exactly one instructions.changed is emitted synchronously by the create call.
   const changed = emitted.filter((entry) => entry.name === "instructions.changed")
   expect(changed).toHaveLength(1)

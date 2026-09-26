@@ -11,9 +11,9 @@ import { createPlusApi, createState, createHandlers } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
 import { enable } from "../src/project.js"
-import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId } from "../src/instructions/paths.js"
-import { load } from "../src/instructions/store.js"
-import { globalDefaultsTeamsPath } from "../src/instructions/teams.js"
+import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
+import { saveRun } from "../src/teams/run.js"
+import { load, save } from "../src/instructions/store.js"
 import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import {
@@ -31,6 +31,8 @@ import {
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
+import { plusTeamPresets } from "../src/instructions/presets.js"
+import { presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { agentHarness, agentInfo, catalogHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
@@ -64,6 +66,30 @@ function toolContext(agent = "alpha"): Tool.Context {
     id: Tool.CallID.make("call_tools_test"),
     progress: () => Effect.void,
   }
+}
+
+// DESIGN §3.3: a user agent's shared rows fall back to off unless a preset
+// sets them. Where a test is about something else, its fixture agent stands
+// for an agent created from the Native `build` preset (linked at the level the
+// agent is addressed at), so every row it does not customize keeps its native
+// value.
+async function linkToBuild(project: string, level: "project" | "global" | "defaults", ids: readonly string[]): Promise<void> {
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records,
+      ...ids.map((id) => ({
+        type: "link" as const,
+        level,
+        agent: id,
+        preset: { kind: "agent" as const, id: "build" },
+        updated: "2026-01-01T00:00:00.000Z",
+      })),
+    ],
+  })
+  if (!saved.ok) throw new Error("linkToBuild: stale save")
 }
 
 function fixtureContext(project: string, overrides?: Partial<Parameters<typeof fullContext>[0]>): Context {
@@ -189,6 +215,8 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       agents: [...team.agents],
       ...(team.overlay !== undefined ? { overlay: [...team.overlay] } : {}),
     })),
+    // Links, Defaults entries and user presets: the chain reads them.
+    ...presetStateOfSnapshot(snapshot),
   }
 }
 
@@ -384,8 +412,6 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   const apiConfig = process.env.OPENCODE_CONFIG_DIR ?? ""
   if (apiConfig.length === 0) throw new Error("missing api config dir")
   const apiProject = apiIsolation.project
-  const agentPrompt = "Be helpful."
-  const agentFields = { description: "Helper agent", mode: "subagent" as const }
   const skillBody = "Take notes."
   process.env.OPENCODE_CONFIG_DIR = toolConfig
   // The tool resolves every create's returned row through the tree, and the
@@ -409,7 +435,8 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   // const instructionText = "Follow the guide."
   const mcpConfig = { type: "remote", url: "https://example.test" }
   process.env.OPENCODE_CONFIG_DIR = toolConfig
-  await runOk(toolCreate, { kind: "agent", id: "helper", prompt: agentPrompt, fields: agentFields })
+  // "<id>" names an agent preset in the string form tools accept.
+  await runOk(toolCreate, { kind: "agent", id: "helper", preset: "orchestrator" })
   await runOk(toolCreate, { kind: "skill", name: "notes2", body: skillBody })
   await runOk(toolCreate, { kind: "base", id: "custom", title: baseTitle, text: baseText })
   // OpenCodePlus: create kind:"instruction" is disabled pending the Context
@@ -418,7 +445,7 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   // await runOk(toolCreate, { kind: "instruction", name: "AGENTS.md", text: instructionText })
   await runOk(toolCreate, { kind: "mcp", name: "search", config: mcpConfig })
   process.env.OPENCODE_CONFIG_DIR = apiConfig
-  const apiAgent = await apiApi.createAgent({ scope: "project", id: "helper", prompt: agentPrompt, fields: agentFields })
+  const apiAgent = await apiApi.createAgent({ scope: "project", id: "helper", preset: { kind: "agent", id: "orchestrator" } })
   if (!apiAgent.ok) throw new Error(`api createAgent failed: ${apiAgent.error.message}`)
   const apiSkill = await apiApi.createSkill({ name: "notes2", body: skillBody })
   if (!apiSkill.ok) throw new Error(`api createSkill failed: ${apiSkill.error.message}`)
@@ -499,9 +526,10 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   // text, title, and frontmatter, so an empty-vs-empty equality cannot pass.
   const agentKey = [...toolProjectFiles.keys()].find((key) => key.endsWith("helper.md"))
   if (agentKey === undefined) throw new Error("missing helper agent file")
-  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toContain(agentPrompt)
-  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toContain("Helper agent")
-  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toContain("subagent")
+  // The preset's description and mode, and an empty body (DESIGN §5).
+  expect(normalizeRoots(toolProjectFiles.get(agentKey) ?? "")).toBe(
+    '---\ndescription: "Owns work, delegates by task, verifies and integrates"\nmode: primary\n---\n',
+  )
   const skillKey = [...toolProjectFiles.keys()].find((key) => key.endsWith(path.join("notes2", "SKILL.md")))
   if (skillKey === undefined) throw new Error("missing notes2 skill file")
   expect(toolProjectFiles.get(skillKey) ?? "").toContain(skillBody)
@@ -643,7 +671,9 @@ test("delete team member removes a project team member and reports the plan stat
 test("delete shipped defaults team member is refused with shipped member wording and writes nothing", async () => {
   const { project } = await tempProject()
   const ctx = fixtureContext(project)
-  const api = createPlusApi(ctx, createState())
+  // No team ships at Defaults any more (DESIGN §2: the shipped teams are Plus
+  // team presets); the injected registry stands for a Defaults team.
+  const api = createPlusApi(ctx, createState(), { builtins: [{ name: "starter", members: [{ id: "planner", body: "planner body" }] }] })
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const snapshot = await snapshotOf(api)
@@ -672,7 +702,7 @@ test("delete team removes a project team directory and reports the plan status",
 
   const created = await api.createTeam({ level: "project", team: "crew" })
   if (!created.ok) throw new Error("create team failed")
-  const added = await api.addTeamAgent({ level: "project", team: "crew", id: "alpha", prompt: "crew alpha prompt" })
+  const added = await api.addTeamAgent({ level: "project", team: "crew", id: "alpha" })
   if (!added.ok) throw new Error("add member failed")
 
   const teamDir = path.join(projectTeamsPath(project), "crew")
@@ -704,40 +734,26 @@ test("delete team removes a project team directory and reports the plan status",
   expect(entry.target).toBe("team:project:crew")
 })
 
-test("delete overlay defaults team member through instructions_delete unlinks file and updates snapshot", async () => {
+// DESIGN §2: the Defaults teams overlay directory is no longer read, so a
+// file left there is no member: no row exists and delete has nothing to find.
+test("a file in the old Defaults overlay directory is no team member row", async () => {
   const { project } = await tempProject()
   const ctx = fixtureContext(project)
   const registry = [{ name: "starter", members: [{ id: "planner", body: "planner body" }] }]
-  const state = createState()
-  const handlers = createHandlers(ctx, state, { builtins: registry })
-  const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
-  const added = (await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "defaults", team: "starter", id: "helper", prompt: "helper role" }, throwing),
-  )) as { id: string; path: string }
-  expect(await Bun.file(added.path).exists()).toBe(true)
-
-  const api = createPlusApi(ctx, state, { builtins: registry })
+  const overlayFile = path.join(process.env.OPENCODE_CONFIG_DIR ?? "", "opencodeplus", "teams-defaults", "starter", "helper.md")
+  await fs.mkdir(path.dirname(overlayFile), { recursive: true })
+  await Bun.write(overlayFile, "helper role")
+  const api = createPlusApi(ctx, createState(), { builtins: registry })
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const snapshot = await snapshotOf(api)
   const memo = memoFromSnapshot(snapshot)
-  const overlayRow = expandedTree(memo).find((node) => node.id === "team:defaults:starter:helper")
-  if (overlayRow === undefined) throw new Error("missing overlay team member row")
-  const plan = removalPlan(memo, overlayRow.id)
-  if ("refusal" in plan) throw new Error(`expected team.removeAgent plan: ${plan.refusal}`)
-  expect(plan.kind).toBe("team.removeAgent")
-
-  const deleted = (await runOk(need(tools, "instructions_delete"), { id: overlayRow.id, confirm: true })) as {
-    status: string
-  }
-  expect(deleted.status).toBe(plan.successStatus)
-  expect(await Bun.file(added.path).exists()).toBe(false)
-
-  const nextSnapshot = await snapshotOf(api)
-  const starterTeam = nextSnapshot.teams?.find((team) => team.team === "starter" && team.level === "defaults")
-  expect(starterTeam?.agents).not.toContain("helper")
-  expect(starterTeam?.overlay ?? []).not.toContain("helper")
+  expect(expandedTree(memo).some((node) => node.id === "team:defaults:starter:helper")).toBe(false)
+  const starterTeam = snapshot.teams?.find((team) => team.team === "starter" && team.level === "defaults")
   expect(starterTeam?.agents).toEqual(["planner"])
+  const error = await runFail(need(tools, "instructions_delete"), { id: "team:defaults:starter:helper", confirm: true })
+  expect(error.message).toContain("row.unknown")
+  expect(await Bun.file(overlayFile).exists()).toBe(true)
 })
 
 test("team toggle through set matches teamPlan", async () => {
@@ -1083,7 +1099,7 @@ test("protected agent creation refuses before writing a file or log line", async
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
-  const error = await runFail(need(tools, "instructions_create"), { kind: "agent", id: "build", prompt: "override" })
+  const error = await runFail(need(tools, "instructions_create"), { kind: "agent", id: "build" })
   expect(error.message).toContain("agent.protected")
   expect(await Bun.file(path.join(project, ".opencode", "agent", "build.md")).exists()).toBe(false)
   expect(await Bun.file(path.join(project, ".opencode", "agents", "build.md")).exists()).toBe(false)
@@ -1191,6 +1207,7 @@ test("toggling the execute row through set succeeds and writes the state record"
     agents: [agentInfo("alpha", "upstream")],
     tools: [{ id: "coder", description: "code mode tool" }],
   })
+  await linkToBuild(project, "defaults", ["alpha"])
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
@@ -1213,6 +1230,7 @@ test("toggling the execute row through set succeeds and writes the state record"
 test("a stale bare-id toggle reports the status that actually committed", async () => {
   const { project } = await tempProject()
   const ctx = fixtureContext(project)
+  await linkToBuild(project, "defaults", ["alpha"])
   const state = createState()
   const real = createPlusApi(ctx, state)
   const before = await snapshotOf(real)
@@ -1438,30 +1456,58 @@ test("a Teams-catalogue rule keeps its catalogue through a message set, and a cu
 // the tool only through the boundary shape. The rows asserted here govern
 // permission actions with no tool row to hang under, so they exist nowhere
 // else in the tree.
-test("instructions_list returns a team member's policy rows for actions with no tool row", async () => {
+test("instructions_list returns a team member's own policy rows even for a tool with no tool row", async () => {
   const { project } = await tempProject()
   process.env.XDG_DATA_HOME = path.join(path.dirname(project), "data")
   const member = "gemini-implementer"
   const memberFile = path.join(projectTeamsPath(project), "crew", `${member}.md`)
   await fs.mkdir(path.dirname(memberFile), { recursive: true })
   await Bun.write(memberFile, formatMarkdown({ description: `crew/${member}` }, "role"))
+  // A live delegated run of the member: its edit-scope row installs core rules
+  // on edit, which this host does not register.
+  const now = new Date().toISOString()
+  await saveRun(teamsDataDir(), {
+    id: "w-0000000000000007",
+    role: member,
+    kind: "w",
+    repo: "opencode",
+    repoKey: "opencode",
+    directory: project,
+    paths: ["src/*"],
+    branch: "team/test",
+    base: "0123456789abcdef0123456789abcdef01234567",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    state: "working",
+    attempts: [],
+    task: null,
+    parent: "main-0123456789abcdef",
+    children: [],
+    briefSha: "abc",
+    bundle: "tools-test",
+    budget: {},
+    createdAt: now,
+    lastUsed: now,
+    sessionID: null,
+    configDigest: null,
+    history: [],
+  })
   const ctx = fixtureContext(project)
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const enabled = await api.setTeamEnabled({ level: "project", team: "crew", enabled: true, actor: { type: "tui" } })
   if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
-  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}` })) as {
+  // Every tool now lists its catalog rows too, so the member's rows span
+  // more than the default page of 40.
+  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}`, limit: 1000 })) as {
     rows: readonly { id: string }[]
     total: number
   }
   expect(listed.total).toBeGreaterThan(0)
   const ids = listed.rows.map((entry) => entry.id)
-  expect(ids).toContain(`item:project:crew/:${member}:perm:external_directory:team-role`)
-  expect(ids).toContain(`item:project:crew/:${member}:perm:question:team-role`)
-  expect(ids).toContain(`item:project:crew/:${member}:perm:subagent:team-role`)
-  expect(ids).toContain(`item:project:crew/:${member}:perm:task:team-role`)
-  expect(ids).toContain(`item:project:crew/:${member}:perm:shell:team-role`)
+  expect(ids).toContain(`item:project:crew/:${member}:perm:edit:run:w-0000000000000007`)
+  // No row carries a role: the former role rows are shared rows a preset sets.
+  expect(ids.filter((id) => id.endsWith(":team-role") || id.endsWith(":role-ceiling") || id.endsWith(":team-tavily"))).toEqual([])
 })
 
 test("deleting a protected agent's custom rule through another agent's row is refused", async () => {
@@ -2060,6 +2106,7 @@ test("instructions_set on a team-special row persists team-scoped record", async
     ],
     tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
   })
+  await linkToBuild(project, "defaults", ["alpha"])
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
@@ -2169,7 +2216,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
   // first and stays alive through it. Owner is the file-backed project agent
   // the model and rule steps are addressed to.
   await runOk(create, { kind: "team", team: "crew", level: "project" })
-  await runOk(create, { kind: "agent", id: "owner", prompt: "owner role", scope: "project" })
+  await runOk(create, { kind: "agent", id: "owner", scope: "project" })
 
   const steps: readonly {
     readonly name: string
@@ -2184,7 +2231,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
   }[] = [
     {
       name: "agent",
-      input: { kind: "agent", id: "helper", prompt: "helper role", scope: "project" },
+      input: { kind: "agent", id: "helper", scope: "project" },
       id: "agent:project:helper",
       item: "helper",
       kind: "agent",
@@ -2242,7 +2289,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
     },
     {
       name: "member",
-      input: { kind: "member", team: "crew", level: "project", id: "newbie", prompt: "newbie role" },
+      input: { kind: "member", team: "crew", level: "project", id: "newbie" },
       id: "team:project:crew:newbie",
       item: "newbie",
       kind: "team",
@@ -2320,12 +2367,12 @@ test("create returns the created level's model and rule row, not the identical D
   const del = need(tools, "instructions_delete")
 
   // Project and global rows need agents that live at those levels.
-  await runOk(create, { kind: "agent", id: "proj", prompt: "proj role", scope: "project" })
-  await runOk(create, { kind: "agent", id: "glob", prompt: "glob role", scope: "global" })
+  await runOk(create, { kind: "agent", id: "proj", scope: "project" })
+  await runOk(create, { kind: "agent", id: "glob", scope: "global" })
 
   // A model with no agent and no level keeps the original validation.
   const invalidModel = await runFail(create, { kind: "model", providerID: "acme", modelID: "nova-2" })
-  expect(invalidModel.message).toContain("create model requires agent for project|global levels")
+  expect(invalidModel.message).toContain("create model requires agent for project|global|preset levels")
 
   // An explicit defaults model with no agent is the shared Defaults row.
   const sharedModel = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults" })) as {
@@ -2418,7 +2465,7 @@ test("create returns the created level's model and rule row, not the identical D
   ).toEqual([])
 })
 
-test("create kind member adds members at project and defaults level and returns the member row id", async () => {
+test("create kind member adds members at project level, refuses a Defaults team, and returns the member row id", async () => {
   const { project } = await tempProject()
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate" }] }]
   const ctx = fullContext({
@@ -2447,16 +2494,17 @@ test("create kind member adds members at project and defaults level and returns 
     team: " crew:one ",
     level: "project",
     id: "nested/beta",
-    prompt: "beta role",
+    preset: "review/editor",
   })) as { id: string; item: string }
   expect(member.id).toBe("team:project:crew:one:nested/beta")
   expect(member.item).toBe("nested/beta")
   const memberPath = path.join(projectTeamsPath(project), "crew:one", "nested", "beta.md")
-  expect(await Bun.file(memberPath).text()).toContain("beta role")
+  // "<team>/<member>" names a member preset: its mode and description, an empty body.
+  expect(await Bun.file(memberPath).text()).toContain("mode: primary")
   round3Capture(
     "member flow: create project member (padded colon team, nested member id)",
     {
-      request: { kind: "member", team: " crew:one ", level: "project", id: "nested/beta", prompt: "beta role" },
+      request: { kind: "member", team: " crew:one ", level: "project", id: "nested/beta", preset: "review/editor" },
       output: member,
       file: { path: memberPath, text: await Bun.file(memberPath).text() },
     },
@@ -2501,18 +2549,18 @@ test("create kind member adds members at project and defaults level and returns 
     team: " gcrew ",
     level: "global",
     id: "gmember",
-    prompt: "global member role",
   })) as { id: string; item: string }
   expect(globalMember.id).toBe("team:global:gcrew:gmember")
   expect(globalMember.item).toBe("gmember")
   const globalMemberPath = path.join(globalTeamsPath(), "gcrew", "gmember.md")
-  expect(await Bun.file(globalMemberPath).text()).toContain("global member role")
+  // No preset: "None — everything off", a file with core's default mode only.
+  expect(await Bun.file(globalMemberPath).text()).toBe("---\nmode: primary\n---\n")
   const globalView = (await runOk(show, { id: globalMember.id })) as Record<string, unknown>
   expect(globalView).toMatchObject({ kind: "member", level: "global", team: "gcrew", member: "gmember" })
   round3Capture(
     "member flow: create global member (padded team name)",
     {
-      request: { kind: "member", team: " gcrew ", level: "global", id: "gmember", prompt: "global member role" },
+      request: { kind: "member", team: " gcrew ", level: "global", id: "gmember" },
       output: globalMember,
       file: { path: globalMemberPath, text: await Bun.file(globalMemberPath).text() },
       resolved: globalView,
@@ -2520,33 +2568,15 @@ test("create kind member adds members at project and defaults level and returns 
     project,
   )
 
-  // Defaults level writes the same overlay the TUI writes for a built-in team.
-  const overlay = (await runOk(create, {
-    kind: "member",
-    team: " ship ",
-    level: "defaults",
-    id: "rookie",
-    prompt: "rookie role",
-  })) as { id: string; item: string }
-  expect(overlay.id).toBe("team:defaults:ship:rookie")
-  expect(overlay.item).toBe("rookie")
-  const overlayPath = path.join(globalDefaultsTeamsPath(), "ship", "rookie.md")
-  expect(await Bun.file(overlayPath).text()).toContain("rookie role")
+  // DESIGN §4: a Defaults team takes member ENTRIES (patterns), never a
+  // file: the overlay directory is not read and nothing is written there.
+  const entry = (await runOk(create, { kind: "member", team: " ship ", level: "defaults", id: "rook*" })) as { id: string; item: string }
+  expect(entry).toMatchObject({ id: "team:defaults:ship:rook*", item: "rook*" })
+  const overlayPath = path.join(process.env.OPENCODE_CONFIG_DIR ?? "", "opencodeplus", "teams-defaults", "ship", "rook*.md")
+  expect(await Bun.file(overlayPath).exists()).toBe(false)
   const snapshot = await snapshotOf(api)
-  expect(snapshot.teams?.find((team) => team.team === "ship")).toMatchObject({ overlay: ["rookie"] })
-  const overlayShown = (await runOk(show, { id: overlay.id })) as Record<string, unknown>
-  expect(overlayShown).toMatchObject({ kind: "member", level: "defaults", team: "ship", member: "rookie" })
-  round3Capture(
-    "member flow: create Defaults overlay member (padded built-in team name)",
-    {
-      request: { kind: "member", team: " ship ", level: "defaults", id: "rookie", prompt: "rookie role" },
-      output: overlay,
-      file: { path: overlayPath, text: await Bun.file(overlayPath).text() },
-      snapshotTeam: snapshot.teams?.find((team) => team.team === "ship"),
-      resolved: overlayShown,
-    },
-    project,
-  )
+  expect(snapshot.teams?.find((team) => team.team === "ship")?.agents).toEqual(["mate"])
+  expect(snapshot.entries).toEqual([expect.objectContaining({ catalogue: "teams", team: "ship", name: "rook*" })])
 
   const removedMember = (await runOk(del, { id: member.id, confirm: true })) as { status: string }
   expect(removedMember.status).toBe("Deleted team member nested/beta")
@@ -2564,17 +2594,9 @@ test("create kind member adds members at project and defaults level and returns 
     { request: { id: globalMember.id, confirm: true }, output: removedGlobal, fileExists: await Bun.file(globalMemberPath).exists() },
     project,
   )
-  const removedOverlay = (await runOk(del, { id: overlay.id, confirm: true })) as { status: string }
-  expect(removedOverlay.status).toBe("Deleted team member rookie")
-  expect(await Bun.file(overlayPath).exists()).toBe(false)
-  round3Capture(
-    "member flow: delete Defaults overlay member",
-    { request: { id: overlay.id, confirm: true }, output: removedOverlay, fileExists: await Bun.file(overlayPath).exists() },
-    project,
-  )
 })
 
-test("create kind member forwards the agent fields to team.addAgent", async () => {
+test("create kind member forwards the preset to team.addAgent", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -2584,8 +2606,7 @@ test("create kind member forwards the agent fields to team.addAgent", async () =
   const forwarded: unknown[] = []
   // A recording delegation, not a stub: the create below still runs the real
   // handler and writes the real member file; the recorder only observes the
-  // request the tool sent, which is how field forwarding is proven before the
-  // member-fields API change lands.
+  // request the tool sent.
   const api: PlusApi = {
     ...real,
     addTeamAgent: (input) => {
@@ -2602,59 +2623,42 @@ test("create kind member forwards the agent fields to team.addAgent", async () =
     team: "crew",
     level: "project",
     id: "fielded",
-    prompt: "fielded role",
-    fields: { description: "fielded desc", mode: "subagent" },
+    preset: "planner",
   })) as { id: string; item: string }
   expect(created.id).toBe("team:project:crew:fielded")
   expect(created.item).toBe("fielded")
   expect(forwarded).toHaveLength(1)
-  const request = forwarded[0] as {
-    level?: string
-    team?: string
-    id?: string
-    prompt?: string
-    template?: string
-    fields?: { description?: string; mode?: string }
-    actor?: { type?: string }
-  }
-  expect(request).toMatchObject({
+  expect(forwarded[0]).toMatchObject({
     level: "project",
     team: "crew",
     id: "fielded",
-    prompt: "fielded role",
+    preset: { kind: "agent", id: "planner" },
     actor: { type: "tool" },
   })
-  expect(request.fields).toEqual({ description: "fielded desc", mode: "subagent" })
-  expect(await Bun.file(path.join(projectTeamsPath(project), "crew", "fielded.md")).text()).toContain("fielded role")
-  round3Capture(
-    "member flow: agent fields forwarded to team.addAgent",
-    { output: created, forwarded: request },
-    project,
+  expect(await Bun.file(path.join(projectTeamsPath(project), "crew", "fielded.md")).text()).toBe(
+    formatMarkdown({ mode: "primary", description: "Turns goals into exact task plans with paths and checks" }, ""),
   )
+  const unknown = await runFail(create, { kind: "member", team: "crew", level: "project", id: "other", preset: "ghost" })
+  expect(unknown.message).toContain("preset.invalid")
+  round3Capture("member flow: preset forwarded to team.addAgent", { output: created, forwarded: forwarded[0] }, project)
 })
 
-test("create kind team passes the template to team.create and produces the template's members", async () => {
+// DESIGN §5: `template` names a team preset (here the Plus `review` preset),
+// no longer a Defaults template: member files carry the preset's mode and
+// description with an empty body, and links make everything else follow it.
+test("create kind team passes the team preset to team.create and produces the preset's members", async () => {
   const { project } = await tempProject()
-  const registry = [
-    {
-      name: "review",
-      members: [
-        { id: "editor", body: "editor role", fields: { description: "editor desc", mode: "primary" as const, permissions: [] } },
-        { id: "reviewer", body: "reviewer role" },
-      ],
-    },
-  ]
   const ctx = fullContext({
     directory: project,
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
-  const api = createPlusApi(ctx, createState(), { builtins: registry })
+  const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
   const show = need(tools, "instructions_show")
 
-  const created = (await runOk(create, { kind: "team", team: "mine", level: "project", template: "review" })) as {
+  const created = (await runOk(create, { kind: "team", team: "mine", level: "project", preset: "review" })) as {
     id: string
     item: string
     enabled: boolean
@@ -2681,7 +2685,7 @@ test("create kind team passes the template to team.create and produces the templ
   round3Capture(
     "team template: create kind team with template",
     {
-      request: { kind: "team", team: "mine", level: "project", template: "review" },
+      request: { kind: "team", team: "mine", level: "project", preset: "review" },
       output: created,
       show: shownTeam,
       snapshotTeam: snapshot.teams?.find((team) => team.team === "mine"),
@@ -2691,11 +2695,22 @@ test("create kind team passes the template to team.create and produces the templ
   )
   // The same handler the TUI's team.create calls wrote the member files.
   const teamDir = path.join(projectTeamsPath(project), "mine")
-  const [editorMember, reviewerMember] = registry[0]!.members
-  if (editorMember === undefined || reviewerMember === undefined) throw new Error("missing template members")
+  const preset = plusTeamPresets.find((team) => team.id === "review")
+  const editorMember = preset?.members.find((member) => member.id === "editor")
+  const reviewerMember = preset?.members.find((member) => member.id === "reviewer")
+  if (editorMember === undefined || reviewerMember === undefined) throw new Error("missing preset members")
   const editorText = await Bun.file(path.join(teamDir, "editor.md")).text()
-  expect(editorText).toBe(formatMarkdown(editorMember.fields as never, editorMember.body))
-  expect(await Bun.file(path.join(teamDir, "reviewer.md")).text()).toBe(formatMarkdown(undefined, reviewerMember.body))
+  expect(editorText).toBe(formatMarkdown({ mode: "primary", description: editorMember.description }, ""))
+  expect(await Bun.file(path.join(teamDir, "reviewer.md")).text()).toBe(
+    formatMarkdown({ mode: "primary", description: reviewerMember.description }, ""),
+  )
+  expect(snapshot.links?.map((link) => [link.agent, link.preset])).toEqual(
+    expect.arrayContaining([
+      [null, { kind: "team", id: "review" }],
+      ["editor", { kind: "member", team: "review", id: "editor" }],
+      ["reviewer", { kind: "member", team: "review", id: "reviewer" }],
+    ]),
+  )
   round3Capture(
     "team template: member files written",
     {
@@ -2725,4 +2740,123 @@ test("create kind instruction is refused with instruction.disabled and writes no
     },
     project,
   )
+})
+
+// DESIGN §5 through the tools: every create kind names its preset, the string
+// preset form resolves, `set {preset}` relinks and unlinks, and `delete`
+// removes entries and User presets, surfacing the in-use refusal.
+test("instructions_create entry, preset, teamPreset and presetMember return their rows; agent takes a string preset", async () => {
+  const { api, tools } = await freshFixture()
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+
+  const agent = (await runOk(create, { kind: "agent", id: "helper", preset: "review/editor" })) as { id: string; item: string }
+  expect(agent).toMatchObject({ id: "agent:project:helper", item: "helper" })
+  expect((await snapshotOf(api)).links).toEqual([
+    expect.objectContaining({ level: "project", agent: "helper", preset: { kind: "member", team: "review", id: "editor" } }),
+  ])
+  expect((await runFail(create, { kind: "agent", id: "ghostly", preset: "no-such-preset" })).message).toContain("preset.invalid")
+
+  const entry = (await runOk(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*", preset: "orchestrator" })) as {
+    id: string
+    item: string
+  }
+  expect(entry).toMatchObject({ id: "agent:defaults:*orchestrator*", item: "*orchestrator*" })
+  const teamEntry = (await runOk(create, { kind: "entry", catalogue: "teams", team: "crew*", name: "*impl*" })) as { id: string }
+  expect(teamEntry.id).toBe("team:defaults:crew*:*impl*")
+  expect((await runFail(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*" })).message).toContain("entry.exists")
+
+  const preset = (await runOk(create, { kind: "preset", id: "mine", from: "planner" })) as { id: string; item: string }
+  expect(preset).toMatchObject({ id: "agent:preset:mine", item: "mine" })
+  expect(await runOk(show, { id: preset.id })).toMatchObject({
+    kind: "preset",
+    preset: { kind: "agent", id: "mine" },
+    origin: "user",
+    link: { kind: "agent", id: "planner" },
+  })
+  const team = (await runOk(create, { kind: "teamPreset", id: "crew", from: "starter" })) as { id: string }
+  expect(team.id).toBe("team:preset:crew")
+  const member = (await runOk(create, { kind: "presetMember", team: "crew", id: "lead", from: "mine" })) as { id: string }
+  expect(member.id).toBe("team:preset:crew:lead")
+  expect((await runFail(create, { kind: "presetMember", team: "starter", id: "x" })).message).toContain("preset.readonly")
+  expect((await runFail(create, { kind: "teamPreset", id: "other", from: "planner" })).message).toContain("preset.invalid")
+  const presets = (await snapshotOf(api)).presets?.map((record) => [record.kind, record.team ?? "", record.id]) ?? []
+  expect(presets.toSorted()).toEqual(
+    [
+      ["agent", "", "mine"],
+      ["agent", "crew", "helper"],
+      ["agent", "crew", "lead"],
+      ["agent", "crew", "planner"],
+      ["team", "", "crew"],
+    ].toSorted(),
+  )
+})
+
+test("instructions_set {preset} relinks and unlinks the row's owner; protected agents refuse, presets do not", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["guarded", "mine"] }))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+
+  await runOk(create, { kind: "agent", id: "helper" })
+  const linked = (await runOk(set, { id: "agent:project:helper", preset: "orchestrator" })) as { preset: unknown; status: string }
+  expect(linked).toMatchObject({ preset: { kind: "agent", id: "orchestrator" }, status: 'Linked "helper" to agent:orchestrator' })
+  // The row now inherits from the preset.
+  const rows = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
+    rows: { id: string; from?: string }[]
+  }
+  expect(rows.rows).toEqual([{ id: "item:project:helper:tool:reader", from: "from preset Orchestrator" }])
+  await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "starter", id: "helper" } })
+  expect((await snapshotOf(api)).links).toEqual([expect.objectContaining({ agent: "helper", preset: { kind: "member", team: "starter", id: "helper" } })])
+  const unlinked = (await runOk(set, { id: "agent:project:helper", preset: null })) as { preset: unknown }
+  expect(unlinked.preset).toBeNull()
+  expect((await snapshotOf(api)).links).toEqual([])
+  expect((await runFail(set, { id: "agent:project:helper", preset: "no-such-preset" })).message).toContain("preset.invalid")
+  expect((await runFail(set, { id: "group:project:agents", preset: "planner" })).message).toContain("link.invalid")
+  expect((await runFail(set, { id: "agent:preset:orchestrator", preset: "planner" })).message).toContain("preset.readonly")
+
+  // A protected agent's link stays out of a tool's reach; a preset of that name does not.
+  await api.createAgent({ scope: "project", id: "guarded" })
+  expect((await runFail(set, { id: "agent:project:guarded", preset: "planner" })).message).toContain("agent.protected")
+  await runOk(create, { kind: "preset", id: "mine" })
+  await runOk(set, { id: "agent:preset:mine", preset: "scout" })
+  expect((await snapshotOf(api)).links).toEqual([expect.objectContaining({ level: "preset", agent: "mine", preset: { kind: "agent", id: "scout" } })])
+
+  // A team relink relinks the members the team preset has, and says which.
+  await runOk(create, { kind: "teamPreset", id: "crewset", from: "starter" })
+  await runOk(create, { kind: "team", team: "crew", level: "project", preset: "starter" })
+  const team = (await runOk(set, { id: "team:project:crew", preset: "crewset" })) as { members: unknown; status: string }
+  expect(team).toMatchObject({
+    members: [
+      { agent: "helper", preset: { kind: "member", team: "crewset", id: "helper" } },
+      { agent: "planner", preset: { kind: "member", team: "crewset", id: "planner" } },
+    ],
+    status: 'Linked "crew" to team:crewset; relinked helper, planner',
+  })
+})
+
+test("instructions_delete removes Defaults entries and User presets and surfaces an in-use preset's users", async () => {
+  const { api, tools } = await freshFixture()
+  const create = need(tools, "instructions_create")
+  const del = need(tools, "instructions_delete")
+  await runOk(create, { kind: "entry", catalogue: "agents", name: "Opus-%" })
+  await runOk(create, { kind: "entry", catalogue: "teams", name: "scout" })
+  await runOk(create, { kind: "entry", catalogue: "teams", name: "helper" })
+  expect(await runOk(del, { id: "agent:defaults:Opus-%", confirm: true })).toMatchObject({ removed: 1, status: "Deleted Defaults entry Opus-%" })
+  expect(await runOk(del, { id: "team:defaults:*", confirm: true })).toMatchObject({ removed: 2 })
+  expect((await snapshotOf(api)).entries).toEqual([])
+
+  await runOk(create, { kind: "preset", id: "mine" })
+  await runOk(create, { kind: "agent", id: "user1", preset: "mine" })
+  const inUse = await runFail(del, { id: "agent:preset:mine", confirm: true })
+  expect(inUse.message).toContain("preset.inUse")
+  expect(inUse.message).toContain("agent:project:user1")
+  expect((await runFail(del, { id: "agent:preset:orchestrator", confirm: true })).message).toContain("read-only")
+  await runOk(need(tools, "instructions_set"), { id: "agent:project:user1", preset: null })
+  expect(await runOk(del, { id: "agent:preset:mine", confirm: true })).toMatchObject({ ref: { kind: "agent", id: "mine" } })
+  expect((await snapshotOf(api)).presets).toEqual([])
 })

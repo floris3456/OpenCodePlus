@@ -36,6 +36,7 @@ async function tempProject(): Promise<string> {
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
+  delete process.env.OPENCODEPLUS_SEARCH_KEYS_DIR
   return path.join(root, "project")
 }
 
@@ -197,6 +198,9 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
           description: "Run bash",
         },
       ],
+      // alpha is an unlinked user agent: its shared rows fall back to off
+      // (DESIGN §3.3), so the publish installs its context hook.
+      session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
     }),
     mcp: baseMcp.domain,
   })

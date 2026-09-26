@@ -7,6 +7,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context, fullContext } from "../harness.js"
+import { teamState } from "./preset-table.js"
 import plus, { activationDirectory, createHandlers, createPlusApi, createState } from "../../src/index.js"
 import { formatMarkdown } from "../../src/agents/files.js"
 import { load, save } from "../../src/instructions/store.js"
@@ -164,7 +165,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput(), callerFor(parent))) as {
         run: string
         session: string
@@ -224,7 +225,7 @@ test("delegate activates the child through the parent project, with no copy", as
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "project-1" }), callerFor(parent))) as {
         run: string
         session: string
@@ -305,7 +306,7 @@ test("the first delegate registers the child run before the host opens its sessi
           }),
       } as unknown as SessionDomain
 
-      const api = createTeamApi(context({ session: domain }), createState())
+      const api = createTeamApi(context({ session: domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "gc-race-1" }), callerFor(parent))) as {
         run: string
         directory: string
@@ -350,6 +351,17 @@ test("activation in a child worktree installs the parent project's agents and to
         records: [
           ...loaded.records,
           { type: "team", level: "project", team: "crew", enabled: true, updated: new Date().toISOString() },
+          // DESIGN §3.3: a member's shared rows fall back to off unless a
+          // preset sets them; alpha stands for a member created from Native
+          // `build`, so activation installs it without rows of its own.
+          {
+            type: "link",
+            level: "project",
+            agent: "alpha",
+            team: { level: "project", team: "crew" },
+            preset: { kind: "agent", id: "build" },
+            updated: new Date().toISOString(),
+          },
         ],
       })
       expect(enabled.ok).toBe(true)
@@ -364,7 +376,7 @@ test("activation in a child worktree installs the parent project's agents and to
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "activation-1" }), callerFor(parent))) as {
         directory: string
       }
@@ -432,7 +444,7 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "api-inherit-1" }), callerFor(parent))) as {
         directory: string
       }
@@ -486,7 +498,7 @@ test("a failed session create retires the pre-registered child run", async () =>
         create: () => Effect.die(new Error("host session create failed")),
       } as unknown as SessionDomain
 
-      const api = createTeamApi(context({ session: domain }), createState())
+      const api = createTeamApi(context({ session: domain }), teamState())
       const error = rejected(await api.delegate(delegateInput({ requestID: "create-fail-1" }), callerFor(parent)))
       expect(error.code).toBe("E_INTERNAL")
 
@@ -548,10 +560,12 @@ test("delegate rejects E_ROLE when an implementer delegates", async () => {
         sessionID: "ses_parent_002",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.delegate(delegateInput({ role: "scout" }), callerFor(parent)))
       expect(error.code).toBe("E_ROLE")
-      expect(error.message).toBe(`Role muse-implementer cannot delegate. accepted: {"role":"muse-implementer",...}`)
+      // An implementer's preset opens no delegation (its "Delegate to" rows
+      // ship off); the refusal says so instead of suggesting another role.
+      expect(error.message).toBe(`muse-implementer may not delegate. No member is open to you for delegation.`)
     } finally {
       await removeRepo(repo.dir)
     }
@@ -571,7 +585,7 @@ test("delegate rejects E_BASE for an unknown ref", async () => {
         sessionID: "ses_parent_003",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.delegate(delegateInput({ base: "no-such-ref" }), callerFor(parent)))
       expect(error.code).toBe("E_BASE")
       expect(error.message).toBe(
@@ -583,7 +597,9 @@ test("delegate rejects E_BASE for an unknown ref", async () => {
   })
 })
 
-test("delegate rejects E_PATHS when an implementer commit has no paths", async () => {
+// The target's own "Scope paths for a commit" row (its Plus implementer
+// preset turns it on), not its id, asks for scope.paths.
+test("delegate rejects E_PATHS when a commit for an implementer-preset member has no paths", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -596,10 +612,12 @@ test("delegate rejects E_PATHS when an implementer commit has no paths", async (
         sessionID: "ses_parent_004",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.delegate(delegateInput({ scope: { paths: [] } }), callerFor(parent)))
       expect(error.code).toBe("E_PATHS")
-      expect(error.message).toBe("Implementers need scope.paths (files or dir/* they may edit).")
+      expect(error.message).toBe(
+        "muse-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).",
+      )
       expect(error.accepted).toEqual(["packages/plus/src/*", "packages/plus/test/*"])
     } finally {
       await removeRepo(repo.dir)
@@ -620,7 +638,7 @@ test("delegate rejects E_REQUEST_ID when the id is reused with new arguments", a
         sessionID: "ses_parent_005",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const first = await api.delegate(
         delegateInput({ requestID: "dup-1", objective: "First objective text that is long enough to validate." }),
         callerFor(parent),
@@ -666,7 +684,7 @@ test("checkpoint commits an in-scope file and moves HEAD", async () => {
       await saveRun(root, child)
       await fs.mkdir(path.join(repo.dir, "docs"), { recursive: true })
       await fs.writeFile(path.join(repo.dir, "docs", "notes.md"), "# notes\n")
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(
         await api.checkpoint({ expectedHead: repo.head, files: ["docs/notes.md"], message: "fix: update notes" }, callerFor(child)),
       ) as { head: string; committed: boolean; sha?: string; subject?: string }
@@ -690,7 +708,7 @@ test("checkpoint rejects an out-of-scope file with E_SCOPE", async () => {
       await saveRun(root, child)
       await fs.mkdir(path.join(repo.dir, "outside"), { recursive: true })
       await fs.writeFile(path.join(repo.dir, "outside", "o.md"), "out of scope\n")
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(
         await api.checkpoint({ expectedHead: repo.head, files: ["outside/o.md"], message: "fix: out of scope" }, callerFor(child)),
       )
@@ -710,7 +728,7 @@ test("checkpoint rejects a non-conventional message with E_MESSAGE", async () =>
       await saveRun(root, child)
       await fs.mkdir(path.join(repo.dir, "docs"), { recursive: true })
       await fs.writeFile(path.join(repo.dir, "docs", "notes.md"), "# notes\n")
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(
         await api.checkpoint({ expectedHead: repo.head, files: ["docs/notes.md"], message: "update notes without a type" }, callerFor(child)),
       )
@@ -735,7 +753,7 @@ test("checkpoint with an empty diff succeeds without committing", async () => {
       await git(repo.dir, ["add", "docs/notes.md"])
       await git(repo.dir, ["commit", "-m", "fix: track notes"])
       const head = await git(repo.dir, ["rev-parse", "HEAD"])
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(
         await api.checkpoint({ expectedHead: head, files: ["docs/notes.md"], message: "fix: nothing to do" }, callerFor(child)),
       ) as { head: string; committed: boolean }
@@ -766,7 +784,7 @@ test("finish done with a green check records the report and commits", async () =
     const repo = await makeRepo()
     try {
       const child = await finishChild(root, repo, PASSING_TEST)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         head: string
         reportPath: string
@@ -790,7 +808,7 @@ test("finish done with a red check fails E_CHECKS_RED", async () => {
     const repo = await makeRepo()
     try {
       const child = await finishChild(root, repo, FAILING_TEST)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       expect(error.code).toBe("E_CHECKS_RED")
       expect(error.message).toContain("Cannot report done: checks red at HEAD")
@@ -806,7 +824,7 @@ test("finish runs a stale check instead of refusing it", async () => {
     const repo = await makeRepo()
     try {
       const child = await finishChild(root, repo, PASSING_TEST)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean; head: string }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "extra.md"), "more work\n")
@@ -833,7 +851,7 @@ test("finish re-runs a dirty-tree receipt at the commit and fails E_CHECKS_RED w
       const child = childInRepo("w-dddddddddddddddd", repo)
       await saveRun(root, child)
       await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "t", argv: ["bun", "test", "t.test.ts"] }])
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       // Edit without committing: the passing test is dirty, so the green
       // receipt is dirty-tree proof and must never satisfy finish at HEAD.
       await fs.writeFile(path.join(repo.dir, "t.test.ts"), PASSING_TEST)
@@ -869,7 +887,7 @@ test("finish done moves run.state to idle and status reports it", async () => {
     const repo = await makeRepo()
     try {
       const child = await finishChild(root, repo, PASSING_TEST)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         head: string
       }
@@ -898,7 +916,7 @@ test("finish blocked without needs fails E_NEEDS", async () => {
     try {
       const child = childInRepo("w-aaaaaaaaaaaaaaaa", repo)
       await saveRun(root, child)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.finish(finishInput({ status: "blocked", summary: "Stuck on scope." }), callerFor(child)))
       expect(error.code).toBe("E_NEEDS")
     } finally {
@@ -920,7 +938,7 @@ test("get_context returns the stored brief, checks and scope", async () => {
         sessionID: "ses_parent_006",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const delegated = required(await api.delegate(delegateInput({ requestID: "ctx-1" }), callerFor(parent))) as {
         run: string
         session: string
@@ -960,7 +978,7 @@ test("get_context on a root run returns brief: null without conventions", async 
         sessionID: "ses_parent_006_root",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.get_context({}, callerFor(parent))) as Record<string, unknown>
       expect(value.run).toBe("main-0123456789abcdef")
       expect(value.brief).toBeNull()
@@ -997,7 +1015,7 @@ test("status shows the child head and the check receipt", async () => {
       await saveRun(root, record)
       await saveRun(root, { ...parent, children: [record.id] })
       await atomicJson(path.join(root, "runs", record.id, "checks.json"), [{ id: "t", argv: ["bun", "test", "t.test.ts"] }])
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const checked = required(await api.check({ id: "t" }, callerFor(record))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       const entries = required(await api.status({ runs: [record.id] }, callerFor(parent))) as Array<{
@@ -1037,7 +1055,7 @@ test("wait returns the settled report for an already-terminal attempt", async ()
       const child = await finishChild(root, repo, PASSING_TEST)
       await saveRun(root, { ...parent, children: [child.id] })
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const finished = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       expect(finished).toBeDefined()
       const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000 }, callerFor(parent))) as {
@@ -1074,7 +1092,7 @@ test("wait names what it acknowledged and status reports the same acked entry", 
       await saveRun(root, parent)
       const child = await finishChild(root, repo, PASSING_TEST)
       await saveRun(root, { ...parent, children: [child.id] })
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       const before = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{
         acked: { attempt: number; at: string } | null
@@ -1112,7 +1130,7 @@ test("wait with ack:false reads the outcome without acknowledging it", async () 
       await saveRun(root, parent)
       const child = await finishChild(root, repo, PASSING_TEST)
       await saveRun(root, { ...parent, children: [child.id] })
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
       const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000, ack: false }, callerFor(parent))) as {
         acknowledged: string[]
@@ -1142,7 +1160,7 @@ test("wait rejects an unknown run with E_NOT_VISIBLE", async () => {
         sessionID: "ses_parent_009",
       })
       await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.wait({ runs: ["w-ffffffffffffffff"], timeoutMs: 10000 }, callerFor(parent)))
       expect(error.code).toBe("E_NOT_VISIBLE")
       expect(error.message).toBe("Run w-ffffffffffffffff is not in this namespace.")
@@ -1171,7 +1189,7 @@ test("finish done with an unstaged modification names the full path in E_DIRTY",
     const repo = await makeRepo()
     try {
       const child = await dirtyChild(root, repo, "w-eeeeeeeeeeeeeeee")
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "src", "greeting.ts"), "export const greeting = 'hello'\n")
@@ -1191,7 +1209,7 @@ test("finish done with an untracked file names the full path in E_DIRTY", async 
     const repo = await makeRepo()
     try {
       const child = await dirtyChild(root, repo, "w-ffffffffffffffff")
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "src", "untracked.ts"), "export const extra = 1\n")
@@ -1211,7 +1229,7 @@ test("finish done with a spaced path names the full path in E_DIRTY", async () =
     const repo = await makeRepo()
     try {
       const child = await dirtyChild(root, repo, "w-1111111111111111")
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
       expect(checked.passed).toBe(true)
       await fs.writeFile(path.join(repo.dir, "src", "with space.ts"), "export const spaced = 1\n")
@@ -1273,7 +1291,7 @@ test("delegate succeeds after four finished children free their slots", async ()
       await saveRun(root, parent)
       const ids = ["w-aaaaaaaaaaaaaaaa", "w-bbbbbbbbbbbbbbbb", "w-cccccccccccccccc", "w-dddddddddddddddd"]
       for (const id of ids) await saveRun(root, finishedChild(id, repo))
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "bounds-free-1" }), callerFor(parent))) as {
         run: string
       }
@@ -1300,11 +1318,13 @@ test("delegate refuses a fifth working child with E_BOUNDS", async () => {
       await saveRun(root, parent)
       const ids = ["w-aaaaaaaaaaaaaaaa", "w-bbbbbbbbbbbbbbbb", "w-cccccccccccccccc", "w-dddddddddddddddd"]
       for (const id of ids) await saveRun(root, workingChild(id, repo))
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.delegate(delegateInput({ requestID: "bounds-full-1" }), callerFor(parent)))
       expect(error.code).toBe("E_BOUNDS")
+      // The bound is the member's "Children working at once" row; the old
+      // text pointed at a policy file that is never loaded.
       expect(error.message).toBe(
-        "In-flight limit 4 reached (w-aaaaaaaaaaaaaaaa, w-bbbbbbbbbbbbbbbb, w-cccccccccccccccc, w-dddddddddddddddd). Call wait first or raise bounds.inFlight in policy.",
+        "In-flight limit 4 reached (w-aaaaaaaaaaaaaaaa, w-bbbbbbbbbbbbbbbb, w-cccccccccccccccc, w-dddddddddddddddd). Wait for a child to settle (tools.team.wait) first.",
       )
     } finally {
       await removeRepo(repo.dir)
@@ -1349,7 +1369,7 @@ test("B — four live children plus one superseded-on-create → a fifth delegat
       })
       await saveRun(root, failedChild)
 
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const result = await api.delegate(delegateInput({ requestID: "fifth-delegate-1" }), callerFor(parent))
       const value = required(result) as { run: string }
       expect(typeof value.run).toBe("string")
@@ -1374,7 +1394,7 @@ test("delegate switches the child to the role pin before prompting", async () =>
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const state = createState()
+      const state = teamState()
       state.activeModels.set("muse-implementer", { providerID: "cliproxyapi", modelID: "muse-spark-1.3-contributor", variant: "high" })
       const api = createTeamApi(context({ session: sessions.domain }), state)
       const value = required(await api.delegate(delegateInput({ requestID: "pin-switch-1" }), callerFor(parent))) as {
@@ -1410,7 +1430,7 @@ test("delegate without a role pin never switches but still prompts", async () =>
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), createState())
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "pin-missing-1" }), callerFor(parent))) as {
         run: string
         session: string
@@ -1433,7 +1453,7 @@ test("finish ignores Plus project.json but still reports real untracked files", 
       await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
       const child = childInRepo("w-3333333333333333", repo)
       await saveRun(root, child)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child))) as {
         dirty: boolean
         dirtyFiles: string[]
@@ -1463,7 +1483,7 @@ test("finish done succeeds with an untracked Plus project.json and passing assig
       const child = await finishChild(root, repo, PASSING_TEST)
       await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
       await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":1,"protectedAgents":[]}\n`)
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.finish(finishInput({ status: "done", summary: "Completed task with passing check." }), callerFor(child))) as {
         head: string
         reportPath: string
@@ -1496,7 +1516,7 @@ test("finish reports modified tracked project.json as dirty", async () => {
       // Modify the tracked project.json
       await fs.writeFile(path.join(repo.dir, ".opencodeplus", "project.json"), `{"version":2,"protectedAgents":["new"]}\n`)
 
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.finish(finishInput({ status: "done", summary: "Modified tracked project." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toContain(".opencodeplus/project.json")
@@ -1516,7 +1536,7 @@ test("finish reports new untracked file under .opencodeplus as dirty", async () 
       const child = childInRepo("w-6666666666666666", repo)
       await saveRun(root, child)
 
-      const api = createTeamApi(context({ session: recordSession().domain }), createState())
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const error = rejected(await api.finish(finishInput({ status: "done", summary: "Added untracked config." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toContain(".opencodeplus/agent.json")

@@ -8,10 +8,13 @@ import {
   activateModelRow,
   addSection,
   createdAgentRow,
+  createdEntryRow,
   createdItemRow,
   createdMemberRow,
+  createdPresetRow,
   createdTeamRow,
   editRefusalForLabel,
+  findRow,
   isModelRowId,
   isPermRowId,
   removalPlan,
@@ -39,17 +42,19 @@ import {
   parseModelItemId,
   parsePermItemId,
   permItemId,
+  presetKey,
   resolve,
   resolveSplit,
-  scopesOf,
+  sameTeam,
   threeWay,
   upstreamForEdit,
 } from "./instructions/model.js"
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
+import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import type { CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
-import type { MemoInput } from "./instructions/tree.js"
-import { memoInputOf } from "./instructions/snapshot.js"
-import { expandedTree } from "./instructions/tree.js"
+import type { MemoInput, TreeNode } from "./instructions/tree.js"
+import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
+import { presetListing } from "./instructions/presets.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
@@ -72,8 +77,9 @@ const ShowDescription =
   "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary."
 
 const SetDescription =
-  "Save an override, toggle, pin, activate a model, or resolve a review row (TUI Enter/Space/p/k/t/e).\n" +
+  "Save an override, toggle, pin, activate a model, resolve a review row, or relink (TUI Enter/Space/p/k/t/e/l).\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
+  "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
 
 const ResetDescription =
@@ -85,10 +91,13 @@ const SplitDescription =
   "Pass boundaries [{id,name,start}] to set manual sections, or add {name,text} to append one."
 
 const CreateDescription =
-  "Create a file-backed row, a team directory, a team member, a model candidate, or a permission rule (TUI `a`).\n" +
-  "Kinds: agent (id+prompt, scope defaults to project, template/fields optional), skill (name+body),\n" +
-  "base (id+title+text), instruction (name+text), mcp (name+config), team (team+level, created disabled),\n" +
-  "member (team+level+id+prompt, template/fields optional; level defaults writes the Defaults overlay),\n" +
+  "Create an agent, team, member, Defaults entry, preset, file-backed row, model candidate or permission rule (TUI `a`).\n" +
+  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); no preset = everything off. Kinds:\n" +
+  "agent (id, scope project|global default project, preset), team (team+level, preset = team preset id; created disabled),\n" +
+  "member (team+level+id, preset; level defaults creates a Teams member entry, team and id are patterns),\n" +
+  "entry (catalogue agents|teams + name, team pattern for teams, preset; names may hold * and %, matched case-insensitively),\n" +
+  "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
+  "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
@@ -96,8 +105,8 @@ const CreateDescription =
   "base/instruction/mcp create one file both catalogues list, so catalogue does not change what is written."
 
 const DeleteDescription =
-  "Delete a project-owned row; refuses without `confirm`.\n" +
-  "Pass confirm:true to delete. Resolves the row through the TUI removal plan and deletes the file."
+  "Delete a user-owned row (agent, team, member, file, Defaults entry, user preset); refuses without `confirm`.\n" +
+  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A preset anything links to is refused (preset.inUse lists who); links only other projects hold are overridden with force:true (they then show as a missing preset)."
 
 const LogDescription =
   "Change history (who/what/when).\n" +
@@ -115,7 +124,12 @@ const Field = Schema.Union([
   Schema.Literal("path"),
   Schema.Literal("updated"),
   Schema.Literal("sections"),
+  Schema.Literal("from"),
 ])
+
+// A preset as tools name it: the RPC's `PresetRef`, or the friendlier string
+// "<id>" (an agent preset) / "<team>/<member>" (a member preset).
+const PresetInput = Schema.Union([Schema.String, Plus.PresetRef])
 
 const Sort = Schema.Union([
   Schema.Literal("tokens"),
@@ -164,6 +178,7 @@ const SetInput = Schema.Struct({
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
   message: Schema.optionalKey(Schema.String),
+  preset: Schema.optionalKey(Schema.NullOr(PresetInput)),
 })
 
 const ResetInput = Schema.Struct({
@@ -189,19 +204,24 @@ const CreateInput = Schema.Struct({
     Schema.Literal("member"),
     Schema.Literal("model"),
     Schema.Literal("rule"),
+    Schema.Literal("entry"),
+    Schema.Literal("preset"),
+    Schema.Literal("teamPreset"),
+    Schema.Literal("presetMember"),
   ]),
   id: Schema.optionalKey(Schema.String),
-  prompt: Schema.optionalKey(Schema.String),
   scope: Schema.optionalKey(Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults")])),
-  template: Schema.optionalKey(Schema.String),
-  fields: Schema.optionalKey(Plus.CreateAgentFields),
+  preset: Schema.optionalKey(PresetInput),
+  from: Schema.optionalKey(PresetInput),
   name: Schema.optionalKey(Schema.String),
   body: Schema.optionalKey(Schema.String),
   title: Schema.optionalKey(Schema.String),
   text: Schema.optionalKey(Schema.String),
   config: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   team: Schema.optionalKey(Schema.String),
-  level: Schema.optionalKey(Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults")])),
+  level: Schema.optionalKey(
+    Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults"), Schema.Literal("preset")]),
+  ),
   catalogue: Schema.optionalKey(Plus.Catalogue),
   providerID: Schema.optionalKey(Schema.String),
   modelID: Schema.optionalKey(Schema.String),
@@ -217,6 +237,7 @@ const CreateInput = Schema.Struct({
 const DeleteInput = Schema.Struct({
   id: Schema.String,
   confirm: Schema.optionalKey(Schema.Boolean),
+  force: Schema.optionalKey(Schema.Boolean),
 })
 
 const LogInput = Schema.Struct({
@@ -283,6 +304,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team") return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
@@ -378,7 +400,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* deleteRuleRow(api, snapshot, memo, input.id, actor)
           const plan = removalPlan(memo, input.id)
           if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
-          return yield* deletePlan(api, plan, actor)
+          return yield* deletePlan(api, plan, actor, input.force === true)
         }),
     })
     editor.add({
@@ -472,6 +494,8 @@ function toSnapshotRecords(
         basedOn: record.basedOn,
         ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
         ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
+        ...(record.basedOnState === undefined ? {} : { basedOnState: record.basedOnState }),
+        ...(record.basedOnPin === undefined ? {} : { basedOnPin: record.basedOnPin }),
         updated: record.updated,
       }),
     ),
@@ -498,6 +522,7 @@ function toSnapshotRecords(
         modelID: record.modelID,
         ...(record.variant === undefined ? {} : { variant: record.variant }),
         ...(record.active === undefined ? {} : { active: record.active }),
+        ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         updated: record.updated,
       }),
     ),
@@ -528,19 +553,78 @@ function rulesOfMemo(memo: MemoInput): RuleRecord[] {
   return memo.records.filter((record): record is RuleRecord => record.type === "rule")
 }
 
-function findRow(memo: MemoInput, id: string) {
-  return expandedTree(memo).find((node) => node.id === id)
-}
-
-function protectedOf(snapshot: Plus.Snapshot, node: { kind: string; id: string; address?: { agent: string | null } }): string | undefined {
+// Presets are not agents: their rows (and a preset that happens to share a
+// protected agent's id) are never protected. Every agent, member or team
+// member row still is, its link included.
+function protectedOf(snapshot: Plus.Snapshot, node: TreeNode): string | undefined {
+  if (node.owner?.level === "preset" || node.address?.level === "preset") return undefined
   if (node.kind === "agent") {
     const agent = node.id.split(":").slice(2).join(":")
     if (agent !== "" && snapshot.protectedAgents.includes(agent)) return agent
     return undefined
   }
-  const owner = node.address?.agent
+  const owner = node.address?.agent ?? node.owner?.agent
   if (owner !== undefined && owner !== null && snapshot.protectedAgents.includes(owner)) return owner
   return undefined
+}
+
+// `set {id, preset}`: relink (or with null unlink) the row's owner.
+function setLink(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  node: TreeNode,
+  preset: string | Plus.PresetRef | null,
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const owner = node.owner
+    if (owner === undefined)
+      return yield* Effect.fail(
+        new Tool.Error({
+          message: `link.invalid: "${node.label}" takes no preset; agent, member, team, Defaults entry and user preset rows do`,
+        }),
+      )
+    const ref = preset === null ? null : presetRefOf(snapshot, preset, owner.agent === null)
+    if (ref === undefined) return yield* Effect.fail(new Tool.Error({ message: `preset.invalid: unknown preset ${JSON.stringify(preset)}` }))
+    const result = yield* Effect.promise(() =>
+      api.setLink({
+        level: owner.level,
+        agent: owner.agent,
+        ...(owner.team === undefined ? {} : { team: owner.team }),
+        ...(owner.catalogue === undefined ? {} : { catalogue: owner.catalogue }),
+        preset: ref,
+        actor,
+      }),
+    )
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    // A team relink also relinks the members the team preset has.
+    const members = result.value.members ?? []
+    const said = result.value.preset === null ? `Unlinked "${node.label}"` : `Linked "${node.label}" to ${presetKey(result.value.preset)}`
+    return {
+      output: {
+        id: node.id,
+        preset: result.value.preset,
+        ...(result.value.members === undefined ? {} : { members }),
+        status: members.length === 0 ? said : `${said}; relinked ${members.map((member) => member.agent).join(", ")}`,
+      },
+    }
+  })
+}
+
+// The string form of a preset: an agent preset id, else `<team>/<member>`
+// (team ids never hold `/`, so the first one splits); a team owner takes a
+// team preset id. Undefined when no preset answers to it.
+function presetRefOf(snapshot: Plus.Snapshot, input: string | Plus.PresetRef, team = false): Plus.PresetRef | undefined {
+  if (typeof input !== "string") return input
+  const listing = snapshot.listing ?? presetListing((snapshot.presets ?? []).map(presetOf))
+  const known = (ref: Plus.PresetRef) => listing.some((entry) => presetKey(entry.ref) === presetKey(ref))
+  const name = input.trim()
+  if (team) return known({ kind: "team", id: name }) ? { kind: "team", id: name } : undefined
+  if (known({ kind: "agent", id: name })) return { kind: "agent", id: name }
+  const slash = name.indexOf("/")
+  if (slash === -1) return undefined
+  const member: Plus.PresetRef = { kind: "member", team: name.slice(0, slash), id: name.slice(slash + 1) }
+  return known(member) ? member : undefined
 }
 
 function computeSet(
@@ -707,7 +791,19 @@ function setModel(
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
-    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+    // A limit row's text is its number: `set({ id, text: "8" })` changes the
+    // cap; every other perm row keeps its text in its rule.
+    if (input.text !== undefined) {
+      const upstream = node?.address === undefined ? undefined : upstreamOf(memo, node.address)
+      if (upstream === undefined || !isValueRow(upstream)) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+      if (limitOf(input.text) === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
+      const text = String(limitOf(input.text))
+      const op = computeSet(memo, { id, text })
+      if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+      const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => computeSet(memoFromSnapshot(fresh), { id, text }))
+      return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+    }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.state !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be toggled by state; use active:true to activate` }))
@@ -740,7 +836,19 @@ function setPerm(
         ...(input.keywords === undefined ? {} : { keywords: input.keywords }),
         ...(input.message === undefined ? {} : { message: input.message }),
       })
-    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+    // A limit row's text is its number: `set({ id, text: "8" })` changes the
+    // cap; every other perm row keeps its text in its rule.
+    if (input.text !== undefined) {
+      const upstream = node?.address === undefined ? undefined : upstreamOf(memo, node.address)
+      if (upstream === undefined || !isValueRow(upstream)) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+      if (limitOf(input.text) === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
+      const text = String(limitOf(input.text))
+      const op = computeSet(memo, { id, text })
+      if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+      const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => computeSet(memoFromSnapshot(fresh), { id, text }))
+      return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+    }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
@@ -919,7 +1027,8 @@ function setTeam(
 
 function showAssembled(api: PlusApi, id: string): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    if (!id.startsWith("agent:"))
+    // Presets and Defaults entries are not agents: nothing assembles for them.
+    if (!/^agent:(project|global|defaults):/.test(id))
       return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: assembled view needs an agent row id (got ${id})` }))
     const agent = id.split(":").slice(2).join(":")
     if (agent === "")
@@ -937,6 +1046,23 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const memo = memoFromSnapshot(snapshot)
     const node = findRow(memo, id)
     if (node === undefined) return yield* Effect.fail(unknownError(id))
+    // Presets and Defaults entries carry no text of their own: resolved and
+    // record render what the row is and what it is linked to.
+    const owner = node.owner
+    if (owner !== undefined && (owner.preset !== undefined || owner.entry !== undefined)) {
+      if (view !== "resolved" && view !== "record")
+        return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view is not available for this row (got ${id})` }))
+      const entity = {
+        kind: owner.preset !== undefined ? ("preset" as const) : ("entry" as const),
+        label: node.label,
+        ...(owner.preset === undefined ? {} : { preset: owner.preset.ref, origin: owner.preset.origin }),
+        ...(owner.entry === undefined ? {} : { entry: owner.entry }),
+        link: owner.link ?? null,
+        ...(owner.linkMissing === true ? { linkMissing: true } : {}),
+      }
+      if (view === "record") return { output: { id, view, record: entity } }
+      return { output: { id, view, ...entity } }
+    }
     if (node.kind === "team") {
       // Team and member rows carry no item address, so resolved/record render
       // the entity these rows stand for; every other view stays refused.
@@ -956,7 +1082,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       (record): record is CustomizationRecord => record.type === "customization",
     )
     const splits = memo.records.filter((record): record is SplitRecord => record.type === "split")
-    const scopes = scopesOf(memo.agents)
+    const scopes = contextOfSnapshot(snapshot)
     const upstream = upstreamOf(memo, address)
     if (upstream === undefined) return yield* Effect.fail(new Tool.Error({ message: `Item not found for "${node.label}"` }))
     if (view === "record") {
@@ -984,6 +1110,12 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           custom: upstream.custom === true,
           enabled: resolved.enabled,
           source: resolved.source,
+          // Where the row is listed and how it is enforced (permission-catalog.ts).
+          category: upstream.category ?? "",
+          kind: upstream.permKind ?? "rule",
+          ...(upstream.field === undefined ? {} : { field: upstream.field }),
+          ...(upstream.value === undefined ? {} : { value: upstream.value }),
+          ...(isValueRow(upstream) ? { limit: limitOf(resolved.text) ?? null } : {}),
           scrub: { hidden: scrubbed.hidden, preview: [...scrubbed.preview] },
           // The refusal text the model reads when this rule denies: a user
           // rule's own message or the curated one it ships.
@@ -1000,12 +1132,28 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const chain = { upstream, records: customizations, splits, scopes, address }
     if (view === "resolved") {
       const resolved = resolve(chain)
-      return { output: { id, view, text: resolved.text, assembled: resolved.assembled, enabled: resolved.enabled, source: resolved.source } }
+      return {
+        output: {
+          id,
+          view,
+          text: resolved.text,
+          assembled: resolved.assembled,
+          enabled: resolved.enabled,
+          source: resolved.source,
+          ...(node.badges.fromLabel === undefined ? {} : { from: node.badges.fromLabel }),
+          ...(node.badges.reviewOf === undefined ? {} : { reviewOf: node.badges.reviewOf }),
+        },
+      }
     }
     if (view === "upstream") return { output: { id, view, text: upstreamForEdit(chain) } }
     if (view === "mine") {
       const own = customizations.find(
-        (record) => record.level === address.level && record.agent === address.agent && record.item === address.item && record.section === address.section,
+        (record) =>
+          record.level === address.level &&
+          record.agent === address.agent &&
+          sameTeam(record.team, address.team) &&
+          record.item === address.item &&
+          record.section === address.section,
       )
       return { output: { id, view, text: own?.text ?? "", hasOverride: own?.text !== undefined } }
     }
@@ -1036,7 +1184,7 @@ function ruleMessageOf(snapshot: Plus.Snapshot, item: Item): string | undefined 
   const tool = item.permTool
   const rule = item.ruleId
   if (tool === undefined || rule === undefined) return undefined
-  if (item.custom !== true) return curatedRuleMessage(tool, rule)
+  if (item.custom !== true) return curatedRuleMessage(tool, rule) ?? item.message
   const record = snapshot.records.find(
     (entry): entry is Plus.SnapshotRuleRecord => entry.type === "rule" && entry.tool === tool && entry.id === rule,
   )
@@ -1045,7 +1193,7 @@ function ruleMessageOf(snapshot: Plus.Snapshot, item: Item): string | undefined 
 
 function recordOfRow(
   memo: MemoInput,
-  address: { level: CustomizationRecord["level"]; agent: string | null; item: string; section: string | null },
+  address: { level: CustomizationRecord["level"]; agent: string | null; item: string; section: string | null; team?: CustomizationRecord["team"] },
   customizations: readonly CustomizationRecord[],
 ): ModelRecord | RuleRecord | CustomizationRecord | null {
   if (address.item.startsWith("model:")) {
@@ -1074,6 +1222,7 @@ function recordOfRow(
       (record) =>
         record.level === address.level &&
         record.agent === address.agent &&
+        sameTeam(record.team, address.team) &&
         record.item === address.item &&
         record.section === address.section,
     ) ?? null
@@ -1083,19 +1232,31 @@ function recordOfRow(
 function createRow(
   api: PlusApi,
   input: {
-    kind: "agent" | "skill" | "base" | "instruction" | "mcp" | "team" | "member" | "model" | "rule"
+    kind:
+      | "agent"
+      | "skill"
+      | "base"
+      | "instruction"
+      | "mcp"
+      | "team"
+      | "member"
+      | "model"
+      | "rule"
+      | "entry"
+      | "preset"
+      | "teamPreset"
+      | "presetMember"
     id?: string
-    prompt?: string
     scope?: "project" | "global" | "defaults"
-    template?: string
-    fields?: Plus.CreateAgentInput["fields"]
+    preset?: string | Plus.PresetRef
+    from?: string | Plus.PresetRef
     name?: string
     body?: string
     title?: string
     text?: string
     config?: Record<string, unknown>
     team?: string
-    level?: "project" | "global" | "defaults"
+    level?: "project" | "global" | "defaults" | "preset"
     catalogue?: Plus.Catalogue
     providerID?: string
     modelID?: string
@@ -1111,8 +1272,7 @@ function createRow(
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     if (input.kind === "agent") {
-      if (input.id === undefined || input.prompt === undefined)
-        return yield* Effect.fail(new Tool.Error({ message: "create agent requires id and prompt" }))
+      if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create agent requires id" }))
       const scope = input.scope ?? "project"
       if (scope !== "project" && scope !== "global")
         return yield* Effect.fail(new Tool.Error({ message: "create agent requires scope project|global" }))
@@ -1120,18 +1280,70 @@ function createRow(
       const candidate = input.id.trim()
       if (candidate !== "" && snapshot.protectedAgents.includes(candidate))
         return yield* Effect.fail(protectedError(candidate))
+      const preset = yield* presetInputOrFail(snapshot, input.preset)
       const created = yield* Effect.promise(() =>
-        api.createAgent({
-          scope,
-          id: input.id as string,
-          ...(input.template === undefined ? {} : { template: input.template }),
-          ...(input.fields === undefined ? {} : { fields: input.fields }),
-          prompt: input.prompt as string,
+        api.createAgent({ scope, id: input.id as string, ...(preset === undefined ? {} : { preset }), actor }),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      const row = yield* createdRowOrFail(api, (memo) => createdAgentRow(memo, scope, created.value.id), `agent "${created.value.id}"`)
+      return { output: { ...created.value, id: row.id, item: row.item } }
+    }
+    if (input.kind === "entry") {
+      if (input.catalogue === undefined || input.name === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create entry requires catalogue and name" }))
+      const snapshot = yield* snapshotOrFail(api)
+      const preset = yield* presetInputOrFail(snapshot, input.preset)
+      const created = yield* Effect.promise(() =>
+        api.createEntry({
+          catalogue: input.catalogue as Plus.Catalogue,
+          name: input.name as string,
+          ...(input.team === undefined ? {} : { team: input.team }),
+          ...(preset === undefined ? {} : { preset }),
           actor,
         }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      const row = yield* createdRowOrFail(api, (memo) => createdAgentRow(memo, scope, created.value.id), `agent "${created.value.id}"`)
+      const value = created.value
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) =>
+          createdEntryRow(memo, { catalogue: value.catalogue, ...(value.team === undefined ? {} : { team: value.team }), name: value.name ?? "" }),
+        `entry "${value.name ?? ""}"`,
+      )
+      return { output: { ...value, id: row.id, item: row.item } }
+    }
+    if (input.kind === "preset" || input.kind === "teamPreset") {
+      if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: `create ${input.kind} requires id` }))
+      const snapshot = yield* snapshotOrFail(api)
+      const team = input.kind === "teamPreset"
+      const from = input.from === undefined ? undefined : presetRefOf(snapshot, input.from, team)
+      if (input.from !== undefined && from === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `preset.invalid: unknown preset ${JSON.stringify(input.from)}` }))
+      if (team && from !== undefined && from.kind !== "team")
+        return yield* Effect.fail(new Tool.Error({ message: "preset.invalid: a team preset is created from a team preset" }))
+      const created = yield* Effect.promise(() =>
+        api.createPreset(
+          team
+            ? { kind: "team", id: input.id as string, ...(from === undefined ? {} : { from: from.id }), actor }
+            : { kind: "agent", id: input.id as string, ...(from === undefined ? {} : { from }), actor },
+        ),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      const ref = created.value.ref
+      const row = yield* createdRowOrFail(api, (memo) => createdPresetRow(memo, ref), `preset "${ref.id}"`)
+      return { output: { ...created.value, id: row.id, item: row.item } }
+    }
+    if (input.kind === "presetMember") {
+      if (input.team === undefined || input.id === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create presetMember requires team and id" }))
+      const snapshot = yield* snapshotOrFail(api)
+      const from = yield* presetInputOrFail(snapshot, input.from)
+      const created = yield* Effect.promise(() =>
+        api.addPresetMember({ team: input.team as string, id: input.id as string, ...(from === undefined ? {} : { from }), actor }),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      const ref = created.value.ref
+      const row = yield* createdRowOrFail(api, (memo) => createdPresetRow(memo, ref), `member preset "${ref.id}"`)
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "skill") {
@@ -1185,13 +1397,16 @@ function createRow(
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "team") {
-      if (input.team === undefined || input.level === undefined)
-        return yield* Effect.fail(new Tool.Error({ message: "create team requires team and level" }))
+      if (input.team === undefined || input.level === undefined || input.level === "preset")
+        return yield* Effect.fail(new Tool.Error({ message: "create team requires team and level project|global" }))
+      if (input.preset !== undefined && typeof input.preset !== "string" && input.preset.kind !== "team")
+        return yield* Effect.fail(new Tool.Error({ message: "preset.invalid: a team is created from a team preset" }))
+      const preset = input.preset === undefined ? undefined : typeof input.preset === "string" ? input.preset : input.preset.id
       const created = yield* Effect.promise(() =>
         api.createTeam({
           level: input.level as "project" | "global",
           team: input.team as string,
-          ...(input.template === undefined ? {} : { template: input.template }),
+          ...(preset === undefined ? {} : { preset }),
           actor,
         }),
       )
@@ -1204,42 +1419,40 @@ function createRow(
       const team = input.team?.trim()
       // team.addAgent validates and trims the team name itself, so the lookup
       // resolves the same name the write used.
-      if (team === undefined || level === undefined || input.id === undefined || input.prompt === undefined)
-        return yield* Effect.fail(new Tool.Error({ message: "create member requires team, level, id, and prompt" }))
+      if (team === undefined || level === undefined || level === "preset" || input.id === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create member requires team, level project|global|defaults, and id" }))
       const snapshot = yield* snapshotOrFail(api)
       const teammate = input.id.trim()
-      if (teammate !== "" && snapshot.protectedAgents.includes(teammate))
+      // A Defaults member entry is a pattern, not an agent: protection is
+      // about agents a tool may not create.
+      if (level !== "defaults" && teammate !== "" && snapshot.protectedAgents.includes(teammate))
         return yield* Effect.fail(protectedError(teammate))
+      const preset = yield* presetInputOrFail(snapshot, input.preset)
       const created = yield* Effect.promise(() =>
-        // `fields` reaches team.addAgent through the conditional spread without
-        // widening the RPC input type; team.addAgent renders them exactly as a
-        // top-level agent.create does.
-        api.addTeamAgent({
-          level,
-          team,
-          id: input.id as string,
-          prompt: input.prompt as string,
-          ...(input.template === undefined ? {} : { template: input.template }),
-          ...(input.fields === undefined ? {} : { fields: input.fields }),
-          actor,
-        }),
+        api.addTeamAgent({ level, team, id: input.id as string, ...(preset === undefined ? {} : { preset }), actor }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      const row = yield* createdRowOrFail(api, (memo) => createdMemberRow(memo, level, team, created.value.id), `team member "${created.value.id}"`)
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) =>
+          level === "defaults"
+            ? createdEntryRow(memo, { catalogue: "teams", team, name: created.value.id })
+            : createdMemberRow(memo, level, team, created.value.id),
+        `team member "${created.value.id}"`,
+      )
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "model") {
       if (input.providerID === undefined || input.modelID === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create model requires providerID and modelID" }))
       const level = input.level ?? input.scope ?? "project"
-      if (level !== "project" && level !== "global" && level !== "defaults")
-        return yield* Effect.fail(new Tool.Error({ message: "create model requires level project|global|defaults" }))
       const rawAgent = input.agent?.trim() ?? ""
+      // A preset's Models group: level preset with the preset id as agent.
       if (level !== "defaults" && rawAgent.length === 0)
-        return yield* Effect.fail(new Tool.Error({ message: "create model requires agent for project|global levels" }))
+        return yield* Effect.fail(new Tool.Error({ message: "create model requires agent for project|global|preset levels" }))
       const agent = level === "defaults" && (rawAgent.length === 0 || rawAgent === "_") ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
-      if (agent !== null && snapshot.protectedAgents.includes(agent))
+      if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
         return yield* Effect.fail(protectedError(agent))
       const created = yield* Effect.promise(() =>
         api.addModel({
@@ -1273,12 +1486,10 @@ function createRow(
       if (input.tool === undefined || input.id === undefined || input.label === undefined || input.patterns === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create rule requires tool, id, label, and patterns" }))
       const level = input.level ?? input.scope ?? "project"
-      if (level !== "project" && level !== "global" && level !== "defaults")
-        return yield* Effect.fail(new Tool.Error({ message: "create rule requires level project|global|defaults" }))
       const rawAgent = input.agent?.trim() ?? ""
       const agent = rawAgent.length === 0 || rawAgent === "_" ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
-      if (agent !== null && snapshot.protectedAgents.includes(agent))
+      if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
         return yield* Effect.fail(protectedError(agent))
       const created = yield* Effect.promise(() =>
         api.addRule({
@@ -1316,6 +1527,16 @@ function createRow(
   })
 }
 
+function presetInputOrFail(
+  snapshot: Plus.Snapshot,
+  input: string | Plus.PresetRef | undefined,
+): Effect.Effect<Plus.PresetRef | undefined, Tool.Error> {
+  if (input === undefined) return Effect.succeed(undefined)
+  const ref = presetRefOf(snapshot, input)
+  if (ref === undefined) return Effect.fail(new Tool.Error({ message: `preset.invalid: unknown preset ${JSON.stringify(input)}` }))
+  return Effect.succeed(ref)
+}
+
 // Resolve the row a create just wrote through the same tree show, set and
 // delete read. There is no fallback id: a create that cannot find its row
 // fails with create.failed instead of returning a string those tools refuse.
@@ -1351,6 +1572,7 @@ function deletePlan(
   api: PlusApi,
   plan: ExecutableRemovalPlan,
   actor: Plus.Actor,
+  force = false,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     if (plan.kind === "agent.delete") {
@@ -1380,6 +1602,29 @@ function deletePlan(
     }
     if (plan.kind === "team.delete") {
       const result = yield* Effect.promise(() => api.deleteTeam({ level: plan.level, team: plan.team, actor }))
+      if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+      return { output: { ...result.value, status: plan.successStatus } }
+    }
+    if (plan.kind === "preset.delete") {
+      // `force` deletes over links other projects hold (they then read as a missing preset).
+      const result = yield* Effect.promise(() => api.deletePreset({ ref: plan.ref, actor, ...(force ? { confirm: true } : {}) }))
+      // In use: the refusal names every row still linked to the preset.
+      if (!result.ok && result.error.code === "preset.inUse")
+        return yield* Effect.fail(
+          new Tool.Error({ message: `preset.inUse: ${result.error.message} (used by ${result.error.data.users.join(", ")})` }),
+        )
+      if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+      return { output: { ...result.value, status: plan.successStatus } }
+    }
+    if (plan.kind === "entry.delete") {
+      const result = yield* Effect.promise(() =>
+        api.deleteEntry({
+          catalogue: plan.catalogue,
+          ...(plan.team === undefined ? {} : { team: plan.team }),
+          ...(plan.name === undefined ? {} : { name: plan.name }),
+          actor,
+        }),
+      )
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }

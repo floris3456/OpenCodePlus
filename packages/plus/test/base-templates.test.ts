@@ -10,6 +10,7 @@ import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
+import { load, save } from "../src/instructions/store.js"
 import { enable } from "../src/project.js"
 import { agentInfo, fullContext, modelInfo, modelRef } from "./harness.js"
 
@@ -21,6 +22,23 @@ afterEach(async () => {
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
+
+// DESIGN §3.3: a user agent's shared rows (its base templates included) fall
+// back to off unless a preset sets them. alpha stands for an agent created
+// from the Native `build` preset, so its base rows stay on and only the
+// customization under test changes them.
+async function linkAlphaToBuild(project: string): Promise<void> {
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records,
+      { type: "link", level: "project", agent: "alpha", preset: { kind: "agent", id: "build" }, updated: "2026-01-01T00:00:00.000Z" },
+    ],
+  })
+  if (!saved.ok) throw new Error("link save was stale")
+}
 
 async function tempRoot(): Promise<{ project: string; config: string }> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
@@ -87,6 +105,7 @@ test("a user template that is not the host's active answer is never applied", as
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role\n")
+  await linkAlphaToBuild(project)
   const hostTemplates = [
     { id: "trinity", title: "Trinity.txt", text: "host trinity base" },
     { id: "general", title: "General.txt", text: "host general base" },
@@ -179,6 +198,7 @@ test("a request model switch through publication applies the request model's cus
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role\n")
+  await linkAlphaToBuild(project)
   const hostTemplates = [
     { id: "gpt", title: "GPT.txt", text: "host gpt base" },
     { id: "kimi", title: "Kimi.txt", text: "host kimi base" },

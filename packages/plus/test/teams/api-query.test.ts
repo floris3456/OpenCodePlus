@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { listHandler } from "../../src/teams/api-query.js"
+import { shippedTable } from "./preset-table.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
@@ -153,7 +154,7 @@ test("an orchestrator sees its own run plus direct children only", async () => {
     const repo = await makeRepo()
     try {
       const family = await seedFamily(root, repo.dir)
-      const value = required(await listHandler({}, callerFor(family.parent))) as ListEntry[]
+      const value = required(await listHandler({}, callerFor(family.parent), shippedTable())) as ListEntry[]
       expect(value.map((entry) => entry.run).toSorted()).toEqual(
         [family.parent.id, family.childA.id, family.childB.id].toSorted(),
       )
@@ -179,7 +180,7 @@ test("a planner sees every run in the namespace", async () => {
         createdAt: "2026-09-06T00:00:00.000Z",
       })
       await saveRun(root, planner)
-      const value = required(await listHandler({}, callerFor(planner))) as ListEntry[]
+      const value = required(await listHandler({}, callerFor(planner), shippedTable())) as ListEntry[]
       expect(value.map((entry) => entry.run).toSorted()).toEqual(
         [family.parent.id, family.childA.id, family.childB.id, family.grandchild.id, family.unrelated.id, planner.id].toSorted(),
       )
@@ -206,11 +207,11 @@ test("all:false hides superseded and reaped, all:true shows them", async () => {
       await saveRun(root, planner)
       await saveRun(root, gone)
       await saveRun(root, reaped)
-      const omitted = required(await listHandler({}, callerFor(planner))) as ListEntry[]
+      const omitted = required(await listHandler({}, callerFor(planner), shippedTable())) as ListEntry[]
       expect(omitted.map((entry) => entry.run).toSorted()).toEqual([planner.id])
-      const hidden = required(await listHandler({ all: false }, callerFor(planner))) as ListEntry[]
+      const hidden = required(await listHandler({ all: false }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(hidden.map((entry) => entry.run).toSorted()).toEqual([planner.id])
-      const shown = required(await listHandler({ all: true }, callerFor(planner))) as ListEntry[]
+      const shown = required(await listHandler({ all: true }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(shown.map((entry) => entry.run).toSorted()).toEqual([gone.id, reaped.id, planner.id].toSorted())
     } finally {
       await removeRepo(repo.dir)
@@ -232,11 +233,11 @@ test("role, state and parent filters each narrow the list", async () => {
         state: "working",
       })
       await saveRun(root, planner)
-      const byRole = required(await listHandler({ role: "gemini-implementer" }, callerFor(planner))) as ListEntry[]
+      const byRole = required(await listHandler({ role: "gemini-implementer" }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(byRole.map((entry) => entry.run)).toEqual([family.childB.id])
-      const byState = required(await listHandler({ state: "working" }, callerFor(planner))) as ListEntry[]
+      const byState = required(await listHandler({ state: "working" }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(byState.map((entry) => entry.run).toSorted()).toEqual([family.parent.id, family.childA.id, planner.id].toSorted())
-      const byParent = required(await listHandler({ parent: family.parent.id }, callerFor(planner))) as ListEntry[]
+      const byParent = required(await listHandler({ parent: family.parent.id }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(byParent.map((entry) => entry.run).toSorted()).toEqual([family.childA.id, family.childB.id].toSorted())
     } finally {
       await removeRepo(repo.dir)
@@ -269,7 +270,7 @@ test("every emitted field is present and correct for a populated run", async () 
       expect(live).not.toBe(repo.head)
       await atomicJson(path.join(root, "runs", stored.id, "report-1.json"), { status: "blocked", summary: "stuck" })
       await atomicJson(path.join(root, "runs", stored.id, "report-2.json"), { status: "done", summary: "finished" })
-      const value = required(await listHandler({ all: true }, callerFor(stored))) as ListEntry[]
+      const value = required(await listHandler({ all: true }, callerFor(stored), shippedTable())) as ListEntry[]
       expect(value).toEqual([
         {
           run: stored.id,
@@ -288,7 +289,7 @@ test("every emitted field is present and correct for a populated run", async () 
       ])
       const missing = baseRun({ id: "w-bbbbbbbbbbbbbbbb", directory: "/tmp/wt-team-query-gone", state: "stopped" })
       await saveRun(root, missing)
-      const shown = required(await listHandler({ all: true }, callerFor(missing))) as ListEntry[]
+      const shown = required(await listHandler({ all: true }, callerFor(missing), shippedTable())) as ListEntry[]
       const gone = shown.find((entry) => entry.run === missing.id)
       expect(gone?.head).toBe(missing.head)
       expect(gone?.reportStatus).toBeNull()
@@ -304,7 +305,7 @@ test("every emitted field is present and correct for a populated run", async () 
         state: "working",
       })
       await saveRun(root, planner)
-      const pendingEntry = (required(await listHandler({ all: true }, callerFor(planner))) as ListEntry[]).find(
+      const pendingEntry = (required(await listHandler({ all: true }, callerFor(planner), shippedTable())) as ListEntry[]).find(
         (entry) => entry.run === pending.id,
       )
       expect(pendingEntry?.runtime).toBe("pending")
@@ -335,7 +336,7 @@ test("the result is sorted by lastUsed descending then run id", async () => {
       await saveRun(root, first)
       await saveRun(root, second)
       await saveRun(root, newest)
-      const value = required(await listHandler({}, callerFor(planner))) as ListEntry[]
+      const value = required(await listHandler({}, callerFor(planner), shippedTable())) as ListEntry[]
       expect(value.map((entry) => entry.run)).toEqual([newest.id, first.id, second.id, planner.id])
     } finally {
       await removeRepo(repo.dir)
@@ -351,8 +352,8 @@ test("calling list does not modify any run.json", async () => {
       const ids = [family.parent.id, family.childA.id, family.childB.id, family.grandchild.id, family.unrelated.id]
       const snapshots: Array<{ id: string; bytes: string }> = []
       for (const id of ids) snapshots.push({ id, bytes: await fs.readFile(path.join(root, "runs", id, "run.json"), "utf8") })
-      await listHandler({}, callerFor(family.parent))
-      await listHandler({ all: true }, callerFor(family.parent))
+      await listHandler({}, callerFor(family.parent), shippedTable())
+      await listHandler({ all: true }, callerFor(family.parent), shippedTable())
       for (const snapshot of snapshots) {
         expect(await fs.readFile(path.join(root, "runs", snapshot.id, "run.json"), "utf8")).toBe(snapshot.bytes)
       }
@@ -391,7 +392,7 @@ test("list and statusOf reflect worktree states (present, removed, dirty)", asyn
       await saveRun(root, removed)
       await saveRun(root, dirty)
 
-      const list = required(await listHandler({ all: true }, callerFor(planner))) as ListEntry[]
+      const list = required(await listHandler({ all: true }, callerFor(planner), shippedTable())) as ListEntry[]
       const plannerEntry = list.find((e) => e.run === planner.id)
       const removedEntry = list.find((e) => e.run === removed.id)
       const dirtyEntry = list.find((e) => e.run === dirty.id)

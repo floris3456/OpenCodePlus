@@ -2,11 +2,12 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import type { Resolution } from "../../instructions/model.js"
+import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
 import type { TreeNode } from "../../instructions/tree.js"
 import { DetailPane } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
-import { createInstructionsDialogs } from "./dialogs.js"
+import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { TreePane } from "./tree-pane.js"
@@ -32,6 +33,8 @@ function canToggle(node: TreeNode | undefined): boolean {
 // there either, so they get no select here.
 export function selectableAgentId(node: TreeNode | undefined): string | undefined {
   if (node?.kind !== "agent") return undefined
+  // Presets (`agent:preset:…`) and Defaults entries are not agents.
+  if (node.owner?.entry !== undefined) return undefined
   const match = node.id.match(/^agent:(project|global|defaults):(.+)$/)
   return match?.[2]
 }
@@ -306,8 +309,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   // Enter on a normal node opens the detail editor; Enter on a yellow review
-  // node opens the three-pane diff; Enter on a permission row opens the rule
-  // editor.
+  // node opens the review: a keep/take choice for a changed state, pin or
+  // active model (§3.6), the three-pane diff for text (after the choice when
+  // both are under review); Enter on a permission row opens the rule editor.
   function enter() {
     const node = current()
     if (!node || node.address === undefined) {
@@ -315,11 +319,30 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       return
     }
     if (isReview(node)) {
-      setDiffNode(node)
-      setMode("diff")
+      if (node.address.item.startsWith("model:")) {
+        void reviewModel(node)
+        return
+      }
+      const parts = node.badges.reviewOf ?? []
+      if (parts.some((part) => part !== "text")) {
+        void reviewState(node, parts.includes("text"))
+        return
+      }
+      openDiff(node)
       return
     }
     if (node.address.item.startsWith("perm:")) {
+      const item = permItem(node)
+      // A limit or bound is a number; a row with no patterns is a switch;
+      // every other permission row opens the rule editor.
+      if (item !== undefined && isValueRow(item)) {
+        void editNumber(node)
+        return
+      }
+      if (item !== undefined && (item.patterns ?? []).length === 0) {
+        props.context.ui.toast.show({ variant: "info", message: `"${node.label}" is a switch: space turns it on or off` })
+        return
+      }
       void dialogs.editRule(node)
       return
     }
@@ -330,6 +353,82 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     setShowDetail(true)
     setDetailDraft(state.resolvedText(node))
     setDetailEditing(true)
+  }
+
+  function openDiff(node: TreeNode) {
+    setDiffNode(node)
+    setMode("diff")
+  }
+
+  // State and pin: "Keep yours (off)" re-records the value above and keeps
+  // yours; "Take from preset X (on)" drops yours so the row follows it again.
+  // Text under review too opens the three-way diff afterwards.
+  async function reviewState(node: TreeNode, text: boolean): Promise<void> {
+    const choice = state.reviewChoice(node)
+    if (choice === undefined) {
+      if (text) openDiff(node)
+      return
+    }
+    const picked = await props.context.ui.dialog.select<"keep" | "take">({
+      title: `Review "${node.label}"`,
+      placeholder: `The ${choice.parts.join(" and ")} above changed since you set yours`,
+      options: [
+        { title: `Keep yours (${choice.mine})`, value: "keep", description: "Your setting stays; the change above is acknowledged" },
+        { title: `Take ${choice.from} (${choice.above})`, value: "take", description: "Drop yours and follow it again" },
+      ],
+    })
+    if (picked === undefined) return
+    const resolved = picked === "keep" ? await state.resolveKeep(node, choice.parts) : await state.resolveTake(node, choice.parts)
+    if (resolved && text) openDiff(node)
+  }
+
+  // Active model: keep acknowledges the model above and keeps yours active;
+  // take clears your active model so the one above wins again.
+  async function reviewModel(node: TreeNode): Promise<void> {
+    const choice = state.modelReview(node)
+    if (choice === undefined) return
+    const picked = await props.context.ui.dialog.select<"keep" | "take">({
+      title: `Review "${node.label}"`,
+      placeholder: "The active model above changed since you chose yours",
+      options: [
+        { title: `Keep yours (${choice.mine})`, value: "keep", description: "Your model stays active; the change above is acknowledged" },
+        {
+          title: choice.above === undefined ? "Take the model above (none)" : `Take ${choice.from} (${choice.above})`,
+          value: "take",
+          description: "Clear your active model and follow it again",
+        },
+      ],
+    })
+    if (picked === undefined) return
+    await state.resolveModel(node, picked)
+  }
+
+  function relink() {
+    void dialogs.relink(current())
+  }
+
+  // The permission row a node addresses; undefined for every other node.
+  function permItem(node: TreeNode) {
+    const item = node.address?.item
+    if (item === undefined || !item.startsWith("perm:") || node.address?.section !== null) return undefined
+    return state.snapshot()?.items.find((entry) => entry.id === item)
+  }
+
+  // Enter on a limit or bound row: the number is the row's text. Off (space)
+  // removes the cap; the number stays for when it is switched back on.
+  async function editNumber(node: TreeNode): Promise<void> {
+    const raw = await props.context.ui.dialog.prompt({
+      title: node.label,
+      description: "A number. Space switches the cap off and on.",
+      value: state.resolvedText(node),
+    })
+    if (raw === undefined) return
+    const value = limitOf(raw)
+    if (value === undefined) {
+      props.context.ui.toast.show({ variant: "error", message: `"${node.label}" takes a number` })
+      return
+    }
+    await state.saveText(node, String(value))
   }
 
   async function resolveDiff(resolution: Resolution, edited?: string): Promise<void> {
@@ -369,12 +468,19 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node && isExpandable(node)) hints.push("left/right expand")
     if (!wide() && node && node.address !== undefined && !isExpandable(node) && !showDetail())
       hints.push("right detail")
-    if (node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
+    // A row with no patterns is a plain switch: space (below) is its only key.
+    const perm = node === undefined ? undefined : permItem(node)
+    if (node?.address !== undefined && isReview(node)) hints.push("enter review")
+    else if (perm !== undefined && isValueRow(perm)) hints.push("enter edit number")
+    else if (perm !== undefined && (perm.patterns ?? []).length > 0 && node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
+    else if (perm !== undefined) hints.push("space switch")
+    else if (node?.address?.item.startsWith("perm:") === true) hints.push("enter edit rule")
     else hints.push("enter edit")
-    if (canToggle(node)) hints.push("space toggle")
+    if (canToggle(node) && !hints.includes("space switch")) hints.push("space toggle")
     else if (selectableAgent(node) !== undefined) hints.push("space select")
     if (canPin(node)) hints.push("p pin")
     hints.push("a add")
+    if (isLinkable(node?.owner)) hints.push("l link")
     if (canDelete(node)) hints.push("d delete")
     if (canReset(node)) hints.push("r reset")
     if (canSplit(node)) hints.push("s split")
@@ -388,8 +494,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function helpText(): string {
     return [
       "arrows move · left collapse · right expand",
-      "enter edit (diff on yellow review rows, rule editor on permission rows)",
-      "space toggle include/exclude · p pin Code Mode tool · a add · d delete (confirm)",
+      "enter edit (rule editor on permission rows)",
+      "enter on a yellow review row: keep yours or take the new value (state, pin, model), diff for text",
+      "space toggle include/exclude · p pin Code Mode tool · a add (name, then preset) · d delete (confirm)",
+      "l link an agent, member, team, entry or User preset to a preset (or unlink)",
       "r reset override · s split into sections",
       "/ filter rows · ? help · esc back",
       "filter: words or key:value · ! negates · a,b ors · sort:key",
@@ -440,6 +548,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
             : []),
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: togglePin }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
+        ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: relink }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },
         ...(canReset(node)
           ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }]

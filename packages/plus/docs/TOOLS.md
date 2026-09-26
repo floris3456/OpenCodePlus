@@ -54,7 +54,7 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
 | `instructions_create` | `kind` plus kind fields (`packages/plus/src/tools.ts:181`) | `{ …created, id, item }` per kind (§4) |
-| `instructions_delete` | `id`, `confirm` | Removal result plus `status` (`packages/plus/src/tools.ts:217`, `packages/plus/src/tools.ts:1359`) |
+| `instructions_delete` | `id`, `confirm`, `force` (User preset linked only from other projects) | Removal result plus `status` (`packages/plus/src/tools.ts:217`, `packages/plus/src/tools.ts:1359`) |
 | `instructions_log` | `where`, `limit`, `offset` | Change-log entries, newest first (`packages/plus/src/tools.ts:222`, `packages/plus/src/tools.ts:104`) |
 
 `where` uses `key:value` terms; the structural keys (`kind`, `item`, `tool`,
@@ -191,21 +191,25 @@ exist only at `defaults` (`packages/plus/src/instructions/tree.ts:486`–
 
 ## 4. `instructions.create` kinds and returned ids
 
-`create` accepts nine `kind` literals (`packages/plus/src/tools.ts:182`).
-Eight create and return `{ …created, id, item }`; `instruction` is refused.
+`create` accepts thirteen `kind` literals (`CreateInput` in `packages/plus/src/tools.ts`).
+Twelve create and return `{ …created, id, item }`; `instruction` is refused.
 `id` is the tree row id that `show`, `set` and `delete` accept; `item` is the
 created item's own id (`packages/plus/src/tools.ts:94`,
 `packages/plus/src/instructions/ops.ts:159`–`packages/plus/src/instructions/ops.ts:162`).
 
 | `kind` | Required fields | Returned `id` | Returned `item` | Source |
 | --- | --- | --- | --- | --- |
-| `agent` | `id`, `prompt`; `scope` defaults `project` | `agent:<scope>:<id>` | agent id | `packages/plus/src/tools.ts:1113`–`packages/plus/src/tools.ts:1136` |
+| `agent` | `id`; `scope` defaults `project`; optional `preset` (no preset = everything off) | `agent:<scope>:<id>` | agent id | `createRow` in `packages/plus/src/tools.ts` |
 | `skill` | `name`, `body` | `item:defaults::skill:<id>` | `skill:<id>` | `packages/plus/src/tools.ts:1137`–`packages/plus/src/tools.ts:1148` |
 | `base` | `id`, `title`, `text` | `item:defaults::base:<id>` | `base:<id>` | `packages/plus/src/tools.ts:1149`–`packages/plus/src/tools.ts:1162` |
 | `instruction` | (disabled) | — | — | `packages/plus/src/tools.ts:1163`–`packages/plus/src/tools.ts:1174` |
 | `mcp` | `name`, `config` | `item:defaults::mcp:<name>` | `mcp:<name>` | `packages/plus/src/tools.ts:1175`–`packages/plus/src/tools.ts:1186` |
-| `team` | `team`, `level` `project`/`global`; optional `template` | `team:<level>:<team>` | team name | `packages/plus/src/tools.ts:1187`–`packages/plus/src/tools.ts:1201` |
-| `member` | `team`, `level` `project`/`global`/`defaults`, `id`, `prompt`; optional `template`/`fields` | `team:<level>:<team>:<member>` | member id | `packages/plus/src/tools.ts:1202`–`packages/plus/src/tools.ts:1230` |
+| `team` | `team`, `level` `project`/`global`; optional `preset` (a team preset id) | `team:<level>:<team>` | team name | `createRow` |
+| `member` | `team`, `level` `project`/`global`/`defaults`, `id`; optional `preset` (at `defaults`: a Teams member entry, patterns) | `team:<level>:<team>:<member>` | member id | `createRow` |
+| `entry` | `catalogue` `agents`/`teams`, `name` (may hold `*`/`%`); `team` pattern for teams; optional `preset` | `agent:defaults:<name>` or `team:defaults:<team>:<name>` | entry name | `createRow` |
+| `preset` | `id`; optional `from` (agent or member preset) | `agent:preset:<id>` | preset id | `createRow` |
+| `teamPreset` | `id`; optional `from` (team preset id; members copied and linked) | `team:preset:<id>` | preset id | `createRow` |
+| `presetMember` | `team` (a User team preset), `id`; optional `from` | `team:preset:<team>:<id>` | member id | `createRow` |
 | `model` | `providerID`, `modelID`; `level` defaults `project`; `agent` required unless level is `defaults` | `item:<level>:<owner>:model:<providerID>/<modelID>[@<variant>]` | item id | `packages/plus/src/tools.ts:1231`–`packages/plus/src/tools.ts:1271` |
 | `rule` | `tool`, `id`, `label`, `patterns`; `level` defaults `project` | `item:<level>:<owner>:perm:<tool>:<rule>` | item id | `packages/plus/src/tools.ts:1272`–`packages/plus/src/tools.ts:1314` |
 
@@ -227,7 +231,7 @@ A create never formats an id: it resolves the row through the same tree that
 `level` is `input.level ?? input.scope ?? "project"`
 (`packages/plus/src/tools.ts:1234`). At `project` or `global` level a model row
 must name an `agent`; otherwise create fails with
-`create model requires agent for project|global levels`
+`create model requires agent for project|global|preset levels`
 (`packages/plus/src/tools.ts:1238`–`packages/plus/src/tools.ts:1239`). At
 `defaults`, an empty agent (or `_`) means the shared row (`agent: null`)
 (`packages/plus/src/tools.ts:1240`). The returned row is resolved at the
@@ -247,7 +251,28 @@ keeps its requested storage level but its only visible row is the shared
 Defaults catalogue row, and that row is the returned `id`
 (`packages/plus/src/tools.ts:1298`–`packages/plus/src/tools.ts:1313`).
 
-### 4.3 The `instruction.disabled` contract
+### 4.3 Presets, Defaults entries and links
+
+A preset is named `"<id>"` (an agent preset) or `"<team>/<member>"` (a member
+preset; team ids never hold `/`), or as the RPC's `PresetRef`
+(`{kind:"agent",id}`, `{kind:"member",team,id}`, `{kind:"team",id}`). A file
+created from a preset carries the preset's `mode` and `description` and an
+empty body; a link record makes everything else follow the preset live
+(DESIGN §5). `set({ id, preset })` relinks the row's owner — an agent, a
+member, a team (team preset), a Defaults entry or a User preset — and
+`preset: null` unlinks (`link.set`). `delete` removes Defaults entries and
+User presets; a preset anything links to is refused with `preset.inUse`, whose
+message lists the linked row ids. Links held only by other projects (listed as
+`<directory> › <row id>`) are deleted over with `force: true`; those owners
+then show the badge `missing preset` (and `linkMissing: true` in `show`) and
+their rows fall through until relinked. Native and Plus presets are read-only
+(`preset.readonly`); their rows are editable and, like every preset row, not
+guarded by `protectedAgents` (presets are not agents). Every row badge carries
+`from` (where its state came from), `fromLabel` in words and `reviewOf` (which
+parts are to review); `show` returns `from`, `list` projects it with
+`fields: ["from"]`.
+
+### 4.4 The `instruction.disabled` contract
 
 `instructions.create kind:"instruction"` always fails with `INSTRUCTION_DISABLED`,
 whose text begins `instruction.disabled:` and names the Context catalogue

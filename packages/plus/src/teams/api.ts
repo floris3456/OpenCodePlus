@@ -28,7 +28,10 @@ import { stopHandler, supersedeHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
-import { kindOf } from "./policy.js"
+import { wildcardMatch } from "../instructions/permission-catalog.js"
+import type { PermissionTable } from "../instructions/permission-enforce.js"
+import type { TeamTool } from "./policy.js"
+import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
 import { render } from "./report.js"
 import {
   attemptTransition,
@@ -108,15 +111,13 @@ export interface TeamApi {
   readonly check: (input: CheckInput, caller: TeamCaller) => Promise<TeamApiResult>
 }
 
-// Policy file loading lands later; the gates read bounds and effort budgets
-// from the schema defaults (members 12, inFlight 4, maxDepth 3, brief 6000).
+// Policy file loading lands later; effort budgets come from the schema
+// defaults. Delegation bounds are the caller's Limits rows.
 const policy = Schema.decodeUnknownSync(Policy)({})
 
 const PATHS_MESSAGE =
-  "Implementers need scope.paths (files or dir/* they may edit)."
+  "scope.paths must be files or dir/* inside the repository, never version-control state."
 const PATHS_ACCEPTED = ["packages/plus/src/*", "packages/plus/test/*"]
-const PLANNERS_MESSAGE = "Planners may delegate only to opus-orchestrator or sol-orchestrator."
-const PLANNERS_ACCEPTED = { role: "opus-orchestrator" }
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
 const COMMIT_MESSAGE_RE = /^(feat|fix|docs|chore|refactor|test)(\([^)]+\))?: /
 
@@ -154,19 +155,19 @@ async function guarded(work: () => Promise<TeamApiResult>): Promise<TeamApiResul
 export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
   return {
     delegate: (input, caller) => guarded(() => delegateHandler(ctx, state, input, caller)),
-    finish: (input, caller) => guarded(() => finishHandler(input, caller)),
-    followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller)),
-    integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller)),
+    finish: (input, caller) => guarded(() => finishHandler(input, caller, state.permissions)),
+    followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller, state.permissions)),
+    integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
-    supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller)),
-    stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller)),
-    status: (input, caller) => guarded(() => statusHandler(input, caller)),
-    wait: (input, caller) => guarded(() => waitHandler(ctx, input, caller)),
-    diff: (input, caller) => guarded(() => diffHandler(input, caller)),
-    list: (input, caller) => guarded(() => listHandler(input, caller)),
-    get_context: (input, caller) => guarded(() => getContextHandler(input, caller)),
-    check: (input, caller) => guarded(() => checkHandler(input, caller)),
+    supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller, state.permissions)),
+    stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
+    status: (input, caller) => guarded(() => statusHandler(input, caller, state.permissions)),
+    wait: (input, caller) => guarded(() => waitHandler(ctx, input, caller, state.permissions)),
+    diff: (input, caller) => guarded(() => diffHandler(input, caller, state.permissions)),
+    list: (input, caller) => guarded(() => listHandler(input, caller, state.permissions)),
+    get_context: (input, caller) => guarded(() => getContextHandler(input, caller, state.permissions)),
+    check: (input, caller) => guarded(() => checkHandler(input, caller, state.permissions)),
   }
 }
 
@@ -183,29 +184,31 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
 
-  const callerKind = kindOf(parent.role)
-  if (!callerKind.ok)
-    return fail("E_ROLE", PLANNERS_MESSAGE, PLANNERS_ACCEPTED)
-  const targetKind = kindOf(brief.role)
-  if (!targetKind.ok) return fail("E_ROLE", PLANNERS_MESSAGE, PLANNERS_ACCEPTED)
-  if ((await depthOf(root, parent)) >= policy.bounds.maxDepth)
+  // Who may delegate to whom is the caller's "Delegate to" rows (Permissions
+  // of team_delegate), which a member preset sets and every level can change.
+  // A brief may name only a member of an enabled team.
+  const table = state.permissions
+  const agent = caller.agent
+  const accepted = delegationTargets(table, agent)
+  const acceptedLine = accepted.length > 0 ? `You may delegate to: ${accepted.join(", ")}.` : "No member is open to you for delegation."
+  const acceptedRole = accepted.length > 0 ? { role: accepted[0] } : undefined
+  if (accepted.length === 0 && !allows(table, agent, "delegate", "to.other-teams"))
+    return fail("E_ROLE", `${agent} may not delegate. ${acceptedLine}`)
+  // A delegated run delegates further only while its member's Access row
+  // "Delegate from a delegated run" is on.
+  if (parent.parent !== null && !allows(table, agent, "delegate", "access.delegated"))
+    return fail("E_ROLE", `${agent}: ${messageOf(table, agent, "delegate", "access.delegated")}`, `report blocked with needs=[{kind:"decision"}]`)
+  if (typeof brief.role !== "string" || brief.role.length === 0 || table === undefined || !table.teamMembers.has(brief.role))
+    return fail("E_ROLE", `"${brief.role}" is not a member of an enabled team. ${acceptedLine}`, acceptedRole)
+  if (!mayDelegate(table, agent, brief.role))
+    return fail("E_ROLE", `${agent} may not delegate to "${brief.role}". ${acceptedLine}`, acceptedRole)
+  const maxDepth = bound(table, agent, "delegate", "limits.depth")
+  if (maxDepth !== undefined && (await depthOf(root, parent)) >= maxDepth)
     return fail(
       "E_ROLE",
-      `Depth limit ${policy.bounds.maxDepth} reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.`,
+      `Depth limit ${maxDepth} reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.`,
       `report blocked with needs=[{kind:"decision"}]`,
     )
-  if (callerKind.kind === "planner" && !policy.roles.planner.delegateTo.includes(brief.role))
-    return fail("E_ROLE", PLANNERS_MESSAGE, PLANNERS_ACCEPTED)
-  if (callerKind.kind === "orchestrator" && !policy.roles.orchestrator.delegateTo.includes(brief.role)) {
-    const first = policy.roles.orchestrator.delegateTo[0] ?? "muse-implementer"
-    return fail("E_ROLE", `Role "${brief.role}" is not allowed for orchestrator. accepted: {"role":"${first}",...}`, {
-      role: first,
-    })
-  }
-  if (callerKind.kind !== "planner" && callerKind.kind !== "orchestrator")
-    return fail("E_ROLE", `Role ${parent.role} cannot delegate. accepted: {"role":"muse-implementer",...}`, {
-      role: "muse-implementer",
-    })
 
   const rawRepo = brief.repo ?? parent.repoKey ?? parent.repo
   const repo = await resolveRepo(rawRepo, parent)
@@ -237,22 +240,8 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   for (const candidate of paths) {
     if (!isScopePath(candidate)) return fail("E_PATHS", PATHS_MESSAGE, PATHS_ACCEPTED)
   }
-  if (targetKind.kind === "implementer" && brief.deliverable.kind === "commit" && paths.length === 0)
-    return fail("E_PATHS", PATHS_MESSAGE, PATHS_ACCEPTED)
-
-  if (brief.role === "spark-implementer" && (brief.reason?.trim() === "" || brief.reason === undefined || paths.length > 5 || brief.checks.length !== 1))
-    return fail("E_SPARK", "spark-implementer needs reason, ≤5 paths and exactly one check.", {
-      reason: "...",
-      paths: ["src/a.ts"],
-      checks: 1,
-    })
-
-  if (targetKind.kind === "orchestrator" && (brief.reason === undefined || brief.reason.trim() === ""))
-    return fail(
-      "E_REASON",
-      `Delegating to an orchestrator needs reason (why coordination, not implementation). accepted: {"reason":"3 independent packages, each needs its own workers"}`,
-      { reason: "3 independent packages, each needs its own workers" },
-    )
+  const refused = briefRefusal(table, brief)
+  if (refused !== undefined) return refused
 
   const childID = newRunID("w")
   let taskID = brief.task
@@ -272,18 +261,20 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     .filter((record) => record.parent === parent.id)
     .map((record) => record.id)
     .toSorted()
-  if (inFlight.length >= policy.bounds.inFlight)
+  const inFlightLimit = bound(table, agent, "delegate", "limits.inflight")
+  if (inFlightLimit !== undefined && inFlight.length >= inFlightLimit)
     return fail(
       "E_BOUNDS",
-      `In-flight limit ${policy.bounds.inFlight} reached (${inFlight.join(", ")}). Call wait first or raise bounds.inFlight in policy.`,
+      `In-flight limit ${inFlightLimit} reached (${inFlight.join(", ")}). Wait for a child to settle (tools.team.wait) first.`,
       "call wait first",
     )
-  if (live.length >= policy.bounds.members) {
+  const membersLimit = bound(table, agent, "delegate", "limits.members")
+  if (membersLimit !== undefined && live.length >= membersLimit) {
     const all = live.map((record) => record.id).toSorted()
     return fail(
       "E_BOUNDS",
-      `Members limit ${policy.bounds.members} reached (${all.join(", ")}). Call wait first or raise bounds.members in policy.`,
-      "raise bounds.members in policy",
+      `Live team runs limit ${membersLimit} reached (${all.join(", ")}). Wait for a run to settle (tools.team.wait) first.`,
+      "call wait first",
     )
   }
 
@@ -303,10 +294,11 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const ifaceChars = brief.context.interfaces.reduce((n, item) => n + item.path.length + (item.symbol?.length ?? 0) + item.note.length, 0)
   const decisionChars = brief.context.decisions.reduce((n, decision) => n + decision.length, 0)
   const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars
-  if (briefChars > policy.bounds.briefChars)
+  const briefLimit = bound(table, agent, "delegate", "limits.brief")
+  if (briefLimit !== undefined && briefChars > briefLimit)
     return fail(
       "E_TOO_LONG",
-      `Brief text is ${briefChars} chars (max ${policy.bounds.briefChars}). Move long material into a file and pass briefFile.`,
+      `Brief text is ${briefChars} chars (max ${briefLimit}). Move long material into a file and pass briefFile.`,
       "pass briefFile",
     )
 
@@ -359,7 +351,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     {
       repoRoot: repo.root,
       repoKey: repo.key,
-      role: targetKind.kind,
+      role: brief.role,
       name: slug(taskID ?? brief.requestID, childID),
       base: baseSha,
       workspaceRoot: root,
@@ -559,7 +551,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   return succeeded(output)
 }
 
-async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiResult> {
+async function finishHandler(args: Report, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   validateSummary(args.summary)
   const stored = await loadRun(root, caller.run.id)
@@ -583,7 +575,8 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
   const missing = await stale(root, assigned, stored.id, head)
   for (const checkDef of missing) await execute(root, { runID: stored.id, check: checkDef, worktree })
 
-  if (args.status === "done" || args.status === "done_with_concerns") {
+  const done = args.status === "done" || args.status === "done_with_concerns"
+  if (done && allows(table, stored.role, "finish", "requirements.checks")) {
     const receipts = await receiptsAt(root, stored.id, head)
     const byId = new Map(receipts.map((receipt) => [receipt.id, receipt] as const))
     const red: string[] = []
@@ -606,7 +599,7 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
     }
   }
 
-  if (args.status === "done" && isImplementerRole(stored.role) && dirtyFiles.length > 0)
+  if (args.status === "done" && allows(table, stored.role, "finish", "requirements.clean") && dirtyFiles.length > 0)
     return fail(
       "E_DIRTY",
       `Worktree has uncommitted changes in [${dirtyFiles.join(", ")}]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.`,
@@ -621,6 +614,15 @@ async function finishHandler(args: Report, caller: TeamCaller): Promise<TeamApiR
     )
 
   const commits = await loadCommits(worktree, stored.base)
+  if (done && allows(table, stored.role, "finish", "requirements.commit")) {
+    const assignedBrief = await readJson<{ deliverable?: { kind?: string } }>(path.join(root, "runs", stored.id, "brief.json"))
+    if (assignedBrief?.deliverable?.kind === "commit" && commits.length === 0)
+      return fail(
+        "E_NO_COMMIT",
+        `This run's deliverable is a commit and it has none since ${stored.base}. Call team_checkpoint first, or finish blocked with needs=[{kind:"info",...}].`,
+        { status: "blocked", needs: [{ kind: "info", detail: "why nothing was committed" }] },
+      )
+  }
   const reportChecks = (await receiptsAt(root, stored.id, head))
     .map((receipt) => ({ id: receipt.id, passed: receipt.passed, head: receipt.head, at: receipt.at }))
     .toSorted((a, b) => a.id.localeCompare(b.id))
@@ -725,27 +727,37 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
   })
 }
 
-async function statusHandler(args: StatusInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function statusHandler(args: StatusInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const self = stored ?? caller.run
   const all = await listRuns(root)
   const ids = args.runs ?? [self.id, ...all.filter((record) => record.parent === self.id).map((record) => record.id)]
+  for (const id of ids) {
+    const target = await loadRun(root, id)
+    if (target === undefined) continue
+    if (!mayReach(table, caller.agent, "status", await relationOf(root, self, target)))
+      return fail("E_NOT_VISIBLE", `Run ${id} is outside what team_status may read for ${caller.agent} (Permissions → Runs).`, self.id)
+  }
   const entries = []
   for (const id of ids) entries.push(await statusOf(root, id))
   return succeeded(entries)
 }
 
-async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const timeoutMs = args.timeoutMs ?? 60000
   if (!Number.isInteger(timeoutMs) || timeoutMs < 10000)
     return fail("E_TIMEOUT_MIN", `timeoutMs ${String(args.timeoutMs)} is below the 10000ms floor.`, { timeoutMs: 10000 })
   const until = args.until ?? "settled"
   const ack = args.ack ?? true
+  const self = (await loadRun(root, caller.run.id)) ?? caller.run
   for (const id of args.runs) {
-    if ((await loadRun(root, id)) === undefined)
+    const target = await loadRun(root, id)
+    if (target === undefined)
       return fail("E_NOT_VISIBLE", `Run ${id} is not in this namespace.`, "a run id from list{}")
+    if (!mayReach(table, caller.agent, "wait", await relationOf(root, self, target)))
+      return fail("E_NOT_VISIBLE", `Run ${id} is outside what team_wait may wait on for ${caller.agent} (Permissions → Runs).`, self.id)
   }
   const settledNow = await settledIds(root, args.runs, until)
   if (settledNow.length > 0) return succeeded(await waitResult(root, caller.run.id, args.runs, settledNow, until, ack))
@@ -815,7 +827,7 @@ async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller): P
   })
 }
 
-async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function getContextHandler(_args: GetContextInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
@@ -847,7 +859,8 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Pr
       }
     }),
   )
-  const siblings = record.task === null ? [] : await siblingsOf(root, record.task)
+  const siblings =
+    record.task === null || !allows(table, record.role, "get_context", "contents.siblings") ? [] : await siblingsOf(root, record.task)
   const pending = await peek(root, record.id)
   const briefPath = brief === null ? null : path.join(root, "runs", record.id, "brief.md")
   const scope =
@@ -888,12 +901,12 @@ async function getContextHandler(_args: GetContextInput, caller: TeamCaller): Pr
 // owned child — so a run can never read a stranger's worktree.
 const DIFF_MAX_BYTES = 200_000
 
-async function diffHandler(args: DiffInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function diffHandler(args: DiffInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const self = (await loadRun(root, caller.run.id)) ?? caller.run
   const target = args.run === self.id ? self : await loadRun(root, args.run)
   if (target === undefined) return fail("E_NOT_VISIBLE", `Run ${args.run} is not in this namespace.`, "a run id from list{}")
-  if (target.id !== self.id && target.parent !== self.id)
+  if (!mayReach(table, caller.agent, "diff", await relationOf(root, self, target)))
     return fail("E_NOT_VISIBLE", `Run ${args.run} is neither your run nor one of your children.`, self.id)
   const from = await diffFrom(root, target, args.from)
   const maxBytes = args.maxBytes === undefined || args.maxBytes <= 0 ? DIFF_MAX_BYTES : Math.trunc(args.maxBytes)
@@ -932,11 +945,22 @@ async function diffFrom(root: string, target: RunRecord, from: DiffInput["from"]
   return parent?.head ?? target.base
 }
 
-async function checkHandler(args: CheckInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function checkHandler(args: CheckInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   const assigned = await readChecks(root, record.id)
+  // Checks it may run (Permissions of team_check): a test-file check or a
+  // package-script check this member's rows turned off is refused before it
+  // runs, with the report that says what to do instead.
+  const assignedCheck = assigned.find((entry) => entry.id === args.id)
+  const family = assignedCheck?.argv[1] === "test" ? "checks.tests" : assignedCheck?.argv[1] === "run" ? "checks.scripts" : undefined
+  if (family !== undefined && !allows(table, record.role, "check", family))
+    return fail(
+      "E_PERMISSION",
+      `${record.role} may not run ${family === "checks.tests" ? "test-file" : "package-script"} checks here (Permissions → Checks it may run). Finish with needs=[{kind:"check",...}] instead.`,
+      { status: "blocked", needs: [{ kind: "check", detail: args.id }] },
+    )
   try {
     return succeeded(await run(root, record.id, args.id, assigned, record.directory))
   } catch (error) {
@@ -996,6 +1020,40 @@ function isScopePath(candidate: string): boolean {
   return !/(^|\/)(\.git|\.cairn|\.beads)(\/|$)/.test(candidate)
 }
 
+// What the member a brief names accepts: its own "Briefs it accepts" and
+// "Brief limits" rows (Permissions of team_get_context), read for the target,
+// never for the caller. Undefined when the brief passes them all.
+function briefRefusal(table: PermissionTable | undefined, brief: Brief): TeamApiResult | undefined {
+  const target = brief.role
+  const paths = brief.scope.paths
+  const says = (id: string) => `${target} ${messageOf(table, target, "get_context", id)}`
+  if (allows(table, target, "get_context", "accepts.scope-paths") && brief.deliverable.kind === "commit" && paths.length === 0)
+    return fail("E_PATHS", `${says("accepts.scope-paths")} (Briefs it accepts → Scope paths for a commit).`, PATHS_ACCEPTED)
+  const plans = row(table, target, "get_context", "accepts.plan-files")
+  if (plans?.on === true) {
+    const patterns = plans.item.patterns ?? []
+    const outside = paths.filter((candidate) => !patterns.some((pattern) => wildcardMatch(candidate, pattern) || wildcardMatch(candidate, `*/${pattern}`)))
+    if (outside.length > 0)
+      return fail("E_PATHS", `${says("accepts.plan-files")} [${patterns.join(", ")}]; outside them: [${outside.join(", ")}].`, [...patterns])
+  }
+  if (allows(table, target, "get_context", "accepts.reason") && (brief.reason === undefined || brief.reason.trim() === ""))
+    return fail("E_REASON", `${says("accepts.reason")} (Briefs it accepts → A reason).`, { reason: "3 independent packages, each needs its own workers" })
+  if (allows(table, target, "get_context", "accepts.check") && brief.checks.length === 0)
+    return fail("E_BRIEF", `${says("accepts.check")} (Briefs it accepts → A check).`, { checks: 1 })
+  const maxPaths = bound(table, target, "get_context", "limits.paths")
+  if (maxPaths !== undefined && paths.length > maxPaths)
+    return fail("E_BRIEF", `${target} accepts at most ${maxPaths} scope paths per brief (Brief limits → Paths per brief); this brief has ${paths.length}.`, { paths: maxPaths })
+  const maxChecks = bound(table, target, "get_context", "limits.checks")
+  if (maxChecks !== undefined && brief.checks.length > maxChecks)
+    return fail("E_BRIEF", `${target} accepts at most ${maxChecks} checks per brief (Brief limits → Checks per brief); this brief has ${brief.checks.length}.`, { checks: maxChecks })
+  return undefined
+}
+
+// A team row's refusal text as the model reads it.
+function messageOf(table: PermissionTable | undefined, agent: string, tool: TeamTool, id: string): string {
+  return row(table, agent, tool, id)?.item.message ?? `is refused by its ${tool} row ${id}`
+}
+
 function inScope(scopePaths: readonly string[], file: string): boolean {
   if (file === "" || file.startsWith("/") || file.endsWith("/") || file.split("/").includes("..")) return false
   for (const pattern of scopePaths) {
@@ -1005,12 +1063,6 @@ function inScope(scopePaths: readonly string[], file: string): boolean {
     } else if (file === pattern) return true
   }
   return false
-}
-
-function isImplementerRole(role: string): boolean {
-  const kind = kindOf(role)
-  if (kind.ok) return kind.kind === "implementer"
-  return role.toLowerCase().includes("implementer")
 }
 
 function stable(value: unknown): string {

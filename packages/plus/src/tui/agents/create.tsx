@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { validateAgentId } from "../../agents/files.js"
 import { Definition } from "../../rpc.js"
+import { pickAgentPreset } from "../preset-picker.js"
 import type { AgentEntry, FileScope, Snapshot } from "../../rpc.js"
 
 export function createAgentActions(context: Plugin.Context) {
@@ -17,79 +18,6 @@ export function createAgentActions(context: Plugin.Context) {
       context.ui.toast.show({ variant: "error", message: errorMessage(error) })
       return undefined
     }
-  }
-
-  async function pickModel(): Promise<string | undefined> {
-    const cached = context.data.location.model.list(context.location)
-    if (cached !== undefined) {
-      if (disposed) return undefined
-      if (cached.length === 0) {
-        context.ui.toast.show({ variant: "error", message: "No models available in this location" })
-        return undefined
-      }
-      const picked = await context.ui.dialog.select<string>({
-        title: "Agent model",
-        placeholder: "Select a model",
-        options: cached.map((model) => ({
-          title: model.name,
-          value: `${model.providerID}/${model.id}`,
-          description: model.providerID,
-        })),
-      })
-      if (disposed) return undefined
-      return picked
-    }
-    try {
-      await context.data.location.model.sync(context.location)
-    } catch (error: unknown) {
-      if (disposed) return undefined
-      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
-      return undefined
-    }
-    if (disposed) return undefined
-    const models = context.data.location.model.list(context.location)
-    if (!models || models.length === 0) {
-      context.ui.toast.show({ variant: "error", message: "No models available in this location" })
-      return undefined
-    }
-    const picked = await context.ui.dialog.select<string>({
-      title: "Agent model",
-      placeholder: "Select a model",
-      options: models.map((model) => ({
-        title: model.name,
-        value: `${model.providerID}/${model.id}`,
-        description: model.providerID,
-      })),
-    })
-    if (disposed) return undefined
-    return picked
-  }
-
-  async function pickStartingPrompt(): Promise<string | undefined> {
-    const snapshot = await loadSnapshot()
-    if (disposed) return undefined
-    if (!snapshot) return undefined
-    const prompts = snapshot.items.filter((item) => item.kind === "system")
-    const choice = await context.ui.dialog.select<string>({
-      title: "Starting prompt",
-      options: [
-        { title: "Blank", value: "", description: "Start with an empty prompt" },
-        ...prompts.map((item) => ({
-          title: `Copy from ${item.agents?.[0] ?? item.title}`,
-          value: item.id,
-          description: item.title,
-        })),
-      ],
-    })
-    if (disposed) return undefined
-    if (choice === undefined) return undefined
-    if (choice === "") return ""
-    const found = prompts.find((item) => item.id === choice)
-    if (!found) {
-      context.ui.toast.show({ variant: "error", message: "Selected prompt is no longer available" })
-      return undefined
-    }
-    return found.text
   }
 
   async function pickEligibleAgent(snapshot: Snapshot, action: "rename" | "delete"): Promise<AgentEntry | undefined> {
@@ -159,25 +87,16 @@ export function createAgentActions(context: Plugin.Context) {
     })
     if (disposed) return
     if (scope === undefined) return
-    const modelRef = await pickModel()
+    // DESIGN §5: name → preset → done (the palette also asks the scope).
+    const snapshot = await loadSnapshot()
     if (disposed) return
-    if (modelRef === undefined) return
-    const mode = await context.ui.dialog.select<"primary" | "subagent" | "all">({
-      title: "Agent mode",
-      options: [
-        { title: "Primary", value: "primary", description: "Can run as the main agent" },
-        { title: "Subagent", value: "subagent", description: "Only runs as a subagent" },
-        { title: "All", value: "all", description: "Runs as primary or subagent" },
-      ],
-    })
+    if (!snapshot) return
+    const preset = await pickAgentPreset(context, snapshot)
     if (disposed) return
-    if (mode === undefined) return
-    const prompt = await pickStartingPrompt()
-    if (disposed) return
-    if (prompt === undefined) return
+    if (preset === undefined) return
     try {
       const ref = await plus["agent.create"](
-        { scope, id: validated.id, fields: { model: modelRef, mode }, prompt },
+        { scope, id: validated.id, ...(preset === null ? {} : { preset }) },
         { location: context.location },
       )
       if (disposed) return

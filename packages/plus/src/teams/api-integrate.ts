@@ -10,6 +10,9 @@ import { IntegrateInput } from "./schema.js"
 import type { Check } from "./schema.js"
 import { readJson } from "./store.js"
 import { remove } from "./worktree.js"
+import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
+import { wildcardMatch } from "../instructions/permission-catalog.js"
+import { allows } from "./reach.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
@@ -49,7 +52,7 @@ async function latestReport(root: string, runID: string): Promise<{ n: number; s
   return best
 }
 
-export async function integrateHandler(ctx: Context, args: IntegrateInput, caller: TeamCaller): Promise<TeamApiResult> {
+export async function integrateHandler(ctx: Context, args: IntegrateInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
   void ctx
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
@@ -71,8 +74,24 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
       "E_NOT_DONE",
       `Child ${child.id} last report is "${status}" (attempt ${attempt}). Only done/done_with_concerns can be integrated. Send a followup or supersede.`,
     )
+  // Outcomes it lands (Permissions of team_integrate).
+  const outcome = status === "done" ? "outcomes.done" : "outcomes.concerns"
+  if (!allows(table, caller.agent, "integrate", outcome))
+    return fail(
+      "E_NOT_DONE",
+      `Child ${child.id} reported "${status}", which ${caller.agent} may not land (Permissions → Outcomes it lands). Send a followup or supersede.`,
+    )
   const top = await gitRaw(parent.directory, ["rev-parse", "--show-toplevel"])
   if (top.code !== 0) return fail("E_INTERNAL", top.err || top.out || `Cannot resolve repository from ${parent.directory}.`)
+  // Branches it lands on: the parent's current branch against the protected
+  // branch row.
+  const protectedRow = rowState(table, caller.agent, "team_integrate", "branches.protected")
+  if (protectedRow !== undefined && !protectedRow.on) {
+    const branchOut = await gitRaw(parent.directory, ["rev-parse", "--abbrev-ref", "HEAD"])
+    const branch = branchOut.code === 0 ? branchOut.out : ""
+    if ((protectedRow.item.patterns ?? []).some((pattern) => wildcardMatch(branch, pattern)))
+      return fail("E_BRANCH", `${protectedRow.item.message ?? "landing on this branch is not allowed here"} (branch "${branch}").`, "a task branch")
+  }
   const repoRoot = top.out
   const checks = (await readJson<Check[]>(path.join(root, "runs", parent.id, "checks.json"))) ?? []
   const mergeCtx: MergeContext = {

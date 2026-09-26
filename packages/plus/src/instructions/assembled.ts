@@ -3,8 +3,8 @@ import type { Transform } from "@opencode/plugin/effect/registration"
 import type { Agent } from "@opencode/schema/agent"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
-import { copyName, isSkillCopy, type ToolPlan } from "./apply.js"
-import { catalogPath, isCodeModeToolEntry, resolve, type CustomizationRecord, type Item, type Level, type Scopes, type SplitRecord } from "./model.js"
+import { copyName, isSkillCopy, resolvedFor, type ApplyAgent, type ToolPlan } from "./apply.js"
+import { catalogPath, isCodeModeToolEntry, type CustomizationRecord, type Item, type Scopes, type SplitRecord } from "./model.js"
 import { scrubLines } from "./tool-permissions.js"
 import type { Plus } from "../rpc.js"
 
@@ -12,7 +12,8 @@ interface AssembledInput {
   readonly ctx: Context
   readonly agent: string
   readonly items: readonly Item[]
-  readonly agents: readonly { readonly id: string; readonly level: Level }[]
+  /** The agents as apply receives them: a team winner carries its team. */
+  readonly agents: readonly ApplyAgent[]
   readonly records: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
@@ -43,14 +44,9 @@ interface AssembledInput {
 export async function assembled(input: AssembledInput): Promise<Plus.Assembled | { ok: false; agent: string }> {
   const owner = input.agents.find((entry) => entry.id === input.agent)
   if (owner === undefined) return { ok: false, agent: input.agent }
-  const addressOf = (item: Item) => ({ level: owner.level, agent: owner.id, item: item.id, section: null })
-  const resolved = new Map(input.items.map((item) => [item.id, resolve({
-    upstream: item,
-    records: input.records,
-    splits: input.splits,
-    scopes: input.scopes,
-    address: addressOf(item),
-  })]))
+  // Resolved exactly as apply resolved it: a native built-in from Project, a
+  // team member with its team.
+  const resolved = new Map(input.items.map((item) => [item.id, resolvedFor(item, owner, input)]))
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
   const scrubbed = scrubKeywords(input.items, resolved)
   const system = systemEntry?.system === undefined ? [] : [preserveScrub(systemEntry.system, scrubbed)]

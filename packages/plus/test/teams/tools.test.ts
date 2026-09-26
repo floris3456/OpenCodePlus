@@ -19,6 +19,7 @@ import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
+import { shippedTable, teamState } from "./preset-table.js"
 import { git } from "../../src/teams/git.js"
 import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief } from "../../src/teams/schema.js"
@@ -63,6 +64,11 @@ const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "c
 
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`
+
+// A member whose "Start a team run from a chat" row is off (the implementer
+// preset's) hears the same refusal plus the row's own words.
+const noChatRun = (id: string): string =>
+  `${notActor(id)} You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`
 
 interface TestToolHarness {
   readonly ctx: Context
@@ -153,8 +159,8 @@ function fixture(): { ctx: Context; tools: Map<string, Tool.Info & { readonly id
 
 async function registeredTools(): Promise<Map<string, Tool.Info & { readonly id: string }>> {
   const created = fixture()
-  const api = createTeamApi(created.ctx, createState())
-  await registerTeamTools(created.ctx, api)
+  const api = createTeamApi(created.ctx, teamState())
+  await registerTeamTools(created.ctx, api, shippedTable)
   return created.tools
 }
 
@@ -279,8 +285,10 @@ test("a session with no run fails E_NOT_ACTOR with the exact message", async () 
     const ctx = toolContext("ses_team_none", "muse-implementer")
     for (const name of teamNames) {
       const message = await runMessage(need(tools, `team_${name}`), {}, ctx)
-      expect(message).toBe(notActor("unknown"))
+      expect(message).toBe(noChatRun("unknown"))
     }
+    // An agent that is no team member keeps the byte-exact message.
+    expect(await runMessage(need(tools, "team_status"), {}, toolContext("ses_team_none_outsider", "build"))).toBe(notActor("unknown"))
   })
 })
 
@@ -289,7 +297,7 @@ test("a session with no run names the input run id in E_NOT_ACTOR", async () => 
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_none_named", "muse-implementer")
     const message = await runMessage(need(tools, "team_followup"), { run: "w-aaaaaaaaaaaaaaaa", requestID: "r1", prompt: "again" }, ctx)
-    expect(message).toBe(notActor("w-aaaaaaaaaaaaaaaa"))
+    expect(message).toBe(noChatRun("w-aaaaaaaaaaaaaaaa"))
   })
 })
 
@@ -337,8 +345,8 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
         project: { id: Project.ID.global, directory, canonical: directory },
       })
       const pluginCtx = context({ tool: harness.domain, location })
-      const api = createTeamApi(pluginCtx, createState())
-      await registerTeamTools(pluginCtx, api)
+      const api = createTeamApi(pluginCtx, teamState())
+      await registerTeamTools(pluginCtx, api, shippedTable)
       const listTool = need(harness.tools, "team_list")
       const statusTool = need(harness.tools, "team_status")
       const toolCtx = toolContext("ses_team_root_001", "sol-orchestrator")
@@ -384,7 +392,7 @@ test("team_status from a no-run implementer session still fails E_NOT_ACTOR", as
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_prep_impl", "muse-implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
-    expect(message).toBe(notActor("unknown"))
+    expect(message).toBe(noChatRun("unknown"))
   })
 })
 
@@ -405,8 +413,8 @@ test("team_status naming runs from a no-run orchestrator session bootstraps a ro
         project: { id: Project.ID.global, directory, canonical: directory },
       })
       const pluginCtx = context({ tool: harness.domain, location })
-      const api = createTeamApi(pluginCtx, createState())
-      await registerTeamTools(pluginCtx, api)
+      const api = createTeamApi(pluginCtx, teamState())
+      await registerTeamTools(pluginCtx, api, shippedTable)
       const tool = need(harness.tools, "team_status")
       const toolCtx = toolContext("ses_team_prep_orch_cwd", "sol-orchestrator")
       const message = await runMessage(tool, { runs: ["w-0000000000000000"] }, toolCtx)
@@ -455,7 +463,7 @@ test("the instructions namespace still registers alongside team", async () => {
   const state = createState()
   const api = createPlusApi(created.ctx, state)
   await registerInstructionTools(created.ctx, api)
-  await registerTeamTools(created.ctx, createTeamApi(created.ctx, state))
+  await registerTeamTools(created.ctx, createTeamApi(created.ctx, state), shippedTable)
   expect(need(created.tools, "instructions_list").options?.namespace).toBe("instructions")
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
   expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
@@ -499,7 +507,7 @@ test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async 
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_audit_refuse", "muse-implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
-    expect(message).toBe(notActor("unknown"))
+    expect(message).toBe(noChatRun("unknown"))
     const lines = await auditLines(root)
     expect(lines).toHaveLength(1)
     const line = lines[0] as Record<string, unknown>
@@ -525,7 +533,7 @@ test("successful gated call writes tool.call with run id and chain verifies acro
       const tools = await registeredTools()
       const refuseCtx = toolContext("ses_team_audit_none", "muse-implementer")
       const refused = await runMessage(need(tools, "team_status"), {}, refuseCtx)
-      expect(refused).toBe(notActor("unknown"))
+      expect(refused).toBe(noChatRun("unknown"))
       const okCtx = toolContext(session, "muse-implementer")
       const output = await runSuccess(need(tools, "team_status"), {}, okCtx)
       expect(output).toBeDefined()
@@ -648,7 +656,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         orchCtx,
       )
       expect(pathsMsg).toBe(
-        `E_PATHS: Implementers need scope.paths (files or dir/* they may edit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+        `E_PATHS: muse-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
       )
 
       // 2. E_ROLE: Planner delegating to a non-orchestrator (e.g. scout)
@@ -672,8 +680,10 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         },
         plannerCtx,
       )
+      // Who a planner may delegate to is its "Delegate to" rows, which its
+      // member preset opens for the team's orchestrators.
       expect(roleMsg).toBe(
-        `E_ROLE: Planners may delegate only to opus-orchestrator or sol-orchestrator.\naccepted: {"role":"opus-orchestrator"}`,
+        `E_ROLE: fable-planner may not delegate to "scout". You may delegate to: opus-orchestrator, sol-orchestrator.\naccepted: {"role":"opus-orchestrator"}`,
       )
 
       // 3. E_CHECKS: Invalid check ID in set_checks
@@ -912,8 +922,8 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
         wait: () => Effect.succeed(undefined),
       } as unknown as Context["session"]
       const tc = testToolContext({ directory: repoDir, session })
-      const api = createTeamApi(tc.ctx, createState())
-      await registerTeamTools(tc.ctx, api)
+      const api = createTeamApi(tc.ctx, teamState())
+      await registerTeamTools(tc.ctx, api, shippedTable)
 
       const delegateTool = need(tc.tools, "team_delegate")
 
@@ -1074,8 +1084,8 @@ test("a human rejection without feedback writes exactly one asked:deny line and 
         wait: () => Effect.succeed(undefined),
       } as unknown as Context["session"]
       const tc = testToolContext({ directory: repoDir, session })
-      const api = createTeamApi(tc.ctx, createState())
-      await registerTeamTools(tc.ctx, api)
+      const api = createTeamApi(tc.ctx, teamState())
+      await registerTeamTools(tc.ctx, api, shippedTable)
 
       const rules: Permission.Ruleset = [
         { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
@@ -1152,8 +1162,8 @@ test("child session calling team_status executes without creating a permission r
     await saveRun(root, childRun)
 
     const tc = testToolContext()
-    const api = createTeamApi(tc.ctx, createState())
-    await registerTeamTools(tc.ctx, api)
+    const api = createTeamApi(tc.ctx, teamState())
+    await registerTeamTools(tc.ctx, api, shippedTable)
 
     const statusTool = need(tc.tools, "team_status")
 
@@ -1203,8 +1213,8 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     await saveRun(root, implRun)
 
     const tc = testToolContext()
-    const api = createTeamApi(tc.ctx, createState())
-    await registerTeamTools(tc.ctx, api)
+    const api = createTeamApi(tc.ctx, teamState())
+    await registerTeamTools(tc.ctx, api, shippedTable)
 
     const delegateTool = need(tc.tools, "team_delegate")
 
@@ -1266,8 +1276,8 @@ test("two Code Mode calls that share one CallID write two distinct audit lines",
     await saveRun(root, plannerRun)
 
     const tc = testToolContext()
-    const api = createTeamApi(tc.ctx, createState())
-    await registerTeamTools(tc.ctx, api)
+    const api = createTeamApi(tc.ctx, teamState())
+    await registerTeamTools(tc.ctx, api, shippedTable)
 
     const rules: Permission.Ruleset = [
       { action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" },
@@ -1706,8 +1716,8 @@ test("D — a home session with a non-repo location gets E_NOT_ACTOR and creates
         project: { id: Project.ID.global, directory, canonical: directory },
       })
       const pluginCtx = context({ tool: harness.domain, location })
-      const api = createTeamApi(pluginCtx, createState())
-      await registerTeamTools(pluginCtx, api)
+      const api = createTeamApi(pluginCtx, teamState())
+      await registerTeamTools(pluginCtx, api, shippedTable)
       const tool = need(harness.tools, "team_get_context")
       const toolCtx = toolContext("ses_home_session_no_repo", "sol-orchestrator")
 

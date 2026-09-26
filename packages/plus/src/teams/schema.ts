@@ -181,20 +181,6 @@ export const ModelIdentity = Schema.Struct({
 })
 export type ModelIdentity = typeof ModelIdentity.Type
 
-// Roles that may be delegated to (copied from scripts/team/roles.ts
-// delegatedRoles; team2 does not import from scripts/team/).
-export const delegatedRoles = [
-  "fable-planner",
-  "astra-planner",
-  "sol-orchestrator",
-  "opus-orchestrator",
-  "muse-implementer",
-  "gemini-implementer",
-  "spark-implementer",
-  "opus-implementer",
-  "scout",
-] as const
-
 const E_CHECKS = "E_CHECKS"
 const CHECKS_ACCEPTED = {
   id: "plus-tests",
@@ -294,7 +280,10 @@ export type Need = typeof Need.Type
 
 export const Brief = Schema.Struct({
   requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
-  role: Schema.Literals(delegatedRoles),
+  // Any member id: who may delegate to whom is the caller's "Delegate to"
+  // rows, not a fixed list, and each agent's team_delegate schema lists the
+  // members open to it.
+  role: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   task: Schema.optional(TaskID),
   objective: Schema.String.check(Schema.isMinLength(20), Schema.isMaxLength(600)),
   deliverable: Deliverable,
@@ -456,19 +445,6 @@ const defaultTimeouts = { startMs: 60000, stallMs: 600000, deadGraceMs: 300000, 
 
 const defaultRetry = { maxAttempts: 3, baseMs: 10000, maxMs: 300000 }
 
-const defaultOrchestratorDelegateTo = [
-  "muse-implementer",
-  "gemini-implementer",
-  "spark-implementer",
-  "opus-implementer",
-  "opus-orchestrator",
-  "sol-orchestrator",
-  "astra-reviewer",
-  "scout",
-  "astra-planner",
-  "fable-planner",
-]
-
 export const Policy = Schema.Struct({
   policy: field(Schema.Literal(1), () => 1 as const),
   bounds: field(
@@ -521,36 +497,6 @@ export const Policy = Schema.Struct({
       auto: field(Schema.Boolean, () => false),
     }),
     () => ({ auto: false }),
-  ),
-  roles: field(
-    Schema.Struct({
-      planner: field(
-        Schema.Struct({
-          delegateTo: field(Schema.Array(Schema.String), () => ["opus-orchestrator", "sol-orchestrator"]),
-        }),
-        () => ({ delegateTo: ["opus-orchestrator", "sol-orchestrator"] }),
-      ),
-      orchestrator: field(
-        Schema.Struct({
-          delegateTo: field(Schema.Array(Schema.String), () => [...defaultOrchestratorDelegateTo]),
-          fixRounds: field(Schema.Number, () => 5),
-          freshWorkerAfterRound: field(Schema.Number, () => 3),
-        }),
-        () => ({
-          delegateTo: [...defaultOrchestratorDelegateTo],
-          fixRounds: 5,
-          freshWorkerAfterRound: 3,
-        }),
-      ),
-    }),
-    () => ({
-      planner: { delegateTo: ["opus-orchestrator", "sol-orchestrator"] },
-      orchestrator: {
-        delegateTo: [...defaultOrchestratorDelegateTo],
-        fixRounds: 5,
-        freshWorkerAfterRound: 3,
-      },
-    }),
   ),
   sweep: field(
     Schema.Struct({

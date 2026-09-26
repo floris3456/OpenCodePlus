@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
+import { shippedTable } from "./preset-table.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { enqueue, pending, queue } from "../../src/teams/merge.js"
@@ -202,7 +203,7 @@ test("happy path lands the child commit in the parent worktree", async () => {
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       const value = required(
-        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
       ) as { entry: string; state: string; head: string | null }
       expect(typeof value.entry).toBe("string")
       expect(value.state).toBe("landed")
@@ -262,7 +263,7 @@ test("blocked report at attempt 2 is refused with E_NOT_DONE", async () => {
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       await writeReport(root, child.id, 2, "blocked")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent)))
+      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_NOT_DONE")
       expect(error.message).toBe(
         `Child w-bbbbbbbbbbbbbbbb last report is "blocked" (attempt 2). Only done/done_with_concerns can be integrated. Send a followup or supersede.`,
@@ -312,7 +313,7 @@ test("working child is refused with E_BUSY", async () => {
       await saveRun(root, parent)
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent)))
+      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_BUSY")
       expect(error.message).toBe("Child is working; wait first.")
     } finally {
@@ -358,7 +359,7 @@ test("wrong expectedParentHead is refused with E_STALE_PARENT", async () => {
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       const error = rejected(
-        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: "0".repeat(40) }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: "0".repeat(40) }, callerFor(parent), shippedTable()),
       )
       expect(error.code).toBe("E_STALE_PARENT")
       expect(error.message).toBe(`Your HEAD is ${parentHead}; pass it as expectedParentHead (never the child's commit).`)
@@ -405,7 +406,7 @@ test("dirty parent is refused with E_DIRTY naming the file", async () => {
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       await fs.writeFile(path.join(repo.dir, "README.md"), "# integrate test modified\n")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent)))
+      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
         "Your worktree has tracked modifications [README.md]; commit or discard them; the merge queue is paused until clean.",
@@ -453,12 +454,12 @@ test("second integrate of the same child is refused with E_ALREADY", async () =>
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       const first = required(
-        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
       ) as { entry: string; state: string; head: string | null }
       expect(first.state).toBe("landed")
       const landedHead = first.head
       if (typeof landedHead !== "string") throw new Error("missing landed head")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: landedHead }, callerFor(parent)))
+      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: landedHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_ALREADY")
       expect(error.message).toBe(`Child w-ffffffffffffffff is already landed at ${landedHead}.`)
     } finally {
@@ -498,7 +499,7 @@ test("non-child run is refused with E_NOT_CHILD", async () => {
       await saveRun(root, parent)
       await saveRun(root, stranger)
       const error = rejected(
-        await integrateHandler(ctxFor(), { run: stranger.id, expectedParentHead: parentHead }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: stranger.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
       )
       expect(error.code).toBe("E_NOT_CHILD")
       expect(error.message).toBe(
@@ -572,7 +573,7 @@ test("integrate drains an older pending entry instead of stranding it", async ()
       })
       expect(await pending(root, parent.id)).toHaveLength(1)
       const value = required(
-        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
       ) as { entry: string; state: string; head: string | null }
       expect(value.state).toBe("landed")
       expect(typeof value.head).toBe("string")
@@ -686,7 +687,7 @@ test("rework attribution on conflict belongs to older child's task and plan run"
       })
 
       const value = required(
-        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: p1 }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: p1 }, callerFor(parent), shippedTable()),
       ) as { entry: string; state: string; head: string | null }
       expect(value.state).toBe("landed")
 
@@ -810,7 +811,7 @@ test("rework attribution on red checks belongs to older child's task and plan ru
       })
 
       const value = required(
-        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent)),
+        await integrateHandler(ctxFor(), { run: newChild.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
       ) as { entry: string; state: string; head: string | null }
       expect(value.state).toBe("landed")
 

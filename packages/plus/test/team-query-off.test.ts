@@ -6,9 +6,10 @@ import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Effect, Layer, Schema } from "effect"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
-import { fingerprint, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
+import { fingerprint, type AgentSource, type CustomizationRecord, type Item, type Level, type Scopes } from "../src/instructions/model.js"
+import { chainContext } from "../src/instructions/presets.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
-import { allowedTeamTools, codeTools, teamTools } from "../src/teams/policy.js"
+import { codeTools, teamTools } from "../src/teams/policy.js"
 import { CodeModeCatalog } from "../../core/src/codemode/catalog.js"
 import { CodeModeInstructions } from "../../core/src/codemode/instructions.js"
 import { Tool as CoreTool } from "../../core/src/tool.js"
@@ -103,6 +104,29 @@ function pluginTool(
   }
 }
 
+// DESIGN §3.3: a user agent's and a team member's shared rows fall back to
+// off unless a preset sets them. The fixture agents stand for agents created
+// from the Native `build` preset (linked where apply addresses them), so every
+// row a test does not switch keeps its native value and the team rows under
+// test keep their own answer.
+function fromBuild(
+  sources: readonly AgentSource[],
+  items: readonly Item[],
+  addressed: readonly { id: string; level: Level; preset?: string }[],
+): Scopes {
+  return chainContext({
+    agents: sources,
+    items,
+    links: addressed.map((agent) => ({
+      type: "link",
+      level: agent.level,
+      agent: agent.id,
+      preset: { kind: "agent", id: agent.preset ?? "build" },
+      updated: UPDATED,
+    })),
+  })
+}
+
 function makeInput(overrides: Partial<ApplyInput> & { items: ApplyInput["items"] }): ApplyInput {
   return {
     agents: [{ id: "opus-orchestrator", level: "project" as Level }],
@@ -144,7 +168,11 @@ test("off on team-query.diff denies that tool and drops it from the code-mode ca
   ]
   const applied = await apply(
     ctx,
-    makeInput({ items: discovered.items, scopes: scopesOf(discovered.agents), records }),
+    makeInput({
+      items: discovered.items,
+      scopes: fromBuild(discovered.agents, discovered.items, [{ id: "opus-orchestrator", level: "project" }]),
+      records,
+    }),
   )
   expect(applied.registrations).toHaveLength(1)
 
@@ -235,15 +263,18 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
     makeInput({
       items: discovered.items,
       agents: [{ id: "muse-implementer", level: "defaults" as Level }],
-      scopes: scopesOf(teamAgents),
+      scopes: fromBuild(teamAgents, discovered.items, [{ id: "muse-implementer", level: "defaults" }]),
       records,
       teamAgents: ["muse-implementer"],
     }),
   )
-  expect(applied.registrations).toHaveLength(1)
+  // The Code Mode denial, and the core deny on the tool's own permission
+  // (`team.diff`) a team tool row that is off installs as a refusal.
+  expect(applied.registrations).toHaveLength(2)
 
   const permissions = agents.state.get("muse-implementer")?.permissions ?? []
   expect(permissions).toContainEqual({ action: "team_diff", resource: "*", effect: "deny" })
+  expect(permissions).toContainEqual({ action: "team.diff", resource: "*", effect: "deny" })
 
   const toolLayer = LayerNode.compile(LayerNode.group([CoreTool.node]), {
     replacements: [
@@ -283,13 +314,19 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
 
 // Item 4, through the real path: apply produces the rules, core's own tool
 // registry produces the catalog. A non-member sees no team entry at all; a
-// member sees exactly its ceiling and nothing above it.
-test("a non-member agent sees no team tool while a member sees exactly its ceiling", async () => {
+// member created from Plus `implementer` sees exactly the old implementer
+// ceiling of Code Mode team tools, because its team tool rows are that ceiling.
+test("a non-member agent sees no team tool while an implementer-preset member sees exactly its ceiling", async () => {
   const agents = agentHarness([agentInfo("build", "upstream")])
   const registered = teamTools.map((name) =>
     pluginTool("team", name, `team ${name}`, codeTools.includes(name as (typeof codeTools)[number])),
   )
-  const ctx = context({ agent: agents.domain, tool: toolDomainFor(registered), mcp: mcpDomainFor("team-query") })
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor(registered),
+    mcp: mcpDomainFor("team-query"),
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
   const member = "gemini-implementer"
   const teamAgents = [{ id: member, scope: "defaults" as const }, { id: "build", scope: "project" as const }]
@@ -298,7 +335,10 @@ test("a non-member agent sees no team tool while a member sees exactly its ceili
     makeInput({
       items: [...discovered.items, ...teamPolicyItems(policyMembersOf([member]))],
       agents: [{ id: member, level: "defaults" as Level }, { id: "build", level: "project" as Level }],
-      scopes: scopesOf(teamAgents),
+      scopes: fromBuild(teamAgents, discovered.items, [
+        { id: member, level: "defaults", preset: "implementer" },
+        { id: "build", level: "project" },
+      ]),
       records: [],
       teamAgents: [member],
     }),
@@ -333,7 +373,8 @@ test("a non-member agent sees no team tool while a member sees exactly its ceili
   }
 
   expect(await visible("build")).toEqual([])
-  const ceiling = allowedTeamTools("implementer")
+  // The old implementer ceiling.
+  const ceiling = ["checkpoint", "finish", "status", "diff", "get_context", "check"]
   expect((await visible(member)).toSorted()).toEqual(
     ceiling.filter((name) => codeTools.includes(name as (typeof codeTools)[number])).map((name) => `team.${name}`).toSorted(),
   )

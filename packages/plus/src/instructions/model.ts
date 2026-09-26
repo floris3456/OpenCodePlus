@@ -2,7 +2,9 @@ import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
 import { assembleWithOverrides, derive, manual, slice, type Split } from "./sections.js"
 
-export type Level = "defaults" | "global" | "project"
+// `preset` holds the human's edits of presets (DESIGN §1); its records live
+// in the global store file.
+export type Level = "defaults" | "global" | "project" | "preset"
 
 export interface TeamRef {
   readonly level: Level
@@ -60,6 +62,13 @@ export interface Address {
   readonly section: string | null
   readonly team?: TeamRef
   readonly catalogue?: Catalogue
+  /**
+   * An ordinary team member's row (Teams → <team> → <member>): the team the
+   * row belongs to. The chain is the one apply runs for that member (`L/A@T`
+   * first, T's link, T's Teams entries); the address's own node — what an
+   * edit writes — stays the per-agent `L/A` its Agents row edits too.
+   */
+  readonly memberOf?: TeamRef
 }
 
 export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm"
@@ -100,11 +109,49 @@ export interface Item {
   readonly provenance?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
+  /**
+   * The agent a user-created rule row belongs to (its RuleRecord's agent).
+   * Only the fallback reads it (§3.3: the agent's own rule falls back to its
+   * upstream value); unlike `agents` it does not limit where the row applies.
+   */
+  readonly ownedBy?: string
   /** Team policy rows only: the core rules this row installs — `on` when it resolves enabled, `off` when it resolves disabled. Only team-policy-rows.ts ever sets it. */
   readonly policy?: PolicyEffects
   /** Team policy rows derived from a live run: the run whose edit scope the row expresses. Only team-policy-rows.ts ever sets it. */
   readonly runID?: string
+  /** Perm rows only: the Permissions category of the tool the row is listed under (e.g. "commands", "files", "to"). */
+  readonly category?: string
+  /** Perm rows only: how the row is enforced. Absent means "rule": core rules on `permAction` (see permission-catalog.ts). */
+  readonly permKind?: PermKind
+  /** input/value/param/limit/approval rows: the input field the row reads (dotted path; `[]` walks an array). */
+  readonly field?: string
+  /** value rows: the literal the row allows. param rows: the value that counts as using the parameter (absent: any value). */
+  readonly value?: string | number | boolean | null
+  /** An allow-list row: while on it lets its patterns through a category whose fallback is off. */
+  readonly allow?: boolean
+  /** limit rows: what the number in the row's text caps, and what a call above it gets. */
+  readonly measure?: "value" | "length" | "count"
+  readonly mode?: "clamp" | "refuse"
+  /** Refusal text of catalog and team rows; curated and user rules keep theirs in tool-permissions.ts and RuleRecords. */
+  readonly message?: string
+  /** True for a category's "Everything else" row: its patterns are the fallback the other rows refine. */
+  readonly fallback?: boolean
+  /** Other tool ids whose Permissions list this same row: one permission shared by several tools. */
+  readonly alsoUnder?: readonly string[]
 }
+
+/**
+ * How a perm row is enforced:
+ * - rule: core rules on the tool's own permission resource (paths, commands, URLs, agent and skill ids).
+ * - input: wildcard patterns matched against values read from the call's input (`field`).
+ * - value: one allowed literal of an enumerated input field; off removes it from the schema and refuses it.
+ * - param: one optional input field; off removes it from the schema and refuses a call that uses it.
+ * - limit: a number (the row's text) capping an input field or a team bound; off means no cap.
+ * - approval: on asks the human before the call runs; a delegated run, which nobody watches, is refused instead.
+ * - env: environment variable names a shell command inherits; off strips the matching variables.
+ * - team: read by the team tools themselves (who a member may delegate to, which runs it may touch, what "done" needs).
+ */
+export type PermKind = "rule" | "input" | "value" | "param" | "limit" | "approval" | "env" | "team"
 
 /** One core permission rule. `ask` is a real core effect, so policy rows can carry it. */
 export interface PolicyRule {
@@ -133,10 +180,142 @@ export interface PolicyEffects {
 // - `model:<providerID>/<modelID>` or `model:<providerID>/<modelID>@<variant>`
 // - `perm:<toolId>:<ruleId>`
 
-export interface Scopes {
+/**
+ * Everything the resolution chain needs besides the records it reads
+ * (DESIGN §3). `global` and `defaults` are the pre-preset scopes; the rest
+ * are optional so a bare `{ global, defaults }` keeps its old meaning:
+ *
+ * - `native` absent means every agent falls back to its upstream value (the
+ *   behaviour before presets). Present, only agents in it (and items an agent
+ *   owns, and native presets) fall back to upstream; everything else is off.
+ * - `links`, `entries` absent mean none; `presets` absent means no preset
+ *   exists (a link to one still reads its stored `preset/…` records).
+ * - `memberTeams` names the teams a member belongs to when its address
+ *   carries no team (the tree addresses members by id in the Teams catalogue);
+ *   Teams entries match against these names.
+ */
+export interface ChainContext {
+  /** Agent ids that have a Global row (Global agents and the native built-ins): a project agent then also reads `global/A`. */
   readonly global: ReadonlySet<string>
+  /** Agents with an exact-name Defaults node `defaults/A` (native agents shown at Defaults). */
   readonly defaults: ReadonlySet<string>
+  /** Agent ids whose fallback is native/upstream (origin native or special). */
+  readonly native?: ReadonlySet<string>
+  readonly links?: readonly LinkRecord[]
+  readonly entries?: readonly EntryRecord[]
+  readonly presets?: PresetCatalog
+  readonly memberTeams?: ReadonlyMap<string, readonly string[]>
 }
+
+/** Kept as the name existing callers use. */
+export type Scopes = ChainContext
+
+/** What a link points at: an agent preset, one member of a team preset, or a whole team preset. */
+export type PresetRef =
+  | { readonly kind: "agent"; readonly id: string }
+  | { readonly kind: "member"; readonly team: string; readonly id: string }
+  | { readonly kind: "team"; readonly id: string }
+
+export type PresetOrigin = "native" | "plus" | "user"
+
+export interface PresetInfo {
+  readonly ref: PresetRef
+  readonly origin: PresetOrigin
+}
+
+/** A Native/Plus preset's shipped answer for one item (or section); a field left out is not set by the preset. */
+export interface ShippedValue {
+  readonly text?: string
+  readonly state?: "on" | "off"
+  readonly pin?: boolean
+}
+
+/**
+ * Every preset that exists and the content Native/Plus presets ship. Shipped
+ * content is code: it is computed on read (`shipped/P` chain nodes) and never
+ * stored. User presets are `PresetRecord`s; their content is ordinary records
+ * at level `preset`.
+ */
+export interface PresetCatalog {
+  readonly presets: readonly PresetInfo[]
+  /** Links that ship with Native/Plus presets (a Plus team member → its Plus agent preset). A stored link of the same preset wins. */
+  readonly links: readonly LinkRecord[]
+  /**
+   * The shipped value of `item` (`section` null = whole item) in a
+   * Native/Plus preset; undefined = the preset does not set it. `upstream` is
+   * the item being resolved (several items share an id, one per agent, so the
+   * id alone cannot name its upstream value).
+   */
+  readonly shipped: (
+    preset: PresetRef,
+    item: string,
+    section: string | null,
+    upstream?: Pick<Item, "text" | "enabled" | "pinned">,
+  ) => ShippedValue | undefined
+  /** The shipped active model of a Native/Plus preset; undefined = none. */
+  readonly model: (preset: PresetRef) => ModelRefLike | undefined
+}
+
+/**
+ * "Created from preset X" (DESIGN §7). The owner is an agent (`agent`), a
+ * team member (`agent` + `team`), a team (`agent: null` + `team`), a Defaults
+ * entry (level defaults, `agent` = the entry name, Teams entries with
+ * `team: { level: "defaults", team: <team pattern> }`) or a preset (level
+ * preset). Linked means live.
+ */
+export interface LinkRecord {
+  readonly type: "link"
+  readonly level: Level
+  readonly agent: string | null
+  readonly team?: TeamRef
+  readonly catalogue?: Catalogue
+  readonly preset: PresetRef
+  readonly updated: string
+}
+
+/**
+ * A Defaults entry: a row named by an exact name or a wildcard pattern (§4).
+ * Its level is always `defaults`; it is stored so records route like every
+ * other record. A Teams entry without `team` matches every team (as `*`).
+ */
+export interface EntryRecord {
+  readonly type: "entry"
+  readonly level: "defaults"
+  readonly catalogue: Catalogue
+  readonly team?: string
+  readonly name: string
+  readonly updated: string
+}
+
+/** A user preset (Native/Plus presets are code). A member preset is `kind: "agent"` with its team preset in `team`. */
+export interface PresetRecord {
+  readonly type: "preset"
+  readonly level: "preset"
+  readonly kind: "agent" | "team"
+  readonly id: string
+  readonly team?: string
+  readonly fields?: { readonly mode?: string; readonly description?: string }
+  readonly updated: string
+}
+
+/**
+ * Where a resolved value came from. `level`: the address's own nodes
+ * (project/global). `preset`: a preset in the chain (`shipped` = its shipped
+ * content, not the human's edits). `default`: a Defaults entry or a native
+ * agent's own Defaults node. `defaults-everyone`: Defaults "for every agent".
+ * `native` / `upstream` / `off`: the fallback (§3.3).
+ */
+export type From =
+  | { readonly kind: "level"; readonly level: Level }
+  | { readonly kind: "preset"; readonly id: string; readonly team?: string; readonly shipped: boolean }
+  | { readonly kind: "default"; readonly name: string; readonly team?: string }
+  | { readonly kind: "defaults-everyone" }
+  | { readonly kind: "native" }
+  | { readonly kind: "upstream" }
+  | { readonly kind: "off" }
+
+/** Which part of an own override is "to review": its text, its on/off state, or its pin (§3.6). */
+export type ReviewPart = "text" | "state" | "pin"
 
 export type AgentScope = "project" | "global" | "defaults"
 
@@ -166,6 +345,31 @@ export interface ModelCandidate {
   readonly modelID: string
   readonly variant?: string
   readonly source: Level | "upstream"
+  /** The chain node that supplied it; `upstream` for the agent's own model. */
+  readonly from: From
+  /**
+   * resolveActiveModel only: the winner is the address's own active record
+   * and the active model above it changed since it was set (§3.6).
+   */
+  readonly review?: true
+}
+
+export interface ModelInput {
+  readonly models: readonly ModelRecord[]
+  readonly scopes: Scopes
+  readonly level: Level
+  readonly agent: string | null
+  readonly team?: TeamRef
+  readonly catalogue?: Catalogue
+  /** As Address.memberOf: resolve as a member of this team, own records stay per-agent. */
+  readonly memberOf?: TeamRef
+  readonly upstream?: ModelRefLike
+}
+
+/** What activating a model needs to record the active model above it (§3.6). */
+export interface ModelContext {
+  readonly scopes: Scopes
+  readonly upstream?: ModelRefLike
 }
 
 export function modelKey(candidate: Pick<ModelRefLike, "providerID" | "modelID" | "variant">): string {
@@ -182,74 +386,53 @@ export function sameModelCandidate(
   return (left.variant ?? "default") === (right.variant ?? "default")
 }
 
-// Union down the chain, deduplicated, most-specific source wins. Chain is the
-// existing resolutionChain order (most specific first): the first record for
-// a candidate names its source. Upstream appends last when not already present.
-export function modelCandidates(input: {
-  models: readonly ModelRecord[]
-  scopes: Scopes
-  level: Level
-  agent: string | null
-  team?: TeamRef
-  catalogue?: Catalogue
-  upstream?: ModelRefLike
-}): ModelCandidate[] {
-  const chain = resolutionChain(
-    {
-      level: input.level,
-      agent: input.agent,
-      item: "",
-      section: null,
-      ...(input.team !== undefined ? { team: input.team } : {}),
-      ...(input.catalogue !== undefined ? { catalogue: input.catalogue } : {}),
-    },
-    input.scopes,
-  )
+// Union down the chain, deduplicated, most-specific source wins. Chain is
+// resolutionChain order (most specific first), presets and Defaults entries
+// included: the first record for a candidate names its source. A shipped
+// preset contributes its shipped active model. Upstream appends last when not
+// already present.
+export function modelCandidates(input: ModelInput): ModelCandidate[] {
   const seen = new Map<string, ModelCandidate>()
-  for (const node of chain) {
-    const matches = input.models.filter(
-      (record) =>
-        record.level === node.level &&
-        record.agent === node.agent &&
-        sameTeam(record.team, node.team) &&
-        catalogueMatches(node.agent, record.catalogue, node.catalogue),
-    )
-    for (const record of matches) {
-      const key = modelKey(record)
+  for (const node of modelChain(input)) {
+    for (const model of modelsAt(input, node)) {
+      const key = modelKey(model)
       if (seen.has(key)) continue
-      seen.set(key, {
-        providerID: record.providerID,
-        modelID: record.modelID,
-        ...(record.variant === undefined ? {} : { variant: record.variant }),
-        source: node.level,
-      })
+      seen.set(key, candidateOf(model, node.level, node.from))
     }
   }
-  if (input.agent !== null && input.upstream !== undefined) {
-    const key = modelKey(input.upstream)
-    if (!seen.has(key))
-      seen.set(key, {
-        providerID: input.upstream.providerID,
-        modelID: input.upstream.modelID,
-        ...(input.upstream.variant === undefined ? {} : { variant: input.upstream.variant }),
-        source: "upstream",
-      })
-  }
+  const upstream = upstreamCandidate(input)
+  if (upstream !== undefined && !seen.has(modelKey(upstream))) seen.set(modelKey(upstream), upstream)
   return [...seen.values()]
 }
 
-// First active record down the chain, else upstream. No active and no
-// upstream means Plus installs nothing for this agent.
-export function resolveActiveModel(input: {
-  models: readonly ModelRecord[]
-  scopes: Scopes
-  level: Level
-  agent: string | null
-  team?: TeamRef
-  catalogue?: Catalogue
-  upstream?: ModelRefLike
-}): ModelCandidate | undefined {
-  const chain = resolutionChain(
+// First active record down the chain (a shipped preset's model counts as
+// active), else upstream. No active and no upstream means Plus installs
+// nothing for this agent. The address's own active record is "to review" when
+// it recorded the active model above it (`basedOn`) and that has changed.
+export function resolveActiveModel(input: ModelInput): ModelCandidate | undefined {
+  const chain = modelChain(input)
+  for (const node of chain) {
+    const winner = activeAt(input, node)
+    if (winner === undefined) continue
+    const own = node.shipped === undefined && scopedTo(node, ownModelScope(input))
+    const review = own && winner.basedOn !== undefined && winner.basedOn !== aboveActiveModelKey(input)
+    return { ...candidateOf(winner, node.level, node.from), ...(review ? { review: true as const } : {}) }
+  }
+  return upstreamCandidate(input)
+}
+
+/**
+ * The key of the active model the chain above `input`'s own address resolves
+ * now ("" when none): what `basedOn` records when a model is activated there.
+ */
+export function aboveActiveModelKey(input: ModelInput): string {
+  const own = ownModelScope(input)
+  const above = resolveActiveModel({ ...input, models: input.models.filter((record) => !scopedTo(record, own)) })
+  return above === undefined ? "" : modelKey(above)
+}
+
+function modelChain(input: ModelInput): ChainNode[] {
+  return resolutionChain(
     {
       level: input.level,
       agent: input.agent,
@@ -257,34 +440,45 @@ export function resolveActiveModel(input: {
       section: null,
       ...(input.team !== undefined ? { team: input.team } : {}),
       ...(input.catalogue !== undefined ? { catalogue: input.catalogue } : {}),
+      ...(input.memberOf !== undefined ? { memberOf: input.memberOf } : {}),
     },
     input.scopes,
   )
-  for (const node of chain) {
-    const winner = input.models.find(
-      (record) =>
-        record.level === node.level &&
-        record.agent === node.agent &&
-        sameTeam(record.team, node.team) &&
-        catalogueMatches(node.agent, record.catalogue, node.catalogue) &&
-        record.active === true,
-    )
-    if (winner !== undefined)
-      return {
-        providerID: winner.providerID,
-        modelID: winner.modelID,
-        ...(winner.variant === undefined ? {} : { variant: winner.variant }),
-        source: node.level,
-      }
+}
+
+function ownModelScope(input: ModelInput): RecordScope {
+  return {
+    level: input.level,
+    agent: input.agent,
+    ...(input.team !== undefined ? { team: input.team } : {}),
+    catalogue: catalogueForAddress(input),
   }
-  if (input.agent !== null && input.upstream !== undefined)
-    return {
-      providerID: input.upstream.providerID,
-      modelID: input.upstream.modelID,
-      ...(input.upstream.variant === undefined ? {} : { variant: input.upstream.variant }),
-      source: "upstream",
-    }
-  return undefined
+}
+
+function modelsAt(input: ModelInput, node: ChainNode): readonly ModelRefLike[] {
+  if (node.shipped === undefined) return input.models.filter((record) => scopedTo(record, node))
+  const shipped = input.scopes.presets?.model(node.shipped)
+  return shipped === undefined ? [] : [shipped]
+}
+
+function activeAt(input: ModelInput, node: ChainNode): (ModelRefLike & { readonly basedOn?: string }) | undefined {
+  if (node.shipped === undefined) return input.models.find((record) => scopedTo(record, node) && record.active === true)
+  return input.scopes.presets?.model(node.shipped)
+}
+
+function upstreamCandidate(input: ModelInput): ModelCandidate | undefined {
+  if (input.agent === null || input.upstream === undefined) return undefined
+  return candidateOf(input.upstream, "upstream", { kind: "upstream" })
+}
+
+function candidateOf(model: ModelRefLike, source: Level | "upstream", from: From): ModelCandidate {
+  return {
+    providerID: model.providerID,
+    modelID: model.modelID,
+    ...(model.variant === undefined ? {} : { variant: model.variant }),
+    source,
+    from,
+  }
 }
 
 /** Everything that identifies a record's owner: level, agent, team, catalogue. */
@@ -306,7 +500,10 @@ export function catalogueField(address: { agent: string | null; catalogue?: Cata
   return { catalogue: "teams" }
 }
 
-export function scopedTo(record: RecordScope, address: RecordScope): boolean {
+// A shipped chain node is virtual: its content comes from the preset catalogue
+// and no stored record ever belongs to it.
+export function scopedTo(record: RecordScope, address: RecordScope & { readonly shipped?: PresetRef }): boolean {
+  if (address.shipped !== undefined) return false
   return (
     record.level === address.level &&
     record.agent === address.agent &&
@@ -373,12 +570,25 @@ export function addModelRecord(
 // choosing one must plant the level override rather than refuse.
 export function ensureActivateModel(
   models: readonly ModelRecord[],
-  address: RecordScope,
+  address: RecordScope & { readonly memberOf?: TeamRef },
   target: { providerID: string; modelID: string; variant?: string },
   updated: string,
+  context?: ModelContext,
 ): ModelRecord[] {
   const withRow = addModelRecord(models, address, target, updated)
-  return activateModel(withRow, address, target)
+  return activateModel(withRow, address, target, context)
+}
+
+// "Keep" for an active-model review: the own active record re-records the
+// active model above it now. No own active record returns an identical list.
+export function acknowledgeActiveModel(
+  models: readonly ModelRecord[],
+  address: RecordScope & { readonly memberOf?: TeamRef },
+  context: ModelContext,
+): ModelRecord[] {
+  const active = models.find((record) => scopedTo(record, address) && record.active === true)
+  if (active === undefined) return [...models]
+  return activateModel(models, address, active, context)
 }
 
 // Reset clears only this level's active flag, leaving candidates in place so
@@ -410,11 +620,44 @@ export function removeModelRecord(
   )
 }
 
-/** { global: ids with scope "global", defaults: ids with scope "defaults" } */
+/**
+ * { global: ids with scope "global" plus the native built-ins (they have a
+ * Global row too, so their Project row reads it), defaults: ids with scope
+ * "defaults", native: ids with origin native or special }. No links, entries
+ * or presets: callers that have them build the full ChainContext.
+ */
 export function scopesOf(agents: readonly AgentSource[]): Scopes {
+  const native = agents.filter((agent) => agent.origin === "native" || agent.origin === "special")
   return {
-    global: new Set(agents.filter((agent) => agent.scope === "global").map((agent) => agent.id)),
+    global: new Set([
+      ...agents.filter((agent) => agent.scope === "global").map((agent) => agent.id),
+      ...native.filter((agent) => agent.scope === "defaults").map((agent) => agent.id),
+    ]),
     defaults: new Set(agents.filter((agent) => agent.scope === "defaults").map((agent) => agent.id)),
+    native: new Set(native.map((agent) => agent.id)),
+  }
+}
+
+/**
+ * Where an agent's runtime answer resolves: its level and the chain context.
+ * A native built-in discovered at Defaults (build, plan, explore, …) has a row
+ * under Project, Global and Defaults alike (tree.ts nativeAgentsForLevel), and
+ * the Project row is the one this location runs, so every item and its active
+ * model resolve from Project with the agent's Global and Defaults rows in the
+ * chain: project → global → link → Defaults entries → defaults/A →
+ * defaults/null. That is the chain the tree's Project row shows (scopesOf
+ * lists these agents at Global). A context without them (a bare
+ * `{ global, defaults }`) gains them here. Every other agent — a host agent
+ * the tree lists under Defaults only, a team-scoped one — resolves at its own
+ * level, the row it is shown on.
+ */
+export function runtimeScope(agent: { readonly id: string; readonly level: Level; readonly team?: TeamRef }, scopes: Scopes): { level: Level; scopes: Scopes } {
+  if (agent.team !== undefined || agent.level !== "defaults") return { level: agent.level, scopes }
+  if (scopes.native !== undefined && !scopes.native.has(agent.id)) return { level: agent.level, scopes }
+  if (scopes.global.has(agent.id) && scopes.defaults.has(agent.id)) return { level: "project", scopes }
+  return {
+    level: "project",
+    scopes: { ...scopes, global: new Set(scopes.global).add(agent.id), defaults: new Set(scopes.defaults).add(agent.id) },
   }
 }
 
@@ -469,22 +712,38 @@ export function parsePermItemId(id: string): { tool: string; ruleId: string } | 
 // `updated` timestamps: this is a pure content flip and the store's `same`
 // still detects the change. Activating the already-active record, or a target
 // with no record at all, returns an identical list (an unchanged save stays a
-// no-op).
+// no-op). With a context the active record also stores `basedOn`, the active
+// model the chain above resolves now, so a later change above raises review.
 export function activateModel(
   records: readonly ModelRecord[],
-  address: RecordScope,
+  address: RecordScope & { readonly memberOf?: TeamRef },
   target: { providerID: string; modelID: string; variant?: string },
+  context?: ModelContext,
 ): ModelRecord[] {
   const scoped = (record: ModelRecord) => scopedTo(record, address)
   const wanted = (record: ModelRecord) =>
     record.providerID === target.providerID && record.modelID === target.modelID && record.variant === target.variant
   const targetRecord = records.find((record) => scoped(record) && wanted(record))
   if (targetRecord === undefined) return [...records]
+  const basedOn =
+    context === undefined
+      ? undefined
+      : aboveActiveModelKey({
+          models: records,
+          scopes: context.scopes,
+          level: address.level,
+          agent: address.agent,
+          ...(address.team !== undefined ? { team: address.team } : {}),
+          ...(address.catalogue !== undefined ? { catalogue: address.catalogue } : {}),
+          ...(address.memberOf !== undefined ? { memberOf: address.memberOf } : {}),
+          ...(context.upstream !== undefined ? { upstream: context.upstream } : {}),
+        })
   const stray = records.some((record) => scoped(record) && !wanted(record) && record.active === true)
-  if (targetRecord.active === true && !stray) return [...records]
+  const recorded = basedOn === undefined || targetRecord.basedOn === basedOn
+  if (targetRecord.active === true && !stray && recorded) return [...records]
   return records.map((record) => {
     if (!scoped(record)) return record
-    if (wanted(record)) return { ...cleared(record), active: true as const }
+    if (wanted(record)) return { ...cleared(record), active: true as const, ...(basedOn === undefined ? {} : { basedOn }) }
     if (record.active === true) return cleared(record)
     return record
   })
@@ -520,6 +779,10 @@ export interface CustomizationRecord {
   readonly basedOn: string
   readonly basedOnText?: string
   readonly acknowledged?: string
+  /** What the chain above resolved for the state when `state` was set here (§3.6); absent = never reviewed. */
+  readonly basedOnState?: "on" | "off"
+  /** What the chain above resolved for the pin when `pin` was set here (§3.6); absent = never reviewed. */
+  readonly basedOnPin?: boolean
   readonly updated: string
 }
 
@@ -550,6 +813,8 @@ export interface ModelRecord {
   readonly modelID: string
   readonly variant?: string
   readonly active?: true
+  /** Active records only: the key of the active model above when this one was activated ("" = none); absent = never reviewed. */
+  readonly basedOn?: string
   readonly updated: string
 }
 
@@ -584,9 +849,18 @@ export interface Resolved {
   readonly enabled: boolean
   readonly pinned: boolean
   readonly source: Level | "upstream"
+  /** Where the on/off state came from. */
+  readonly from: From
+  /** Where the text came from. */
+  readonly textFrom: From
+  /** Where the pin came from. */
+  readonly pinFrom: From
   readonly overriddenHere: boolean
   readonly modified: boolean
+  /** True when any part is under review (`reviewOf` is not empty). */
   readonly review: boolean
+  /** Which parts of the own override are "to review". */
+  readonly reviewOf: readonly ReviewPart[]
 }
 
 export interface ThreeWay {
@@ -678,25 +952,57 @@ export function upstreamForEdit(input: ChainInput): string {
   return aboveSectionText(input, input.address.section)
 }
 
+// `only` limits keep/take to some parts under review (the TUI resolves a
+// state/pin review with its own choice before the text's three-way diff);
+// absent = every part.
 export function resolveResolution(
   input: ChainInput,
   resolution: Resolution,
   edited?: string,
+  only?: readonly ReviewPart[],
 ): CustomizationRecord[] {
   const records = [...input.records]
   const index = records.findIndex((record) => sameNode(record, input.address))
   const existing = index === -1 ? undefined : records[index]
   const upstream = upstreamForEdit(input)
   const fingerprintOf = fingerprint(upstream)
+  const wants = (part: ReviewPart) => only === undefined || only.includes(part)
+  // keep: acknowledge the text above, and let a tracked state/pin re-record
+  // the value above now, so the override stays and the review clears.
   if (resolution === "keep") {
     if (existing === undefined) return records
-    if (existing.acknowledged === fingerprintOf) return records
-    records[index] = { ...withoutUndefined(existing), acknowledged: fingerprintOf, updated: now() }
+    const state = wants("state") && existing.state !== undefined && existing.basedOnState !== undefined
+    const pin = wants("pin") && existing.pin !== undefined && existing.basedOnPin !== undefined
+    const above = state || pin ? resolveAbove(input, existing) : undefined
+    const kept = {
+      ...withoutUndefined(existing),
+      ...(wants("text") ? { acknowledged: fingerprintOf } : {}),
+      ...(state && above !== undefined ? { basedOnState: stateOf(above.enabled) } : {}),
+      ...(pin && above !== undefined ? { basedOnPin: above.pinned } : {}),
+    }
+    if (
+      kept.acknowledged === existing.acknowledged &&
+      kept.basedOnState === existing.basedOnState &&
+      kept.basedOnPin === existing.basedOnPin
+    )
+      return records
+    records[index] = { ...kept, updated: now() }
     return records
   }
+  // take: drop the parts under review so they follow the chain above again;
+  // with nothing under review it drops the text, as it always has.
   if (resolution === "take") {
     if (existing === undefined) return records
-    const dropped = withoutUndefined({ ...existing, text: undefined, basedOnText: undefined, acknowledged: undefined })
+    const parts = resolve(input).reviewOf.filter(wants)
+    if (only !== undefined && parts.length === 0) return records
+    const dropped = withoutUndefined({
+      ...existing,
+      ...(parts.length === 0 || parts.includes("text")
+        ? { text: undefined, basedOnText: undefined, acknowledged: undefined }
+        : {}),
+      ...(parts.includes("state") ? { state: undefined, basedOnState: undefined } : {}),
+      ...(parts.includes("pin") ? { pin: undefined, basedOnPin: undefined } : {}),
+    })
     if (dropped.text === undefined && dropped.state === undefined && dropped.pin === undefined) {
       records.splice(index, 1)
       return records
@@ -743,11 +1049,18 @@ export function resolveResolution(
   return records
 }
 
+/** What merge reads of the item: its text and fingerprint, plus (when known) what the fallback needs. */
+export type MergeUpstream = Pick<Item, "fingerprint" | "text"> & Partial<Item>
+
+// With a chain context, setting `state` or `pin` also records what the chain
+// above resolves for it at this moment (`basedOnState`, `basedOnPin`, §3.6);
+// without one they are dropped when the field is set, as a record written
+// before review of state and pin existed.
 export function merge(
   records: readonly CustomizationRecord[],
   address: Address,
   fields: MergeFields,
-  upstream: Pick<Item, "fingerprint" | "text">,
+  upstream: MergeUpstream,
   scopes?: Scopes,
   splits?: readonly SplitRecord[],
 ): CustomizationRecord[] {
@@ -759,6 +1072,16 @@ export function merge(
   const acknowledged = fields.acknowledged === undefined ? existing?.acknowledged : (fields.acknowledged ?? undefined)
   if (text === undefined && state === undefined && pin === undefined) return [...rest]
   const baseline = baselineForMerge(records, address, upstream, scopes, splits)
+  const setsState = fields.state !== undefined && fields.state !== null
+  const setsPin = fields.pin !== undefined && fields.pin !== null
+  const above =
+    scopes !== undefined && (setsState || setsPin)
+      ? resolve(upstreamInput(rest, address, upstream, scopes, splits ?? []))
+      : undefined
+  const aboveState = setsState && above !== undefined ? stateOf(above.enabled) : undefined
+  const abovePin = setsPin ? above?.pinned : undefined
+  const basedOnState = fields.state === undefined ? existing?.basedOnState : aboveState
+  const basedOnPin = fields.pin === undefined ? existing?.basedOnPin : abovePin
   const next: CustomizationRecord = {
     type: "customization",
     level: address.level,
@@ -773,6 +1096,8 @@ export function merge(
     basedOn: existing?.basedOn ?? baseline.fingerprint,
     ...(existing?.basedOnText === undefined && text === undefined ? {} : { basedOnText: existing?.basedOnText ?? baseline.text }),
     ...(acknowledged === undefined ? {} : { acknowledged }),
+    ...(state === undefined || basedOnState === undefined ? {} : { basedOnState }),
+    ...(pin === undefined || basedOnPin === undefined ? {} : { basedOnPin }),
     updated: now(),
   }
   return [...rest, next]
@@ -832,12 +1157,15 @@ export function countReview(
 function resolveWhole(input: ChainInput): Resolved {
   const whole = wholeRecords(input)
   const chain = resolutionChain(input.address, input.scopes)
-  const textWinner = chain.find((node) => at(whole, node)?.text !== undefined)
-  const stateWinner = chain.find((node) => at(whole, node)?.state !== undefined)
-  const pinWinner = chain.find((node) => at(whole, node)?.pin !== undefined)
-  const text = textWinner === undefined ? input.upstream.text : (at(whole, textWinner)?.text ?? "")
-  const enabled = stateWinner === undefined ? input.upstream.enabled : at(whole, stateWinner)?.state === "on"
-  const pinned = pinWinner === undefined ? (input.upstream.pinned ?? false) : (at(whole, pinWinner)?.pin ?? false)
+  const values = chain.map((node) => valueAt(input, whole, node, null))
+  const textAt = values.findIndex((value) => value?.text !== undefined)
+  const stateAt = values.findIndex((value) => value?.state !== undefined)
+  const pinAt = values.findIndex((value) => value?.pin !== undefined)
+  const sourceAt = values.findIndex(
+    (value) => value?.text !== undefined || value?.state !== undefined || value?.pin !== undefined,
+  )
+  const fallback = fallbackOf(input)
+  const text = textAt === -1 ? input.upstream.text : (values[textAt]?.text ?? "")
   const own = at(whole, input.address)
   const split = resolveSplit({
     text,
@@ -850,19 +1178,20 @@ function resolveWhole(input: ChainInput): Resolved {
     split.sections.map((section) => section.id).filter((id) => sectionState(input, chain, id) === "off"),
   )
   const overridden = sectionOverrides(input, chain)
-  const modified = own?.text !== undefined
-  const source = chain.find(
-    (node) => at(whole, node)?.text !== undefined || at(whole, node)?.state !== undefined || at(whole, node)?.pin !== undefined,
-  )
+  const reviewOf = reviewParts(input, own, () => aboveWholeFingerprint(input, whole, chain))
   return {
     text,
     assembled: assembleWithOverrides(text, split, excluded, overridden),
-    enabled,
-    pinned,
-    source: source?.level ?? "upstream",
+    enabled: stateAt === -1 ? fallback.enabled : values[stateAt]?.state === "on",
+    pinned: pinAt === -1 ? (input.upstream.pinned ?? false) : (values[pinAt]?.pin ?? false),
+    source: sourceAt === -1 ? "upstream" : chain[sourceAt].level,
+    from: stateAt === -1 ? fallback.from : chain[stateAt].from,
+    textFrom: textAt === -1 ? { kind: "upstream" } : chain[textAt].from,
+    pinFrom: pinAt === -1 ? { kind: "upstream" } : chain[pinAt].from,
     overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined),
-    modified,
-    review: isReview(own, aboveWholeFingerprint(input, whole, chain)),
+    modified: own?.text !== undefined,
+    review: reviewOf.length > 0,
+    reviewOf,
   }
 }
 
@@ -880,22 +1209,27 @@ function resolveSection(input: ChainInput): Resolved {
   })
   const definition = split.sections.find((section) => section.id === id)
   const sectioned = sectionRecords(input, id)
-  const winner = chain.find((node) => at(sectioned, node)?.text !== undefined)
+  const values = chain.map((node) => valueAt(input, sectioned, node, id))
+  const textAt = values.findIndex((value) => value?.text !== undefined)
+  const stateAt = values.findIndex((value) => value?.state !== undefined)
   const upstreamSlice = definition === undefined ? "" : slice(whole.text, definition)
-  const winnerText = winner === undefined ? undefined : (at(sectioned, winner)?.text ?? "")
-  const text = winnerText ?? upstreamSlice
-  const stateWinner = chain.find((node) => at(sectioned, node)?.state !== undefined)
+  const text = textAt === -1 ? upstreamSlice : (values[textAt]?.text ?? "")
   const own = at(sectioned, input.address)
-  const modified = own?.text !== undefined
+  const sourceNode = textAt === -1 ? (stateAt === -1 ? undefined : chain[stateAt]) : chain[textAt]
+  const reviewOf = reviewParts(input, own, () => aboveSectionFingerprint(input, id))
   return {
     text,
     assembled: text,
-    enabled: stateWinner === undefined ? whole.enabled : at(sectioned, stateWinner)?.state === "on",
+    enabled: stateAt === -1 ? whole.enabled : values[stateAt]?.state === "on",
     pinned: whole.pinned,
-    source: winner?.level ?? stateWinner?.level ?? "upstream",
+    source: sourceNode?.level ?? "upstream",
+    from: stateAt === -1 ? whole.from : chain[stateAt].from,
+    textFrom: textAt === -1 ? whole.textFrom : chain[textAt].from,
+    pinFrom: whole.pinFrom,
     overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined),
-    modified,
-    review: isReview(own, aboveSectionFingerprint(input, id)),
+    modified: own?.text !== undefined,
+    review: reviewOf.length > 0,
+    reviewOf,
   }
 }
 
@@ -916,11 +1250,47 @@ function sectionRecords(input: ChainInput, id: string): CustomizationRecord[] {
   return input.records.filter((record) => record.item === input.address.item && record.section === id)
 }
 
+// A stored node answers from its record; a shipped node from the preset
+// catalogue (computed, never stored).
+function valueAt(
+  input: ChainInput,
+  records: readonly CustomizationRecord[],
+  node: ChainNode,
+  section: string | null,
+): ShippedValue | undefined {
+  if (node.shipped === undefined) return at(records, node)
+  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream)
+}
+
+// §3.3: native agents (and a team's Special agents), items the agent owns and
+// Native presets fall back to the item's upstream state; everything else —
+// Defaults "for every agent" included — falls back to off. A context without
+// `native` keeps the pre-preset rule: everything falls back to upstream. An
+// MCP server row is server configuration, not an agent's setting (apply reads
+// it at Defaults for every agent only), so it keeps its upstream state.
+function fallbackOf(input: ChainInput): { enabled: boolean; from: From } {
+  const kind = fallbackKind(input)
+  return { enabled: kind === "off" ? false : input.upstream.enabled, from: { kind } }
+}
+
+function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
+  const native = input.scopes.native
+  const agent = input.address.agent
+  if (native === undefined) return "upstream"
+  if (input.upstream.kind === "mcp") return "upstream"
+  if (agent === null) return "off"
+  if (input.address.level === "preset") {
+    if (input.address.team !== undefined) return "off"
+    return presetOrigin(input.scopes, { kind: "agent", id: agent }) === "native" ? "native" : "off"
+  }
+  if (native.has(agent)) return "native"
+  if (input.upstream.agents?.includes(agent) || input.upstream.ownedBy === agent) return "upstream"
+  return "off"
+}
+
 function aboveWholeText(input: ChainInput, whole: readonly CustomizationRecord[]): string {
-  const chain = resolutionChain(input.address, input.scopes)
-  const above = chain
-    .slice(1)
-    .map((node) => at(whole, node)?.text)
+  const above = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
+    .map((node) => valueAt(input, whole, node, null)?.text)
     .find((text) => text !== undefined)
   return above ?? input.upstream.text
 }
@@ -930,18 +1300,14 @@ function aboveWholeFingerprint(
   whole: readonly CustomizationRecord[],
   chain?: readonly ChainNode[],
 ): string {
-  const nodes = chain ?? resolutionChain(input.address, input.scopes)
-  const above = nodes
-    .slice(1)
-    .map((node) => at(whole, node)?.text)
+  const above = aboveOwn(chain ?? resolutionChain(input.address, input.scopes), input.address)
+    .map((node) => valueAt(input, whole, node, null)?.text)
     .find((text) => text !== undefined)
   return above === undefined ? input.upstream.fingerprint : fingerprint(above)
 }
 
 function aboveSectionText(input: ChainInput, id: string): string {
-  const chain = resolutionChain(input.address, input.scopes)
-  const ancestor = chain
-    .slice(1)
+  const ancestor = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
     .map((node) => sectionTextAt(input, node, id))
     .find((text) => text !== undefined)
   if (ancestor !== undefined) return ancestor
@@ -956,6 +1322,13 @@ function aboveSectionText(input: ChainInput, id: string): string {
   const definition = split.sections.find((section) => section.id === id)
   if (definition === undefined) return text
   return slice(text, definition)
+}
+
+// The chain without the address's own node: what "above" reads. The own node
+// is first except for a member row (`memberOf`), whose team-scoped node
+// `L/A@T` comes before its own per-agent node.
+function aboveOwn(chain: readonly ChainNode[], address: Address): ChainNode[] {
+  return chain.filter((node) => node.shipped !== undefined || !scopedTo(node, address))
 }
 
 function resolvedUpstreamText(input: ChainInput): string {
@@ -982,30 +1355,29 @@ function sectionOverrides(input: ChainInput, chain: readonly ChainNode[]): Map<s
   })
   const out = new Map<string, string>()
   for (const section of split.sections) {
-    const winner = chain.find((node) => sectionTextAt(input, node, section.id) !== undefined)
-    if (winner === undefined) continue
-    const override = sectionTextAt(input, winner, section.id)
+    const override = chain.map((node) => sectionTextAt(input, node, section.id)).find((text) => text !== undefined)
     if (override === undefined) continue
     out.set(section.id, override)
   }
   return out
 }
 
-function sectionTextAt(input: ChainInput, node: ChainNode | Address, id: string): string | undefined {
-  return sectionRecords(input, id).find((record) => scopedTo(record, node))?.text
+function sectionTextAt(input: ChainInput, node: ChainNode, id: string): string | undefined {
+  return valueAt(input, sectionRecords(input, id), node, id)?.text
 }
 
 function effectiveWholeText(input: ChainInput): string {
   const whole = wholeRecords(input)
-  const winner = resolutionChain(input.address, input.scopes).find((node) => at(whole, node)?.text !== undefined)
-  if (winner === undefined) return input.upstream.text
-  return at(whole, winner)?.text ?? ""
+  const text = resolutionChain(input.address, input.scopes)
+    .map((node) => valueAt(input, whole, node, null)?.text)
+    .find((value) => value !== undefined)
+  return text ?? input.upstream.text
 }
 
 function baselineForMerge(
   records: readonly CustomizationRecord[],
   address: Address,
-  upstream: Pick<Item, "fingerprint" | "text">,
+  upstream: MergeUpstream,
   scopes?: Scopes,
   splits?: readonly SplitRecord[],
 ): { text: string; fingerprint: string } {
@@ -1018,20 +1390,20 @@ function baselineForMerge(
 function upstreamInput(
   records: readonly CustomizationRecord[],
   address: Address,
-  upstream: Pick<Item, "fingerprint" | "text">,
+  upstream: MergeUpstream,
   scopes: Scopes,
   splits: readonly SplitRecord[],
 ): ChainInput {
-  const found = upstream as Partial<Item>
+  // Every field the caller knows is kept (the fallback reads `agents`,
+  // `ownedBy` and the item's kind); only the missing required ones default.
   return {
     upstream: {
+      ...upstream,
       id: address.item,
-      kind: found.kind ?? "system",
-      group: found.group ?? "none",
-      title: found.title ?? address.item,
-      text: upstream.text,
-      enabled: found.enabled ?? true,
-      fingerprint: upstream.fingerprint,
+      kind: upstream.kind ?? "system",
+      group: upstream.group ?? "none",
+      title: upstream.title ?? address.item,
+      enabled: upstream.enabled ?? true,
     },
     records,
     splits,
@@ -1041,19 +1413,52 @@ function upstreamInput(
 }
 
 function sectionState(input: ChainInput, chain: readonly ChainNode[], id: string): "on" | "off" | undefined {
-  return chain
-    .map((node) => sectionRecords(input, id).find((record) => scopedTo(record, node))?.state)
-    .find((state) => state !== undefined)
+  const sectioned = sectionRecords(input, id)
+  return chain.map((node) => valueAt(input, sectioned, node, id)?.state).find((state) => state !== undefined)
 }
 
-// `modified` is text-only: a state-only override never marks a node modified
-// and never raises review, so a disabled-but-otherwise-unmodified copy keeps
-// taking upstream text silently.
-function isReview(own: CustomizationRecord | undefined, current: string): boolean {
-  if (own?.text === undefined) return false
-  if (current === own.basedOn) return false
-  if (current === own.acknowledged) return false
-  return true
+// §3.6. Text: `modified` is text-only and a text override is "to review" when
+// the text above moved past both `basedOn` and `acknowledged`. State and pin:
+// an override that recorded the value above when it was set (`basedOnState`,
+// `basedOnPin`) is "to review" when the value above now differs; records
+// without them (written before) never flag.
+function reviewParts(
+  input: ChainInput,
+  own: CustomizationRecord | undefined,
+  aboveFingerprint: () => string,
+): ReviewPart[] {
+  if (own === undefined) return []
+  const state = own.state !== undefined && own.basedOnState !== undefined
+  const pin = own.pin !== undefined && own.basedOnPin !== undefined
+  const above = state || pin ? resolveAbove(input, own) : undefined
+  return [
+    ...(isReview(own, aboveFingerprint) ? (["text"] as const) : []),
+    ...(state && above !== undefined && stateOf(above.enabled) !== own.basedOnState ? (["state"] as const) : []),
+    ...(pin && above !== undefined && above.pinned !== own.basedOnPin ? (["pin"] as const) : []),
+  ]
+}
+
+/** The address's own record and what the chain above it resolves now: the two sides of a state/pin review (§3.6). */
+export function ownAndAbove(input: ChainInput): { readonly own: CustomizationRecord; readonly above: Resolved } | undefined {
+  const own = input.records.find((record) => sameNode(record, input.address))
+  if (own === undefined) return undefined
+  return { own, above: resolveAbove(input, own) }
+}
+
+// What the chain above `own` resolves: the same address with `own` removed.
+function resolveAbove(input: ChainInput, own: CustomizationRecord): Resolved {
+  return resolve({ ...input, records: input.records.filter((record) => record !== own) })
+}
+
+function isReview(own: CustomizationRecord, current: () => string): boolean {
+  if (own.text === undefined) return false
+  const now = current()
+  if (now === own.basedOn) return false
+  return now !== own.acknowledged
+}
+
+function stateOf(enabled: boolean): "on" | "off" {
+  return enabled ? "on" : "off"
 }
 
 export interface ChainNode {
@@ -1061,31 +1466,279 @@ export interface ChainNode {
   readonly agent: string | null
   readonly team?: TeamRef
   readonly catalogue?: Catalogue
+  /** Virtual node carrying a Native/Plus preset's shipped content; no stored record belongs to it. */
+  readonly shipped?: PresetRef
+  /** What the node stands for, as shown to the human ("from preset X", "from default X"). */
+  readonly from: From
 }
 
-// Resolution chain, most specific first, resolving text and state
-// independently: the first level supplying that field wins. The chain ends in
-// the shared inventory of ONE catalogue: a team-scoped or teams-catalogue
-// address falls through to the Teams catalogue's "everyone" rows and never
-// sees the Agents catalogue's, and the reverse.
+/**
+ * Resolution chain, most specific first (DESIGN §3.1); text, state, pin and
+ * the active model each take the first node that sets them.
+ *
+ * For an agent or member A (team T optional) at project/global:
+ *   1. L/A@T, L/A, global/A (L = project and a Global A exists)
+ *   2. expand(nearest link among the step-1 nodes)
+ *   3. matching Defaults entries, most specific first (§4) — a native agent's
+ *      own Defaults node counts as an exact entry — each followed by expand(its link)
+ *   4. defaults/null of the address's catalogue
+ * A Defaults node `defaults/E`: defaults/E, expand(link of E), defaults/null.
+ * A preset `preset/P`: expand(P), defaults/null. `defaults/null`: itself.
+ * expand(P) = preset/P, shipped/P (Native and Plus only), expand(link of P);
+ * a preset seen once is not expanded again, which cuts cycles. The fallback
+ * after the last node is the resolver's (fallbackOf).
+ */
 export function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
+  // A member row reads exactly the chain apply runs for the member of that
+  // team; only what it writes (its own node, `L/A`) differs.
+  if (address.memberOf !== undefined && address.team === undefined)
+    return resolutionChain(
+      {
+        level: address.level,
+        agent: address.agent,
+        item: address.item,
+        section: address.section,
+        team: address.memberOf,
+        catalogue: address.catalogue ?? "teams",
+      },
+      scopes,
+    )
   const catalogue = catalogueForAddress(address)
-  const nodes: ChainNode[] = []
-  if (address.team !== undefined) {
-    nodes.push({ level: address.level, agent: address.agent, team: address.team, catalogue })
+  const visited = new Set<string>()
+  const tail = address.level === "defaults" && address.agent === null ? [] : [everyone(catalogue)]
+  if (address.level === "preset" && address.agent !== null) {
+    const ref: PresetRef =
+      address.team === undefined
+        ? { kind: "agent", id: address.agent }
+        : { kind: "member", team: address.team.team, id: address.agent }
+    return distinct([...expand(scopes, catalogue, ref, visited), ...tail])
   }
-  nodes.push({ level: address.level, agent: address.agent, catalogue })
-  if (address.level === "project") {
-    if (address.agent !== null && scopes.global.has(address.agent)) nodes.push({ level: "global", agent: address.agent, catalogue })
-    if (address.agent !== null && scopes.defaults.has(address.agent)) nodes.push({ level: "defaults", agent: address.agent, catalogue })
-  }
-  if (address.level === "global" && address.agent !== null && scopes.defaults.has(address.agent))
-    nodes.push({ level: "defaults", agent: address.agent, catalogue })
-  if (!(address.level === "defaults" && address.agent === null)) nodes.push({ level: "defaults", agent: null, catalogue })
-  return nodes
+  const own = ownNodes(address, scopes, catalogue)
+  // The nearest link among the agent's own nodes, the team-scoped node first:
+  // a team-less member address (the tree's) reads its team-scoped link before
+  // its unscoped ones, exactly as the team-scoped address (apply's) does.
+  const link = memberLink(address, scopes, catalogue) ?? own.map((node) => linkAt(scopes, node)).find((ref) => ref !== undefined)
+  const linked = expand(scopes, catalogue, link, visited)
+  const entries =
+    address.level === "defaults"
+      ? []
+      : entryNodes(address, scopes, catalogue).flatMap((node) => [
+          node,
+          ...expand(scopes, catalogue, linkAt(scopes, node), visited),
+        ])
+  return distinct([...own, ...linked, ...entries, ...tail])
 }
 
-function at(records: readonly CustomizationRecord[], node: ChainNode | Address): CustomizationRecord | undefined {
+/** `*` and `%` match any run of characters (including none); the whole name must match, ignoring case. */
+export function matchesName(pattern: string, name: string): boolean {
+  const cached = patterns.get(pattern)
+  if (cached !== undefined) return cached.test(name)
+  const source = [...pattern]
+    .map((char) => (char === "*" || char === "%" ? ".*" : char.replace(/[.+?^${}()|[\]\\/-]/g, "\\$&")))
+    .join("")
+  const compiled = new RegExp(`^${source}$`, "is")
+  patterns.set(pattern, compiled)
+  return compiled.test(name)
+}
+
+const patterns = new Map<string, RegExp>()
+
+export interface EntryName {
+  readonly name: string
+  /** Teams entries: the team pattern (absent = every team). */
+  readonly team?: string
+}
+
+/**
+ * §4 order of matching Defaults entries, most specific first: an exact name
+ * before a pattern, then more literal characters, then name order. Teams
+ * entries: member exactness, team exactness, member literals, team literals,
+ * then member and team name order.
+ */
+export function entrySpecificity(left: EntryName, right: EntryName): number {
+  const leftTeam = left.team ?? "*"
+  const rightTeam = right.team ?? "*"
+  const ranked = [
+    Number(wild(left.name)) - Number(wild(right.name)),
+    Number(wild(leftTeam)) - Number(wild(rightTeam)),
+    literals(right.name) - literals(left.name),
+    literals(rightTeam) - literals(leftTeam),
+    compareText(left.name.toLowerCase(), right.name.toLowerCase()),
+    compareText(leftTeam.toLowerCase(), rightTeam.toLowerCase()),
+    compareText(left.name, right.name),
+    compareText(leftTeam, rightTeam),
+  ].find((difference) => difference !== 0)
+  return ranked ?? 0
+}
+
+function compareText(left: string, right: string): number {
+  if (left === right) return 0
+  return left < right ? -1 : 1
+}
+
+function wild(pattern: string): boolean {
+  return pattern.includes("*") || pattern.includes("%")
+}
+
+function literals(pattern: string): number {
+  return [...pattern].filter((char) => char !== "*" && char !== "%").length
+}
+
+function ownNodes(address: Address, scopes: Scopes, catalogue: Catalogue): ChainNode[] {
+  const own: ChainNode = { level: address.level, agent: address.agent, catalogue, from: ownFrom(address.level, address.agent) }
+  if (address.team === undefined) {
+    if (address.level !== "project" || address.agent === null || !scopes.global.has(address.agent)) return [own]
+    return [own, { level: "global", agent: address.agent, catalogue, from: { kind: "level", level: "global" } }]
+  }
+  const scoped: ChainNode = {
+    level: address.level,
+    agent: address.agent,
+    team: address.team,
+    catalogue,
+    from: ownFrom(address.level, address.agent, address.team.team),
+  }
+  // A Teams entry is its own node only: it never reads the Agents entry or
+  // native Defaults node that shares its member name.
+  if (teamsEntry(address, scopes)) return [scoped]
+  if (address.level !== "project" || address.agent === null || !scopes.global.has(address.agent)) return [scoped, own]
+  return [scoped, own, { level: "global", agent: address.agent, catalogue, from: { kind: "level", level: "global" } }]
+}
+
+function ownFrom(level: Level, agent: string | null, team?: string): From {
+  if (level !== "defaults") return { kind: "level", level }
+  if (agent === null) return { kind: "defaults-everyone" }
+  return { kind: "default", name: agent, ...(team === undefined ? {} : { team }) }
+}
+
+function teamsEntry(address: Address, scopes: Scopes): boolean {
+  if (address.level !== "defaults" || address.team === undefined) return false
+  const team = address.team.team
+  return (scopes.entries ?? []).some(
+    (entry) => entry.catalogue === "teams" && entry.name === address.agent && (entry.team ?? "*") === team,
+  )
+}
+
+// §4: Agents-catalogue entries match a stand-alone agent; Teams-catalogue
+// entries match a member whose team name matches the entry's team pattern.
+// The native agent's own Defaults node (`scopes.defaults`) is an exact
+// Agents-catalogue name; a team-scoped native agent reads it after its Teams
+// entries.
+function entryNodes(address: Address, scopes: Scopes, catalogue: Catalogue): ChainNode[] {
+  const agent = address.agent
+  if (agent === null) return []
+  const entries = scopes.entries ?? []
+  const own: EntryName[] = scopes.defaults.has(agent) ? [{ name: agent }] : []
+  if (catalogue === "agents") {
+    const named = entries.filter((entry) => entry.catalogue === "agents" && matchesName(entry.name, agent))
+    return [...named.map((entry) => ({ name: entry.name })), ...own]
+      .toSorted(entrySpecificity)
+      .map((entry) => defaultsNode(entry, catalogue))
+  }
+  const teams = address.team === undefined ? (scopes.memberTeams?.get(agent) ?? []) : [address.team.team]
+  const named = entries.filter(
+    (entry) =>
+      entry.catalogue === "teams" &&
+      matchesName(entry.name, agent) &&
+      teams.some((team) => matchesName(entry.team ?? "*", team)),
+  )
+  return [
+    ...named
+      .map((entry) => ({ name: entry.name, team: entry.team ?? "*" }))
+      .toSorted(entrySpecificity)
+      .map((entry) => defaultsNode(entry, catalogue)),
+    ...own.map((entry) => defaultsNode(entry, catalogue)),
+  ]
+}
+
+function defaultsNode(entry: EntryName, catalogue: Catalogue): ChainNode {
+  return {
+    level: "defaults",
+    agent: entry.name,
+    ...(entry.team === undefined ? {} : { team: { level: "defaults" as const, team: entry.team } }),
+    catalogue,
+    from: { kind: "default", name: entry.name, ...(entry.team === undefined ? {} : { team: entry.team }) },
+  }
+}
+
+function everyone(catalogue: Catalogue): ChainNode {
+  return { level: "defaults", agent: null, catalogue, from: { kind: "defaults-everyone" } }
+}
+
+function expand(scopes: Scopes, catalogue: Catalogue, ref: PresetRef | undefined, visited: Set<string>): ChainNode[] {
+  if (ref === undefined || ref.kind === "team") return []
+  const key = presetKey(ref)
+  if (visited.has(key)) return []
+  visited.add(key)
+  const team = ref.kind === "member" ? ref.team : undefined
+  const scope = {
+    level: "preset" as const,
+    agent: ref.id,
+    ...(team === undefined ? {} : { team: { level: "preset" as const, team } }),
+    catalogue,
+  }
+  const from = { kind: "preset" as const, id: ref.id, ...(team === undefined ? {} : { team }) }
+  const origin = presetOrigin(scopes, ref)
+  const link = linkAt(scopes, scope) ?? scopes.presets?.links.find((record) => scopedTo(record, scope))?.preset
+  return [
+    { ...scope, from: { ...from, shipped: false } },
+    ...(origin === "native" || origin === "plus" ? [{ ...scope, shipped: ref, from: { ...from, shipped: true } }] : []),
+    ...expand(scopes, catalogue, link, visited),
+  ]
+}
+
+function linkAt(scopes: Scopes, node: RecordScope): PresetRef | undefined {
+  return scopes.links?.find((record) => scopedTo(record, node))?.preset
+}
+
+// A member's link carries its team (`L/A@T`), but the tree addresses a member
+// by id in the Teams catalogue without one. `memberTeams` names the member's
+// teams, so that address reads the same team-scoped link apply reads, and
+// with the same precedence: before the unscoped `L/A` and `global/A` links.
+function memberLink(address: Address, scopes: Scopes, catalogue: Catalogue): PresetRef | undefined {
+  const agent = address.agent
+  if (agent === null || address.team !== undefined || catalogue !== "teams") return undefined
+  const teams = scopes.memberTeams?.get(agent) ?? []
+  return scopes.links?.find(
+    (record) =>
+      record.level === address.level &&
+      record.agent === agent &&
+      record.team !== undefined &&
+      teams.includes(record.team.team),
+  )?.preset
+}
+
+/** The origin of a known preset; undefined when the catalogue does not know it. */
+export function presetOrigin(scopes: Scopes, ref: PresetRef): PresetOrigin | undefined {
+  return scopes.presets?.presets.find((preset) => presetKey(preset.ref) === presetKey(ref))?.origin
+}
+
+/** One string per preset: `agent:<id>`, `member:<team>/<id>`, `team:<id>`. */
+export function presetKey(ref: PresetRef): string {
+  if (ref.kind === "member") return `member:${ref.team}/${ref.id}`
+  return `${ref.kind}:${ref.id}`
+}
+
+// A node reached twice (an explicit exact entry and a native agent's own
+// Defaults node, say) keeps its first, most specific place.
+function distinct(nodes: readonly ChainNode[]): ChainNode[] {
+  const seen = new Set<string>()
+  return nodes.filter((node) => {
+    const key = [
+      node.shipped === undefined ? "" : presetKey(node.shipped),
+      node.level,
+      String(node.agent),
+      node.team === undefined ? "" : `${node.team.level}:${node.team.team}`,
+    ].join("\u0000")
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function at(
+  records: readonly CustomizationRecord[],
+  node: RecordScope & { readonly shipped?: PresetRef },
+): CustomizationRecord | undefined {
   return records.find((record) => scopedTo(record, node))
 }
 

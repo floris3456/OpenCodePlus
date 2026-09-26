@@ -10,8 +10,20 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
-import { applies, catalogPath, resolve, resolveActiveModel, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
+import { applies, catalogPath, resolve, resolveActiveModel, runtimeScope, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
 import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
+import {
+  enforcementState,
+  hook,
+  installEnforcement,
+  narrowTools,
+  permissionTable,
+  tableActive,
+  tableNarrows,
+  type EnforcementDeps,
+  type EnforcementState,
+  type PermissionTable,
+} from "./permission-enforce.js"
 import { teachingFilePath, teachingItemId } from "./paths.js"
 
 export interface ApplyAgent {
@@ -39,6 +51,10 @@ export interface ApplyInput {
   readonly rules?: readonly RuleRecord[]
   /** Ids of the currently resolved (enabled) team winners; the only absent ids applyModels may create. */
   readonly teamAgents?: readonly string[]
+  /** Hook-side permission state kept across publishes (pending approvals, "always" answers). */
+  readonly enforcement?: EnforcementState
+  /** How enforcement tells a delegated team run (nobody to ask) from a watched session. */
+  readonly enforcementDeps?: EnforcementDeps
 }
 
 export interface ToolPlan {
@@ -54,17 +70,26 @@ export interface ToolPlan {
 export interface Applied {
   readonly registrations: Registration[]
   readonly tools: readonly ToolPlan[]
+  /** Every agent's resolved permission rows, for the team tools and the hooks. */
+  readonly permissions: PermissionTable
 }
 
 export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
   const models = input.models ?? []
-  // Team rules do not come from a record: a role's ceiling and native denies,
-  // and the `team.*` deny that hides the namespace from every non-member,
-  // must land even when nothing at all is customized, so they are their own
-  // reason to install.
+  const permissions = permissionTableOf(input)
+  // Team rules do not come from a record: a live run's edit scope and the
+  // `team.*` deny that hides the namespace from every non-member must land
+  // even when nothing at all is customized, so they are their own reason to
+  // install.
   const teamRules = input.items.some((item) => item.kind === "perm" && item.policy !== undefined)
-  if (input.records.length === 0 && models.length === 0 && !teamRules && teamNamespaceDenials(input).length === 0)
-    return { registrations: [], tools: [] }
+  if (
+    input.records.length === 0 &&
+    models.length === 0 &&
+    !teamRules &&
+    teamNamespaceDenials(input).length === 0 &&
+    input.agents.every((agent) => plain(input.scopes, agent.id))
+  )
+    return { registrations: [], tools: [], permissions }
   const installed: Registration[] = []
   // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
@@ -73,18 +98,68 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     const model = await applyModels(ctx, { agents: input.agents, models, scopes: input.scopes, teamAgents: input.teamAgents })
     if (model !== undefined) installed.push(model)
     const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
-    const session = await applySession(ctx, input)
+    const session = await applySession(ctx, input, permissions)
     for (const registration of session.registrations) installed.push(registration)
+    if (tableActive(permissions, input.agents.map((agent) => agent.id)))
+      for (const registration of await installEnforcement(
+        ctx,
+        permissions,
+        input.enforcement ?? enforcementState(),
+        input.enforcementDeps ?? { headless: async () => false },
+      ))
+        installed.push(registration)
     const mcp = await applyMcp(ctx, input)
     if (mcp !== undefined) installed.push(mcp)
     if (role !== undefined || model !== undefined || skills.agentChanged || session.agentChanged) await runVoid(ctx.agent.reload())
     if (skills.skillChanged) await runVoid(ctx.skill.reload())
     if (mcp !== undefined) await runVoid(ctx.mcp.reload())
-    return { registrations: [...installed], tools: session.tools }
+    return { registrations: [...installed], tools: session.tools, permissions }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
   }
+}
+
+// Every agent's permission rows, resolved lazily. Rows nobody customized
+// resolve to their shipped state without walking the records — for an agent
+// no preset, entry or off fallback can change (`plain`). The team tools and
+// the hooks read this table.
+export function permissionTableOf(input: ApplyInput): PermissionTable {
+  const byId = new Map(input.agents.map((agent) => [agent.id, agent] as const))
+  return permissionTable({
+    items: input.items,
+    teamMembers: input.teamAgents ?? [],
+    resolve: (item, agentId) => {
+      const agent = byId.get(agentId)
+      if (agent === undefined || (!touched(input).has(item.id) && plain(input.scopes, agentId)))
+        return { enabled: item.enabled, text: item.text }
+      const resolved = resolvedFor(item, agent, input)
+      return { enabled: resolved.enabled, text: resolved.text }
+    },
+  })
+}
+
+const touchedCache = new WeakMap<ApplyInput, ReadonlySet<string>>()
+
+// Item ids some customization addresses: every other item resolves to its
+// shipped state at every address, so it needs no chain walk.
+function touched(input: ApplyInput): ReadonlySet<string> {
+  const cached = touchedCache.get(input)
+  if (cached !== undefined) return cached
+  const ids = new Set(input.records.map((record) => record.item))
+  touchedCache.set(input, ids)
+  return ids
+}
+
+// An agent whose uncustomized rows all resolve to their upstream value: no
+// Defaults entry exists, nothing links it to a preset, and its fallback is
+// upstream (a native agent, or a context from before presets). Any other
+// agent's rows fall back to off or follow a preset (DESIGN §3.3), so they
+// install even when no record exists.
+function plain(scopes: Scopes, agent: string): boolean {
+  if ((scopes.entries ?? []).length > 0) return false
+  if ((scopes.links ?? []).some((link) => link.agent === agent)) return false
+  return scopes.native === undefined || scopes.native.has(agent)
 }
 
 // Per-agent model selection: resolve each effective agent's active model down
@@ -96,10 +171,11 @@ export async function applyModels(
   input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes; teamAgents?: readonly string[] },
 ): Promise<Registration | undefined> {
   const updates = input.agents.flatMap((agent) => {
+    const runtime = runtimeScope(agent, input.scopes)
     const winner = resolveActiveModel({
       models: input.models,
-      scopes: input.scopes,
-      level: agent.level,
+      scopes: runtime.scopes,
+      level: runtime.level,
       agent: agent.id,
       ...(agent.team !== undefined ? { team: agent.team } : {}),
     })
@@ -176,30 +252,21 @@ interface ChainArgs {
   readonly scopes: Scopes
 }
 
-function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
-  // A Defaults-scope agent (every host built-in: build, plan, explore, …) owns
-  // a visible row under Project, Global AND Defaults — tree.ts
-  // nativeAgentsForLevel/specialAgentsForLevel list it at all three levels —
-  // and ops.ts writes at the row's own address, so turning one of its
-  // permission rows off from the Project view saves `{level:"project",
-  // agent:"build"}`. Resolving that agent's perm rows at the discovered
-  // Defaults level reaches neither that record nor a Global one, so the saved
-  // OFF installed no host deny and no refusal message at all. Permission rows
-  // for such an agent therefore resolve from Project with the agent present at
-  // both higher levels, which is exactly the chain resolutionChain then builds:
-  // project -> global -> defaults -> shared. Every other item kind keeps the
-  // discovered scope, and a team-scoped agent keeps its established chain and
-  // the Teams catalogue untouched.
-  const fromProject = item.kind === "perm" && agent.team === undefined && agent.level === "defaults"
+// A Defaults-scope agent (every host built-in: build, plan, explore, …) owns a
+// visible row under Project, Global AND Defaults, and ops.ts writes at the row
+// the human pressed. Every item kind — tools, skills, base, system, perm — and
+// the active model (applyModels) resolve through runtimeScope, the chain the
+// tree's Project row shows, so what is displayed is what is enforced: a
+// Defaults entry, a Project or Global row all reach the runtime answer.
+export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
+  const runtime = runtimeScope(agent, args.scopes)
   return resolve({
     upstream: item,
     records: args.records,
     splits: args.splits,
-    scopes: fromProject
-      ? { global: new Set(args.scopes.global).add(agent.id), defaults: new Set(args.scopes.defaults).add(agent.id) }
-      : args.scopes,
+    scopes: runtime.scopes,
     address: {
-      level: fromProject ? "project" : agent.level,
+      level: runtime.level,
       agent: agent.id,
       item: item.id,
       section: null,
@@ -345,7 +412,7 @@ function pushRule(
   // reason about concrete resources covered by a wildcard.
   // Team-provided agents are not host upstream: core's update upserts, so a
   // deny for a team-only id creates the entry here and the team install
-  // overlays its body and ceiling afterwards. Upsert only for a current team
+  // overlays its body afterwards. Upsert only for a current team
   // winner; a retained rule for a disabled team would otherwise recreate the
   // disposed role from Agent.Info.default. Every other absent id keeps the
   // old skip-if-absent behaviour.
@@ -369,17 +436,22 @@ function pushRule(
 // discovery (the tool's own `options.permission`), falling back to the tool id
 // map (edit/write share core's `edit` action). A rule message travels with
 // every pattern the row denies, so the model reads why it was refused.
-function permDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny"; message?: string }[] {
+// Every rule row that is off installs one core deny per pattern. Rule rows
+// only ever refuse: a category's "Everything else" row and allow-list rows are
+// input rows checked on the call itself (permission-enforce.ts), so no core
+// allow from one category can reopen what another row or a role restriction
+// closed. Rows of every other kind are enforced there too.
+function permDenials(input: ApplyInput): Rule[] {
   return input.agents.flatMap((agent) =>
-    input.items.flatMap((item) => {
+    input.items.flatMap((item): Rule[] => {
       if (item.kind !== "perm") return []
       // Team policy rows carry both sides of their answer and install through
       // policyRules; installing their patterns here too would double them.
       if (item.policy !== undefined) return []
+      if ((item.permKind ?? "rule") !== "rule") return []
       if (item.patterns === undefined || item.patterns.length === 0) return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
-      if (resolved.enabled) return []
+      if (resolvedFor(item, agent, input).enabled) return []
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
       const action = item.permAction ?? actionForToolId(tool)
@@ -389,10 +461,44 @@ function permDenials(input: ApplyInput): { agent: string; action: string; resour
         action,
         resource: pattern,
         effect: "deny" as const,
+        refusal: true,
         ...(message === undefined ? {} : { message }),
       }))
     }),
   )
+}
+
+interface Rule {
+  readonly agent: string
+  readonly action: string
+  readonly resource: string
+  readonly effect: PolicyRule["effect"]
+  readonly message?: string
+  /** A row's own refusal (a rule row that is off, the non-member namespace deny): always lands last. */
+  readonly refusal?: boolean
+}
+
+// The order every Plus rule lands in, whichever row produced it: first a
+// role row's whole-resource defaults (its "shell *"), then the role rules that
+// let a specific resource through (a run's scope paths, a planner's plan
+// files), then the role's own refusals, and last every refusal of a row that
+// is off (curated, catalog and user rules, and the non-member namespace deny).
+// Core answers last-match-wins, so a row that is off always refuses what it
+// matches — even with the pattern `*` — and a role's "allow shell *" can no
+// longer undo a "git push" row that is off. Within the defaults an allow comes
+// before an ask before a deny, so the most restrictive default wins; the sort
+// is stable, so each row keeps its own internal order.
+export function orderRules<T extends { readonly resource: string; readonly effect: PolicyRule["effect"]; readonly refusal?: boolean }>(rules: readonly T[]): T[] {
+  const effectRank = { allow: 0, ask: 1, deny: 2 } as const
+  const rank = (rule: T) => {
+    if (rule.refusal === true) return 6
+    if (rule.resource === "*") return effectRank[rule.effect]
+    return rule.effect === "deny" ? 5 : 3 + effectRank[rule.effect]
+  }
+  return rules
+    .map((rule, index) => ({ rule, index }))
+    .toSorted((left, right) => rank(left.rule) - rank(right.rule) || left.index - right.index)
+    .map((entry) => entry.rule)
 }
 
 // The refusal text a perm row installs. A user RuleRecord's own message wins
@@ -402,15 +508,14 @@ function ruleDenialMessage(input: ApplyInput, item: Item, tool: string): string 
   const ruleId = item.ruleId
   if (ruleId === undefined) return undefined
   if (item.custom === true) return input.rules?.find((record) => record.tool === tool && record.id === ruleId)?.message
-  return curatedRuleMessage(tool, ruleId)
+  return curatedRuleMessage(tool, ruleId) ?? item.message
 }
 
-// Team role rules: every policy row resolved for the member it belongs to,
+// Policy rows: every policy row resolved for the member it belongs to,
 // installing the row's own `on` rules when it resolves enabled and its `off`
-// rules when it resolves disabled. The rules are the row's whole answer — the
-// role ceiling, the native denies and a live run's edit scope all arrive here
-// — so a project or global override of the row changes what lands with no
-// other code path involved. A rule's `message` travels with it: core sends it
+// rules when it resolves disabled. The rules are the row's whole answer — a
+// live run's edit scope arrives here — so a project or global override of the
+// row changes what lands with no other code path involved. A rule's `message` travels with it: core sends it
 // to the model in place of the generic refusal when that rule denies.
 function policyRules(input: ApplyInput): { agent: string; action: string; resource: string; effect: PolicyRule["effect"]; message?: string }[] {
   return input.agents.flatMap((agent) =>
@@ -439,10 +544,26 @@ function teamNamespaceDenials(input: ApplyInput): { agent: string; action: strin
   const members = new Set(input.teamAgents ?? [])
   return input.agents
     .filter((agent) => !members.has(agent.id))
-    .map((agent) => ({ agent: agent.id, action: `${teamNamespace}.*`, resource: "*", effect: "deny" as const }))
+    .map((agent) => ({ agent: agent.id, action: `${teamNamespace}.*`, resource: "*", effect: "deny" as const, refusal: true }))
 }
 
 const teamNamespace = "team"
+
+// A `tool:team_<name>` row that resolves off refuses the call itself: one
+// core deny on the tool's own permission (`team.<name>`, teams/tools.ts
+// teamOptions), for direct and Code Mode team tools alike. Hiding a direct
+// tool from the model is not a refusal, and the Code Mode denial keyed on the
+// registry id never matches `team.<name>`; the old per-kind team tool ceiling
+// installed exactly this deny. A non-member already has the whole namespace
+// denied (teamNamespaceDenials).
+function teamToolDenials(candidates: readonly ToolCandidate[], members: readonly string[] = []): Rule[] {
+  const prefix = `tool:${teamNamespace}_`
+  return candidates.flatMap((candidate): Rule[] => {
+    if (candidate.enabled || !candidate.item.id.startsWith(prefix) || !members.includes(candidate.agent)) return []
+    const action = `${teamNamespace}.${candidate.item.id.slice(prefix.length)}`
+    return [{ agent: candidate.agent, action, resource: "*", effect: "deny", refusal: true }]
+  })
+}
 
 // Disabled-rule scrub keywords per agent: the union of keywords from every
 // OFF perm item for that agent. Empty means no scrub, so unrelated saves
@@ -635,6 +756,7 @@ function instructionPlanPath(id: string): string {
 async function applySession(
   ctx: Context,
   input: ApplyInput,
+  permissions: PermissionTable,
 ): Promise<{ registrations: Registration[]; tools: readonly ToolPlan[]; agentChanged: boolean }> {
   const base = basePlans(input)
   const candidates = toolCandidates(input)
@@ -661,15 +783,29 @@ async function applySession(
       catalogPath: catalogPath(candidate.item),
       pinned: candidate.pinned,
     }))
-  // Role rules and the non-member namespace deny land through the same
-  // pushRule path as every other rule, appended after the per-pattern denies
-  // so a policy row's own ordering (deny *, then the allowed paths, then the
-  // never-editable state) survives core's last-match-wins evaluation.
-  const permDenies = [...permDenials(input), ...policyRules(input), ...teamNamespaceDenials(input)]
+  // Role rules, the non-member namespace deny and every row's own rules land
+  // through the same pushRule path, in orderRules' order: defaults, then what
+  // lets something through, then refusals. A policy row's own ordering (deny
+  // *, then the allowed paths, then the never-editable state) is exactly that
+  // order, so it survives core's last-match-wins evaluation.
+  const permDenies = orderRules<Rule>([
+    ...permDenials(input),
+    ...policyRules(input),
+    ...teamNamespaceDenials(input),
+    ...teamToolDenials(candidates, input.teamAgents),
+  ]).map((rule) => ({
+    agent: rule.agent,
+    action: rule.action,
+    resource: rule.resource,
+    effect: rule.effect,
+    ...(rule.message === undefined ? {} : { message: rule.message }),
+  }))
   const scrubByAgent = scrubKeywordsByAgent(input)
   const needsScrub = [...scrubByAgent.values()].some((keywords) => keywords.length > 0)
-  if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub)
+  const needsNarrowing = tableNarrows(permissions, input.agents.map((agent) => agent.id))
+  if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub && !needsNarrowing)
     return { registrations: [], tools: [], agentChanged: false }
+  const contextHook = base.length > 0 || native.length > 0 || instructions.length > 0 || needsScrub
   const installed: Registration[] = []
   const team = new Set(input.teamAgents ?? [])
   try {
@@ -685,7 +821,7 @@ async function applySession(
       })
       installed.push(permRegistration)
     }
-    if (base.length > 0 || native.length > 0 || instructions.length > 0 || needsScrub) {
+    if (contextHook) {
       const pins = new Map<string, string>()
       for (const agent of input.agents) {
         if (agent.base !== undefined) pins.set(agent.id, agent.base)
@@ -700,9 +836,22 @@ async function applySession(
         applyToolPlan(event, native.filter((plan) => plan.agent === String(event.agent)))
         applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
         applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
+        if (needsNarrowing) narrowTools(event, permissions)
         return Effect.void
       })
       installed.push(registration)
+    }
+    // Schema narrowing alone rides its own context hook: it only shapes what
+    // the model is told (execute.before still refuses), so a host without the
+    // seam keeps working without it.
+    if (!contextHook && needsNarrowing) {
+      const narrowing = await hook(() =>
+        ctx.session.hook("context", (event) => {
+          narrowTools(event, permissions)
+          return Effect.void
+        }),
+      )
+      if (narrowing !== undefined) installed.push(narrowing)
     }
     if (catalogPlans.length > 0 || needsScrub) {
       const catalogRegistration = await runHook(ctx.session.hook, "catalog", (event) => {

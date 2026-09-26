@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
-import { createState } from "../../src/index.js"
+import { change, presetTable, shippedMembers, teamState } from "./preset-table.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek } from "../../src/teams/inbox.js"
 import { onSessionEvent } from "../../src/teams/lifecycle.js"
@@ -167,7 +167,7 @@ test("queued followup lands in the child inbox and get_context sees it", async (
     await saveRun(root, parent)
     await saveRun(root, child)
     await writeBrief(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const value = required(
       await api.followup(followupInput(), callerFor(parent)),
     ) as { attempt: number; state: string }
@@ -195,7 +195,7 @@ test("delivery now on a working child fails E_BUSY with the exact message", asyn
     })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const result = await api.followup(followupInput({ run: child.id, requestID: "busy-1", delivery: "now" }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_BUSY")
@@ -206,18 +206,47 @@ test("delivery now on a working child fails E_BUSY with the exact message", asyn
   })
 })
 
-test("reviewer child fails E_REVIEWER with the exact message", async () => {
+// Whether a child takes corrections is the child's own "Corrections by
+// followup" row (Briefs it accepts), which the Plus reviewer preset ships off:
+// a review is re-run fresh, not corrected.
+test("a reviewer-preset child refuses a followup with its row's message", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "astra-reviewer" })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
-    const result = await api.followup(followupInput({ run: child.id, requestID: "rev-1" }), callerFor(parent))
-    const error = rejected(result)
-    expect(error.code).toBe("E_REVIEWER")
-    expect(error.message).toBe(`Reviewers take re-review via team_review(previous:"latest"), not followups.`)
-    if (!result.ok) expect(result.error.accepted).toEqual({ previous: "latest" })
-    else throw new Error("expected E_REVIEWER")
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+    const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "rev-1" }), callerFor(parent)))
+    expect(error.code).toBe("E_NO_FOLLOWUP")
+    expect(error.message).toBe(
+      "astra-reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).",
+    )
+    expect(error.accepted).toBe("delegate a fresh run")
+  })
+})
+
+test("the same reviewer takes a followup once its Corrections by followup row is on", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "astra-reviewer" })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const reviewer = shippedMembers().find((member) => member.id === "astra-reviewer")
+    if (reviewer === undefined) throw new Error("no astra-reviewer in the shipped team")
+    const table = presetTable({ records: [change(reviewer, "perm:team_get_context:accepts.followup", { state: "on" })] })
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState(table))
+    expect(required(await api.followup(followupInput({ run: child.id, requestID: "rev-2" }), callerFor(parent)))).toMatchObject({ attempt: 2, state: "admitted" })
+  })
+})
+
+test("a child with no preset takes no correction: the row falls back to off", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "ocp-alice" })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const table = presetTable({ members: [...shippedMembers(), { id: "ocp-alice", team: "opencodeplus-team" }] })
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState(table))
+    const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "alice-1" }), callerFor(parent)))
+    expect(error.code).toBe("E_NO_FOLLOWUP")
+    expect(error.message).toStartWith("ocp-alice takes no corrections by followup")
   })
 })
 
@@ -240,7 +269,7 @@ test("non-child run is refused with E_NOT_CHILD", async () => {
     })
     await saveRun(root, parent)
     await saveRun(root, stranger)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const result = await api.followup(followupInput({ run: stranger.id, requestID: "nc-1" }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_NOT_CHILD")
@@ -262,7 +291,7 @@ test("unknown run id is refused with E_NOT_CHILD and empty children list", async
       children: [],
     })
     await saveRun(root, parent)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const result = await api.followup(followupInput({ run: "w-0000000000000000", requestID: "unk-1" }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_NOT_CHILD")
@@ -280,7 +309,7 @@ test("terminal superseded child fails E_TERMINAL with the exact message", async 
     })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const result = await api.followup(followupInput({ run: child.id, requestID: "term-1" }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_TERMINAL")
@@ -296,7 +325,7 @@ test("terminal reaped child fails E_TERMINAL with the exact message", async () =
     })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const result = await api.followup(followupInput({ run: child.id, requestID: "term-reap-1" }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_TERMINAL")
@@ -310,7 +339,7 @@ test("same requestID twice is idempotent, different args fail E_REQUEST_ID", asy
     const { parent, child } = parentChild("main-0123456789abcdef", "w-eeeeeeeeeeeeeeee")
     await saveRun(root, parent)
     await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const first = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
     ) as { attempt: number; state: string }
@@ -339,7 +368,7 @@ test("budget in the call replaces the child budget outright", async () => {
     })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), createState())
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const value = required(
       await api.followup(followupInput({ run: child.id, requestID: "bud-1", budget: { turns: 10 } }), callerFor(parent)),
     )
@@ -354,7 +383,7 @@ test("delivery now on an idle child prompts, moves to working and returns admitt
     await saveRun(root, parent)
     await saveRun(root, child)
     const sessions = recordSession()
-    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const api = createTeamApi(context({ session: sessions.domain }), teamState())
     const value = required(
       await api.followup(
         followupInput({ run: child.id, requestID: "now-1", delivery: "now", prompt: "Continue in place: fix the off-by-one now." }),
@@ -377,7 +406,7 @@ test("queue default on an idle child prompts and returns admitted with the real 
     await saveRun(root, parent)
     await saveRun(root, child)
     const sessions = recordSession()
-    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const api = createTeamApi(context({ session: sessions.domain }), teamState())
     const value = required(
       await api.followup(
         followupInput({ run: child.id, requestID: "queue-idle-1", prompt: "Continue in place: cover the idle handoff now." }),
@@ -406,7 +435,7 @@ test("queue on a working child returns the current attempt and does not prompt",
     await saveRun(root, parent)
     await saveRun(root, child)
     const sessions = recordSession()
-    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const api = createTeamApi(context({ session: sessions.domain }), teamState())
     const value = required(
       await api.followup(
         followupInput({ run: child.id, requestID: "queue-busy-1", prompt: "Continue in place: queue while working now." }),
@@ -433,7 +462,7 @@ test("two queued followups to a working child keep the current attempt", async (
     await saveRun(root, parent)
     await saveRun(root, child)
     const sessions = recordSession()
-    const api = createTeamApi(context({ session: sessions.domain }), createState())
+    const api = createTeamApi(context({ session: sessions.domain }), teamState())
     const first = required(
       await api.followup(
         followupInput({ run: child.id, requestID: "queue-twice-1", prompt: "First queued followup while working here." }),
@@ -466,7 +495,7 @@ test("a followup queued to a working child is delivered as a new attempt when it
     await saveRun(root, child)
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
-    const api = createTeamApi(ctx, createState())
+    const api = createTeamApi(ctx, teamState())
     const queued = required(
       await api.followup(
         followupInput({ run: child.id, requestID: "queue-idle-handoff", prompt: "Continue in place: also cover the empty list." }),
@@ -496,7 +525,7 @@ test("now whose prompt rejects restores the run and allows a same-requestID retr
     await saveRun(root, parent)
     await saveRun(root, child)
     const failing = recordRejectingSession()
-    const failingApi = createTeamApi(context({ session: failing.domain }), createState())
+    const failingApi = createTeamApi(context({ session: failing.domain }), teamState())
     const input = followupInput({ run: child.id, requestID: "now-fail-1", delivery: "now", prompt: "Continue in place: retry the failed admit now." })
     const result = await failingApi.followup(input, callerFor(parent))
     expect(result.ok).toBe(false)
@@ -509,7 +538,7 @@ test("now whose prompt rejects restores the run and allows a same-requestID retr
     expect(restored?.attempts[0]?.state).toBe("succeeded")
     expect(restored?.attempts[0]?.n).toBe(1)
     const sessions = recordSession()
-    const retryApi = createTeamApi(context({ session: sessions.domain }), createState())
+    const retryApi = createTeamApi(context({ session: sessions.domain }), teamState())
     const retried = required(await retryApi.followup(input, callerFor(parent))) as { attempt: number; state: string }
     expect(retried).toEqual({ attempt: 2, state: "admitted" })
     expect(sessions.prompted).toHaveLength(1)

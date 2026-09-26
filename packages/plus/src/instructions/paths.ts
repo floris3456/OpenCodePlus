@@ -23,6 +23,13 @@ export function globalRecordsPath(configDir: string = globalConfigDir()): string
   return path.join(configDir, "opencodeplus", "instructions", "records.jsonl")
 }
 
+// The global index of projects whose store holds a preset link (store.ts
+// linkedProjects): projects are not enumerable otherwise, and deleting a
+// preset must see the links every project holds.
+export function linkedProjectsPath(configDir: string = globalConfigDir()): string {
+  return path.join(path.dirname(globalRecordsPath(configDir)), "linked-projects.json")
+}
+
 export function projectLogPath(directory: string): string {
   return path.join(directory, ".opencodeplus", "instructions", "log.jsonl")
 }

@@ -121,22 +121,32 @@ test("second publish with the built-in team enabled is a no-op", async () => {
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([])
   const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
+  // A host with the read tool, so the members' presets install core denies.
+  const host = fullContext({ directory: project, tools: [{ id: "read", description: "Read a file.", options: { codemode: false } }] })
   const ctx = context({
     location,
     agent: agents.domain,
     skill,
-    tool: fullContext({ directory: project }).tool,
-    mcp: fullContext({ directory: project }).mcp,
+    tool: host.tool,
+    mcp: host.mcp,
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const state = createState()
   const handlers = createHandlers(ctx, state)
+  // The shipped team is a Plus team preset now, not a Defaults team (DESIGN
+  // §2, §5): a project team created from it has the same members, linked to
+  // their member presets.
   await Effect.runPromise(
-    handlers["team.setEnabled"]({ level: "defaults", team: "opencodeplus-team", enabled: true }, throwingContext({})),
+    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext({})),
   )
-  const deniesShell = (permissions: readonly { action: string; resource: string; effect: string }[]) =>
-    permissions.some((rule) => rule.action === "shell" && rule.resource === "*" && rule.effect === "deny")
+  await Effect.runPromise(
+    handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext({})),
+  )
+  // The implementer preset closes private keys: read's Private keys row is a core deny.
+  const deniesKeys = (permissions: readonly { action: string; resource: string; effect: string }[]) =>
+    permissions.some((rule) => rule.action === "read" && rule.resource === "*.key" && rule.effect === "deny")
   const installed = await Effect.runPromise(ctx.agent.list())
-  expect(deniesShell(installed.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
+  expect(deniesKeys(installed.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
   const afterEnable = state.fingerprint
   const installs = agents.transforms
   const disposes = agents.disposes
@@ -147,5 +157,5 @@ test("second publish with the built-in team enabled is a no-op", async () => {
   expect(agents.disposes).toBe(disposes)
   expect(agents.reloads).toBe(reloads)
   const republished = await Effect.runPromise(ctx.agent.list())
-  expect(deniesShell(republished.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
+  expect(deniesKeys(republished.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
 })
