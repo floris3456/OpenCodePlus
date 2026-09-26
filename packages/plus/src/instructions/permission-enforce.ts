@@ -30,6 +30,7 @@ import os from "node:os"
 import path from "node:path"
 import { applies, type Item } from "./model.js"
 import { catalogFor, categoryLabel, limitOf, valuesAt, wildcardMatch } from "./permission-catalog.js"
+import type { MemoInput } from "./resolve-memo.js"
 
 export interface PermRow {
   readonly item: Item
@@ -859,6 +860,8 @@ function callKey(sessionID: string, messageID: string, callID: string): string {
 export interface EnforcementDeps {
   /** Whether a session is a delegated team run, which nobody watches. */
   readonly headless: (sessionID: string) => Promise<boolean>
+  /** Current inventory and records, so aggregate edits authorize the rows they actually change. */
+  readonly instructions?: () => Promise<MemoInput>
 }
 
 // Whether any agent's direct tools need their schema narrowed: a value or
@@ -923,6 +926,14 @@ export async function installEnforcement(
           tabUrl: (tab) => state.tabs.get(tab),
         })
         if (decision.refuse !== undefined) return yield* Effect.fail(new Tool.Error({ message: decision.refuse }))
+        if (deps.instructions !== undefined && (event.tool === "instructions_set" || event.tool === "instructions_reset")) {
+          const { instructionControlInputs } = yield* Effect.promise(() => import("./ops.js"))
+          const inventory = yield* Effect.promise(deps.instructions)
+          for (const input of instructionControlInputs(inventory, event.tool, event.input)) {
+            const expanded = decide(rows, { tool: event.tool, input, sessionID, directory, agent, teamMembers: table.teamMembers })
+            if (expanded.refuse !== undefined) return yield* Effect.fail(new Tool.Error({ message: expanded.refuse }))
+          }
+        }
         const headless =
           decision.approval !== undefined || decision.headlessRefusal !== undefined
             ? yield* Effect.promise(() => deps.headless(sessionID).catch(() => false))

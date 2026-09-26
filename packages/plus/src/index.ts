@@ -33,6 +33,7 @@ import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/
 import { enforcementState, type EnforcementState, type PermissionTable } from "./instructions/permission-enforce.js"
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
+import { memoInputOf } from "./instructions/snapshot.js"
 import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
@@ -3993,12 +3994,16 @@ async function discoverAll(
     splits: splitsOf(loaded.records),
   })
   const memberControls = (await Promise.all(teams.flatMap((team) => team.agents.map(async (member) => {
+    // Member installation overlays host agents, so omitted file fields inherit
+    // the same pre-Plus values rather than synthetic control defaults.
+    const upstream = state.agentUpstream?.find((agent) => agent.id === member.id)
     const fields = member.path === undefined
       ? builtins.find((entry) => entry.name === team.team)?.members.find((entry) => entry.id === member.id)?.fields
       : parseTeamFields(await fs.readFile(member.path, "utf8"))
     return controlItems(member.id, {
+      ...upstream,
       ...fields,
-      steps: fields?.steps as Agent.Info["steps"],
+      steps: (fields?.steps ?? upstream?.steps) as Agent.Info["steps"],
     }, discovered.items.find((item) => item.id === "compaction:instructions" && item.agents === undefined)?.text)
       .map((item) => ({ ...item, controlTeam: { level: team.level, team: team.team } }))
   })))).flat()
@@ -4534,7 +4539,14 @@ function publishFresh(
         rules: rulesOf(stored.records),
         teamAgents: view.teamAgents.map((agent) => agent.id),
         enforcement: state.enforcement,
-        enforcementDeps: { headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w" },
+        enforcementDeps: {
+          headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w",
+          instructions: async () => {
+            const snapshot = await createPlusApi(ctx, state, { builtins }).snapshot()
+            if (!snapshot.ok) throw new Error(snapshot.error.message)
+            return memoInputOf(snapshot.value)
+          },
+        },
         deferAgentControls: true,
       }
       const applied = yield* Effect.promise(() => apply(ctx, applyInput))

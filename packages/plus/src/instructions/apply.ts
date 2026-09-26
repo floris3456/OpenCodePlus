@@ -135,7 +135,7 @@ export async function applyAgentControls(ctx: Context, input: ApplyInput): Promi
       const value = resolvedFor(item, agent, input)
       // A false upstream state (e.g. a disabled member file) is a ceiling.
       if (id === "setting:enabled" && (!item.enabled || !value.enabled)) return [{ id, text: "", enabled: false }]
-      if (booleanControl(id) ? value.enabled === item.enabled : value.text === item.text && value.textFrom.kind === "upstream") return []
+      if (booleanControl(id) ? value.enabled === item.enabled && value.from.kind === "upstream" : value.text === item.text && value.textFrom.kind === "upstream") return []
       return [{ id, text: value.text, enabled: value.enabled }]
     })
     return unique.length === 0 ? [] : [{ agent: agent.id, rows: unique }]

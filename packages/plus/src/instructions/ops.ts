@@ -205,22 +205,55 @@ function controlRow(memo: Memo, id: string): TreeNode | undefined {
   }
 }
 
-function entityControlId(node: TreeNode, item: string): string | undefined {
+function entityControlId(memo: Memo, node: TreeNode, item: string): string | undefined {
   if (node.kind === "agent") return node.id.replace(/^agent:/, "item:") + `:${item}`
-  const special = node.kind === "team" && node.depth === 4 ? /^team:(project|global|defaults):(.+):special:([^:]+)$/.exec(node.id) : null
-  if (special !== null) return `item:${special[1]}:${special[2]}/:special:${special[3]}:${item}`
-  if (node.kind !== "team" || node.depth !== 3) return undefined
+  if (node.kind !== "team") return undefined
   const owner = node.owner
-  if (owner?.team !== undefined && owner.agent !== null) return `item:${owner.level}:${owner.team.team}/:${owner.agent}:${item}`
-  const suffix = `:${node.label}`
-  if (!node.id.endsWith(suffix)) return undefined
-  return node.id.slice(0, -suffix.length).replace(/^team:/, "item:") + `/:${node.label}:${item}`
+  if (owner !== undefined) {
+    if (owner.agent === null || owner.team === undefined || node.id !== `team:${owner.level}:${owner.team.team}:${owner.agent}`) return undefined
+    return `item:${owner.level}:${owner.team.team}/:${owner.agent}:${item}`
+  }
+  if (memo.ctx.teams.some((team) => node.id === `team:${team.level}:${team.team}`)) return undefined
+  const special = /^team:(project|global|defaults):(.+):special:([^:]+)$/.exec(node.id)
+  if (special !== null && memo.ctx.teams.some((team) => team.level === special[1] && team.team === special[2]))
+    return `item:${special[1]}:${special[2]}/:special:${special[3]}:${item}`
+  const team = memo.ctx.teams.find((team) => team.agents.some((member) => node.id === `team:${team.level}:${team.team}:${member}`))
+  return team === undefined ? undefined : `item:${team.level}:${team.team}/:${node.label}:${item}`
 }
 
 export function setAgentMode(input: MemoInput, rowId: string, mode: "primary" | "subagent" | "all"): OpResult {
-  const node = findRow(input, rowId)
-  const id = node === undefined ? undefined : entityControlId(node, "setting:mode")
+  const found = findNode(input, rowId)
+  const id = found === undefined ? undefined : entityControlId(found.memo, found.node, "setting:mode")
   return id === undefined ? { refusal: `"${rowId}" is not an agent or member` } : saveText(input, id, mode)
+}
+
+/** Concrete control writes and implicit field changes, checked by execute.before. */
+export function instructionControlInputs(input: MemoInput, tool: string, value: unknown): Readonly<Record<string, unknown>>[] {
+  if (typeof value !== "object" || value === null || !("id" in value) || typeof value.id !== "string") return []
+  const fields = value as Record<string, unknown>
+  const found = findNode(input, value.id)
+  if (found === undefined) return []
+  if (tool === "instructions_set" && fields.preset === undefined && found.node.address?.item === "setting:mode")
+    return [{ ...fields, mode: fields.text ?? true }]
+  const enabledId = entityControlId(found.memo, found.node, "setting:enabled")
+    ?? (found.node.address !== undefined && booleanControl(found.node.address.item) ? value.id : undefined)
+  if (enabledId === undefined) return []
+  if (tool === "instructions_reset") {
+    const plan = reset(input, value.id)
+    if ("refusal" in plan) return []
+    return found.memo.ctx.customizations
+      .filter((record) => !plan.records.some((remaining) => sameAddress(remaining, record)))
+      .map((record) => ({ id: entityControlId(found.memo, found.node, record.item) ?? value.id }))
+  }
+  if (tool !== "instructions_set" || fields.preset !== undefined) return []
+  const mode = fields.mode === undefined ? [] : [{ ...fields, id: entityControlId(found.memo, found.node, "setting:mode"), text: fields.mode }]
+  const toggles = fields.state !== undefined || [fields.mode, fields.text, fields.pin, fields.resolve].every((field) => field === undefined)
+  if (!toggles) return mode
+  const plan = fields.state === undefined ? toggle(input, value.id) : setEnabled(input, value.id, fields.state === "on")
+  const address = controlRow(found.memo, enabledId)?.address
+  if ("refusal" in plan || address === undefined) return mode
+  const state = plan.records.find((record) => sameAddress(record, address))?.state
+  return [...mode, { ...fields, id: enabledId, state }]
 }
 
 /** One row by id, found by descending the lazy tree (no full expansion). */
@@ -464,7 +497,7 @@ export function toggle(input: MemoInput, rowId: string): OpResult {
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
-  const control = entityControlId(node, "setting:enabled")
+  const control = entityControlId(found.memo, node, "setting:enabled")
   if (control !== undefined) return toggle(input, control)
   const memo = found.memo
   const refusal = toggleRefusal(node)
@@ -499,7 +532,7 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpR
   const found = findNode(input, rowId)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
-  const control = entityControlId(node, "setting:enabled")
+  const control = entityControlId(found.memo, node, "setting:enabled")
   if (control !== undefined) return setEnabled(input, control, value)
   const memo = found.memo
   const refusal = toggleRefusal(node)
@@ -588,7 +621,7 @@ export function reset(input: MemoInput, rowId: string): OpResult {
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
-  const control = entityControlId(node, "setting:enabled")
+  const control = entityControlId(memo, node, "setting:enabled")
   if (control !== undefined) {
     const address = controlRow(memo, control)?.address
     if (address === undefined) return { refusal: `"${node.label}" cannot be reset` }

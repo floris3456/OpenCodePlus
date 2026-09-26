@@ -4,6 +4,7 @@ import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
+import type { ToolDomain, ToolHooks } from "@opencode/plugin/effect/tool"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -42,7 +43,15 @@ async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "G
   await enable(directory)
   const agents = agentHarness(initial, directory)
   const tools = toolHarness()
-  const ctx = { ...fullContext({ directory, classifications: new Map([["", "general"], ["worker", "general"]]) }), agent: agents.domain, tool: tools.domain }
+  type Before = (event: ToolHooks["execute.before"]) => Effect.Effect<void, Tool.Error>
+  const before = new Set<Before>()
+  const hook: ToolDomain["hook"] = (name, callback) => Effect.sync(() => {
+    if (name !== "execute.before") return { dispose: Effect.void }
+    const handler = callback as unknown as Before
+    before.add(handler)
+    return { dispose: Effect.sync(() => { before.delete(handler) }) }
+  })
+  const ctx = { ...fullContext({ directory, hooks: { current: 0 }, classifications: new Map([["", "general"], ["worker", "general"]]) }), agent: agents.domain, tool: { ...tools.domain, hook } }
   const state = createState()
   states.push(state)
   const api = createPlusApi(ctx, state)
@@ -64,7 +73,15 @@ async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "G
     if (!result.value.ok) throw new Error("Unexpected stale write")
     return result.value.snapshot
   }
-  return { root, directory, agents, tools, ctx, state, api, snapshot, edit }
+  async function call(name: string, input: unknown, agent = "build") {
+    const tool = tools.tools.get(`instructions_${name}`)
+    if (tool === undefined) throw new Error(`Missing ${name}`)
+    const context: Tool.Context = { sessionID: Session.ID.make("ses_controls"), messageID: SessionMessage.ID.make("msg_controls"), agent: Agent.ID.make(agent), id: Tool.CallID.make("call_controls"), progress: () => Effect.void }
+    const event = { ...context, tool: `instructions_${name}`, input }
+    for (const callback of [...before]) await Effect.runPromise(callback(event))
+    return Effect.runPromise(tool.execute(event.input, context))
+  }
+  return { root, directory, agents, tools, ctx, state, api, snapshot, edit, call }
 }
 
 test("published on/off survives discovery and replacement, and reset restores upstream agent fields", async () => {
@@ -262,4 +279,108 @@ test("Tool set accepts agent state/mode and control text, reset uses the same re
   await Bun.write(config, JSON.stringify({ ...value, protectedAgents: ["build"] }))
   await expect(call("set", { id: "agent:project:build", state: "off" })).rejects.toThrow("protected")
   await Effect.runPromise(registration.dispose)
+})
+
+test("execute.before authorizes concrete model rows removed by an agent reset before Tool/API mutation", async () => {
+  const f = await fixture([agentInfo("build"), agentInfo("plan")])
+  await registerInstructionTools(f.ctx, f.api)
+  await f.edit(saveText(memoInputOf(await f.snapshot()), "item:project:plan:compaction:model", "test/summarizer"))
+  await f.edit(saveText(memoInputOf(await f.snapshot()), "item:project:plan:compaction:strategy", "local"))
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_reset:targets.models", false))
+  const before = await f.snapshot()
+  await expect(f.call("reset", { id: "item:project:plan:compaction:model" })).rejects.toThrow("changing model rows")
+  await expect(f.call("reset", { id: "agent:project:plan" })).rejects.toThrow("changing model rows")
+  const after = await f.snapshot()
+  expect(after.revision).toBe(before.revision)
+  expect(after.records).toEqual(before.records)
+  expect(f.agents.state.get("plan")?.compaction?.model).toEqual(Model.Ref.parse("test/summarizer"))
+  // A concrete non-model reset still works; an aggregate without a local model
+  // override must not be refused for a model it would not remove.
+  await f.call("reset", { id: "item:project:plan:compaction:strategy" })
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:plan:compaction:model"))
+  await f.edit(setAgentMode(memoInputOf(await f.snapshot()), "agent:project:plan", "all"))
+  await f.call("reset", { id: "agent:project:plan" })
+  expect(f.agents.state.get("plan")?.mode).toBe("primary")
+})
+
+test("execute.before checks implicit state and mode aliases against field and concrete target restrictions", async () => {
+  const f = await fixture([agentInfo("build"), agentInfo("plan")])
+  await registerInstructionTools(f.ctx, f.api)
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.state", false))
+  const before = await f.snapshot()
+  await expect(f.call("set", { id: "agent:project:plan" })).rejects.toThrow("state")
+  await expect(f.call("set", { id: "agent:project:plan", state: "off" })).rejects.toThrow("state")
+  await expect(f.call("set", { id: "item:project:plan:setting:enabled" })).rejects.toThrow("state")
+  expect((await f.snapshot()).revision).toBe(before.revision)
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.state"))
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.text", false))
+  await expect(f.call("set", { id: "agent:project:plan", mode: "all" })).rejects.toThrow("text")
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.text"))
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.mode", false))
+  await expect(f.call("set", { id: "item:project:plan:setting:mode", text: "all" })).rejects.toThrow("mode")
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.mode"))
+  // Editing a catalog rule keeps its enforcement metadata. This catches aliases
+  // against the concrete addressed id, not just a built-in target category.
+  const updated = await f.api.updateRule({ level: "project", agent: "build", tool: "instructions_set", id: "targets.models", label: "Mode writes", patterns: ["*:setting:mode"], keywords: ["mode"] })
+  if (!updated.ok) throw new Error(updated.error.message)
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:targets.models", false))
+  await expect(f.call("set", { id: "agent:project:plan", mode: "all" })).rejects.toThrow("not allowed")
+  expect(f.agents.state.get("plan")?.mode).toBe("primary")
+  const stateRule = await f.api.updateRule({ level: "project", agent: "build", tool: "instructions_set", id: "targets.models", label: "Enable writes", patterns: ["*:setting:enabled"], keywords: ["enable"] })
+  if (!stateRule.ok) throw new Error(stateRule.error.message)
+  await expect(f.call("set", { id: "agent:project:plan", state: "off" })).rejects.toThrow("not allowed")
+  await expect(f.call("set", { id: "agent:project:plan" })).rejects.toThrow("not allowed")
+  expect(f.agents.state.has("plan")).toBe(true)
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:targets.models"))
+  await f.call("set", { id: "agent:project:plan", state: "off" })
+  expect(f.agents.state.has("plan")).toBe(false)
+})
+
+test("member controls inherit hidden host fields and an explicit hidden off publishes and resets correctly", async () => {
+  const f = await fixture([{ ...agentInfo("build"), hidden: true, color: "#123456", steps: 7 as Agent.Info["steps"] }])
+  const member = path.join(projectTeamsPath(f.directory), "crew", "build.md")
+  await fs.mkdir(path.dirname(member), { recursive: true })
+  await fs.writeFile(member, "---\nmode: primary\n---\nTeam build")
+  const store = await load(f.directory)
+  await save(f.directory, { expectedProjectRevision: store.projectRevision, expectedGlobalRevision: store.globalRevision, records: [{ type: "team", level: "project", team: "crew", enabled: true, updated: "" }] })
+  await f.api.refresh()
+  const initial = await f.snapshot()
+  expect(controlItemFor(initial.items, { agent: "build", item: "setting:hidden", memberOf: { level: "project", team: "crew" } })?.enabled).toBe(true)
+  expect(f.agents.state.get("build")).toMatchObject({ hidden: true, color: "#123456", steps: 7 })
+  await f.edit(setEnabled(memoInputOf(initial), "item:project:crew/:build:setting:hidden", false))
+  expect(f.agents.state.get("build")?.hidden).toBe(false)
+  await f.api.refresh()
+  expect(f.agents.state.get("build")?.hidden).toBe(false)
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:crew/:build:setting:hidden"))
+  expect(f.agents.state.get("build")?.hidden).toBe(true)
+  const disabled = await f.api.setTeamEnabled({ level: "project", team: "crew", enabled: false })
+  expect(disabled.ok).toBe(true)
+  expect(f.agents.state.get("build")?.hidden).toBe(true)
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:setting:hidden", false))
+  expect(f.agents.state.get("build")?.hidden).toBe(false)
+})
+
+test("Tool entity controls address member presets and Defaults entries by owner, not tree depth", async () => {
+  const f = await fixture()
+  await registerInstructionTools(f.ctx, f.api)
+  const store = await load(f.directory)
+  await save(f.directory, { expectedProjectRevision: store.projectRevision, expectedGlobalRevision: store.globalRevision, records: [
+    { type: "entry", level: "defaults", catalogue: "agents", name: "b*", updated: "" },
+    { type: "entry", level: "defaults", catalogue: "teams", team: "crew*", name: "helper*", updated: "" },
+  ] })
+  for (const [entity, owner, team] of [
+    ["team:preset:starter:planner", "planner", "starter"],
+    ["agent:defaults:b*", "b*", undefined],
+    ["team:defaults:crew*:helper*", "helper*", "crew*"],
+  ]) {
+    await f.call("set", { id: entity, mode: "all", state: "off" })
+    const records = (await f.snapshot()).records.filter((record) => record.type === "customization" && record.agent === owner)
+    expect(records).toHaveLength(2)
+    expect(records.map((record) => record.team?.team)).toEqual([team, team])
+    expect(records).toContainEqual(expect.objectContaining({ item: "setting:mode", text: "all" }))
+    expect(records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "off" }))
+    await f.call("reset", { id: entity })
+    expect((await f.snapshot()).records.filter((record) => record.type === "customization" && record.agent === owner)).toHaveLength(0)
+  }
+  await expect(f.call("set", { id: "team:preset:starter", mode: "all" })).rejects.toThrow("not an agent or member")
 })
