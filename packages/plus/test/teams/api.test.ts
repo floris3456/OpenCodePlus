@@ -14,7 +14,7 @@ import { load, save } from "../../src/instructions/store.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { lastReceipt } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
-import { gc } from "../../src/teams/lifecycle.js"
+import { gc, onSessionEvent } from "../../src/teams/lifecycle.js"
 import { byDirectory, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
@@ -198,6 +198,12 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
       expect(await git(value.directory, ["status", "--porcelain"])).toBe("")
       expect(persisted?.projectDirectory).toBe(repo.dir)
+      await onSessionEvent(context({ session: sessions.domain }), root, { type: "session.execution.succeeded", data: { sessionID: value.session } })
+      const replay = required(await api.delegate(delegateInput(), callerFor(parent)))
+      expect(replay).toMatchObject({ run: value.run, session: value.session, replayed: true, state: "idle", receipt: { state: "starting" }, current: { state: "idle", attempt: 1 } })
+      expect(sessions.created).toHaveLength(1)
+      expect(sessions.prompted.filter((prompt) => prompt.sessionID === value.session)).toHaveLength(1)
+      expect(rejected(await api.delegate(delegateInput({ objective: "A different objective must not replace the admitted payload." }), callerFor(parent))).code).toBe("E_REQUEST_ID")
     } finally {
       await removeRepo(repo.dir)
     }

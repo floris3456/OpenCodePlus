@@ -682,7 +682,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
           role: "muse-implementer",
           objective: "Implement with empty paths to trigger E_PATHS refusal.",
           deliverable: { kind: "commit" },
-          scope: { paths: [] },
+          scope: { paths: [], forbidden: [] },
           checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }],
         },
         orchCtx,

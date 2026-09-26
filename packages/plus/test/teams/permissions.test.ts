@@ -193,23 +193,13 @@ test("a live run describes its scope without adding agent-wide allows", async ()
   expect(row?.text).toContain("Session-aware enforcement")
 })
 
-// The refusals the round-1 permission hook sent are the rules' own words now,
-// so a denied edit still tells the agent what its scope is and what to do.
-// Source: docs/team-v2/acceptance/2026-09-18-live-rounds.md R2, hook commit
-// c63cf4b4 "fix(plus): explain team scope denials to the agent".
-const OUTSIDE_SCOPE = `"*" is outside your scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`
-
-function forbiddenState(resource: string): string {
-  return `"${resource}" is version-control or paused-tool state and is never editable, even inside scope.paths [packages/plus/src/*]. Report it in needs=[{kind:"path"...}].`
-}
-
-test("the rules a denial comes from carry the message the model reads", async () => {
+test("scope display does not override preset denial messages", async () => {
   await saveRun(dir, makeRun())
   const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir))
   const permissions = await permissionsAfterApply("muse-implementer", items)
   const { evaluate } = await import("../../../core/src/permission.js")
 
-  // Edit scope: the two round-1 texts, verbatim but for the quoted subject.
+  // Scope is checked per Session, not compiled into agent-wide rules.
   expect(permissions.filter((rule) => rule.action === "edit")).toEqual([])
   expect(evaluate("edit", "packages/plus/src/index.ts", permissions).message).toBeUndefined()
 
@@ -220,8 +210,7 @@ test("the rules a denial comes from carry the message the model reads", async ()
   expect(evaluate("external_directory", "/etc/hosts", preset.permissions).message).toBe("paths outside this checkout are not available here")
 })
 
-// A permission rule belongs to an agent, so two live runs of one role cannot
-// hold separate scopes: what they must NOT do is take each other's away.
+// Agent-wide rows must neither union nor intersect independent run scopes.
 test("two live runs of one role describe individual scopes, not an agent-wide union", async () => {
   await saveRun(dir, makeRun({ id: "w-0000000000000003", paths: ["a.ts"] }))
   await saveRun(dir, makeRun({ id: "w-0000000000000004", paths: ["b.ts"] }))
@@ -235,8 +224,7 @@ test("two live runs of one role describe individual scopes, not an agent-wide un
     expect(row?.text).not.toContain("[a.ts, b.ts]")
   }
   const permissions = await permissionsAfterApply("muse-implementer", items)
-  // A rule belongs to the agent, so the messages name the union too: what the
-  // rules really allow is what the agent is told.
+  // Enforcement belongs to the Session hook, covered in permission-hooks.
   expect(permissions.filter((rule) => rule.action === "edit")).toEqual([])
 })
 
@@ -308,7 +296,7 @@ function acrossSnapshotBoundary(source: readonly Item[]): Item[] {
   return Schema.decodeUnknownSync(Schema.Array(Plus.SnapshotItem))(JSON.parse(JSON.stringify(wire))).map(itemOf)
 }
 
-test("a rule keeps its message across the snapshot boundary, and a rule without one stays bare", () => {
+test("scope guidance and delegation refusals survive the snapshot boundary", () => {
   const member = "gemini-implementer"
   const run = { id: "w-0000000000000005", role: member, paths: ["packages/plus/src/*"] }
   const crossed = acrossSnapshotBoundary(teamPolicyItems(policyMembersOf([member]), [run]))
@@ -320,11 +308,10 @@ test("a rule keeps its message across the snapshot boundary, and a rule without 
     category: "to",
     message: `${member} delegates only within its own team`,
   })
-  // The per-run edit scope, whose deny rules carry the round-1 texts.
+  // Guidance carries no agent-wide allows.
   expect(policyOf(`perm:edit:run:${run.id}`)?.on).toEqual([])
 
-  // A rule with no message crosses exactly as it did before the field existed:
-  // the key is absent, never an encoded `undefined`.
+  // Snapshot readback still names the individual Session boundary.
   const scope = policyOf(`perm:edit:run:${run.id}`)?.on ?? []
   expect(scope).toEqual([])
   expect(crossed.find((item) => item.runID === run.id)?.text).toContain("Same-role runs do not share scope")
