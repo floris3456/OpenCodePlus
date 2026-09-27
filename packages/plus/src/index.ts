@@ -18,7 +18,7 @@ import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
-import { createSkill, deleteSkill, importSkill } from "./agents/skills.js"
+import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
 import { apply, applyAgentControls, roleUpdates, runRegistration, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { installTeaching } from "./instructions/teaching.js"
@@ -805,10 +805,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createSkill: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined)
+      const scope = input.scope ?? "project"
+      if (scope === "project" && (await read(directory)) === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const result = await createSkill({ projectDirectory: directory, name: input.name, body: input.body })
+      const target = skillTargetOf(directory, input)
+      if (!target.ok)
+        return { ok: false as const, error: { code: "skill.invalid" as const, message: target.message, data: { id: input.name, reason: target.message } } }
+      const result = await createSkill({ ...target.target, name: input.name, body: input.body })
       if (!result.ok && result.reason === "exists")
         return {
           ok: false as const,
@@ -820,15 +823,18 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
-      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.create", target: result.path, summary: `skill.create ${result.id}` })
-      return { ok: true as const, value: { id: result.id, path: result.path } }
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.create", target: result.path, summary: `skill.create ${result.id} (${scope})` })
+      return { ok: true as const, value: { id: result.id, path: result.path, scope } }
     },
     importSkill: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined)
+      const scope = input.scope ?? "project"
+      if (scope === "project" && (await read(directory)) === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
-      const result = await importSkill({ projectDirectory: directory, path: input.path })
+      const target = skillTargetOf(directory, input)
+      if (!target.ok)
+        return { ok: false as const, error: { code: "skill.invalid" as const, message: target.message, data: { id: input.path, reason: target.message } } }
+      const result = await importSkill({ ...target.target, path: input.path })
       if (!result.ok && result.reason === "exists")
         return {
           ok: false as const,
@@ -840,22 +846,26 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
-      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.import", target: result.path, summary: `skill.import ${result.id}` })
-      return { ok: true as const, value: { id: result.id, path: result.path } }
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.import", target: result.path, summary: `skill.import ${result.id} (${scope})` })
+      return { ok: true as const, value: { id: result.id, path: result.path, scope } }
     },
     deleteSkill: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
+      const scope = input.scope ?? "project"
       const config = await read(directory)
-      if (config === undefined)
+      if (scope === "project" && config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
+      const target = skillTargetOf(directory, input)
+      if (!target.ok)
+        return { ok: false as const, error: { code: "skill.invalid" as const, message: target.message, data: { id: input.id, reason: target.message } } }
       // The cascade below drops every customization/split at skill:<id>, not
       // only rows the deleted skill owned, and deleting the file is a write;
       // refuse a tool actor before either. The delete helper trims ids, so the
       // cascade address uses the same trimmed form.
       const stored = await load(directory)
-      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `skill:${input.id.trim()}`, config)
+      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `skill:${input.id.trim()}`, config ?? { protectedAgents: [] })
       if (refusal !== undefined) return { ok: false as const, error: refusal }
-      const result = await deleteSkill({ projectDirectory: directory, id: input.id })
+      const result = await deleteSkill({ ...target.target, id: input.id })
       if (!result.ok && result.reason === "missing")
         return {
           ok: false as const,
@@ -867,11 +877,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       const freshStored = await load(directory)
-      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      const freshLoaded = { ...freshStored, protectedAgents: config?.protectedAgents ?? [] }
       await removeItemRecords(directory, freshLoaded, `skill:${result.id}`)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
-      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: "project", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id}` })
-      return { ok: true as const, value: { id: result.id, path: result.path } }
+      await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id} (${scope})` })
+      return { ok: true as const, value: { id: result.id, path: result.path, scope } }
     },
     createBase: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -3084,6 +3094,22 @@ const INSTRUCTIONS_DISABLED = true
 
 function disabledMessage(directory: string): string {
   return `Project mode is not enabled for ${directory}`
+}
+
+// Resolve the skill storage target from a skill RPC input. Scope defaults to
+// project; preset scope must name its preset. A missing preset is a caller
+// error the handlers surface as skill.invalid rather than a thrown path error.
+function skillTargetOf(
+  directory: string,
+  input: { scope?: Plus.SkillScope; preset?: string },
+): { ok: true; target: SkillTarget } | { ok: false; message: string } {
+  const scope = input.scope ?? "project"
+  if (scope !== "preset") return { ok: true, target: { scope, projectDirectory: directory } }
+  const preset = input.preset?.trim()
+  if (preset === undefined || preset.length === 0) return { ok: false, message: "preset scope requires a preset id" }
+  if (preset.includes("/") || preset.includes("\\") || preset.includes("\0") || preset.includes(".."))
+    return { ok: false, message: `Invalid preset id "${preset}"` }
+  return { ok: true, target: { scope, projectDirectory: directory, preset } }
 }
 
 function messageOf(error: unknown): string {

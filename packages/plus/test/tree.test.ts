@@ -8,7 +8,7 @@ import { fingerprint, type AgentSource, type CustomizationRecord, type Item } fr
 import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
-import { expandedTree, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
+import { expandedTree, skillScopeOfNode, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
 import { enable } from "../src/project.js"
 import { saveRun } from "../src/teams/run.js"
@@ -152,6 +152,9 @@ test("Implementer subtree shape under the project root", () => {
   expect(childrenOf(nodes, "group:project:Implementer:skills").map((node) => node.label)).toEqual([
     "OpenCode",
     "OpenCodePlus",
+    "Global",
+    "Defaults",
+    "Preset",
     "MCP",
     "Project",
   ])
@@ -854,6 +857,20 @@ test("review rolls up to Native, Tools, Implementer, Agents, and Project while c
   }
 })
 
+test("skill scope add follows the Skills node's level and preset", () => {
+  expect(skillScopeOfNode(undefined)).toEqual({ scope: "project" })
+  expect(skillScopeOfNode({ id: "group:project:Implementer:skills" })).toEqual({ scope: "project" })
+  expect(skillScopeOfNode({ id: "group:project:Implementer:skills:native" })).toEqual({ scope: "project" })
+  expect(skillScopeOfNode({ id: "group:global:Helper:skills" })).toEqual({ scope: "global" })
+  expect(skillScopeOfNode({ id: "group:defaults::skills" })).toEqual({ scope: "defaults" })
+  expect(skillScopeOfNode({ id: "group:preset:orchestrator:skills" })).toEqual({ scope: "preset", preset: "orchestrator" })
+  // A member preset's owner carries a separator; it is flattened to one segment.
+  expect(skillScopeOfNode({ id: "group:preset:opencodeplus-team/:fable-planner:skills" })).toEqual({
+    scope: "preset",
+    preset: "opencodeplus-team-fable-planner",
+  })
+})
+
 test("add affordances land on exactly the listed groups", () => {
   const nodes = expandAll({
     items: items(),
@@ -887,11 +904,16 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:project:Implementer:base")).toBe("base")
   expect(adds.get("group:defaults::base")).toBe("base")
   expect(adds.get("group:project:Implementer:skills:project")).toBe("skill")
+  expect(adds.get("group:project:Implementer:skills:native")).toBe("skill")
+  expect(adds.get("group:project:Implementer:skills:plus")).toBe("skill")
+  expect(adds.get("group:project:Implementer:skills:global")).toBe("skill")
+  expect(adds.get("group:project:Implementer:skills:defaults")).toBe("skill")
+  expect(adds.get("group:project:Implementer:skills:preset")).toBe("skill")
   expect(adds.get("group:project:Implementer:system")).toBe("instruction")
   expect(adds.get("group:defaults::system")).toBe("instruction")
   expect(adds.get("group:defaults::mcp")).toBe("mcp")
   expect(adds.get("group:project:Implementer:tools")).toBeUndefined()
-  expect(adds.get("group:project:Implementer:skills")).toBeUndefined()
+  expect(adds.get("group:project:Implementer:skills")).toBe("skill")
   expect(adds.get("group:project:Implementer:tools:native")).toBeUndefined()
 })
 

@@ -64,6 +64,7 @@ function baseInput(overrides?: Partial<MemoInput>): MemoInput {
         id: "skill:proj-one",
         kind: "skill",
         group: "project",
+        skillScope: "project",
         title: "proj-one",
         text: "project skill",
         enabled: true,
@@ -334,7 +335,7 @@ test("removalPlan skill not project-owned refusal", () => {
   if (!row) throw new Error("missing native skill row")
   const plan = removalPlan(input, row.id)
   if (!("refusal" in plan)) throw new Error("expected refusal")
-  expect(plan.refusal).toBe(`"${row.label}" cannot be deleted: skill "native-one" is not project-owned`)
+  expect(plan.refusal).toBe(`"${row.label}" cannot be deleted: skill "native-one" is not user-authored`)
 })
 
 test("removalPlan base built-in refusal", () => {
@@ -406,7 +407,7 @@ test("refusalFor explains delete blocks and stays silent on structural rows", ()
   const nodes = expandedTree(input)
   const native = nodes.find((candidate) => candidate.address?.item === "skill:native-one")
   if (!native) throw new Error("missing native skill")
-  expect(refusalFor(input, native.id)).toBe(`"${native.label}" cannot be deleted: skill "native-one" is not project-owned`)
+  expect(refusalFor(input, native.id)).toBe(`"${native.label}" cannot be deleted: skill "native-one" is not user-authored`)
   const agentId = exactId(input, "agent:project:alpha")
   expect(refusalFor(input, agentId)).toBeUndefined()
 })

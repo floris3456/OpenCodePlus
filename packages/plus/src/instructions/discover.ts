@@ -612,17 +612,45 @@ function skillOrigin(skill: Skill.Info): ToolOrigin | undefined {
   return (skill as Skill.Info & { readonly origin?: ToolOrigin }).origin
 }
 
-function skillGroup(skill: Skill.Info, directory: string): { group: Item["group"]; server?: string } {
+function skillGroup(skill: Skill.Info, directory: string): {
+  group: Item["group"]
+  server?: string
+  scope?: Item["skillScope"]
+  preset?: string
+} {
   // Plus-owned skills match by their stable ids: an `origin`
   // field would not survive core's skill state (core/src/plugin/host.ts adds
   // through Schema.decodeUnknownSync(Skill.Info), which drops undeclared
   // keys), so classification cannot rely on it. teaching.test.ts pins both
   // the stripping and this fallback.
   if (skill.id === teachingSkillId || skill.id === "opencodeplus-release") return { group: "plus" }
+  // A user-authored skill is classified by where its SKILL.md lives, so the
+  // four creation scopes surface as their own groups.
+  const scoped = skillDirectoryScope(skill.location, directory)
+  if (scoped !== undefined)
+    return { group: scoped.scope, scope: scoped.scope, ...(scoped.preset === undefined ? {} : { preset: scoped.preset }) }
   const grouped = toolGroup(skillOrigin(skill))
   if (grouped.group !== "native") return grouped
-  if (isProjectSkill(skill.location, directory)) return { group: "project" }
   return { group: "native" }
+}
+
+// The authored scope of a skill file: a leaf directory under the global skills
+// root (global/defaults/preset) or the project's own skill directory. Built-in
+// and plugin skills are registered without a file, so they have no scope.
+function skillDirectoryScope(
+  location: string,
+  directory: string,
+): { scope: "project" | "global" | "defaults" | "preset"; preset?: string } | undefined {
+  const root = path.join(globalConfigDir(), "skills")
+  const relative = path.relative(root, location)
+  if (relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+    const segments = relative.split(path.sep)
+    if (segments[0] === "defaults") return { scope: "defaults" }
+    if (segments[0] === "presets" && segments.length >= 3) return { scope: "preset", preset: segments[1] }
+    return { scope: "global" }
+  }
+  if (isProjectSkill(location, directory)) return { scope: "project" }
+  return undefined
 }
 
 // A skill discovered from the project's own skill directory
@@ -652,6 +680,8 @@ function skillItems(
         kind: "skill",
         group: grouped.group,
         ...(grouped.server === undefined ? {} : { server: grouped.server }),
+        ...(grouped.scope === undefined ? {} : { skillScope: grouped.scope }),
+        ...(grouped.preset === undefined ? {} : { skillPreset: grouped.preset }),
         title: skill.name,
         text,
         enabled: upstreamEnabled(),

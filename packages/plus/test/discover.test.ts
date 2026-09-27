@@ -550,6 +550,31 @@ test("project skills group as project and Plus copies stay excluded", async () =
   ])
 })
 
+test("skills classify by their authored scope directory", async () => {
+  const config = await tempDir("plus-discover-config-")
+  process.env.OPENCODE_CONFIG_DIR = config
+  const directory = await tempDir("plus-discover-")
+  const skills: SkillEntry[] = [
+    skill("g", "global body", path.join(config, "skills", "g", "SKILL.md")),
+    skill("d", "defaults body", path.join(config, "skills", "defaults", "d", "SKILL.md")),
+    skill("p", "preset body", path.join(config, "skills", "presets", "crew", "p", "SKILL.md")),
+    skill("j", "project body", path.join(directory, ".opencode", "skill", "j", "SKILL.md")),
+  ]
+  const discovered = await discover({
+    ctx: fullContext({ directory, skills }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const found = discovered.items.filter((item) => item.kind === "skill")
+  expect(found).toEqual([
+    expect.objectContaining({ id: "skill:g", group: "global", skillScope: "global" }),
+    expect.objectContaining({ id: "skill:d", group: "defaults", skillScope: "defaults" }),
+    expect.objectContaining({ id: "skill:p", group: "preset", skillScope: "preset", skillPreset: "crew" }),
+    expect.objectContaining({ id: "skill:j", group: "project", skillScope: "project" }),
+  ])
+})
+
 test("system:role is one per agent with scoped agents and order 0", async () => {
   const directory = await tempDir("plus-discover-")
   const agents = [agent("alpha", "alpha prompt"), agent("beta", "beta prompt")]

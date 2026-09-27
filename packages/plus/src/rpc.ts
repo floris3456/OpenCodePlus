@@ -62,9 +62,22 @@ export const ItemGroup = Schema.Union([
   Schema.Literal("native"),
   Schema.Literal("plus"),
   Schema.Literal("mcp"),
+  Schema.Literal("global"),
+  Schema.Literal("defaults"),
+  Schema.Literal("preset"),
   Schema.Literal("project"),
   Schema.Literal("none"),
 ]).annotate({ identifier: "Plus.ItemGroup" })
+
+// A skill's authored scope (agents/skills.ts). The tree projects it onto the
+// skill group so a row says where its SKILL.md lives.
+export type SkillScope = typeof SkillScope.Type
+export const SkillScope = Schema.Union([
+  Schema.Literal("project"),
+  Schema.Literal("global"),
+  Schema.Literal("defaults"),
+  Schema.Literal("preset"),
+]).annotate({ identifier: "Plus.SkillScope" })
 
 // Mirrors PolicyEffects in instructions/model.ts. A team policy row carries
 // both sides of its own answer, and `ask` is a real core effect, so all three
@@ -104,6 +117,8 @@ export const SnapshotItem = Schema.Struct({
   namespace: Schema.optionalKey(Schema.String),
   pinned: Schema.optionalKey(Schema.Boolean),
   execute: Schema.optionalKey(Schema.Boolean),
+  skillScope: Schema.optionalKey(SkillScope),
+  skillPreset: Schema.optionalKey(Schema.String),
   permTool: Schema.optionalKey(Schema.String),
   permAction: Schema.optionalKey(Schema.String),
   ruleId: Schema.optionalKey(Schema.String),
@@ -521,26 +536,36 @@ export const DeleteAgentInput = Schema.Struct({
   actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.DeleteAgentInput" })
 
+// A skill's authored scope. `scope` defaults to project when omitted (the
+// historical behavior); `preset` is required when scope is preset and ignored
+// otherwise.
 export interface CreateSkillInput extends Schema.Schema.Type<typeof CreateSkillInput> {}
 export const CreateSkillInput = Schema.Struct({
   name: Schema.String,
   body: Schema.String,
+  scope: Schema.optionalKey(SkillScope),
+  preset: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.CreateSkillInput" })
 
 export interface ImportSkillInput extends Schema.Schema.Type<typeof ImportSkillInput> {}
 export const ImportSkillInput = Schema.Struct({
   path: Schema.String,
+  scope: Schema.optionalKey(SkillScope),
+  preset: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.ImportSkillInput" })
 
 export interface SkillRef extends Schema.Schema.Type<typeof SkillRef> {}
 export const SkillRef = Schema.Struct({
   id: Schema.String,
   path: Schema.String,
+  scope: Schema.optionalKey(SkillScope),
 }).annotate({ identifier: "Plus.SkillRef" })
 
 export interface DeleteSkillInput extends Schema.Schema.Type<typeof DeleteSkillInput> {}
 export const DeleteSkillInput = Schema.Struct({
   id: Schema.String,
+  scope: Schema.optionalKey(SkillScope),
+  preset: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.DeleteSkillInput" })
 
 export interface CreateBaseInput extends Schema.Schema.Type<typeof CreateBaseInput> {}

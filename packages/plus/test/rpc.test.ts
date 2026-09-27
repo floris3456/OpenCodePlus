@@ -1029,7 +1029,7 @@ test("skill create and import write SKILL.md and raise declared errors", async (
   await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["skill.create"]({ name: "notes", body: "Take notes." }, throwingContext({})))
-  expect(created).toEqual({ id: "notes", path: path.join(project, ".opencode", "skill", "notes", "SKILL.md") })
+  expect(created).toEqual({ id: "notes", path: path.join(project, ".opencode", "skill", "notes", "SKILL.md"), scope: "project" })
   expect(await Bun.file(created.path).text()).toContain("Take notes.")
   expectRpcBody(created)
   const duplicate: { current?: CapturedError } = {}
@@ -1055,13 +1055,47 @@ test("skill delete removes the project SKILL.md directory and raises declared er
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["skill.create"]({ name: "notes", body: "Take notes." }, throwingContext({})))
   const deleted = await Effect.runPromise(handlers["skill.delete"]({ id: "notes" }, throwingContext({})))
-  expect(deleted).toEqual({ id: "notes", path: created.path })
+  expect(deleted).toEqual({ id: "notes", path: created.path, scope: "project" })
   expect(await Bun.file(created.path).exists()).toBe(false)
   expectRpcBody(deleted)
   const missing: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["skill.delete"]({ id: "ghost" }, throwingContext(missing)), missing, "skill.missing")
   const invalid: { current?: CapturedError } = {}
   await expectDeclaredError(handlers["skill.delete"]({ id: "../evil" }, throwingContext(invalid)), invalid, "skill.invalid")
+})
+
+test("skill create writes each scope to its own directory, needs no project mode off-project, and delete removes it", async () => {
+  const { project, config } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  // tempRoot disabled project mode: the non-project scopes still land.
+  const global = await Effect.runPromise(handlers["skill.create"]({ name: "g", body: "g body", scope: "global" }, throwingContext({})))
+  expect(global).toEqual({ id: "g", path: path.join(config, "skills", "g", "SKILL.md"), scope: "global" })
+  const defaults = await Effect.runPromise(
+    handlers["skill.create"]({ name: "d", body: "d body", scope: "defaults" }, throwingContext({})),
+  )
+  expect(defaults.path).toBe(path.join(config, "skills", "defaults", "d", "SKILL.md"))
+  const preset = await Effect.runPromise(
+    handlers["skill.create"]({ name: "p", body: "p body", scope: "preset", preset: "my-preset" }, throwingContext({})),
+  )
+  expect(preset.path).toBe(path.join(config, "skills", "presets", "my-preset", "p", "SKILL.md"))
+  expect(await Bun.file(preset.path).text()).toContain("p body")
+  // A preset scope without a preset id is a caller error, not a path error.
+  const missing: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["skill.create"]({ name: "x", body: "x", scope: "preset" }, throwingContext(missing)),
+    missing,
+    "skill.invalid",
+  )
+  // The default scope still requires project mode.
+  const disabled: { current?: CapturedError } = {}
+  await expectDeclaredError(
+    handlers["skill.create"]({ name: "proj", body: "x" }, throwingContext(disabled)),
+    disabled,
+    "project.disabled",
+  )
+  const deleted = await Effect.runPromise(handlers["skill.delete"]({ id: "g", scope: "global" }, throwingContext({})))
+  expect(deleted).toEqual({ id: "g", path: global.path, scope: "global" })
+  expect(await Bun.file(global.path).exists()).toBe(false)
 })
 
 test("rule remove drops customizations so re-adding the rule reads enabled:true", async () => {

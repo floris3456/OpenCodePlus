@@ -94,7 +94,7 @@ Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` sp
 
 | kind | required fields |
 | agent | \`id\` (+ optional \`scope\` project\|global, \`preset\`; no preset = unlinked, Defaults still apply) |
-| skill | \`name\`, \`body\` |
+| skill | \`name\`, \`body\` (+ optional \`scope\` project\|global\|defaults\|preset and, for preset, \`preset\`; \`scope\` defaults to project) |
 | base | \`id\`, \`title\`, \`text\` |
 | instruction | disabled: fails with \`instruction.disabled\` |
 | mcp | \`name\`, \`config\` |
@@ -106,6 +106,8 @@ Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` sp
 | presetMember | \`team\` (a User team preset), \`id\` (+ optional \`from\`) |
 | model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\` project\|global\|defaults\|preset, \`agent\`; \`level\` defaults to \`project\`, and project/global/preset rows need \`agent\`) |
 | rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ optional \`keywords\`, \`message\`, \`level\` project\|global\|defaults, \`agent\`; \`level\` defaults to \`project\`) |
+
+Skill \`scope\` picks where the \`SKILL.md\` is written: \`project\` is the checkout's own \`.opencode/skill\`; \`global\`, \`defaults\` and \`preset\` are subdirectories of the global skills folder core scans. The TUI's Add on a Skills row uses that row's level (and the preset under Presets) as the scope, so nothing is typed.
 
 Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\` for file, model, and rule rows; \`agent:<level>:<id>\` for an agent, an Agents entry or an agent preset; \`team:<level>:<team>\` for a team or team preset; \`team:<level>:<team>:<member>\` for a member, a Teams entry or a member preset. An agent or member file carries its preset's mode and description and an empty body; everything else follows the preset.
 

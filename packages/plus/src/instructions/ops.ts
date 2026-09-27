@@ -85,6 +85,8 @@ export type RemovalPlan =
   | {
       readonly kind: "skill.delete"
       readonly id: string
+      readonly scope: "project" | "global" | "defaults" | "preset"
+      readonly preset?: string
       readonly confirmTitle: string
       readonly confirmMessage: string
       readonly successStatus: string
@@ -1057,13 +1059,16 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
   if (item === undefined) return { refusal: `"${node.label}" cannot be deleted` }
   if (item.kind === "skill" && itemId.startsWith("skill:")) {
     const skillId = itemId.slice("skill:".length)
-    if (node.actions?.remove !== true || item.group !== "project")
-      return { refusal: `"${node.label}" cannot be deleted: skill "${skillId}" is not project-owned` }
+    const scope = item.skillScope ?? (item.group === "project" ? "project" : undefined)
+    if (node.actions?.remove !== true || scope === undefined)
+      return { refusal: `"${node.label}" cannot be deleted: skill "${skillId}" is not user-authored` }
     return {
       kind: "skill.delete",
       id: skillId,
+      scope,
+      ...(item.skillPreset === undefined ? {} : { preset: item.skillPreset }),
       confirmTitle: `Delete skill ${skillId}?`,
-      confirmMessage: `Delete project skill "${skillId}"? This cannot be undone.`,
+      confirmMessage: `Delete ${scope} skill "${skillId}"? This cannot be undone.`,
       successStatus: `Deleted skill ${skillId}`,
     }
   }
@@ -1132,7 +1137,8 @@ export function refusalFor(input: MemoInput, rowId: string): string | undefined 
   if (item === undefined) return undefined
   if (item.kind === "skill") {
     const skillId = address.item.startsWith("skill:") ? address.item.slice("skill:".length) : address.item
-    return `"${node.label}" cannot be deleted: skill "${skillId}" is not project-owned`
+    if (item.skillScope !== undefined || item.group === "project") return undefined
+    return `"${node.label}" cannot be deleted: skill "${skillId}" is not user-authored`
   }
   if (item.kind === "base") {
     const templateId = address.item.startsWith("base:") ? address.item.slice("base:".length) : address.item

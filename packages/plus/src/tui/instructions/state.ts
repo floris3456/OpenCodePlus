@@ -911,7 +911,10 @@ export function createInstructionsState(context: Plugin.Context) {
       } else if (plan.kind === "mcp.remove") {
         await plus["mcp.remove"]({ name: plan.name }, { location: context.location })
       } else if (plan.kind === "skill.delete") {
-        await plus["skill.delete"]({ id: plan.id }, { location: context.location })
+        await plus["skill.delete"](
+          { id: plan.id, scope: plan.scope, ...(plan.preset === undefined ? {} : { preset: plan.preset }) },
+          { location: context.location },
+        )
       } else if (plan.kind === "base.delete") {
         await plus["base.delete"]({ id: plan.id }, { location: context.location })
       } else if (plan.kind === "preset.delete") {

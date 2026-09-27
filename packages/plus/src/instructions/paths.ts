@@ -108,6 +108,34 @@ export function resolveInstructionPath(
   return { ok: true, relative: path.relative(root, target), path: target }
 }
 
+// Skills are discovered by core from `<config>/skill` and `<config>/skills`
+// (core/src/config/plugin/skill.ts). Scopes that a user creates through the
+// tool must land where core already scans, so every non-project scope is a
+// subdirectory of the global skills directory: no plugin registration is
+// needed, and the on-disk layout stays ordinary SKILL.md files.
+//
+//   global   <config>/skills/<name>/SKILL.md
+//   defaults <config>/skills/defaults/<name>/SKILL.md
+//   preset   <config>/skills/presets/<preset>/<name>/SKILL.md
+//
+// A skill id is its leaf directory name (core/src/config/plugin/skill-file.ts),
+// so the subdirectory does not change the id; discover.ts reads the path to
+// tell the scopes apart.
+export function globalSkillsDir(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "skills")
+}
+
+export function defaultsSkillsDir(configDir: string = globalConfigDir()): string {
+  return path.join(globalSkillsDir(configDir), "defaults")
+}
+
+export function presetSkillsDir(preset: string, configDir: string = globalConfigDir()): string {
+  const root = path.resolve(globalSkillsDir(configDir), "presets")
+  const target = path.resolve(root, preset)
+  if (target === root || !target.startsWith(`${root}${path.sep}`)) throw new Error(`Invalid preset id "${preset}"`)
+  return target
+}
+
 // The teaching layer (teaching.ts) lives here as path plus stable ids so
 // discover.ts and apply.ts share them without a dependency cycle and without
 // hardcoding the strings twice.

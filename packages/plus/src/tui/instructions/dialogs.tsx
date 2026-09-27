@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
-import type { AddKind, RowOwner, TreeNode } from "../../instructions/tree.js"
+import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import type { InstructionsState } from "./state.js"
 
@@ -78,7 +78,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
       return addAgent(node)
     }
     if (kind === "base") return addBase()
-    if (kind === "skill") return addSkill()
+    if (kind === "skill") return addSkill(node)
     if (kind === "instruction") return addInstruction()
     // Defaults → Teams takes team entries: a team pattern with a member entry.
     if (kind === "team" && node?.id === "group:defaults:teams") return addTeamEntry()
@@ -285,10 +285,16 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     }
   }
 
-  async function addSkill(): Promise<void> {
+  async function addSkill(node: TreeNode | undefined): Promise<void> {
     if (disposed) return
+    // The node the user invoked Add on decides the scope: a Skills group under
+    // the Project root authors a project skill, under Global a global one, and
+    // under Defaults/Presets respectively. The subgroup (OpenCode, Project, …)
+    // is a skill's origin, not the target, so only the level is read.
+    const target = skillScopeOfNode(node)
+    const scopeLabel = target.scope === "preset" ? `preset ${target.preset ?? ""}`.trim() : target.scope
     const mode = await context.ui.dialog.select<"create" | "import">({
-      title: "Add skill",
+      title: `Add ${scopeLabel} skill`,
       options: [
         { title: "Create", value: "create", description: "Create a new skill from name and body" },
         { title: "Import", value: "import", description: "Import from a path to SKILL.md" },
@@ -296,14 +302,15 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     })
     if (disposed) return
     if (mode === undefined) return
+    const scope = { scope: target.scope, ...(target.preset === undefined ? {} : { preset: target.preset }) }
     if (mode === "import") {
       const path = await context.ui.dialog.prompt({ title: "Import skill", placeholder: "path/to/SKILL.md" })
       if (disposed) return
       if (path === undefined) return
       try {
-        const ref = await plus["skill.import"]({ path }, { location: context.location })
+        const ref = await plus["skill.import"]({ path, ...scope }, { location: context.location })
         if (disposed) return
-        context.ui.toast.show({ variant: "success", message: `Imported skill ${ref.id}` })
+        context.ui.toast.show({ variant: "success", message: `Imported ${scopeLabel} skill ${ref.id}` })
         await state.refresh()
       } catch (error: unknown) {
         if (disposed) return
@@ -318,9 +325,9 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     if (disposed) return
     if (body === undefined) return
     try {
-      const ref = await plus["skill.create"]({ name, body }, { location: context.location })
+      const ref = await plus["skill.create"]({ name, body, ...scope }, { location: context.location })
       if (disposed) return
-      context.ui.toast.show({ variant: "success", message: `Created skill ${ref.id}` })
+      context.ui.toast.show({ variant: "success", message: `Created ${scopeLabel} skill ${ref.id}` })
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return

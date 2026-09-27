@@ -78,6 +78,23 @@ export type TreeNodeKind = "root" | "group" | "agent" | "team" | "item" | "secti
 // on a Defaults Agents group adds an entry, on a Defaults team entry row a
 // member entry, on a user team preset a member preset; `team` on the Defaults
 // Teams group adds a team entry.
+export type SkillScopeTarget = { scope: "project" | "global" | "defaults" | "preset"; preset?: string }
+
+// The scope a new skill is written to comes from the Skills node Add was
+// invoked on: the level in its group id, and — under Presets — the preset name.
+// A node without a Skills group id (the generic Add picker) defaults to the
+// project, preserving the previous behavior. The subgroup (OpenCode, Project,
+// …) is a skill's origin, not the creation target, so only the level is read.
+export function skillScopeOfNode(node: { readonly id: string } | undefined): SkillScopeTarget {
+  const match = node?.id.match(/^group:(project|global|defaults|preset):(.*):skills(?::.*)?$/)
+  if (match === null || match === undefined) return { scope: "project" }
+  const scope = match[1] as SkillScopeTarget["scope"]
+  if (scope !== "preset") return { scope }
+  // Member presets carry `<team>/:<member>`; the filesystem needs one segment.
+  const preset = (match[2] ?? "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "")
+  return preset.length === 0 ? { scope: "project" } : { scope, preset }
+}
+
 export type AddKind =
   | "agent"
   | "base"
@@ -1605,12 +1622,18 @@ function lazySkills(
     id: prefix,
     label: "Skills",
     depth,
+    // Add is offered on the Skills group itself and on each origin leaf, so a
+    // user can create a skill at this node's scope wherever they invoke it.
+    add: "skill",
     actions: noActions(),
     children: () => {
       const skills = sortedKind(ctx, "skill", owner)
       return [
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "OpenCode", depth + 1, skills.filter((item) => item.group === "native"), undefined, teamRef, catalogue, ownerPath),
-        leafGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, skills.filter((item) => item.group === "plus"), undefined, teamRef, catalogue, ownerPath),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "OpenCode", depth + 1, skills.filter((item) => item.group === "native"), "skill", teamRef, catalogue, ownerPath),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, skills.filter((item) => item.group === "plus"), "skill", teamRef, catalogue, ownerPath),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:global`, "Global", depth + 1, skills.filter((item) => item.group === "global"), "skill", teamRef, catalogue, ownerPath),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:defaults`, "Defaults", depth + 1, skills.filter((item) => item.group === "defaults"), "skill", teamRef, catalogue, ownerPath),
+        leafGroup(ctx, memo, level, owner, agent, `${prefix}:preset`, "Preset", depth + 1, skills.filter((item) => item.group === "preset"), "skill", teamRef, catalogue, ownerPath),
         mcpGroup(ctx, memo, level, owner, agent, `${prefix}:mcp`, depth + 1, skills.filter((item) => item.group === "mcp"), teamRef, catalogue, ownerPath),
         leafGroup(
           ctx,
@@ -1665,7 +1688,16 @@ function straySkills(
   ownerPath?: string,
 ): Lazy[] {
   return skills
-    .filter((item) => item.group !== "native" && item.group !== "plus" && item.group !== "mcp" && item.group !== "project")
+    .filter(
+      (item) =>
+        item.group !== "native" &&
+        item.group !== "plus" &&
+        item.group !== "mcp" &&
+        item.group !== "project" &&
+        item.group !== "global" &&
+        item.group !== "defaults" &&
+        item.group !== "preset",
+    )
     .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth, teamRef, catalogue, ownerPath))
 }
 
@@ -2387,6 +2419,10 @@ function removable(level: Level, owner: string | null, item: Item): boolean {
   if (level === "defaults" && owner === null && item.kind === "mcp") return true
   if (item.id === "system:role") return false
   if (item.kind === "base" && item.userBase === true) return true
+  // A skill is deletable wherever a user authored it: the project's own
+  // directory or one of the global-directory scopes. Built-in and plugin
+  // skills (native/plus/mcp) are not files and stay refused.
+  if (item.kind === "skill") return item.skillScope !== undefined || item.group === "project"
   return item.group === "project"
 }
 

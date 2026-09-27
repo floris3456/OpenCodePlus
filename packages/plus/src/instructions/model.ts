@@ -72,7 +72,7 @@ export interface Address {
 }
 
 export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm" | "setting" | "compaction"
-export type ItemGroup = "native" | "plus" | "mcp" | "project" | "none"
+export type ItemGroup = "native" | "plus" | "mcp" | "global" | "defaults" | "preset" | "project" | "none"
 
 export interface Item {
   readonly id: string
@@ -97,6 +97,14 @@ export interface Item {
   readonly pinned?: boolean
   /** Marks the single synthetic host-owned `execute` row. Only discovery ever sets it, always `true`. */
   readonly execute?: boolean
+  /**
+   * Skill rows only: where the SKILL.md is authored (agents/skills.ts). `project`
+   * and the global-directory scopes are user-owned and deletable; built-in and
+   * plugin skills carry no scope. Only discovery ever sets it.
+   */
+  readonly skillScope?: "project" | "global" | "defaults" | "preset"
+  /** Skill rows only: the preset a `preset`-scoped skill belongs to. Only discovery ever sets it. */
+  readonly skillPreset?: string
   /** Perm rule rows only: the parent tool id (e.g. "shell", "edit", "subagent"). Only discovery ever sets it. */
   readonly permTool?: string
   /** Perm rule rows only: the core permission action from the tool's own `options.permission` when the registry carries one. Only discovery ever sets it. */

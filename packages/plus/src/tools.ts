@@ -217,7 +217,9 @@ const CreateInput = Schema.Struct({
     Schema.Literal("presetMember"),
   ]),
   id: Schema.optionalKey(Schema.String),
-  scope: Schema.optionalKey(Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults")])),
+  scope: Schema.optionalKey(
+    Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults"), Schema.Literal("preset")]),
+  ),
   preset: Schema.optionalKey(PresetInput),
   from: Schema.optionalKey(PresetInput),
   name: Schema.optionalKey(Schema.String),
@@ -1265,7 +1267,7 @@ function createRow(
       | "teamPreset"
       | "presetMember"
     id?: string
-    scope?: "project" | "global" | "defaults"
+    scope?: "project" | "global" | "defaults" | "preset"
     preset?: string | Plus.PresetRef
     from?: string | Plus.PresetRef
     name?: string
@@ -1367,7 +1369,19 @@ function createRow(
     if (input.kind === "skill") {
       if (input.name === undefined || input.body === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create skill requires name and body" }))
-      const created = yield* Effect.promise(() => api.createSkill({ name: input.name as string, body: input.body as string, actor }))
+      const scope = input.scope ?? "project"
+      const preset = typeof input.preset === "string" ? input.preset : input.preset?.id
+      if (scope === "preset" && (preset === undefined || preset.length === 0))
+        return yield* Effect.fail(new Tool.Error({ message: "preset.invalid: create skill with scope preset requires a preset id" }))
+      const created = yield* Effect.promise(() =>
+        api.createSkill({
+          name: input.name as string,
+          body: input.body as string,
+          scope,
+          ...(preset === undefined ? {} : { preset }),
+          actor,
+        }),
+      )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       const row = yield* createdRowOrFail(
         api,
