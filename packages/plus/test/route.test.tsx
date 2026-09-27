@@ -13,10 +13,12 @@ import { load, save } from "../src/instructions/store.js"
 import type { PresetRef, Snapshot } from "../src/rpc.js"
 import { Definition } from "../src/rpc.js"
 import { createInstructionsDialogs } from "../src/tui/instructions/dialogs.js"
+import { HELP, HelpDialog } from "../src/tui/instructions/help.js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import type { TestFixture } from "./tui.js"
 import { agentInfo, fullContext } from "./harness.js"
+import { binds, breadcrumb, category, dispatch, expand, footer, gotoLevel, levelOf, moveTo, reach, reachCategory, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
 
 const e2eRoots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -27,106 +29,117 @@ afterEach(async () => {
   await Promise.all(e2eRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-function dispatch(fixture: TestFixture, key: string): boolean {
-  for (const cmd of fixture.commands()) {
-    if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-      void cmd.run()
-      return true
-    }
-  }
-  return false
+// reach() as a user does it (filter by id, enter goes to the row), with two
+// differences: `id:` matches by prefix (team:project:crew also matches its
+// members), so the negated `<id>:` prefix keeps exactly the row itself; and
+// the Presets level's full tree can take longer to filter than
+// waitForFrame's 20 passes.
+async function goto(fixture: TestFixture, id: string, label: string): Promise<void> {
+  await gotoLevel(fixture, levelOf(id))
+  await toSidebar(fixture)
+  if (!dispatch(fixture, "/")) throw new Error("no filter key")
+  await fixture.waitForFrame((frame) => frame.includes("words or key:value"))
+  await sleep(20)
+  const query = `id:${id} !id:${id}:`
+  await fixture.typeText(query)
+  await until(fixture, (frame) => frame.includes(query.slice(-24)))
+  // Let the debounced filter (150 ms) apply the whole query.
+  await sleep(250)
+  await until(fixture, (frame) => footer(frame).includes("esc clear filter") && selectedRow(frame).includes(label))
+  dispatch(fixture, "return")
+  await until(fixture, (frame) => !footer(frame).includes("esc clear filter") && selectedRow(frame).includes(label))
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function moveDown(fixture: TestFixture, n: number): Promise<void> {
-  for (let i = 0; i < n; i++) {
-    dispatch(fixture, "down")
-    await sleep(20)
-  }
-}
-
-function binds(fixture: TestFixture): string[] {
-  return fixture.commands().map((cmd) => cmd.bind as string)
-}
-
-function selectedRow(frame: string): string {
-  const line = frame.split("\n").find((entry) => entry.includes("›"))
-  return line ?? ""
-}
-
-// Locate rows by label instead of hardcoded moveDown counts from a root, so
-// the next structural change does not shift every test. Each step waits for
-// the selection to actually move before continuing, so the walk cannot
-// outrun the renderer and blow past its target while frames are stale.
-async function moveTo(fixture: TestFixture, label: string): Promise<void> {
-  for (let i = 0; i < 60; i++) {
-    const before = fixture.captureCharFrame()
-    if (selectedRow(before).includes(label)) return
-    dispatch(fixture, "down")
-    await fixture.waitForFrame((frame) => selectedRow(frame) !== selectedRow(before))
-  }
-  throw new Error(`never reached row "${label}"`)
-}
-
-async function expand(fixture: TestFixture): Promise<void> {
-  // Idempotent: only press right when the selected row shows collapsed "+".
-  // Roots start expanded ("-"), so a blind right would collapse them.
-  const line = selectedRow(fixture.captureCharFrame())
-  const rest = line.slice(line.indexOf("›") + 1)
-  if (/^\s*- /.test(rest)) return
-  dispatch(fixture, "right")
+// Open the selected item row and the Description group its sections may
+// hang under, until the section row `label` shows in the list.
+async function showSection(fixture: TestFixture, label: string): Promise<void> {
+  await expand(fixture)
   await sleep(50)
+  if (!listPane(fixture.captureCharFrame()).includes(label) && listPane(fixture.captureCharFrame()).includes("▸ Description")) {
+    await moveTo(fixture, "Description")
+    await expand(fixture)
+  }
+  await fixture.waitForFrame((frame) => listPane(frame).includes(label))
 }
 
-// Agents live under their level's Agents group (collapsed by default) inside
-// the User origin subgroup, so every agent-scoped test starts by revealing
-// the named agent row. The opening "Instructions" wait doubles as a mount
-// gate, but the agent name may already be on screen (the loader resolves
-// between renders), so do not require both in one predicate.
-async function gotoAgent(fixture: TestFixture, name: string): Promise<void> {
-  await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  await moveTo(fixture, "Agents")
-  await expand(fixture)
-  await moveTo(fixture, "User")
-  await expand(fixture)
-  await moveTo(fixture, name)
+// Type into the live filter of the current level and let it apply.
+async function filter(fixture: TestFixture, text: string): Promise<void> {
+  await toSidebar(fixture)
+  expect(dispatch(fixture, "/")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes("words or key:value"))
+  await sleep(20)
+  await fixture.typeText(text)
+  await fixture.waitForFrame((frame) => frame.includes(`/ ${text}`))
+  await sleep(250)
 }
 
-// The Defaults shared inventory belongs to a catalogue now, so reaching a
-// shared group means Defaults › Agents › <group> (or Defaults › Teams ›
-// <group> for the Teams catalogue's own copy).
-async function gotoDefaultsInventory(
-  fixture: TestFixture,
-  label: string,
-  catalogue: "Agents" | "Teams" = "Agents",
-): Promise<void> {
-  await moveTo(fixture, "Defaults")
-  await expand(fixture)
-  await moveTo(fixture, catalogue)
-  await expand(fixture)
+// The filter lands on its first leaf match (often a section below the item
+// the words name): walk up to the first result, then down to `label`.
+async function moveToResult(fixture: TestFixture, label: string): Promise<void> {
+  for (let step = 0; step < 40; step++) {
+    const before = selectedRow(fixture.captureCharFrame())
+    dispatch(fixture, "up")
+    // Long enough for the move to render: a stale frame would stop the
+    // walk early or leave moveTo comparing against an old row.
+    await sleep(80)
+    if (selectedRow(fixture.captureCharFrame()) === before) break
+  }
   await moveTo(fixture, label)
 }
 
-// Down-only walk that skips the current row first: used when several rows
-// share a label (each level has its own Agents group).
-async function moveToNext(fixture: TestFixture, label: string): Promise<void> {
-  const before = selectedRow(fixture.captureCharFrame())
-  dispatch(fixture, "down")
-  await fixture.waitForFrame((frame) => selectedRow(frame) !== before)
-  await moveTo(fixture, label)
+// waitForFrame gives up after 20 render passes; a create flow's refresh
+// through the real handlers can take longer before its row shows.
+async function until(fixture: TestFixture, predicate: (frame: string) => boolean, timeout = 4000): Promise<string> {
+  for (let waited = 0; waited < timeout; waited += 50) {
+    const frame = fixture.captureCharFrame()
+    if (predicate(frame)) return frame
+    await sleep(50)
+  }
+  return fixture.waitForFrame(predicate)
 }
 
-// A rule row sits under its tool's Permissions group and category group:
-// from the expanded tool row, open both and select the rule.
-async function openRule(fixture: TestFixture, category: string, label: string): Promise<void> {
-  await moveTo(fixture, "Permissions")
-  await expand(fixture)
-  await moveTo(fixture, category)
-  await expand(fixture)
-  await moveTo(fixture, label)
+const SIDEBAR = 30
+
+// The cursor row of the sidebar alone: on a wide frame the same line also
+// carries the list (the owner's name, its category tabs).
+function sidebarRow(frame: string): string {
+  return selectedRow(frame).slice(0, SIDEBAR - 1)
+}
+
+// moveTo for the sidebar: Down until the sidebar's cursor row shows `label`.
+async function navTo(fixture: TestFixture, label: string): Promise<void> {
+  for (let step = 0; step < 80; step++) {
+    const before = fixture.captureCharFrame()
+    if (sidebarRow(before).includes(label)) return
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => sidebarRow(frame) !== sidebarRow(before))
+  }
+  throw new Error(`never reached sidebar row "${label}"`)
+}
+
+// The list column of a wide frame: between the sidebar and the inspector.
+function listPane(frame: string): string {
+  return frame
+    .split("\n")
+    .slice(2)
+    .map((line) => (line.split("│")[0] ?? "").slice(SIDEBAR))
+    .join("\n")
+}
+
+// The inspector's text without whitespace, so a fact reads the same however
+// the pane wraps it; compare with flat(text).
+function inspector(frame: string): string {
+  return flat(
+    frame
+      .split("\n")
+      .slice(2)
+      .flatMap((line) => (line.includes("│") ? [line.slice(line.indexOf("│") + 1)] : []))
+      .join(""),
+  )
+}
+
+function flat(text: string): string {
+  return text.replace(/\s+/g, "")
 }
 
 function mcpItem(overrides?: Record<string, unknown>) {
@@ -173,32 +186,23 @@ test("roots render with agents and subtree groups", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Agents live one level down under each level's Agents group inside the
-    // User origin subgroup: expand Project's group and User to reveal
-    // Implementer, then the agent itself to reveal its Tools/Base/Skills/System subtree.
-    await moveTo(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
-    await moveTo(fixture, "Implementer")
-    await expand(fixture)
+    // The levels are tabs; the Project sidebar lists Agents › User ›
+    // Implementer, and the selected agent's categories are tabs over the list.
+    await goto(fixture, "agent:project:Implementer", "Implementer")
     await fixture.waitForFrame((frame) => frame.includes("Tools"))
     const expanded = fixture.captureCharFrame()
-    expect(expanded).toContain("Project")
-    expect(expanded).toContain("Global")
-    expect(expanded).toContain("Defaults")
+    expect(expanded.split("\n")[0]).toContain("Project")
+    expect(expanded.split("\n")[0]).toContain("Global")
+    expect(expanded.split("\n")[0]).toContain("Defaults")
+    expect(breadcrumb(expanded)).toContain("Project › Agents › User › Implementer")
     expect(expanded).toContain("Implementer")
     expect(expanded).toContain("Tools")
     expect(expanded).toContain("Base")
     expect(expanded).toContain("Skills")
     expect(expanded).toContain("System")
     // Global's Agents group holds Helper under its User subgroup.
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("Helper"))
+    await goto(fixture, "agent:global:Helper", "Helper")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("Global › Agents › User › Helper")
     expect(fixture.captureCharFrame()).toContain("Helper")
     expect(fixture.captureCharFrame()).toContain("Agents")
   } finally {
@@ -235,52 +239,82 @@ test("filter narrows visible rows", async () => {
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["Implementer"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // Agents start collapsed under group:project:agents inside the User origin subgroup; expand both first.
-    await moveTo(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("Implementer"))
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    // The live filter replaces the list with the matches and their
+    // ancestors; the sidebar keeps listing every owner.
+    await filter(fixture, "Implementer")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Implementer"))
     const frame = fixture.captureCharFrame()
-    expect(frame).toContain("Filter:")
-    expect(frame).toContain("Implementer")
-    expect(frame).not.toContain("Helper")
+    expect(frame).toContain("/ Implementer")
+    expect(footer(frame)).toContain("esc clear filter")
+    expect(listPane(frame)).toContain("Implementer")
+    expect(listPane(frame)).not.toContain("Helper")
   } finally {
     fixture.destroy()
   }
 })
 
-test("help overlay lists keys and closes", async () => {
-  const fixture = await renderInstructionsRoute({ snapshots: [createSnapshot()], width: 120, height: 40 })
+// `?` opens the help dialog (the host dialog, not text in the screen); the
+// dialog renders HELP, which lists the keys and the whole filter grammar.
+test("help dialog lists keys and leaves the screen untouched", async () => {
+  const shown: unknown[] = []
+  const fixture = await renderPlusFixture({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 40,
+    render: (context) => {
+      const show = context.ui.dialog.show
+      context.ui.dialog.show = ((element: unknown) => {
+        shown.push(element)
+        return (show as (element: unknown) => unknown)(element)
+      }) as typeof show
+      return createComponent(InstructionsRoute, { context, onClose: () => {} })
+    },
+  })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    dispatch(fixture, "?")
-    await fixture.waitForFrame((frame) => frame.includes("space toggle include/exclude"))
-    expect(fixture.captureCharFrame()).toContain("space toggle include/exclude")
-    expect(fixture.captureCharFrame()).toContain("p pin Code Mode tool")
-    expect(fixture.captureCharFrame()).toContain("l link an agent, member, team, entry or User preset to a preset (or unlink)")
-    expect(fixture.captureCharFrame()).toContain("enter on a yellow review row: keep yours or take the new value")
-    // The overlay lists the filter keys so the grammar is discoverable
-    // without leaving the TUI: structural keys grouped, then the slower
-    // text-dependent ones.
-    expect(fixture.captureCharFrame()).toContain("keys: kind item group")
-    expect(fixture.captureCharFrame()).toContain("namespace")
-    expect(fixture.captureCharFrame()).toContain("pinned")
-    expect(fixture.captureCharFrame()).toContain("execute")
-    expect(fixture.captureCharFrame()).toContain("has id label updated team acked excluded")
-    expect(fixture.captureCharFrame()).toContain("slow text:")
-    expect(fixture.captureCharFrame()).toContain("shadowed orphan")
-    dispatch(fixture, "escape")
-    await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("space toggle include/exclude"))
-    expect(fixture.captureCharFrame()).not.toContain("space toggle include/exclude")
+    const before = fixture.captureCharFrame()
+    expect(binds(fixture)).toContain("?")
+    expect(footer(before)).toContain("? help")
+    expect(dispatch(fixture, "?")).toBe(true)
+    expect(shown.length).toBe(1)
+    await sleep(50)
+    expect(fixture.captureCharFrame()).not.toContain("keep yours or take the new value")
+    expect(footer(fixture.captureCharFrame())).toContain("? help")
   } finally {
     fixture.destroy()
+  }
+  const keys = new Map(HELP.flatMap(([, entries]) => entries))
+  expect(keys.get("space")).toContain("on/off")
+  expect(keys.get("p")).toContain("pin a Code Mode tool")
+  expect(keys.get("l")).toBe("link an agent, member, team, entry or User preset to a preset (or unlink)")
+  expect([...keys.values()].some((label) => label.includes("keep yours or take the new value"))).toBe(true)
+  // The filter keys stay discoverable without leaving the TUI: structural
+  // keys first, then the slower text-dependent ones.
+  const grammar = HELP.find(([group]) => group === "Filter")?.[1].map(([key, label]) => `${key} ${label}`).join("\n") ?? ""
+  expect(grammar).toContain("kind item group")
+  expect(grammar).toContain("namespace")
+  expect(grammar).toContain("pinned")
+  expect(grammar).toContain("execute")
+  expect(grammar).toContain("has id label updated team acked excluded")
+  // The reworked help names the slower keys it can serve (text upstream
+  // tokens delta) instead of the old overlay's shadowed/orphan pair.
+  expect(grammar).toContain("text upstream tokens delta")
+  // The dialog renders that content.
+  const dialog = await renderPlusFixture({
+    snapshots: [createSnapshot()],
+    width: 120,
+    height: 60,
+    render: (context) => createComponent(HelpDialog, { context }),
+  })
+  try {
+    const frame = await dialog.waitForFrame((next) => next.includes("Filter"))
+    expect(frame).toContain("link an agent, member, team, entry or User preset to a preset (or unlink)")
+    expect(frame).toContain("keep yours or take the new value")
+  } finally {
+    dialog.destroy()
   }
 })
 
@@ -298,8 +332,9 @@ test("add agent asks the name, then the preset, on the Project Agents group", as
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    // The `a: add agent` affordance lives on group:project:agents now.
-    await moveTo(fixture, "Agents")
+    // The `a: add agent` affordance lives on group:project:agents, the
+    // sidebar's Agents catalogue.
+    await goto(fixture, "group:project:agents", "Agents")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.agentCreates.length).toBe(1)
@@ -317,6 +352,8 @@ test("add agent asks the name, then the preset, on the Project Agents group", as
 test("a on an instruction row adds a section with split plus customization records", async () => {
   const body = "# Purpose\n\na\n\n# Usage\n\nb\n"
   const after: Snapshot = createSnapshot({
+    // The rebuilt tree still has the agent the section was added under.
+    agents: [projectAgent("Implementer")],
     items: [
       {
         id: "system:AGENTS.md",
@@ -374,12 +411,8 @@ test("a on an instruction row adds a section with split plus customization recor
     dialogs: { prompts: ["Notes", "follow the guide"] },
   })
   try {
-    // Agent subtree by label: Agents group, agent, System group, item row.
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "System")
-    await expand(fixture)
-    await moveTo(fixture, "AGENTS.md")
+    // Implementer › System › the item row.
+    await goto(fixture, "item:project:Implementer:system:AGENTS.md", "AGENTS.md")
     await fixture.waitForFrame((frame) => frame.includes(body.split("\n")[0]))
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes('Added "Notes"'))
@@ -411,10 +444,12 @@ test("a on an instruction row adds a section with split plus customization recor
     expect(customization.section).not.toBeNull()
     expect(boundaryIds.has(customization.section ?? "")).toBe(true)
     // Rebuilt tree shows the new section row under the item: the emitted
-    // snapshot carries the same split, so the row renders by name.
+    // snapshot carries the same split, so the row renders by name once the
+    // item is open.
     await fixture.emitChanged()
-    await fixture.waitForFrame((frame) => frame.includes("Notes"))
-    expect(fixture.captureCharFrame()).toContain("Notes")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("AGENTS.md") && /[▸▾]/.test(selectedRow(frame)))
+    await showSection(fixture, "Notes")
+    expect(listPane(fixture.captureCharFrame())).toContain("Notes")
     // The assembled host text carries the new section content after the old
     // body: resolve the emitted snapshot exactly like apply does.
     const written = fixture.fake.mutateInputs[0].records
@@ -516,14 +551,8 @@ test("a on a tool row adds a section", async () => {
     dialogs: { selects: ["section"], prompts: ["Flags", "extra flags"] },
   })
   try {
-    // Agent subtree by label: Agents group, agent, Tools, subgroup, item.
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveToNext(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "bash")
+    // Implementer › Tools › OpenCode › the item.
+    await goto(fixture, "item:project:Implementer:tool:bash", "bash")
     await fixture.waitForFrame((frame) => frame.includes("run commands"))
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes('Added "Flags"'))
@@ -543,8 +572,9 @@ test("a on a tool row adds a section", async () => {
       text: "extra flags",
     })
     await fixture.emitChanged()
-    await fixture.waitForFrame((frame) => frame.includes("Flags"))
-    expect(fixture.captureCharFrame()).toContain("Flags")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("bash") && /[▸▾]/.test(selectedRow(frame)))
+    await showSection(fixture, "Flags")
+    expect(listPane(fixture.captureCharFrame())).toContain("Flags")
   } finally {
     fixture.destroy()
   }
@@ -560,9 +590,9 @@ test("a on a row without section support keeps the generic picker", async () => 
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::tools has no add, so a opens the generic picker.
-    await gotoDefaultsInventory(fixture, "Tools")
+    await reachCategory(fixture, "group:defaults::tools", "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.skillCreates.length === 1)
+    await until(fixture, () => fixture.fake.skillCreates.length === 1)
     expect(fixture.fake.skillCreates.length).toBe(1)
   } finally {
     fixture.destroy()
@@ -579,7 +609,7 @@ test("add base prompts for id, title, and text", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::base carries the add:base affordance.
-    await gotoDefaultsInventory(fixture, "Base")
+    await reachCategory(fixture, "group:defaults::base", "Base")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.baseCreates.length).toBe(1)
@@ -599,7 +629,7 @@ test("add skill offers create with name and body", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::tools has no add, so a opens the generic picker.
-    await gotoDefaultsInventory(fixture, "Tools")
+    await reachCategory(fixture, "group:defaults::tools", "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.skillCreates.length).toBe(1)
@@ -618,7 +648,7 @@ test("add skill offers import from SKILL.md path", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await gotoDefaultsInventory(fixture, "Tools")
+    await reachCategory(fixture, "group:defaults::tools", "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.skillImports.length).toBe(1)
@@ -628,7 +658,13 @@ test("add skill offers import from SKILL.md path", async () => {
   }
 })
 
-test("add instruction prompts for name and text", async () => {
+// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
+// (src/instructions/discover.ts), so instruction.create is not offered from
+// the System category: its synthesized Role/persona row owns `a` (a section)
+// and the category's own add never gets reached. Skipped, not deleted, so the
+// rework re-enables it with the feature (see the other instruction.create
+// test below).
+test.skip("add instruction prompts for name and text", async () => {
   const fixture = await renderInstructionsRoute({
     snapshots: [createSnapshot()],
     width: 120,
@@ -637,9 +673,13 @@ test("add instruction prompts for name and text", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await gotoDefaultsInventory(fixture, "System")
+    // With instruction adds enabled again, this should reach the System
+    // category and prompt for name and text; today the category's
+    // synthesized Role/persona row owns `a` and the category's own
+    // add:"instruction" is never reached (see the skip comment).
+    await reach(fixture, "group:defaults::system", "System")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.instructionCreates.length === 1)
+    await until(fixture, () => fixture.fake.instructionCreates.length === 1)
     expect(fixture.fake.instructionCreates.length).toBe(1)
     expect(fixture.fake.instructionCreates[0]).toMatchObject({ name: "AGENTS.md", text: "guide text" })
   } finally {
@@ -657,7 +697,7 @@ test("add mcp prompts for name and JSON config", async () => {
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // group:defaults::mcp carries the add:mcp affordance.
-    await gotoDefaultsInventory(fixture, "MCP")
+    await reachCategory(fixture, "group:defaults::mcp", "MCP")
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.mcpAdds.length).toBe(1)
@@ -676,8 +716,9 @@ test("delete agent asks for confirmation", async () => {
     dialogs: { confirms: [true] },
   })
   try {
-    await gotoAgent(fixture, "Implementer")
+    await goto(fixture, "agent:project:Implementer", "Implementer")
     expect(binds(fixture)).toContain("d")
+    expect(footer(fixture.captureCharFrame())).toContain("d delete")
     expect(dispatch(fixture, "d")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Deleted agent Implementer"))
     expect(fixture.fake.agentDeletes.length).toBe(1)
@@ -694,15 +735,9 @@ test("defaults agent row offers no d delete", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await moveTo(fixture, "Template")
+    await goto(fixture, "agent:defaults:Template", "Template")
     expect(binds(fixture)).toContain("d")
-    expect(fixture.captureCharFrame()).not.toContain("d delete")
+    expect(footer(fixture.captureCharFrame())).not.toContain("d delete")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
     expect(fixture.fake.agentDeletes.length).toBe(0)
@@ -734,14 +769,11 @@ test("delete project skill calls skill.delete and the row disappears", async () 
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults › Agents › Skills › Project › the item.
-    await gotoDefaultsInventory(fixture, "Skills")
-    await expand(fixture)
-    await moveTo(fixture, "Project")
-    await expand(fixture)
-    await moveTo(fixture, "proj-one")
+    // Defaults › Every agent › Skills › Project › the item.
+    await reach(fixture, "item:defaults::skill:proj-one", "proj-one")
     await fixture.waitForFrame((frame) => frame.includes("project skill"))
     expect(binds(fixture)).toContain("d")
+    expect(footer(fixture.captureCharFrame())).toContain("d delete")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes("Deleted skill proj-one"))
     expect(fixture.fake.skillDeletes.length).toBe(1)
@@ -770,15 +802,11 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // OpenCode skills hang under Defaults → Agents → Skills → OpenCode.
-    await gotoDefaultsInventory(fixture, "Skills")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "native-one")
+    // OpenCode skills hang under Defaults → Every agent → Skills → OpenCode.
+    await reach(fixture, "item:defaults::skill:native-one", "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
     expect(binds(fixture)).toContain("d")
-    expect(fixture.captureCharFrame()).not.toContain("d delete")
+    expect(footer(fixture.captureCharFrame())).not.toContain("d delete")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
     expect(fixture.fake.skillDeletes.length).toBe(0)
@@ -874,18 +902,16 @@ test.skip("created project instruction deletes through instruction.delete and th
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // Project-owned row offers d and deletes through the real handler.
-    await gotoDefaultsInventory(fixture, "System")
-    await expand(fixture)
-    await moveTo(fixture, "AGENTS.md")
+    await reach(fixture, "item:defaults::system:AGENTS.md", "AGENTS.md")
     await fixture.waitForFrame((frame) => frame.includes("Follow the guide."))
     expect(binds(fixture)).toContain("d")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes("Deleted instruction AGENTS.md"))
     expect(instructionDeletes).toEqual([{ name: "AGENTS.md" }])
     await fixture.waitForFrame((frame) => !frame.includes("Follow the guide."))
-    await moveTo(fixture, "../AGENTS.md")
+    await reach(fixture, "item:defaults::system:../AGENTS.md", "../AGENTS.md")
     expect(binds(fixture)).toContain("d")
-    expect(fixture.captureCharFrame()).not.toContain("d delete")
+    expect(footer(fixture.captureCharFrame())).not.toContain("d delete")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
   } finally {
@@ -915,23 +941,11 @@ test("tool row does not offer d delete", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "build")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "read")
+    // Defaults › build › Tools › OpenCode › read.
+    await goto(fixture, "item:defaults:build:tool:read", "read")
     expect(binds(fixture)).toContain("d")
-    const lines = fixture.captureCharFrame().trimEnd().split("\n")
-    const lastLine = lines[lines.length - 1] ?? ""
-    expect(lastLine).not.toContain("d delete")
+    expect(footer(fixture.captureCharFrame())).toContain("space toggle")
+    expect(footer(fixture.captureCharFrame())).not.toContain("d delete")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes("cannot be deleted"))
   } finally {
@@ -1027,23 +1041,23 @@ test("key availability follows the selected row", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], agents: [agentInfo("Implementer")], width: 120, height: 40 })
   try {
-    // Root row: structural, no space/r/s; d produces status refusal. Goto gates the mount first.
+    // A structural row (the sidebar's Agents catalogue): no space/r/s; d
+    // produces a status refusal.
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await goto(fixture, "group:project:agents", "Agents")
     const rootBinds = binds(fixture)
     expect(rootBinds).toContain("a")
     expect(rootBinds).toContain("d")
     expect(rootBinds).not.toContain("space")
     expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
-    // Agent row: Space toggles Enabled; ctrl+space selects without a write. The
-    // agent hides under its Agents group; the initial Implementer frame only
-    // gates the mount, then gotoAgent reveals the row.
-    await gotoAgent(fixture, "Implementer")
+    // Agent row: Space toggles Enabled; ctrl+space selects without a write.
+    await goto(fixture, "agent:project:Implementer", "Implementer")
     const agentBinds = binds(fixture)
     expect(agentBinds).toContain("d")
     expect(agentBinds).toContain("space")
     expect(agentBinds).toContain("ctrl+space")
-    expect(fixture.captureCharFrame()).toContain("ctrl+space select")
+    expect(footer(fixture.captureCharFrame())).toContain("ctrl+space select")
     dispatch(fixture, "ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["Implementer"])
     expect(fixture.fake.mutateInputs.length).toBe(0)
@@ -1091,30 +1105,28 @@ function reviewSnapshot(): Snapshot {
   })
 }
 
-// Defaults MCP inventory: expand Defaults, the MCP group, then move through
-// the per-server subgroup rows to the item. waitForFrame only polls up to 20
-// frames (~a second), so each navigation step must also wait for the *frame*
-// to catch up, not just sleep: the final wait targets the item row directly.
+// Defaults › Every agent › MCP › the server's item.
 async function gotoMcpItem(fixture: TestFixture): Promise<void> {
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  await gotoDefaultsInventory(fixture, "MCP")
-  await expand(fixture)
-  await moveTo(fixture, "sample")
-  await fixture.waitForFrame((frame) => selectedRow(frame).includes("sample"))
+  await goto(fixture, "item:defaults::mcp:sample", "sample")
 }
 
-test("narrow detail opens with right and closes with escape", async () => {
+// Narrow: the sidebar and the owner are two pages; the inspector sits under
+// the list. Esc goes back to the sidebar page, → on the owner opens it again.
+test("narrow list page opens with right and closes with escape", async () => {
   const snapshot = createSnapshot({ items: [mcpItem()] })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 80, height: 40 })
   try {
     await gotoMcpItem(fixture)
-    dispatch(fixture, "right")
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => frame.includes("back to tree"))
-    expect(fixture.captureCharFrame()).toContain("sample-config")
+    await fixture.waitForFrame((frame) => frame.includes("sample-config") && footer(frame).includes("esc sidebar"))
+    expect(fixture.captureCharFrame()).not.toContain("Every member")
     dispatch(fixture, "escape")
-    await fixture.waitForFrame((frame) => frame.includes("arrows move") && !frame.includes("back to tree"))
-    expect(fixture.captureCharFrame()).not.toContain("back to tree")
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc close") && !frame.includes("sample-config"))
+    expect(fixture.captureCharFrame()).toContain("Every member")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("Every agent")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("sample-config") && footer(frame).includes("esc sidebar"))
+    expect(selectedRow(fixture.captureCharFrame())).toContain("sample")
   } finally {
     fixture.destroy()
   }
@@ -1124,13 +1136,14 @@ test("enter on a yellow node opens the three-pane diff and k keeps mine", async 
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
-    dispatch(fixture, "right")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("!")
+    expect(footer(fixture.captureCharFrame())).toContain("enter review")
     dispatch(fixture, "return")
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     const frame = fixture.captureCharFrame()
-    expect(frame).toContain("Original upstream")
-    expect(frame).toContain("Yours")
-    expect(frame).toContain("New upstream")
+    expect(frame).toContain("1 Upstream change")
+    expect(frame).toContain("2 Your change")
+    expect(frame).toContain("3 Take result")
     expect(frame).toContain("k keep mine")
     dispatch(fixture, "k")
     await fixture.waitForFrame((frame) => frame.includes('Kept "sample"'))
@@ -1145,9 +1158,8 @@ test("enter on a yellow node resolves t take upstream", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
-    dispatch(fixture, "right")
     dispatch(fixture, "return")
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     dispatch(fixture, "t")
     await fixture.waitForFrame((frame) => frame.includes("Took upstream"))
     expect(fixture.fake.mutateInputs.length).toBe(1)
@@ -1165,15 +1177,19 @@ test("enter on a yellow node resolves e edit through the route", async () => {
   })
   try {
     await gotoMcpItem(fixture)
-    dispatch(fixture, "right")
     // The diff pane mounts its own e edit editor; wait for it before typing.
     dispatch(fixture, "return")
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     dispatch(fixture, "e")
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
     expect(editor).toBeDefined()
-    expect(editor?.plainText).toBe("mine")
+    // e edits a merge of the upstream change onto yours; both changed the
+    // same line, so the draft carries conflict markers and cannot be saved.
+    expect(editor?.plainText).toBe("<<<<<<< yours\nmine\n=======\nnew-upstream\n>>>>>>> upstream")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
+    expect(fixture.fake.mutateInputs.length).toBe(0)
     editor?.setText("merged text")
     dispatch(fixture, "ctrl+s")
     await fixture.waitForFrame((frame) => frame.includes('Edited "sample"'))
@@ -1193,12 +1209,8 @@ test("s opens the manual splitter and saves two named sections", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults tools branch: Defaults › Agents › Tools › OpenCode › the item.
-    await gotoDefaultsInventory(fixture, "Tools")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "bash")
+    // Defaults tools branch: Defaults › Every agent › Tools › OpenCode › the item.
+    await goto(fixture, "item:defaults::tool:bash", "bash")
     await fixture.waitForFrame((frame) => frame.includes("Purpose tells when."))
     expect(binds(fixture)).toContain("s")
     dispatch(fixture, "s")
@@ -1285,19 +1297,19 @@ test("filter reveals a match nested under collapsed ancestors", async () => {
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["zz-unique"] },
   })
   try {
-    // The tool row starts hidden under collapsed ancestors; filtering must
-    // reveal it with its ancestor chain.
+    // The tool row starts hidden in another category (the list shows
+    // Implementer's Settings); filtering must reveal it with its ancestor chain.
     await fixture.waitForFrame((frame) => frame.includes("Project"))
     expect(fixture.captureCharFrame()).not.toContain("zz-unique-tool")
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
+    await filter(fixture, "zz-unique")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("zz-unique-tool"))
     const frame = fixture.captureCharFrame()
-    expect(frame).toContain("Filter:")
-    expect(frame).toContain("zz-unique-tool")
-    expect(frame).toContain("Implementer")
+    expect(frame).toContain("/ zz-unique")
+    expect(listPane(frame)).toContain("zz-unique-tool")
+    expect(listPane(frame)).toContain("Implementer")
+    expect(listPane(frame)).toContain("Tools")
   } finally {
     fixture.destroy()
   }
@@ -1312,11 +1324,12 @@ test("right on an item row reveals its sections for select and toggle", async ()
   })
   try {
     await gotoMcpItem(fixture)
-    // Right expands the item row itself; the section rows appear in the tree
-    // with their on/off badge (the detail pane uses [included] instead).
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => frame.includes("Purpose [on]"))
-    await moveDown(fixture, 1)
+    // Right expands the item row itself; the section rows appear in the list
+    // with their on/off glyph.
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("● Purpose"))
+    await moveTo(fixture, "Purpose")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("● Purpose")
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))
@@ -1343,17 +1356,16 @@ test("filtered hidden match can be selected and toggled", async () => {
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["zz-unique"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
-    // Filtered list walks to the revealed tool row by label.
-    await moveTo(fixture, "zz-unique-tool")
+    await filter(fixture, "zz-unique")
+    // The results walk to the revealed tool row by label; ctrl+space toggles
+    // a result in place (space types into the filter).
+    await moveToResult(fixture, "zz-unique-tool")
     await fixture.waitForFrame((frame) => frame.includes("zz-unique-body"))
-    expect(binds(fixture)).toContain("space")
-    dispatch(fixture, "space")
+    expect(binds(fixture)).toContain("ctrl+space")
+    dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "zz-unique-tool"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
     expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:zz-unique", state: "off" })
@@ -1387,19 +1399,12 @@ function codemodeSnapshot(): Snapshot {
 test("Code Mode rows toggle and edit like any other tool", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [codemodeSnapshot()], width: 120, height: 40 })
   try {
-    // Navigate INTO the Code Mode tool by label: agent subtree, Tools group,
-    // Native subgroup, Code Mode group, item row, then its auto-derived sections.
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveToNext(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "Code Mode")
-    await expand(fixture)
-    await moveTo(fixture, "coder")
-    expect(selectedRow(fixture.captureCharFrame())).not.toContain("[unsupported]")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[on]")
+    // Implementer › Tools › OpenCode › Code Mode › the item row, then its
+    // auto-derived sections.
+    await goto(fixture, "item:project:Implementer:tool:coder", "coder")
+    expect(selectedRow(fixture.captureCharFrame())).not.toContain("unsupported")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("● coder")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("Tools › OpenCode › Code Mode › coder")
     expect(binds(fixture)).toContain("space")
     expect(binds(fixture)).toContain("p")
     expect(binds(fixture)).toContain("s")
@@ -1408,21 +1413,21 @@ test("Code Mode rows toggle and edit like any other tool", async () => {
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     expect(fixture.captureCharFrame()).toContain("ctrl+s save")
     dispatch(fixture, "escape")
-    await sleep(100)
+    await fixture.waitForFrame((frame) => !frame.includes("ctrl+s save") && selectedRow(frame).includes("coder"))
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "coder"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
     expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:coder", state: "off" })
-    dispatch(fixture, "right")
+    await expand(fixture)
     // Several sections hang under the tool's Description group.
-    await fixture.waitForFrame((frame) => frame.includes("Description"))
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Description"))
     await moveTo(fixture, "Description")
     await expand(fixture)
-    // The Description group's detail already shows "# Alpha" (every section
-    // combined), so wait for the section row itself.
-    await fixture.waitForFrame((frame) => frame.includes("Alpha [on]"))
-    await moveTo(fixture, "Alpha [on]")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[on]")
+    // The inspector already shows "# Alpha" (every section combined), so
+    // wait for the section row itself.
+    await fixture.waitForFrame((frame) => listPane(frame).includes("● Alpha"))
+    await moveTo(fixture, "Alpha")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("● Alpha")
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Alpha"'))
@@ -1435,16 +1440,9 @@ test("Code Mode rows toggle and edit like any other tool", async () => {
 test("p key writes a pin through the same status path as toggle", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [codemodeSnapshot()], width: 120, height: 40 })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveToNext(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "Code Mode")
-    await expand(fixture)
-    await moveTo(fixture, "coder")
+    await goto(fixture, "item:project:Implementer:tool:coder", "coder")
     expect(binds(fixture)).toContain("p")
+    expect(footer(fixture.captureCharFrame())).toContain("p pin")
     dispatch(fixture, "p")
     await fixture.waitForFrame((frame) => frame.includes('Pinned "coder"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
@@ -1481,33 +1479,24 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "System")
-    await expand(fixture)
-    await moveTo(fixture, "Role/persona")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
+    await goto(fixture, "item:project:Implementer:system:role", "Role/persona")
+    // The whole-row lock is one inspector line, not a row badge.
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("always live (exclude sections instead)")))
     expect(binds(fixture)).not.toContain("space")
     expect(dispatch(fixture, "space")).toBe(false)
     expect(fixture.fake.mutateInputs.length).toBe(0)
     // Section toggles under the same role still apply: exclusions assemble.
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => frame.includes("Purpose"))
-    // Purpose is the first child of the expanded Role item: move down once.
-    // Do not use moveTo("Purpose") here: the detail pane also shows "Purpose"
-    // on the Role row itself, so a label search false-positives without moving.
-    dispatch(fixture, "down")
-    await sleep(100)
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("● Purpose"))
+    await moveTo(fixture, "Purpose")
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Purpose"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
     // Whole base row: same refusal, on the Defaults Agents-catalogue Base
-    // group (the agent's own Base group sits above the System group we are in).
-    await gotoDefaultsInventory(fixture, "Base")
-    await expand(fixture)
-    await moveTo(fixture, "gpt.txt")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[unsupported]")
+    // category.
+    await reach(fixture, "item:defaults::base:gpt", "gpt.txt")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("always live (exclude sections instead)")))
     expect(binds(fixture)).not.toContain("space")
     expect(dispatch(fixture, "space")).toBe(false)
     expect(fixture.fake.mutateInputs.length).toBe(1)
@@ -1565,11 +1554,12 @@ test("Models group is first and space activates the candidate", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("Models"))
-    await moveTo(fixture, "Models")
-    await expand(fixture)
+    await goto(fixture, "agent:project:Implementer", "Implementer")
+    // Models is the first category after the agent's own Settings: key 2.
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
+    expect(dispatch(fixture, "2")).toBe(true)
+    await fixture.waitForFrame((frame) => breadcrumb(frame).includes("Implementer › Models"))
     await moveTo(fixture, "acme/nova-2")
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
@@ -1587,19 +1577,17 @@ test("filter matching a Code Mode section reveals a live editable row", async ()
     snapshots: [codemodeSnapshot()],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["Alpha"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
     // Code Mode sections are live, so the filter reveals the section with its
-    // ancestor chain as a selectable row that toggles.
-    await fixture.waitForFrame((frame) => frame.includes("Alpha"))
-    await moveTo(fixture, "Alpha")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("Alpha")
-    expect(binds(fixture)).toContain("space")
-    dispatch(fixture, "space")
+    // ancestor chain as a selectable row that toggles in place.
+    await filter(fixture, "Alpha")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Alpha"))
+    await moveToResult(fixture, "Alpha")
+    expect(selectedRow(fixture.captureCharFrame())).toContain("● Alpha")
+    expect(binds(fixture)).toContain("ctrl+space")
+    dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame((frame) => frame.includes('Disabled "Alpha"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
     expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "tool:coder", section: "alpha", state: "off" })
@@ -1642,30 +1630,34 @@ test("provenance flags travel real discovery -> snapshot -> rendered rows", asyn
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["coder", "Custom.txt"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Filter:"))
-    await fixture.waitForFrame((frame) => frame.includes("coder"))
-    await moveTo(fixture, "coder")
+    await filter(fixture, "coder")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("coder"))
+    await moveToResult(fixture, "coder")
     const toolRow = selectedRow(fixture.captureCharFrame())
     expect(toolRow).toContain("coder")
-    expect(toolRow).not.toContain("[unsupported]")
-    expect(toolRow).toContain("[on]")
+    expect(toolRow).not.toContain("unsupported")
+    expect(toolRow).toContain("● coder")
+    // Go to the result: its keys are the list's.
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => !footer(frame).includes("esc clear filter") && selectedRow(frame).includes("coder"))
     const keys = binds(fixture)
     expect(keys).toContain("space")
     expect(keys).toContain("s")
     expect(keys).toContain("p")
     await fixture.waitForFrame((frame) => frame.includes("code mode tool"))
-    expect(fixture.captureCharFrame()).not.toContain("[unsupported]")
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Custom.txt"))
-    await moveTo(fixture, "Custom.txt")
+    expect(fixture.captureCharFrame()).not.toContain("unsupported")
+    expect(inspector(fixture.captureCharFrame())).not.toContain(flat("always live"))
+    await filter(fixture, "Custom.txt")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Custom.txt"))
+    await moveToResult(fixture, "Custom.txt")
     const baseRow = selectedRow(fixture.captureCharFrame())
     expect(baseRow).toContain("Custom.txt")
-    expect(baseRow).toContain("[inactive]")
+    expect(baseRow).toContain("inactive")
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => !footer(frame).includes("esc clear filter") && selectedRow(frame).includes("Custom.txt"))
     expect(binds(fixture)).toContain("d")
   } finally {
     fixture.destroy()
@@ -1727,28 +1719,22 @@ test("team row toggles through the real team.setEnabled and the rebuilt tree sho
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Navigate by label: Project root, its Teams group (beside Agents), the
-    // crew row, then its member rows.
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    // The disabled row renders its badge in the visible frame.
-    expect(selectedRow(fixture.captureCharFrame())).toContain("[off]")
+    // The sidebar's Teams catalogue lists the crew container and its members.
+    await goto(fixture, "team:project:crew", "crew")
+    // The disabled row renders its glyph in the visible frame.
+    expect(sidebarRow(fixture.captureCharFrame())).toContain("○ crew")
     expect(binds(fixture)).toContain("space")
     await expand(fixture)
     await fixture.waitForFrame((frame) => frame.includes("nested/beta"))
     expect(fixture.captureCharFrame()).toContain("alpha")
-    await moveTo(fixture, "crew")
     // Space calls the real team.setEnabled with the inverted state.
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Enabled team "crew"'))
     expect(teamToggles).toEqual([{ level: "project", team: "crew", enabled: true }])
     // The toggle republishes: refresh pulls a fresh snapshot whose teams
     // entry reads enabled, and the rebuilt tree shows the new badge.
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("crew") && selectedRow(frame).includes("[on]"))
-    const selected = selectedRow(fixture.captureCharFrame())
-    expect(selected).toContain("crew")
-    expect(selected).toContain("[on]")
+    await fixture.waitForFrame((frame) => sidebarRow(frame).includes("● crew"))
+    expect(sidebarRow(fixture.captureCharFrame())).toContain("● crew")
     expect(liveSnapshots[liveSnapshots.length - 1].teams).toEqual([
       { level: "project", team: "crew", enabled: true, agents: ["alpha", "nested/beta"] },
     ])
@@ -1759,7 +1745,7 @@ test("team row toggles through the real team.setEnabled and the rebuilt tree sho
       { level: "project", team: "crew", enabled: true },
       { level: "project", team: "crew", enabled: false },
     ])
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("crew") && selectedRow(frame).includes("[off]"))
+    await fixture.waitForFrame((frame) => sidebarRow(frame).includes("○ crew"))
   } finally {
     fixture.destroy()
   }
@@ -1811,11 +1797,11 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // The empty Teams group is always present beside Agents: `a` on it
+    // The empty Teams catalogue is always present beside Agents: `a` on it
     // prompts for a name then a team preset, taking project scope from the cursor.
-    await moveTo(fixture, "Teams")
+    await goto(fixture, "group:project:teams", "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamCreates.length === 1)
+    await until(fixture, () => teamCreates.length === 1)
     const call = teamCreates[0]
     expect(teamCreates).toEqual([{ level: "project", team: "fresh" }])
     expect("preset" in call).toBe(false)
@@ -1825,14 +1811,12 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
     // The create republishes: refresh pulls a fresh snapshot whose teams
     // entry reads disabled, and the rebuilt tree reveals and selects the new
     // off row.
-    await fixture.waitForFrame(() => (liveSnapshots[liveSnapshots.length - 1].teams ?? []).length === 1)
+    await until(fixture, () => (liveSnapshots[liveSnapshots.length - 1].teams ?? []).length === 1)
     expect(liveSnapshots[liveSnapshots.length - 1].teams).toEqual([
       { level: "project", team: "fresh", enabled: false, agents: [] },
     ])
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("fresh") && selectedRow(frame).includes("[off]"))
-    const selected = selectedRow(fixture.captureCharFrame())
-    expect(selected).toContain("fresh")
-    expect(selected).toContain("[off]")
+    await until(fixture, (frame) => sidebarRow(frame).includes("○ fresh"))
+    expect(sidebarRow(fixture.captureCharFrame())).toContain("○ fresh")
   } finally {
     fixture.destroy()
   }
@@ -1866,15 +1850,10 @@ test("reviewer persona shows its own prompt and saves only its record", async ()
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
-    // Agent subtree by label: Agents group, agent, System group, Role item.
-    // The Implementer agent sorts first inside the group; move past it.
-    await gotoAgent(fixture, "Implementer")
-    await moveToNext(fixture, "Reviewer")
-    await expand(fixture)
-    await moveTo(fixture, "System")
-    await expand(fixture)
-    await moveTo(fixture, "Role/persona")
+    // Reviewer › System › Role item (Implementer has its own Role row).
+    await goto(fixture, "item:project:Reviewer:system:role", "Role/persona")
     await fixture.waitForFrame((frame) => frame.includes("reviewer-prompt"))
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("Reviewer › System")
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
@@ -1928,15 +1907,9 @@ test("a on a tool row offers Section or Permission rule and creates without scop
     dialogs: { selects: ["rule"], prompts: ["No force pushes", "git push --force *", "", "force pushes are not allowed here"] },
   })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
+    await goto(fixture, "item:project:Implementer:tool:shell", "shell")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
+    await until(fixture, () => fixture.fake.ruleAdds.length === 1)
     expect(fixture.fake.ruleAdds[0]).toMatchObject({
       level: "project",
       agent: "Implementer",
@@ -1964,9 +1937,9 @@ test("a on a generic row prompts for rule scope and creates a per-agent rule", a
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await gotoDefaultsInventory(fixture, "Tools")
+    await reachCategory(fixture, "group:defaults::tools", "Tools")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
+    await until(fixture, () => fixture.fake.ruleAdds.length === 1)
     expect(fixture.fake.ruleAdds[0]).toMatchObject({
       level: "project",
       agent: "my-agent",
@@ -2039,22 +2012,16 @@ test("perm rows list under the tool's Permissions and category, and enter opens 
     },
   })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveToNext(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
-    await expand(fixture)
+    await goto(fixture, "item:project:Implementer:tool:shell", "shell")
     // Rule rows are editable leaves under the tool's Permissions group and
     // their category; enter offers the rule editor.
-    await openRule(fixture, "Commands", "Git push")
-    expect(fixture.captureCharFrame()).toContain("Permissions")
-    await fixture.waitForFrame((frame) => frame.includes("enter edit rule"))
-    expect(fixture.captureCharFrame()).toContain("enter edit rule")
+    await reach(fixture, "item:project:Implementer:perm:shell:git-push", "Git push")
+    expect(listPane(fixture.captureCharFrame())).toContain("Permissions")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("shell › Permissions › Commands › Git push")
+    await fixture.waitForFrame((frame) => footer(frame).includes("enter edit rule"))
+    expect(footer(fixture.captureCharFrame())).toContain("enter edit rule")
     expect(dispatch(fixture, "return")).toBe(true)
-    await fixture.waitForFrame(() => ruleUpdates.length === 1)
+    await until(fixture, () => ruleUpdates.length === 1)
     expect(ruleUpdates[0]).toMatchObject({
       level: "project",
       agent: "Implementer",
@@ -2090,13 +2057,11 @@ test("a on a Defaults Teams tool row creates the rule in the Teams catalogue", a
     dialogs: { selects: ["rule"], prompts: ["No force pushes", "git push --force *", "", "force pushes are not allowed here"] },
   })
   try {
-    await gotoDefaultsInventory(fixture, "Tools", "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
+    // Defaults › Every member › Tools › OpenCode › shell.
+    await goto(fixture, "item:defaults:/teams:tool:shell", "shell")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("Defaults › Teams › Tools")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.ruleAdds.length === 1)
+    await until(fixture, () => fixture.fake.ruleAdds.length === 1)
     expect(fixture.fake.ruleAdds[0]).toMatchObject({
       level: "defaults",
       agent: null,
@@ -2188,15 +2153,10 @@ test("enter on a Defaults Teams perm row sends the Teams catalogue with rule.upd
     },
   })
   try {
-    await gotoDefaultsInventory(fixture, "Tools", "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
-    await expand(fixture)
-    await openRule(fixture, "Commands", "Git push")
+    await goto(fixture, "item:defaults:/teams:tool:shell", "shell")
+    await reach(fixture, "item:defaults:/teams:perm:shell:git-push", "Git push")
     expect(dispatch(fixture, "return")).toBe(true)
-    await fixture.waitForFrame(() => ruleUpdates.length === 1)
+    await until(fixture, () => ruleUpdates.length === 1)
     expect(ruleUpdates[0]).toMatchObject({
       level: "defaults",
       agent: null,
@@ -2212,7 +2172,7 @@ test("enter on a Defaults Teams perm row sends the Teams catalogue with rule.upd
   }
 })
 
-test("detail pane e starts text editing on a tool row but not on a permission rule", async () => {
+test("e starts text editing on a tool row but not on a permission rule", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
     items: [
@@ -2247,13 +2207,7 @@ test("detail pane e starts text editing on a tool row but not on a permission ru
     height: 40,
   })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveToNext(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
+    await goto(fixture, "item:project:Implementer:tool:shell", "shell")
     // Tool row: 'e' is bound and starts text editing.
     expect(binds(fixture)).toContain("e")
     expect(dispatch(fixture, "e")).toBe(true)
@@ -2264,8 +2218,8 @@ test("detail pane e starts text editing on a tool row but not on a permission ru
     await fixture.waitForFrame((frame) => !frame.includes("ctrl+s save"))
 
     // Navigate to the permission rule under Permissions → Commands.
-    await expand(fixture)
-    await openRule(fixture, "Commands", "Git push")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("shell"))
+    await reach(fixture, "item:project:Implementer:perm:shell:git-push", "Git push")
     // Permission row: 'e' is unavailable and does not start text editing.
     expect(binds(fixture)).not.toContain("e")
     expect(dispatch(fixture, "e")).toBe(false)
@@ -2275,7 +2229,7 @@ test("detail pane e starts text editing on a tool row but not on a permission ru
   }
 })
 
-test("detail pane shows a rule's refusal message, curated or user-set", async () => {
+test("inspector shows a rule's refusal message, curated or user-set", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
     items: [
@@ -2339,20 +2293,13 @@ test("detail pane shows a rule's refusal message, curated or user-set", async ()
     height: 40,
   })
   try {
-    await gotoAgent(fixture, "Implementer")
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveToNext(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
-    await expand(fixture)
-    await openRule(fixture, "Commands", "Git push")
-    await fixture.waitForFrame((frame) => frame.includes("message: pushing is not allowed here"))
-    expect(fixture.captureCharFrame()).toContain("message: pushing is not allowed here")
+    await goto(fixture, "item:project:Implementer:tool:shell", "shell")
+    await reach(fixture, "item:project:Implementer:perm:shell:git-push", "Git push")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("message pushing is not allowed here")))
+    expect(inspector(fixture.captureCharFrame())).toContain(flat("message pushing is not allowed here"))
     await moveTo(fixture, "My rule")
-    await fixture.waitForFrame((frame) => frame.includes("message: mine is not allowed here"))
-    expect(fixture.captureCharFrame()).toContain("message: mine is not allowed here")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("message mine is not allowed here")))
+    expect(inspector(fixture.captureCharFrame())).toContain(flat("message mine is not allowed here"))
   } finally {
     fixture.destroy()
   }
@@ -2647,14 +2594,12 @@ test("a on a team row adds through the real team.addAgent without the generic pi
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
+    await goto(fixture, "team:project:crew", "crew")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 1)
+    await until(fixture, () => teamAdds.length === 1)
     expect(teamAdds[0]).toMatchObject({ level: "project", team: "crew", id: "newbie" })
     expect("preset" in (teamAdds[0] as Record<string, unknown>)).toBe(false)
-    await fixture.waitForFrame(() =>
+    await until(fixture, () =>
       (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents ?? []).includes("newbie"),
     )
     expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")).toEqual({
@@ -2663,8 +2608,9 @@ test("a on a team row adds through the real team.addAgent without the generic pi
       enabled: false,
       agents: ["newbie"],
     })
-    await expand(fixture)
-    await moveTo(fixture, "newbie")
+    // The member row appears in the sidebar under its team.
+    await until(fixture, (frame) => frame.includes("newbie"))
+    await navTo(fixture, "newbie")
     expect(selectedRow(fixture.captureCharFrame())).toContain("newbie")
     const titles = fixture.fake.dialogSelects.map(([title]) => title)
     expect(titles).toContain("Preset")
@@ -2717,11 +2663,9 @@ test("a on a colon team row calls team.addAgent with the full name", async () =>
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "release:review")
+    await goto(fixture, "team:project:release:review", "release:review")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 1)
+    await until(fixture, () => teamAdds.length === 1)
     expect(teamAdds[0]).toMatchObject({ level: "project", team: "release:review", id: "newbie" })
     // Never opened the ordinary agent-creation flow.
     expect(fixture.fake.agentCreates.length).toBe(0)
@@ -2776,11 +2720,11 @@ test("a on a team row with an internal newline calls team.addAgent with the mult
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "release")
+    // The id holds a newline the filter input cannot take: walk the sidebar.
+    await goto(fixture, "group:project:teams", "Teams")
+    await navTo(fixture, "release")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 1)
+    await until(fixture, () => teamAdds.length === 1)
     expect(teamAdds[0]).toMatchObject({ level: "project", team: "release\nreview", id: "newbie" })
     // Never opened the ordinary agent-creation flow.
     expect(fixture.fake.agentCreates.length).toBe(0)
@@ -2832,9 +2776,9 @@ test("team create on group:project:teams asks the name, then a grouped team pres
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
+    await goto(fixture, "group:project:teams", "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamCreates.length === 1)
+    await until(fixture, () => teamCreates.length === 1)
     expect(teamCreates).toEqual([{ level: "project", team: "crew", preset: "opencodeplus-team" }])
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Team name"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Team preset"])
@@ -2845,11 +2789,11 @@ test("team create on group:project:teams asks the name, then a grouped team pres
     expect(picker.options.some((option) => option.category === "OpenCode" || option.category === "Native")).toBe(false)
     expect(picker.options.at(-1)).toEqual({ title: "Empty team", value: "" })
     expect(fixture.captureCharFrame()).not.toContain("Team scope")
-    await fixture.waitForFrame(() =>
+    await until(fixture, () =>
       (liveSnapshots[liveSnapshots.length - 1].teams ?? []).some((t) => t.level === "project" && t.team === "crew" && !t.enabled),
     )
     // The new team row is revealed and selected.
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("crew") && selectedRow(frame).includes("[off]"))
+    await until(fixture, (frame) => sidebarRow(frame).includes("○ crew"))
   } finally {
     fixture.destroy()
   }
@@ -2896,31 +2840,30 @@ test("a on Defaults Teams asks team pattern, member pattern, preset; a on its en
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Defaults")
-    await moveToNext(fixture, "Teams")
+    await goto(fixture, "group:defaults:teams", "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 1)
+    await until(fixture, () => teamAdds.length === 1)
     expect(teamAdds[0]).toEqual({ level: "defaults", team: "*review*", id: "*orchestrator*", preset: { kind: "agent", id: "orchestrator" } })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Team name or pattern", "Member name or pattern"])
     expect(fixture.fake.promptInputs[0]?.description).toContain("* and % match any text, case-insensitive")
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Preset"])
     // The member entry row is revealed and selected under its team pattern.
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("*orchestrator*"))
+    await until(fixture, (frame) => sidebarRow(frame).includes("*orchestrator*"))
     // a on the member entry row: the team is the PATTERN, never "<pattern>:<member>".
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 2)
+    await until(fixture, () => teamAdds.length === 2)
     expect(teamAdds[1]).toEqual({ level: "defaults", team: "*review*", id: "*reviewer*" })
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("*reviewer*"))
+    await until(fixture, (frame) => sidebarRow(frame).includes("*reviewer*"))
     // a on the team pattern row itself adds to the same pattern.
     dispatch(fixture, "up")
     dispatch(fixture, "up")
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("*review*") && !selectedRow(frame).includes("*reviewer*") && !selectedRow(frame).includes("*orch"))
+    await fixture.waitForFrame((frame) => sidebarRow(frame).includes("*review*") && !sidebarRow(frame).includes("*reviewer*") && !sidebarRow(frame).includes("*orch"))
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 3)
+    await until(fixture, () => teamAdds.length === 3)
     expect(teamAdds[2]).toEqual({ level: "defaults", team: "*review*", id: "*editor*", preset: { kind: "agent", id: "reviewer" } })
     expect(fixture.fake.promptInputs.slice(2).map((input) => input.title)).toEqual(["Member name or pattern", "Member name or pattern"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).not.toContain("Team scope")
-    await fixture.waitForFrame(() => (liveSnapshots.at(-1)?.entries ?? []).length === 3)
+    await until(fixture, () => (liveSnapshots.at(-1)?.entries ?? []).length === 3)
     expect((liveSnapshots.at(-1)?.entries ?? []).map((entry) => `${entry.team} ${entry.name}`).toSorted()).toEqual([
       "*review* *editor*",
       "*review* *orchestrator*",
@@ -2974,14 +2917,10 @@ test("a on a team member row adds through the real team.addAgent without the gen
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "alpha")
+    await goto(fixture, "team:project:crew:alpha", "alpha")
     expect(selectedRow(fixture.captureCharFrame())).toContain("alpha")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 1)
+    await until(fixture, () => teamAdds.length === 1)
     expect(teamAdds[0]).toMatchObject({ level: "project", team: "crew", id: "bravo" })
     expect("preset" in (teamAdds[0] as Record<string, unknown>)).toBe(false)
     expect(fixture.fake.agentCreates.length).toBe(0)
@@ -2989,7 +2928,7 @@ test("a on a team member row adds through the real team.addAgent without the gen
     expect(titles).toContain("Preset")
     expect(titles.some((title) => title === "Add")).toBe(false)
     expect(fixture.captureCharFrame()).not.toContain("Select what to add")
-    await fixture.waitForFrame(() =>
+    await until(fixture, () =>
       (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents ?? []).includes("bravo"),
     )
     expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")).toEqual({
@@ -3046,14 +2985,10 @@ test("a on a colon team member row calls team.addAgent with the full team name",
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew:alpha")
-    await expand(fixture)
-    await moveTo(fixture, "firstmate")
+    await goto(fixture, "team:project:crew:alpha:firstmate", "firstmate")
     expect(selectedRow(fixture.captureCharFrame())).toContain("firstmate")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => teamAdds.length === 1)
+    await until(fixture, () => teamAdds.length === 1)
     expect(teamAdds[0]).toMatchObject({ level: "project", team: "crew:alpha", id: "secondmate" })
     expect(fixture.fake.agentCreates.length).toBe(0)
     const titles = fixture.fake.dialogSelects.map(([title]) => title)
@@ -3113,14 +3048,13 @@ test("a on ambiguous team member row surfaces error toast and calls no team.addA
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "alpha")
-    expect(selectedRow(fixture.captureCharFrame())).toContain("alpha")
+    // team:project:crew:alpha names both the team crew:alpha and crew's
+    // member alpha: walk the sidebar to the member row under crew.
+    await goto(fixture, "team:project:crew", "crew")
+    await navTo(fixture, "alpha")
+    expect(sidebarRow(fixture.captureCharFrame())).toMatch(/^\s+● alpha/)
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => toasts.length >= 1)
+    await until(fixture, () => toasts.length >= 1)
     expect(toasts).toContainEqual({
       variant: "error",
       message: '"crew:alpha" is ambiguous: it matches both a team and a member of team "crew". Rename one to continue.',
@@ -3174,18 +3108,14 @@ test("d on a member row with the real handler wired removes the row", async () =
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "alpha")
+    await goto(fixture, "team:project:crew:alpha", "alpha")
     expect(selectedRow(fixture.captureCharFrame())).toContain("alpha")
     expect(binds(fixture)).toContain("d")
     expect(dispatch(fixture, "d")).toBe(true)
-    await fixture.waitForFrame(() => teamRemoves.length === 1)
+    await until(fixture, () => teamRemoves.length === 1)
     expect(teamRemoves[0]).toEqual({ level: "project", team: "crew", id: "alpha" })
     await fixture.waitForFrame((frame) => frame.includes("Deleted team member alpha"))
-    await fixture.waitForFrame(() =>
+    await until(fixture, () =>
       (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents ?? []).length === 0,
     )
     expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")?.agents).toEqual([])
@@ -3244,20 +3174,18 @@ test("d on a team row with the real handler wired removes the row and wires team
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
+    await goto(fixture, "team:project:crew", "crew")
     expect(selectedRow(fixture.captureCharFrame())).toContain("crew")
     expect(binds(fixture)).toContain("d")
     expect(dispatch(fixture, "d")).toBe(true)
-    await fixture.waitForFrame(() => teamDeletes.length === 1)
+    await until(fixture, () => teamDeletes.length === 1)
     expect(teamDeletes[0]).toEqual({ level: "project", team: "crew" })
     expect(confirmOptions).toMatchObject({
       title: "Delete team crew?",
       message: 'Delete project team "crew" and its 1 member file(s)? It is currently disabled. This cannot be undone.',
     })
     await fixture.waitForFrame((frame) => frame.includes("Deleted team crew"))
-    await fixture.waitForFrame(() =>
+    await until(fixture, () =>
       (liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")) === undefined,
     )
     expect(liveSnapshots[liveSnapshots.length - 1].teams?.find((team) => team.team === "crew")).toBeUndefined()
@@ -3299,17 +3227,13 @@ test("defaults team row offers no d delete", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Defaults")
-    await expand(fixture)
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "starter")
+    await goto(fixture, "team:defaults:starter", "starter")
     expect(selectedRow(fixture.captureCharFrame())).toContain("starter")
     // `d` is bound on every row so undeletable rows answer with the honest
     // refusal instead of swallowing the key; the hint line still offers
     // `d delete` only where the row can actually be deleted.
     expect(binds(fixture)).toContain("d")
-    expect(fixture.captureCharFrame()).not.toContain("d delete")
+    expect(footer(fixture.captureCharFrame())).not.toContain("d delete")
     dispatch(fixture, "d")
     await fixture.waitForFrame((frame) => frame.includes('"starter" cannot be deleted: team "starter" is built in'))
   } finally {
@@ -3330,17 +3254,13 @@ test("a on a Special row or special-agent row under a team shows status refusal"
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "Special")
+    await goto(fixture, "team:project:crew:special", "Special")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Special agents are built in; add is not available here"))
     expect(fixture.fake.dialogSelects.length).toBe(0)
 
     await expand(fixture)
-    await moveTo(fixture, "title")
+    await navTo(fixture, "title")
     expect(dispatch(fixture, "a")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("Special agents are built in; add is not available here"))
     expect(fixture.fake.dialogSelects.length).toBe(0)
@@ -3395,17 +3315,9 @@ test("space on a Models row under a team special persists the team-scoped record
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "Special")
-    await expand(fixture)
-    await moveTo(fixture, "title")
-    await expand(fixture)
-    await moveTo(fixture, "Models")
-    await expand(fixture)
-    await moveTo(fixture, "acme/nova-2")
+    // Teams › crew › Special › title (sidebar) › Models › the candidate.
+    await goto(fixture, "item:project:crew/:special:title:model:acme/nova-2", "acme/nova-2")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("crew › Special › title › Models")
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")
     await fixture.waitForFrame((frame) => frame.includes('Activated "acme/nova-2"'))
@@ -3433,33 +3345,23 @@ test("ctrl+space selects an Agents-group agent through the core picker, never sp
   }
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], agents: [agentInfo("alpha")], width: 120, height: 40 })
   try {
-    await gotoAgent(fixture, "alpha")
+    await goto(fixture, "agent:project:alpha", "alpha")
     expect(binds(fixture)).toContain("ctrl+space")
-    expect(fixture.captureCharFrame()).toContain("ctrl+space select")
+    expect(footer(fixture.captureCharFrame())).toContain("ctrl+space select")
     expect(dispatch(fixture, "ctrl+space")).toBe(true)
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
     expect(fixture.fake.mutateInputs.length).toBe(0)
 
     // Team member rows keep their own (non-select) behaviour.
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "mate")
+    await goto(fixture, "team:project:crew:mate", "mate")
     expect(binds(fixture)).toContain("space")
     expect(binds(fixture)).not.toContain("ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
 
     // Special agents are not offered by the picker: no select bind. They sit
     // under Defaults → Agents → OpenCode → Special.
-    await moveTo(fixture, "Defaults")
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "Special")
-    await expand(fixture)
-    await moveTo(fixture, "title")
+    await goto(fixture, "agent:defaults:title", "title")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("Defaults › Agents › OpenCode › Special › title")
     expect(binds(fixture)).toContain("space")
     expect(binds(fixture)).not.toContain("ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["alpha"])
@@ -3491,12 +3393,9 @@ test("a on Global Agents → User asks the name, then a grouped preset, and crea
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Global")
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
+    await goto(fixture, "group:global:agents:user", "User")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.agentCreates.length === 1)
+    await until(fixture, () => fixture.fake.agentCreates.length === 1)
     expect(fixture.fake.agentCreates[0]).toEqual({
       scope: "global",
       id: "helper",
@@ -3514,7 +3413,7 @@ test("a on Global Agents → User asks the name, then a grouped preset, and crea
     expect(picker.options.some((option) => option.value === "team:opencodeplus-team")).toBe(false)
     expect(picker.options.at(-1)).toEqual({ title: "None — everything off", value: "__none__" })
     // The new agent row is revealed and selected.
-    await fixture.waitForFrame((frame) => selectedRow(frame).includes("helper"))
+    await until(fixture, (frame) => sidebarRow(frame).includes("helper"))
   } finally {
     fixture.destroy()
   }
@@ -3527,9 +3426,9 @@ test("the preset picker lists User agent presets in their own group", async () =
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], dialogs: { prompts: ["x"], selects: ["agent:mine"] } })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Agents")
+    await goto(fixture, "group:project:agents", "Agents")
     dispatch(fixture, "a")
-    await fixture.waitForFrame(() => fixture.fake.agentCreates.length === 1)
+    await until(fixture, () => fixture.fake.agentCreates.length === 1)
     expect(fixture.fake.agentCreates[0]).toEqual({ scope: "project", id: "x", preset: { kind: "agent", id: "mine" } })
     expect(fixture.fake.selectInputs[0].options.find((option) => option.value === "agent:mine")?.category).toBe("Agent presets · User")
   } finally {
@@ -3544,10 +3443,9 @@ test("a on Defaults Agents asks a name or pattern, then a preset, and creates an
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Defaults")
-    await moveToNext(fixture, "Agents")
+    await goto(fixture, "group:defaults:agents", "Agents")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.entryCreates.length === 1)
+    await until(fixture, () => fixture.fake.entryCreates.length === 1)
     expect(fixture.fake.entryCreates[0]).toEqual({ catalogue: "agents", name: "*orchestrator*", preset: { kind: "agent", id: "orchestrator" } })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Agent name or pattern"])
     expect(fixture.fake.promptInputs[0]?.description).toContain("* and % match any text, case-insensitive (e.g. *orchestrator*)")
@@ -3569,34 +3467,28 @@ test("Presets → Agents → User and Teams → User create User presets from a 
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Presets")
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
+    await goto(fixture, "group:preset:agents:user", "User")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.presetCreates.length === 1)
+    await until(fixture, () => fixture.fake.presetCreates.length === 1)
     expect(fixture.fake.presetCreates[0]).toEqual({ kind: "agent", id: "mine", from: { kind: "agent", id: "planner" } })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Preset name"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Base preset"])
     expect(fixture.fake.selectInputs[0].options.at(-1)).toEqual({ title: "None — everything off", value: "__none__" })
 
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "User")
+    await goto(fixture, "group:preset:teams:user", "User")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.presetCreates.length === 2)
+    await until(fixture, () => fixture.fake.presetCreates.length === 2)
     expect(fixture.fake.presetCreates[1]).toEqual({ kind: "team", id: "crew" })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Preset name", "Team preset name"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Base preset", "Team preset"])
     expect(fixture.fake.selectInputs[1].options.at(-1)).toEqual({ title: "Empty team", value: "" })
     // The create reveals Presets → Teams → User (where the new preset lands).
-    await fixture.waitForFrame(() => fixture.fake.toasts.some((toast) => toast.message === "Created team preset crew"))
-    await fixture.waitForFrame((frame) => /- User/.test(selectedRow(frame)))
+    await until(fixture, () => fixture.fake.toasts.some((toast) => toast.message === "Created team preset crew"))
+    await until(fixture, (frame) => /^\s+▾ User/.test(selectedRow(frame)) && breadcrumb(frame).includes("Presets › Teams › User"))
 
-    await expand(fixture)
-    await moveTo(fixture, "squad")
+    await navTo(fixture, "squad")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.presetAddMembers.length === 1)
+    await until(fixture, () => fixture.fake.presetAddMembers.length === 1)
     expect(fixture.fake.presetAddMembers[0]).toEqual({ team: "squad", id: "lead", from: { kind: "agent", id: "orchestrator" } })
     expect(fixture.fake.promptInputs.at(-1)?.title).toBe("Member name")
     expect(fixture.fake.dialogSelects.at(-1)).toEqual(["Preset"])
@@ -3620,18 +3512,13 @@ test("a on a member preset's Models group adds a team-scoped model at level pres
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Presets")
-    await moveToNext(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await moveTo(fixture, "squad")
-    await expand(fixture)
-    await moveTo(fixture, "lead")
-    await expand(fixture)
-    await moveTo(fixture, "Models")
+    // Presets › Teams › User › squad › lead (sidebar), then its Models.
+    await goto(fixture, "team:preset:squad:lead", "lead")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
+    await category(fixture, "Models")
     expect(dispatch(fixture, "a")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.modelAdds.length === 1)
+    await until(fixture, () => fixture.fake.modelAdds.length === 1)
     expect(fixture.fake.modelAdds[0]).toEqual({
       level: "preset",
       agent: "lead",
@@ -3654,11 +3541,11 @@ test("l relinks an agent to another preset with the current link preselected, an
     dialogs: { selects: ["agent:planner", "__none__"] },
   })
   try {
-    await gotoAgent(fixture, "alice")
+    await goto(fixture, "agent:project:alice", "alice")
     expect(binds(fixture)).toContain("l")
-    expect(fixture.captureCharFrame()).toContain("l link")
+    expect(footer(fixture.captureCharFrame())).toContain("l link")
     expect(dispatch(fixture, "l")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.linkSets.length === 1)
+    await until(fixture, () => fixture.fake.linkSets.length === 1)
     expect(fixture.fake.linkSets[0]).toEqual({ level: "project", agent: "alice", preset: { kind: "agent", id: "planner" } })
     const picker = fixture.fake.selectInputs[0]
     expect(picker.title).toBe("Link to preset")
@@ -3666,7 +3553,7 @@ test("l relinks an agent to another preset with the current link preselected, an
     expect(picker.options.at(-1)).toEqual({ title: "None — unlink", value: "__none__" })
     expect(fixture.fake.toasts).toContainEqual({ variant: "success", message: "Linked alice to Planner (Plus)" })
     expect(dispatch(fixture, "l")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.linkSets.length === 2)
+    await until(fixture, () => fixture.fake.linkSets.length === 2)
     expect(fixture.fake.linkSets[1]).toEqual({ level: "project", agent: "alice", preset: null })
     expect(fixture.fake.toasts).toContainEqual({ variant: "success", message: "Unlinked alice" })
   } finally {
@@ -3680,13 +3567,11 @@ test("l on a team relinks to a team preset; l is not offered on rows that take n
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // A group row has no owner.
-    await moveTo(fixture, "Agents")
+    await goto(fixture, "group:project:agents", "Agents")
     expect(binds(fixture)).not.toContain("l")
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
+    await goto(fixture, "team:project:crew", "crew")
     expect(dispatch(fixture, "l")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.linkSets.length === 1)
+    await until(fixture, () => fixture.fake.linkSets.length === 1)
     expect(fixture.fake.linkSets[0]).toEqual({
       level: "project",
       agent: null,
@@ -3696,12 +3581,7 @@ test("l on a team relinks to a team preset; l is not offered on rows that take n
     expect(fixture.fake.selectInputs[0]?.title).toBe("Link to team preset")
     expect(fixture.fake.selectInputs[0]?.options.at(-1)).toEqual({ title: "None — unlink", value: "" })
     // Native and Plus presets are read-only: no l.
-    await moveTo(fixture, "Presets")
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "Build")
+    await goto(fixture, "agent:preset:build", "Build")
     expect(binds(fixture)).not.toContain("l")
   } finally {
     fixture.destroy()
@@ -3720,14 +3600,9 @@ test("l toasts the server's refusal of a cycle", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Presets")
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await moveTo(fixture, "mine")
+    await goto(fixture, "agent:preset:mine", "mine")
     expect(dispatch(fixture, "l")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.toasts.length === 1)
+    await until(fixture, () => fixture.fake.toasts.length === 1)
     expect(fixture.fake.linkSets[0]).toEqual({ level: "preset", agent: "mine", preset: { kind: "agent", id: "planner" } })
     expect(fixture.fake.toasts).toEqual([{ variant: "error", message }])
   } finally {
@@ -3754,15 +3629,10 @@ test("d on a User preset in use toasts who uses it", async () => {
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Presets")
-    await moveToNext(fixture, "Agents")
-    await expand(fixture)
-    await moveTo(fixture, "User")
-    await expand(fixture)
-    await moveTo(fixture, "mine")
-    expect(fixture.captureCharFrame()).toContain("d delete")
+    await goto(fixture, "agent:preset:mine", "mine")
+    expect(footer(fixture.captureCharFrame())).toContain("d delete")
     expect(dispatch(fixture, "d")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.toasts.length === 1)
+    await until(fixture, () => fixture.fake.toasts.length === 1)
     expect(fixture.fake.presetDeletes).toEqual([{ ref: { kind: "agent", id: "mine" } }])
     expect(fixture.fake.toasts[0]).toEqual({
       variant: "error",
@@ -3773,20 +3643,15 @@ test("d on a User preset in use toasts who uses it", async () => {
   }
 })
 
-test("tree rows show the from-label suffix and the detail pane its provenance and link", async () => {
+test("rows show the from-label suffix and the inspector its provenance and link", async () => {
   const snapshot = createSnapshot({ agents: [projectAgent("alice")], items: [bashItem()], links: [linkTo("alice", "orchestrator")] })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160 })
   try {
-    await gotoAgent(fixture, "alice")
-    await fixture.waitForFrame((frame) => frame.includes("Created from preset: Orchestrator (Plus)"))
-    await expand(fixture)
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "bash")
-    const frame = await fixture.waitForFrame((next) => next.includes("state and text: from preset Orchestrator"))
-    expect(frame).toContain("bash [on] · from preset Orchestrator")
+    await goto(fixture, "agent:project:alice", "alice")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("preset Orchestrator (Plus)")))
+    await goto(fixture, "item:project:alice:tool:bash", "bash")
+    const frame = await fixture.waitForFrame((next) => inspector(next).includes(flat("source from preset Orchestrator")))
+    expect(selectedRow(frame)).toMatch(/● bash\s+from preset Orchestrator/)
   } finally {
     fixture.destroy()
   }
@@ -3808,13 +3673,7 @@ function reviewedBash(overrides?: Record<string, unknown>) {
 }
 
 async function gotoBash(fixture: TestFixture): Promise<void> {
-  await gotoAgent(fixture, "alice")
-  await expand(fixture)
-  await moveTo(fixture, "Tools")
-  await expand(fixture)
-  await moveTo(fixture, "OpenCode")
-  await expand(fixture)
-  await moveTo(fixture, "bash")
+  await goto(fixture, "item:project:alice:tool:bash", "bash")
 }
 
 test("enter on a state review offers keep yours / take from the preset; keep re-records the value above", async () => {
@@ -3827,11 +3686,11 @@ test("enter on a state review offers keep yours / take from the preset; keep re-
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { selects: ["keep"] } })
   try {
     await gotoBash(fixture)
-    const frame = fixture.captureCharFrame()
-    expect(selectedRow(frame)).toContain("[to review (state)]")
-    expect(frame).toContain("enter review")
+    const frame = await fixture.waitForFrame((next) => inspector(next).includes(flat("review to review (state)")))
+    expect(selectedRow(frame)).toMatch(/bash.*!/)
+    expect(footer(frame)).toContain("enter review")
     expect(dispatch(fixture, "return")).toBe(true)
-    await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
+    await until(fixture, () => fixture.fake.mutateInputs.length === 1)
     const choice = fixture.fake.selectInputs[0]
     expect(choice.title).toBe('Review "bash"')
     expect(choice.options.map((option) => [option.title, option.value])).toEqual([
@@ -3858,7 +3717,7 @@ test("take on a state review drops yours; with text under review too the diff fo
   try {
     await gotoBash(fixture)
     dispatch(fixture, "return")
-    await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
+    await until(fixture, () => fixture.fake.mutateInputs.length === 1)
     expect(fixture.fake.mutateInputs[0].records.some((entry) => entry.type === "customization" && entry.item === "tool:bash")).toBe(false)
   } finally {
     fixture.destroy()
@@ -3872,14 +3731,15 @@ test("take on a state review drops yours; with text under review too the diff fo
   const second = await renderInstructionsRoute({ snapshots: [both], width: 160, dialogs: { selects: ["take"] } })
   try {
     await gotoBash(second)
-    expect(selectedRow(second.captureCharFrame())).toContain("[to review (text, state)]")
+    await second.waitForFrame((frame) => inspector(frame).includes(flat("review to review (text, state)")))
+    expect(selectedRow(second.captureCharFrame())).toMatch(/bash.*!/)
     dispatch(second, "return")
-    await second.waitForFrame(() => second.fake.mutateInputs.length === 1)
+    await until(second, () => second.fake.mutateInputs.length === 1)
     // The state is dropped, the text stays for its own review.
     const record = second.fake.mutateInputs[0].records.find((entry) => entry.type === "customization" && entry.item === "tool:bash")
     expect(record).toMatchObject({ text: "mine", basedOnText: "old" })
     expect(record !== undefined && "state" in record).toBe(false)
-    await second.waitForFrame((frame) => frame.includes("k keep mine · t take new"))
+    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t take new")))
   } finally {
     second.destroy()
   }
@@ -3909,14 +3769,11 @@ test("enter on a model review offers keep yours / take the model above", async (
   ] as const) {
     const fixture = await renderInstructionsRoute({ snapshots: [models({ basedOn: "acme/old" })], width: 160, dialogs: { selects: [pick] } })
     try {
-      await gotoAgent(fixture, "alice")
-      await expand(fixture)
-      await moveTo(fixture, "Models")
-      await expand(fixture)
-      await moveTo(fixture, "acme/mine")
-      expect(selectedRow(fixture.captureCharFrame())).toContain("[review]")
+      await goto(fixture, "item:project:alice:model:acme/mine", "acme/mine")
+      expect(selectedRow(fixture.captureCharFrame())).toMatch(/acme\/mine.*!/)
+      await fixture.waitForFrame((frame) => inspector(frame).includes(flat("review to review")))
       dispatch(fixture, "return")
-      await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
+      await until(fixture, () => fixture.fake.mutateInputs.length === 1)
       expect(fixture.fake.selectInputs[0].options.map((option) => option.title)).toEqual([
         "Keep yours (acme/mine)",
         "Take from Defaults (every agent) (acme/base)",
@@ -3934,7 +3791,7 @@ test("enter on a model review offers keep yours / take the model above", async (
 // A team's Special agent reads its team-scoped records: the detail pane's
 // active-model lines and scrub preview resolve with the row's team, as the
 // tree row itself does, never the team-less agent.
-test("detail pane: a team's Special agent shows its team-scoped active model and scrub preview", async () => {
+test("inspector: a team's Special agent shows its team-scoped active model and scrub preview", async () => {
   const crew = { level: "project" as const, team: "crew" }
   const snapshot = createSnapshot({
     agents: [{ id: "summary", scope: "defaults" as const, fileBacked: false, origin: "special" as const }],
@@ -3963,24 +3820,11 @@ test("detail pane: a team's Special agent shows its team-scoped active model and
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, height: 60 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await moveTo(fixture, "Teams")
-    await expand(fixture)
-    await moveTo(fixture, "crew")
-    await expand(fixture)
-    await moveTo(fixture, "Special")
-    await expand(fixture)
-    await moveTo(fixture, "summary")
-    await expand(fixture)
-    await moveTo(fixture, "Models")
-    await expand(fixture)
-    await moveTo(fixture, "acme/nova-1")
-    await fixture.waitForFrame((frame) => frame.includes("source: Project · active"))
-    await moveTo(fixture, "Tools")
-    await expand(fixture)
-    await moveTo(fixture, "OpenCode")
-    await expand(fixture)
-    await moveTo(fixture, "shell")
-    await fixture.waitForFrame((frame) => frame.includes("1 lines hidden by rules: Use git push to publish."))
+    // Teams › crew › Special › summary (sidebar) › Models › the model.
+    await goto(fixture, "item:project:crew/:special:summary:model:acme/nova-1", "acme/nova-1")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("from Project · active")))
+    await goto(fixture, "item:project:crew/:special:summary:tool:shell", "shell")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("hidden 1 lines hidden by rules: Use git push to publish.")))
   } finally {
     fixture.destroy()
   }

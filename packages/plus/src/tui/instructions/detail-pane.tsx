@@ -1,6 +1,4 @@
 import { TextAttributes } from "@opentui/core"
-import type { Plugin } from "@opencode/plugin/tui"
-import { createEffect, For, Show } from "solid-js"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { fromLabel } from "../../instructions/from-label.js"
 import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
@@ -12,22 +10,8 @@ import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from 
 import { controlKind, controlValue, withControlItems, type TreeNode } from "../../instructions/tree.js"
 import type { Level, Plus, Snapshot } from "../../rpc.js"
 import { presetName } from "../preset-picker.js"
-import { badgeColor, badgeLabels, controlColor, controlLabels } from "./tree-pane.js"
 
-export interface DetailPaneState {
-  saveText: (node: TreeNode, text: string) => Promise<boolean>
-}
 
-export interface DetailPaneProps {
-  context: Plugin.Context
-  node: () => TreeNode | undefined
-  snapshot: () => Snapshot | undefined
-  state: DetailPaneState
-  editing: () => boolean
-  onEditingChange: (editing: boolean) => void
-  draft: () => string
-  onDraftChange: (draft: string) => void
-}
 
 function agentsOf(snapshot: Snapshot): AgentSource[] {
   return snapshot.agents.map(agentOf)
@@ -472,13 +456,13 @@ export function excludedAttributes(excluded: boolean) {
   return excluded ? TextAttributes.STRIKETHROUGH : undefined
 }
 
-function wholeItemText(node: TreeNode, snapshot: Snapshot): { text: string; ranges: ExcludedRange[] } {
+export function wholeItemText(node: TreeNode, snapshot: Snapshot): { text: string; ranges: ExcludedRange[] } {
   const text = resolvedText(node, snapshot)
   if (node.address?.section !== null) return { text, ranges: [] }
   return { text, ranges: excludedRanges(node, snapshot) }
 }
 
-function renderRanges(text: string, ranges: readonly ExcludedRange[]): { body: string; excluded: boolean }[] {
+export function renderRanges(text: string, ranges: readonly ExcludedRange[]): { body: string; excluded: boolean }[] {
   if (ranges.length === 0) return [{ body: text, excluded: false }]
   const points = [0, text.length]
   for (const range of ranges) {
@@ -500,297 +484,10 @@ function renderRanges(text: string, ranges: readonly ExcludedRange[]): { body: s
 // differently depending on which catalogue it was reached through: a
 // stand-alone agent row inherits the Agents catalogue's Defaults, a team
 // member row the Teams catalogue's.
-function addressLine(node: TreeNode): string | undefined {
+export function addressLine(node: TreeNode): string | undefined {
   const address = node.address
   if (address === undefined) return undefined
   const head = address.agent === null ? displayLevel(address.level) : `${displayLevel(address.level)} · ${address.agent}`
   const tail = address.section === null ? address.item : `${address.item} · ${address.section}`
   return `${head} · catalogue: ${catalogueForAddress(address)} · ${tail}`
-}
-
-export function DetailPane(props: DetailPaneProps) {
-  let area: { plainText: string; isDestroyed: boolean; focus(): void; blur(): void; gotoBufferEnd(): void } | undefined
-
-  function editable(): boolean {
-    return isEditable(props.node())
-  }
-
-  function cancelEditing() {
-    area?.blur()
-    props.onDraftChange("")
-    props.onEditingChange(false)
-  }
-
-  async function saveEditing() {
-    const target = area
-    const node = props.node()
-    if (!target || target.isDestroyed || !node) return
-    props.onDraftChange(target.plainText)
-    const saved = await props.state.saveText(node, target.plainText)
-    if (saved) cancelEditing()
-  }
-
-  function isEditing(): boolean {
-    return props.editing() && editable()
-  }
-
-  createEffect(() => {
-    if (!isEditing()) return
-    const target = area
-    if (!target || target.isDestroyed) return
-    target.focus()
-    target.gotoBufferEnd()
-  })
-
-  // Drafts belong to one node: leaving the node discards the editor
-  // instead of saving stale text against a new target. Snapshot changes
-  // alone must not discard: a stale-revision save adopts the new snapshot
-  // and keeps the draft so the user can save again.
-  createEffect((previous: string | undefined) => {
-    const node = props.node()
-    const current = node?.id
-    if (previous !== undefined && current !== previous && props.editing()) cancelEditing()
-    return current
-  }, undefined)
-
-  props.context.keymap.layer(() => {
-    if (!isEditing()) {
-      const node = props.node()
-      const snapshot = props.snapshot()
-      if (!node || !snapshot) return { commands: [] }
-      if (!editable()) return { commands: [] }
-      return {
-        commands: [
-          {
-            bind: "e",
-            title: "Edit text",
-            group: "Instructions",
-            run: () => {
-              props.onDraftChange(resolvedText(node, snapshot))
-              props.onEditingChange(true)
-            },
-          },
-        ],
-      }
-    }
-    return {
-      commands: [
-        { bind: "ctrl+s", title: "Save text", group: "Instructions", run: () => void saveEditing() },
-        { bind: "escape", title: "Cancel editing", group: "Instructions", run: cancelEditing },
-      ],
-    }
-  })
-
-  return (
-    <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
-      <Show
-        when={props.node()}
-        fallback={
-          <text flexShrink={0} fg={props.context.theme.text.subdued}>
-            Select an item
-          </text>
-        }
-      >
-        {(node) => (
-          <box flexDirection="column" gap={1} flexGrow={1} minHeight={0}>
-            <text flexShrink={0} fg={props.context.theme.text.default}>
-              {node().label} ({node().kind})
-            </text>
-            <Show when={addressLine(node())}>
-              {(line) => (
-                <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                  {line()}
-                </text>
-              )}
-            </Show>
-            <Show when={props.snapshot()}>
-              {(snapshot) => (
-                <>
-                  <Show when={provenanceLine(node(), snapshot())}>
-                    {(line) => (
-                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                        {line()}
-                      </text>
-                    )}
-                  </Show>
-                  <For each={controlDetail(node(), snapshot())}>
-                    {(line) => <text flexShrink={0} fg={controlColor(props.context, node())}>{line}</text>}
-                  </For>
-                  <For each={controlLabels(node())}>
-                    {(label) => <text flexShrink={0} fg={controlColor(props.context, node())}>{label}</text>}
-                  </For>
-                  <Show when={linkLine(node(), snapshot())}>
-                    {(line) => (
-                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                        {line()}
-                      </text>
-                    )}
-                  </Show>
-                  <For each={matchLines(node(), snapshot())}>
-                    {(line) => (
-                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                        {line}
-                      </text>
-                    )}
-                  </For>
-                  <For each={badgeLabels(node())}>
-                    {(label) => (
-                      <text flexShrink={0} fg={badgeColor(props.context, label)}>
-                        {label}
-                      </text>
-                    )}
-                  </For>
-                  <Show when={modelDetail(node(), snapshot())}>
-                    {(detail) => (
-                      <box flexDirection="column" flexShrink={0}>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`provider: ${detail().providerID}`}
-                        </text>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`model: ${detail().modelID}`}
-                        </text>
-                        <Show when={detail().variant}>
-                          {(variant) => (
-                            <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                              {`variant: ${variant()}`}
-                            </text>
-                          )}
-                        </Show>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`source: ${displayLevel(detail().source)}${detail().active ? " · active" : ""}`}
-                        </text>
-                      </box>
-                    )}
-                  </Show>
-                  <Show when={categoryDetail(node())}>
-                    {(line) => (
-                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                        {line()}
-                      </text>
-                    )}
-                  </Show>
-                  <Show when={permDetail(node(), snapshot())}>
-                    {(detail) => (
-                      <box flexDirection="column" flexShrink={0}>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`tool: ${detail().tool} · rule: ${detail().rule}${detail().custom ? " · custom" : ""}`}
-                        </text>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`enforced by: ${detail().enforcement}`}
-                        </text>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`patterns: ${detail().patterns.join(", ") || "(none)"}`}
-                        </text>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`keywords: ${detail().keywords.join(", ") || "(none)"}`}
-                        </text>
-                        <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                          {`provenance: ${detail().provenance.join(", ") || "(curated)"}`}
-                        </text>
-                        <Show when={detail().message}>
-                          {(message) => (
-                            <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                              {`message: ${message()}`}
-                            </text>
-                          )}
-                        </Show>
-                      </box>
-                    )}
-                  </Show>
-                  <Show when={scrubInfo(node(), snapshot())}>
-                    {(info) => (
-                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                        {`${info().hidden} lines hidden by rules: ${info().preview.join(" / ")}`}
-                      </text>
-                    )}
-                  </Show>
-                  <Show when={node().address?.section === null && controlKind(node().address?.item) === undefined}>
-                    <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                      Sections:
-                    </text>
-                    <For each={sectionRows(node(), snapshot())}>
-                      {(row) => (
-                        <text
-                          flexShrink={0}
-                          fg={props.context.theme.text.default}
-                          attributes={excludedAttributes(row.excluded)}
-                        >
-                          {`  - ${row.name} [${row.excluded ? "excluded" : "included"}]`}
-                        </text>
-                      )}
-                    </For>
-                  </Show>
-                  <Show when={node().address !== undefined && node().address?.section !== null}>
-                    <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                      Item: {parentItemTitle(node(), snapshot())} ({node().address?.item})
-                    </text>
-                    <Show when={sectionExcluded(node(), snapshot())}>
-                      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                        [excluded]
-                      </text>
-                    </Show>
-                  </Show>
-                  <Show
-                    when={isEditing()}
-                    fallback={
-                      <scrollbox flexGrow={1}>
-                        <Show
-                          when={node().address?.section === null}
-                          fallback={
-                            <text
-                              flexShrink={0}
-                              fg={node().badges.disabled === undefined ? props.context.theme.text.default : props.context.theme.text.formfield.disabled}
-                              attributes={excludedAttributes(sectionExcluded(node(), snapshot()))}
-                            >
-                              {node().enabledRow === undefined ? resolvedText(node(), snapshot()) : ""}
-                            </text>
-                          }
-                        >
-                          <Show when={wholeItemText(node(), snapshot())}>
-                            {(whole) => (
-                              <box flexDirection="column" flexShrink={0}>
-                                <For each={renderRanges(whole().text, whole().ranges)}>
-                                  {(part) => (
-                                    <text
-                                      flexShrink={0}
-                                      fg={node().badges.disabled === undefined ? props.context.theme.text.default : props.context.theme.text.formfield.disabled}
-                                      attributes={excludedAttributes(part.excluded)}
-                                    >
-                                      {`${part.body}${part.excluded ? " [excluded]" : ""}`}
-                                    </text>
-                                  )}
-                                </For>
-                              </box>
-                            )}
-                          </Show>
-                        </Show>
-                      </scrollbox>
-                    }
-                  >
-                    <textarea
-                      flexGrow={1}
-                      initialValue={props.draft()}
-                      textColor={props.context.theme.text.formfield.default}
-                      focusedTextColor={props.context.theme.text.formfield.focused}
-                      cursorColor={props.context.theme.text.formfield.focused}
-                      ref={(next) => {
-                        area = next
-                      }}
-                      onContentChange={() => {
-                        if (!area || area.isDestroyed) return
-                        props.onDraftChange(area.plainText)
-                      }}
-                    />
-                    <text flexShrink={0} fg={props.context.theme.text.subdued}>
-                      ctrl+s save · esc cancel
-                    </text>
-                  </Show>
-                </>
-              )}
-            </Show>
-          </box>
-        )}
-      </Show>
-    </box>
-  )
 }

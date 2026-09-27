@@ -217,23 +217,36 @@ When every user is in another project (`data.elsewhere`), a second confirm
 `preset.delete {ref, confirm: true}`. An owner linked to a deleted preset shows
 the warning badge `missing preset`.
 
-**Tree pane.** An inheriting row shows its `badges.fromLabel` as a dim suffix
-after its badges (`shell [on] · from preset Orchestrator`), never when the row
-sets the value itself (`set here`). The review badge reads through
-`reviewLabel`: `to review`, `to review (state)`, `to review (text, state)`; a
-model row's review reads `review`. Both colours follow the theme role: the
-suffix is secondary text (`text.subdued`), every review label the warning
-feedback token it always had.
+**Screen layout** (`tui/instructions/route.tsx`, `workspace.ts`,
+`docs/instructions-redesign.md`). The tree is shown as a workspace: level tabs
+(Project, Global, Defaults, Presets; `<` `>`), a sidebar of the level's
+catalogues, origins, teams and owners (agents, members, Special agents,
+presets, Defaults entries, and the Defaults catalogues as `Every agent` /
+`Every member`), the selected owner's category tabs (`[` `]`, `1`–`8`), the
+category's own subtree as the list, and an inspector. Row ids, actions and
+every mutation are the tree's; `workspaceOf` only decides which rows are open.
 
-**Detail pane.** The provenance line names state and text sources in the same
-words: `state and text: from preset Orchestrator`, or `state: from preset
-Orchestrator · text: upstream` when they differ; a value this level sets reads
-`set here (Project)`; model rows `active model: …` / `candidate: …`. Owner rows
-add `Created from preset: Orchestrator (Plus)` or `No preset` (nothing for a
-shipped preset of its own). Defaults entry rows add what they match: `matches
-agents named: <pattern>` / `matches members named: <m> in teams named: <t>` /
-`matches teams named: <t>`, then `matching now: …` computed from the snapshot's
-agents and teams with `matchesName`.
+**Rows** (`row.tsx`). `●`/`○` is on/off; `◆` and an info-coloured gutter mark a
+value set at this level; `!` (`!N` for N below) and a warning gutter mark a
+review. An inheriting row shows its `badges.fromLabel` dim at the right
+(`shell … from preset Orchestrator`), never when the row sets the value itself
+(`set here`) or for the baseline (`OpenCode`, `upstream`); inside a preset its
+own `from preset <itself>` is not repeated. The review wording reads through
+`reviewLabel` in the inspector: `to review`, `to review (state)`, `to review
+(text, state)`; a model row's review reads `review`. Colours follow theme roles:
+provenance is `text.subdued`, review the warning feedback token, set-here the
+info feedback token.
+
+**Inspector** (`inspector.tsx`). Facts in the same words as before: `source`
+names state and text sources (`state and text: from preset Orchestrator`,
+`state: from preset Orchestrator · text: upstream`, `set here (Project)`, or
+`default (nothing overrides it)`); model rows `active model: …` / `candidate:
+…`. Owner rows add `preset` (`Orchestrator (Plus)`, or `No preset`; nothing for
+a shipped preset of its own). Defaults entry rows add what they match
+(`matches agents named: <pattern>` / `matches members named: <m> in teams
+named: <t>` / `matches teams named: <t>`) and `now` (`matching now`) computed
+from the snapshot's agents and teams with `matchesName`. Every addressed row
+names its `address` with its catalogue.
 
 **Review (§3.6).** Enter on a review row whose `reviewOf` holds `state` or
 `pin` opens a choice (title `Review "<row>"`): `Keep yours (<yours>)` →
@@ -241,11 +254,18 @@ agents and teams with `matchesName`.
 `Take <from label> (<above>)` (e.g. `Take from preset Orchestrator (on)`) →
 `take` limited to those parts; values read `on`/`off` and `pinned`/`not
 pinned`. With `text` under review too, the three-way diff opens after the
-choice for the text. A text-only review opens the diff as before. A model row
+choice for the text. A text-only review opens the diff pane: a real diff
+(opentui `<diff>`, the theme's diff tokens) with three comparisons — upstream
+change (original → new upstream), your change (original → yours) and take
+result (yours → new upstream) — where `k` keeps, `t` takes and `e` edits a
+three-way merge of the upstream change onto yours (`diff-lines.ts` `merge3`;
+conflicting regions are fenced and saving is refused until they are resolved).
+`c` opens the same pane read-only for any row whose text this level overrides. A model row
 under review offers `Keep yours (<model>)` (`acknowledgeActiveModel`: your
 active model re-records the model above) and `Take <from label> (<model
-above>)` (`clearModelActive`). The hint line shows `enter review` on review
-rows and `l link` where `l` is bound.
+above>)` (`clearModelActive`). The footer shows `enter review` on review
+rows and `l link` where `l` is bound; `n` / `shift+n` jump to the next /
+previous row under review in the level (`workspace.ts` `reviewTargets`).
 
 ### Catalogues (`model.ts`, `tree.ts`, `store.ts`)
 
@@ -260,7 +280,7 @@ bytes and its exact meaning.
   rows and a team member only the Teams catalogue's, then its team, then
   itself. An agent that is both resolves differently depending on which it was
   launched as (`apply.ts` sets `team` for agents that come from an enabled
-  team); the detail pane names the catalogue on every addressed row.
+  team); the inspector names the catalogue on every addressed row.
 - **Records.** Only the shared inventory is per catalogue: `catalogue` is
   written on `customization`, `split`, `model` and `rule` records with
   `agent === null`, never on a per-agent record, which is one record both
@@ -379,7 +399,7 @@ tool's legacy category (below), else in Rules.
   materialises a custom override of the same identity.
 
 The hint line says `enter edit number`, `space switch` or `enter edit rule`
-accordingly. The detail pane (`detail-pane.tsx`) prints `enforced by:
+accordingly. The inspector (`inspector.tsx`, via `detail-pane.tsx` `enforcementLine`) prints `enforced by:
 <enforcementLine>` under a perm row's `tool: … · rule: …` line (the kinds
 table under Permission rules gives each line), `Every permission of <tool>,
 one group per category. Rows are on/off; enter edits a rule's patterns or a
@@ -803,7 +823,7 @@ of any record list. Every production resolution reads the full context:
 publish (`buildActiveModels`, apply, specials, team role overrides, baselines,
 the fingerprint view), discovery's base badge, `instructions.assembled`, the
 memo behind the tree/query/ops, the tools' `show`, and the TUI state and
-detail pane (`snapshot.ts` `contextOfSnapshot`, `memoInputOf`).
+inspector (`snapshot.ts` `contextOfSnapshot`, `memoInputOf`).
 
 A member's link carries its team (`L/A@T`). The tree's member rows carry
 `memberOf` (the row's own team), so their chain is apply's team-scoped chain
@@ -1593,7 +1613,7 @@ Tool permission rules carry the same field:
   (`curatedRuleMessage(tool, rule) ?? item.message`); a mined row has none and
   keeps the generic refusal.
 - `instructions_show` on a perm row returns `message` when the row has one
-  (the same fallback), and the TUI detail pane prints it under `provenance`.
+  (the same fallback), and the TUI inspector prints it under `provenance`.
 - Two whole-set resubmissions carry the same optional fields. A state-only
   write — `set` with `state` alone — goes through `tools.ts`
   `toSnapshotRecords`; every TUI write (`persist` in
@@ -2233,7 +2253,7 @@ How each kind is enforced (`model.ts` `PermKind`):
 | `env` | `tool.execute.before`, `shell.create.before` | off strips the matching environment variables before the command starts |
 | `team` | the team handlers (`teams/reach.ts`) | as each row says (Team rules are instructions rows) |
 
-The detail pane's `enforced by:` line (`detail-pane.tsx` `enforcementLine`)
+The inspector's `enforced by` line (`detail-pane.tsx` `enforcementLine`)
 says the same per row:
 
 ```

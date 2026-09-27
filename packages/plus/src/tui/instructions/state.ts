@@ -232,9 +232,12 @@ export function createInstructionsState(context: Plugin.Context) {
     return out
   }
 
+  // The rows the filter matched, as opposed to the ancestors shown with them.
+  let lastMatched: ReadonlySet<string> = new Set()
   const nodes = createMemo<TreeNode[]>(() => {
     const raw = filter()
     if (raw.trim().length === 0) {
+      lastMatched = new Set()
       cachedFullTree = undefined
       return allNodes()
     }
@@ -264,6 +267,7 @@ export function createInstructionsState(context: Plugin.Context) {
     }
     const full = cachedFullTree.tree
     const matched = matchFilter(raw, full)
+    lastMatched = new Set(matched.map((node) => node.id))
     const byId = new Map(full.map((node) => [node.id, node]))
     const indexById = new Map(full.map((node, index) => [node.id, index] as const))
     const included = new Map<string, TreeNode>()
@@ -309,10 +313,37 @@ export function createInstructionsState(context: Plugin.Context) {
   // on a debounce, so that can be a later snapshot than the create's own
   // refresh. Moving the cursor drops the wish.
   let pending: { readonly expand: readonly string[]; readonly row: string } | undefined
+  const [revealed, setRevealed] = createSignal<{ readonly expand: readonly string[]; readonly row: string } | undefined>(undefined)
 
   function reveal(expand: readonly string[], row: string) {
     pending = { expand, row }
+    setRevealed({ expand, row })
     applyPending()
+  }
+
+  // The same rows tree() emits for the flat view, for any expansion set: the
+  // workspace view builds its sidebar and its category list from it.
+  function treeWith(open: ReadonlySet<string>): TreeNode[] {
+    if (!snapshot()) return []
+    return tree({
+      items: itemsForTree(),
+      records: recordsForTree(),
+      agents: agentsForTree(),
+      teams: teamsForTree(),
+      ...presetStateForTree(),
+      expanded: open,
+    })
+  }
+
+  // Row ids the shared query engine matches (the tool layer's grammar);
+  // undefined when the grammar rejects the text.
+  function queryIds(where: string): ReadonlySet<string> | undefined {
+    if (!snapshot()) return new Set()
+    try {
+      return new Set(query(memoInput(), { where, fields: ["id"] }).rows.map((row) => row.id))
+    } catch {
+      return undefined
+    }
   }
 
   function applyPending(): boolean {
@@ -517,13 +548,20 @@ export function createInstructionsState(context: Plugin.Context) {
         },
         { location: context.location },
       )
-      if (disposed || disabled || requestGen !== generation) return false
+      if (disposed || disabled) return false
+      // The write's own instructions.changed event usually starts a reload
+      // before this answer arrives. That newer load owns the snapshot, but
+      // the write still succeeded: report it, or an editor never closes.
+      const latest = requestGen === generation
       if (result.ok) {
-        setSnapshot(result.snapshot)
+        if (latest) {
+          setSnapshot(result.snapshot)
+          ensureSelection()
+        }
         setStatus(successStatus)
-        ensureSelection()
         return true
       }
+      if (!latest) return false
       setSnapshot(result.snapshot)
       setStatus(
         `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${result.snapshot.revision}/${result.snapshot.globalRevision}); ${retryHint}`,
@@ -991,6 +1029,10 @@ export function createInstructionsState(context: Plugin.Context) {
   return {
     snapshot,
     nodes,
+    matched: (): ReadonlySet<string> => {
+      nodes()
+      return lastMatched
+    },
     allNodes,
     selected,
     selectedId,
@@ -1024,6 +1066,9 @@ export function createInstructionsState(context: Plugin.Context) {
     modelReview,
     resolveModel,
     reveal,
+    revealed,
+    treeWith,
+    queryIds,
     remove,
     refresh,
     dispose,

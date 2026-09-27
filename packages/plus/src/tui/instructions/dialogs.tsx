@@ -5,7 +5,12 @@ import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "..
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import type { InstructionsState } from "./state.js"
 
-export function createInstructionsDialogs(context: Plugin.Context, state: InstructionsState) {
+export interface InstructionsDialogsOptions {
+  /** The row a node hangs under; defaults to the flat tree's nearest shallower row. */
+  readonly parentOf?: (node: TreeNode) => TreeNode | undefined
+}
+
+export function createInstructionsDialogs(context: Plugin.Context, state: InstructionsState, options: InstructionsDialogsOptions = {}) {
   const plus = context.client.rpc(Definition)
   let disposed = false
 
@@ -542,6 +547,7 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
 
   // The row a group hangs under (the nearest shallower row above it).
   function parentOf(node: TreeNode): TreeNode | undefined {
+    if (options.parentOf !== undefined) return options.parentOf(node)
     const list = state.nodes()
     const index = list.findIndex((entry) => entry.id === node.id)
     return list.slice(0, Math.max(index, 0)).findLast((entry) => entry.depth < node.depth)

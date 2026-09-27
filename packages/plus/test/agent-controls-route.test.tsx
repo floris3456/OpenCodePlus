@@ -1,33 +1,14 @@
 import { expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { controlItems, controlRecord, controlSnapshot } from "./agent-controls-fixture.js"
-import { renderInstructionsRoute, type TestFixture } from "./tui.js"
+import { dispatch, reach, selectedRow } from "./instructions-nav.js"
+import { renderInstructionsRoute } from "./tui.js"
 
 const build = Agent.Info.default(Agent.ID.make("build"))
 
-function dispatch(fixture: TestFixture, key: string): boolean {
-  const command = fixture.commands().find((command) => command.bind === key)
-  if (command === undefined) return false
-  void command.run()
-  return true
-}
-
-function selected(frame: string): string {
-  return frame.split("\n").find((line) => line.includes("›")) ?? ""
-}
-
-async function filterTo(fixture: TestFixture, id: string, label: string): Promise<void> {
-  await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  expect(dispatch(fixture, "/")).toBe(true)
-  await fixture.waitForFrame((frame) => frame.includes(`Filter: id:${id}`))
-  for (let step = 0; step < 15; step++) {
-    const before = selected(fixture.captureCharFrame())
-    if (before.includes(label)) return
-    dispatch(fixture, "down")
-    await fixture.waitForFrame((frame) => selected(frame) !== before)
-  }
-  throw new Error(`Did not reach ${id}`)
-}
+// Each test reaches its row the way a user does: the live filter with the
+// row's id, then enter ("go to").
+const selected = selectedRow
 
 for (const width of [80, 120]) {
   test(`Enter cycles Mode Primary → Subagent → All in the production route at ${width} columns`, async () => {
@@ -40,9 +21,8 @@ for (const width of [80, 120]) {
         controlSnapshot([controlRecord("setting:mode", { text: "all" })], { revision: 3 }),
         controlSnapshot([controlRecord("setting:mode", { text: "primary" })], { revision: 4 }),
       ],
-      dialogs: { prompts: [`id:${id}`] },
     })
-    await filterTo(fixture, id, "Mode")
+    await reach(fixture, id, "Mode")
     for (const [index, value] of ["subagent", "all", "primary"].entries()) {
       expect(dispatch(fixture, "return")).toBe(true)
       await fixture.waitForFrame((frame) => fixture.fake.mutateInputs.length === index + 1 && selected(frame).includes(value[0].toUpperCase() + value.slice(1)))
@@ -70,9 +50,8 @@ test("Enter cycles Strategy Auto → Local → Remote and back without deleting 
         ...saved, controlRecord("compaction:strategy", { text }),
       ], { revision: index + 2 })),
     ],
-    dialogs: { prompts: [`id:${id}`] },
   })
-  await filterTo(fixture, id, "Strategy")
+  await reach(fixture, id, "Strategy")
   for (const [index, text] of ["local", "remote", "auto"].entries()) {
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => fixture.fake.mutateInputs.length === index + 1 && !frame.includes("Loading…"))
@@ -90,13 +69,13 @@ test("Enter on Mode still cycles after opening its narrow detail pane", async ()
       controlSnapshot(),
       controlSnapshot([controlRecord("setting:mode", { text: "subagent" })], { revision: 2 }),
     ],
-    dialogs: { prompts: [`id:${id}`] },
   })
-  await filterTo(fixture, id, "Mode")
-  dispatch(fixture, "right")
-  await fixture.waitForFrame((frame) => frame.includes("back to tree"))
+  await reach(fixture, id, "Mode")
+  // Narrow: the list is its own page with the inspector under it; Enter
+  // still cycles there and the inspector follows.
+  expect(fixture.captureCharFrame()).not.toContain("▾ Agents")
   expect(dispatch(fixture, "return")).toBe(true)
-  await fixture.waitForFrame((frame) => frame.includes("Value: Subagent"))
+  await fixture.waitForFrame((frame) => /value\s+Subagent/.test(frame))
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item: "setting:mode", text: "subagent" }))
 })
 
@@ -114,51 +93,50 @@ test("Space toggles an agent and its Enabled row; Hidden stays distinct; ctrl+sp
         controlRecord("setting:enabled", { state: "on" }), controlRecord("setting:hidden", { state: "on" }),
       ], { revision: 4 }),
     ],
-    dialogs: { prompts: [`id:${agent}`, `id:${enabled}`, `id:${hidden}`, `id:${agent}`] },
-  })
-  await filterTo(fixture, agent, "build")
+      })
+  await reach(fixture, agent, "build")
   expect(dispatch(fixture, "ctrl+space")).toBe(true)
   expect(fixture.fake.agentSelects).toEqual(["build"])
   dispatch(fixture, "space")
-  await fixture.waitForFrame((frame) => selected(frame).includes("[off]"))
+  await fixture.waitForFrame((frame) => selected(frame).includes("○"))
   fixture.emitAgents([])
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "off" }))
   expect(dispatch(fixture, "ctrl+space")).toBe(false)
-  await filterTo(fixture, enabled, "Enabled")
+  await reach(fixture, enabled, "Enabled")
   dispatch(fixture, "space")
-  await fixture.waitForFrame((frame) => selected(frame).includes("[on]"))
+  await fixture.waitForFrame((frame) => selected(frame).includes("●"))
   fixture.emitAgents([build])
   expect(fixture.fake.mutateInputs[1].records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "on" }))
-  await filterTo(fixture, hidden, "Hidden")
+  await reach(fixture, hidden, "Hidden")
   dispatch(fixture, "space")
-  await fixture.waitForFrame((frame) => selected(frame).includes("[on]"))
+  await fixture.waitForFrame((frame) => selected(frame).includes("●"))
   fixture.emitAgents([{ ...build, hidden: true }])
-  await filterTo(fixture, agent, "build")
-  expect(selected(fixture.captureCharFrame())).toContain("[hidden]")
-  expect(selected(fixture.captureCharFrame())).toContain("[on]")
+  await reach(fixture, agent, "build")
+  expect(selected(fixture.captureCharFrame())).toContain("hidden")
+  expect(selected(fixture.captureCharFrame())).toContain("●")
   expect(dispatch(fixture, "ctrl+space")).toBe(false)
   expect(fixture.fake.agentSelects).toEqual(["build"])
 })
 
 for (const level of ["global", "defaults"] as const) {
   for (const control of [
-    { item: "setting:enabled", blocked: { state: "off" as const }, restored: { state: "on" as const }, agents: [], badge: "[off]" },
-    { item: "setting:hidden", blocked: { state: "on" as const }, restored: { state: "off" as const }, agents: [{ ...build, hidden: true }], badge: "[hidden]" },
-    { item: "setting:mode", blocked: { text: "subagent" }, restored: { text: "primary" }, agents: [{ ...build, mode: "subagent" as const }], badge: "[subagent]" },
+    { item: "setting:enabled", blocked: { state: "off" as const }, restored: { state: "on" as const }, agents: [], badge: "○" },
+    { item: "setting:hidden", blocked: { state: "on" as const }, restored: { state: "off" as const }, agents: [{ ...build, hidden: true }], badge: "hidden" },
+    { item: "setting:mode", blocked: { text: "subagent" }, restored: { text: "primary" }, agents: [{ ...build, mode: "subagent" as const }], badge: "subagent" },
   ]) {
     test(`${level} selection follows the effective host catalogue when Project ${control.item} blocks it`, async () => {
       const id = `agent:${level}:build`
       await using fixture = await renderInstructionsRoute({
         agents: control.agents,
         snapshots: [controlSnapshot([controlRecord(control.item, control.blocked)])],
-        dialogs: { prompts: [`id:${id}`] },
       })
-      await filterTo(fixture, id, "build")
-      expect(selected(fixture.captureCharFrame())).toContain("[on]")
-      expect(selected(fixture.captureCharFrame())).toContain("[primary]")
-      expect(selected(fixture.captureCharFrame())).not.toContain("[hidden]")
+      await reach(fixture, id, "build")
+      // The row shows its own tier: on, primary (not named), not hidden.
+      expect(selected(fixture.captureCharFrame())).toContain("●")
+      expect(selected(fixture.captureCharFrame())).not.toContain("subagent")
+      expect(selected(fixture.captureCharFrame())).not.toContain("hidden")
       expect(fixture.commands().some((command) => command.bind === "space")).toBe(true)
-      expect(fixture.captureCharFrame()).not.toContain("ctrl+space select")
+      expect(fixture.commands().some((command) => command.bind === "ctrl+space")).toBe(false)
       expect(dispatch(fixture, "ctrl+space")).toBe(false)
       expect(fixture.fake.agentSelects).toEqual([])
       expect(fixture.fake.mutateInputs).toEqual([])
@@ -172,9 +150,8 @@ for (const level of ["global", "defaults"] as const) {
           controlRecord(control.item, { level, ...control.blocked }),
           controlRecord(control.item, control.restored),
         ])],
-        dialogs: { prompts: [`id:${id}`] },
       })
-      await filterTo(fixture, id, "build")
+      await reach(fixture, id, "build")
       expect(selected(fixture.captureCharFrame())).toContain(control.badge)
       expect(fixture.captureCharFrame()).toContain("ctrl+space select")
       expect(dispatch(fixture, "ctrl+space")).toBe(true)
@@ -191,9 +168,8 @@ for (const level of ["project", "global", "defaults"]) {
       await using fixture = await renderInstructionsRoute({
         agents: [{ ...build, mode }],
         snapshots: [controlSnapshot([controlRecord("setting:mode", { text: mode })])],
-        dialogs: { prompts: [`id:${id}`] },
       })
-      await filterTo(fixture, id, "build")
+      await reach(fixture, id, "build")
       expect(dispatch(fixture, "ctrl+space")).toBe(true)
       expect(fixture.fake.agentSelects).toEqual(["build"])
       expect(fixture.fake.mutateInputs).toEqual([])
@@ -212,9 +188,8 @@ for (const [id, agent, label] of [
       snapshots: [controlSnapshot([], {
         entries: [{ type: "entry", level: "defaults", catalogue: "agents", name: "worker", updated: "2026-09-26" }],
       })],
-      dialogs: { prompts: [`id:${id}`] },
     })
-    await filterTo(fixture, id, label)
+    await reach(fixture, id, label)
     expect(dispatch(fixture, "ctrl+space")).toBe(false)
     expect(fixture.fake.agentSelects).toEqual([])
   })
@@ -224,9 +199,8 @@ test("host catalogue updates recheck selection commands without changing tier ba
   const id = "agent:global:build"
   await using fixture = await renderInstructionsRoute({
     snapshots: [controlSnapshot()],
-    dialogs: { prompts: [`id:${id}`] },
   })
-  await filterTo(fixture, id, "build")
+  await reach(fixture, id, "build")
   expect(dispatch(fixture, "ctrl+space")).toBe(false)
   fixture.emitAgents([build])
   await fixture.waitForFrame((frame) => frame.includes("ctrl+space select"))
@@ -236,7 +210,7 @@ test("host catalogue updates recheck selection commands without changing tier ba
   await fixture.waitForFrame((frame) => !frame.includes("ctrl+space select"))
   void select?.run()
   expect(fixture.fake.agentSelects).toEqual([])
-  expect(selected(fixture.captureCharFrame())).toContain("[on]")
+  expect(selected(fixture.captureCharFrame())).toContain("●")
   expect(dispatch(fixture, "space")).toBe(true)
   await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ level: "global", item: "setting:enabled", state: "off" }))
@@ -247,25 +221,38 @@ for (const [item, label, text] of [
   ["setting:color", "Color", "#123456"],
   ["setting:steps", "Steps", "12"],
   ["compaction:model", "Model", "acme/compact#fast"],
-  ["compaction:instructions", "Instructions", "Keep test evidence.\nKeep pending tasks."],
 ]) {
-  test(`${label} uses the standard detail editor and persists ${item} through state`, async () => {
+  test(`${label} edits in a one-line prompt and persists ${item} through state`, async () => {
     const id = `item:project:build:${item}`
     await using fixture = await renderInstructionsRoute({
       snapshots: [controlSnapshot(), controlSnapshot([controlRecord(item, { text })], { revision: 2 })],
-      dialogs: { prompts: [`id:${id}`] },
+      dialogs: { prompts: [text] },
     })
-    await filterTo(fixture, id, label)
+    await reach(fixture, id, label)
     dispatch(fixture, "return")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    const editor = fixture.renderer.currentFocusedEditor
-    expect(editor).toBeDefined()
-    editor?.setText(text)
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes(`Saved "${label}"`) && !frame.includes("ctrl+s save"))
+    await fixture.waitForFrame((frame) => frame.includes(`Saved "${label}"`))
+    expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual([label])
     expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item, text, section: null }))
   })
 }
+
+test("Instructions uses the full-width editor and persists compaction:instructions through state", async () => {
+  const item = "compaction:instructions"
+  const text = "Keep test evidence.\nKeep pending tasks."
+  const id = `item:project:build:${item}`
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [controlSnapshot(), controlSnapshot([controlRecord(item, { text })], { revision: 2 })],
+  })
+  await reach(fixture, id, "Instructions")
+  dispatch(fixture, "return")
+  await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+  const editor = fixture.renderer.currentFocusedEditor
+  expect(editor).toBeDefined()
+  editor?.setText(text)
+  dispatch(fixture, "ctrl+s")
+  await fixture.waitForFrame((frame) => frame.includes('Saved "Instructions"') && !frame.includes("ctrl+s save"))
+  expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item, text, section: null }))
+})
 
 test("Remote fields show retained values and refuse Enter, e, Space and reset in the route", async () => {
   const id = "item:project:build:compaction:model"
@@ -274,9 +261,8 @@ test("Remote fields show retained values and refuse Enter, e, Space and reset in
       controlRecord("compaction:strategy", { text: "remote" }),
       controlRecord("compaction:model", { text: "acme/small" }),
     ])],
-    dialogs: { prompts: [`id:${id}`] },
   })
-  await filterTo(fixture, id, "Model")
+  await reach(fixture, id, "Model")
   expect(fixture.captureCharFrame()).toContain("acme/small")
   expect(fixture.captureCharFrame()).toContain("retained")
   expect(dispatch(fixture, "return")).toBe(true)
@@ -295,9 +281,9 @@ test("r removes only the current Mode override and exposes global provenance", a
       controlSnapshot([global, controlRecord("setting:mode", { text: "all" })]),
       controlSnapshot([global], { revision: 2 }),
     ],
-    dialogs: { prompts: [`id:${id}`], confirms: [true] },
+    dialogs: { confirms: [true] },
   })
-  await filterTo(fixture, id, "Mode")
+  await reach(fixture, id, "Mode")
   dispatch(fixture, "r")
   await fixture.waitForFrame((frame) => frame.includes('Reset "Mode"') && frame.includes("from global"))
   expect(fixture.fake.mutateInputs[0].records).toEqual([global])
@@ -317,9 +303,9 @@ test("r on an agent resets its scoped Settings and Compaction together, retainin
       ]),
       controlSnapshot([global], { revision: 2 }),
     ],
-    dialogs: { prompts: [`id:${id}`], confirms: [true] },
+    dialogs: { confirms: [true] },
   })
-  await filterTo(fixture, id, "build")
+  await reach(fixture, id, "build")
   expect(dispatch(fixture, "r")).toBe(true)
   await fixture.waitForFrame((frame) => frame.includes('Reset agent controls for "build"'))
   expect(fixture.fake.mutateInputs[0].records).toEqual([global])
@@ -342,9 +328,9 @@ test("r on a member-preset entity resets all nine scoped controls while retainin
       ]),
       controlSnapshot(retained, { revision: 2 }),
     ],
-    dialogs: { prompts: [`id:${id}`], confirms: [true] },
+    dialogs: { confirms: [true] },
   })
-  await filterTo(fixture, id, "planner")
+  await reach(fixture, id, "planner")
   expect(dispatch(fixture, "r")).toBe(true)
   await fixture.waitForFrame((frame) => frame.includes('Reset agent controls for "planner"'))
   expect(fixture.fake.mutateInputs[0].records).toEqual(retained)
@@ -356,14 +342,13 @@ test("saving empty compaction instructions creates an explicit empty prompt inst
   const global = controlRecord("compaction:instructions", { level: "global", text: "Inherited summary prompt" })
   await using fixture = await renderInstructionsRoute({
     snapshots: [controlSnapshot([global]), controlSnapshot([global, controlRecord("compaction:instructions", { text: "" })], { revision: 2 })],
-    dialogs: { prompts: [`id:${id}`] },
   })
-  await filterTo(fixture, id, "Instructions")
+  await reach(fixture, id, "Instructions")
   dispatch(fixture, "return")
   await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
   fixture.renderer.currentFocusedEditor?.setText("")
   dispatch(fixture, "ctrl+s")
-  await fixture.waitForFrame((frame) => frame.includes("Value: Empty prompt"))
+  await fixture.waitForFrame((frame) => /value\s+Empty prompt/.test(frame))
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item: "compaction:instructions", level: "project", text: "" }))
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(global)
 })

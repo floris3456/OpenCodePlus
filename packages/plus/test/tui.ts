@@ -47,7 +47,7 @@ export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
   }
 }
 
-function createTestTheme() {
+export function createTestTheme() {
   const white = RGBA.fromHex("#ffffff")
   const black = RGBA.fromHex("#000000")
   const gray = RGBA.fromHex("#888888")
@@ -55,10 +55,25 @@ function createTestTheme() {
   const blue = RGBA.fromHex("#0000ff")
   const selectedBg = RGBA.fromHex("#333333")
 
+  const green = RGBA.fromHex("#00ff00")
+  const red = RGBA.fromHex("#ff0000")
+  const stateful = (base: RGBA, focused: RGBA) => ({ default: base, focused, selected: focused, hovered: focused, pressed: focused, disabled: gray })
+  const scale = (color: RGBA) => Object.fromEntries([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950].map((step) => [step, color]))
+
   return {
+    categorical: [scale(blue), scale(green), scale(yellow), scale(red)],
+    border: { default: gray },
+    scrollbar: { default: gray },
+    diff: {
+      text: { added: green, removed: red, context: white, hunkHeader: gray },
+      background: { added: black, removed: black, context: black },
+      highlight: { added: green, removed: red },
+      lineNumber: { text: gray, background: { added: black, removed: black } },
+    },
     text: {
       default: white,
       subdued: gray,
+      action: { primary: stateful(white, white), secondary: stateful(gray, white), destructive: stateful(red, red) },
       formfield: {
         default: white,
         selected: white,
@@ -75,6 +90,8 @@ function createTestTheme() {
     },
     background: {
       default: black,
+      surface: { offset: black, overlay: selectedBg },
+      action: { primary: stateful(selectedBg, selectedBg), secondary: stateful(black, selectedBg), destructive: stateful(red, red) },
       formfield: {
         default: black,
         selected: selectedBg,
@@ -168,6 +185,8 @@ export interface TestFixture {
   readonly destroy: () => void
   readonly commands: () => readonly TestKeymapCommand[]
   readonly resize: (width: number, height: number) => void
+  /** Types into the focused input (the filter bar, an editor). */
+  readonly typeText: (text: string) => Promise<void>
   readonly [Symbol.asyncDispose]: () => Promise<void>
 }
 
@@ -528,6 +547,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     destroy,
     commands,
     resize,
+    typeText: (text) => output.mockInput.typeText(text),
     [Symbol.asyncDispose]: async () => {
       destroy()
     },

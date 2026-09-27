@@ -1,4 +1,3 @@
-import { RGBA } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
@@ -7,6 +6,7 @@ import { createSignal } from "solid-js"
 import { manual } from "../src/instructions/sections.js"
 import { DiffPane } from "../src/tui/instructions/diff-pane.js"
 import { Splitter } from "../src/tui/instructions/splitter.js"
+import { createTestTheme } from "./tui.js"
 
 interface TestCommand {
   readonly bind?: string
@@ -21,42 +21,12 @@ interface Fixture {
   readonly destroy: () => void
 }
 
-function createTheme() {
-  const white = RGBA.fromHex("#ffffff")
-  const black = RGBA.fromHex("#000000")
-  const gray = RGBA.fromHex("#888888")
-  const yellow = RGBA.fromHex("#ffff00")
-  return {
-    text: {
-      default: white,
-      subdued: gray,
-      formfield: { default: white, selected: white, focused: white, hovered: white, disabled: gray },
-      feedback: {
-        info: { default: white, subdued: gray },
-        warning: { default: yellow, subdued: gray },
-        error: { default: yellow, subdued: gray },
-        success: { default: white, subdued: gray },
-      },
-    },
-    background: {
-      default: black,
-      formfield: { default: black, selected: black, focused: black, hovered: black, disabled: black },
-      feedback: {
-        info: { default: black },
-        warning: { default: black },
-        error: { default: black },
-        success: { default: black },
-      },
-    },
-  }
-}
-
 // Self-contained mount: only theme + keymap, no route/state/backend imports.
 async function mount(element: (context: Plugin.Context) => JSX.Element): Promise<Fixture> {
   const output = await createTestRenderer({ width: 120, height: 40, remote: true, useThread: false })
   const layers: Array<() => { commands?: readonly TestCommand[] }> = []
   const rawContext = {
-    theme: createTheme(),
+    theme: createTestTheme(),
     themeMode: "dark",
     keymap: {
       layer: (fn: () => { commands?: readonly TestCommand[] }) => {
@@ -103,22 +73,55 @@ const threeWay = {
   upstream: "new upstream text",
 }
 
-test("diff pane shows original, yours, and new upstream panes", async () => {
+test("diff pane renders each comparison as a real diff", async () => {
   const fixture = await mount((context) => (
     <DiffPane context={context} title="Demo item" threeWay={threeWay} active={() => true} onResolve={async () => {}} />
   ))
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    const first = fixture.captureCharFrame()
+    expect(first).toContain("Upstream change")
+    expect(first).toContain("Your change")
+    expect(first).toContain("Take result")
+    // 1: original upstream → new upstream, both lines of the diff.
+    expect(first).toContain("original upstream → new upstream")
+    expect(first).toContain("original upstream text")
+    expect(first).toContain("new upstream text")
+    expect(first).not.toContain("my customized text")
+    // 2: original upstream → yours.
+    expect(send(fixture, "2")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("my customized text"))
+    expect(fixture.captureCharFrame()).toContain("original upstream → yours")
+    // 3: yours → new upstream, what take would do.
+    expect(send(fixture, "3")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("yours → new upstream"))
+    expect(fixture.captureCharFrame()).toContain("my customized text")
+    expect(fixture.captureCharFrame()).toContain("new upstream text")
+    expect(fixture.captureCharFrame()).toContain("needs review")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a compare that is not a review shows your change only and offers no keep or take", async () => {
+  const fixture = await mount((context) => (
+    <DiffPane
+      context={context}
+      title="Demo item"
+      threeWay={{ original: "same upstream", mine: "my text", upstream: "same upstream" }}
+      review={false}
+      active={() => true}
+      onResolve={async () => {}}
+    />
+  ))
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Your change"))
     const frame = fixture.captureCharFrame()
-    expect(frame).toContain("Original upstream")
-    expect(frame).toContain("original upstream text")
-    expect(frame).toContain("Yours")
-    expect(frame).toContain("my customized text")
-    expect(frame).toContain("New upstream")
-    expect(frame).toContain("new upstream text")
-    expect(frame).toContain("k keep mine")
-    expect(frame).toContain("t take new")
-    expect(frame).toContain("e edit")
+    expect(frame).not.toContain("Upstream change")
+    expect(frame).toContain("compare")
+    expect(frame).toContain("my text")
+    expect(fixture.commands().some((cmd) => cmd.bind === "k")).toBe(false)
+    expect(fixture.commands().some((cmd) => cmd.bind === "t")).toBe(false)
   } finally {
     fixture.destroy()
   }
@@ -138,7 +141,7 @@ test("diff pane resolution callbacks fire for keep and take", async () => {
     />
   ))
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     expect(send(fixture, "k")).toBe(true)
     expect(send(fixture, "t")).toBe(true)
     await waitFor(() => seen.length === 2)
@@ -148,7 +151,34 @@ test("diff pane resolution callbacks fire for keep and take", async () => {
   }
 })
 
-test("diff pane edit prefills mine and saves on ctrl+s", async () => {
+test("diff pane edit starts from the upstream change merged onto yours and saves on ctrl+s", async () => {
+  const saved: { resolution: string; edited?: string }[] = []
+  const fixture = await mount((context) => (
+    <DiffPane
+      context={context}
+      title="Demo item"
+      threeWay={{ original: "alpha\nbeta\n", mine: "alpha\nBETA mine\n", upstream: "ALPHA upstream\nbeta\n" }}
+      active={() => true}
+      onResolve={async (resolution, edited) => {
+        saved.push({ resolution, edited })
+      }}
+    />
+  ))
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    expect(send(fixture, "e")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    const editor = fixture.renderer.currentFocusedEditor
+    expect(editor?.plainText).toBe("ALPHA upstream\nBETA mine\n")
+    expect(send(fixture, "ctrl+s")).toBe(true)
+    await waitFor(() => saved.length === 1)
+    expect(saved[0]).toEqual({ resolution: "edit", edited: "ALPHA upstream\nBETA mine\n" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("diff pane marks conflicting changes and refuses to save while markers remain", async () => {
   const saved: { resolution: string; edited?: string }[] = []
   const fixture = await mount((context) => (
     <DiffPane
@@ -162,17 +192,19 @@ test("diff pane edit prefills mine and saves on ctrl+s", async () => {
     />
   ))
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
-    expect(editor).toBeDefined()
-    expect(editor?.plainText).toBe("my customized text")
+    expect(editor?.plainText).toBe("<<<<<<< yours\nmy customized text\n=======\nnew upstream text\n>>>>>>> upstream")
+    expect(fixture.captureCharFrame()).toContain("1 conflicting region")
+    expect(send(fixture, "ctrl+s")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
+    expect(saved).toEqual([])
     editor?.setText("merged resolution text")
     expect(send(fixture, "ctrl+s")).toBe(true)
     await waitFor(() => saved.length === 1)
-    expect(saved[0]?.resolution).toBe("edit")
-    expect(saved[0]?.edited).toBe("merged resolution text")
+    expect(saved[0]).toEqual({ resolution: "edit", edited: "merged resolution text" })
   } finally {
     fixture.destroy()
   }
@@ -184,7 +216,7 @@ test("diff pane registers no route keys while inactive", async () => {
     <DiffPane context={context} title="Demo item" threeWay={threeWay} active={active} onResolve={async () => {}} />
   ))
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     expect(fixture.commands().some((cmd) => cmd.bind === "k")).toBe(true)
     setActive(false)
     await waitFor(() => !fixture.commands().some((cmd) => cmd.bind === "k"))
@@ -208,13 +240,13 @@ test("diff pane escape cancels editing without saving", async () => {
     />
   ))
   try {
-    await fixture.waitForFrame((frame) => frame.includes("Original upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     expect(send(fixture, "escape")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("k keep mine"))
     expect(saves).toBe(0)
-    expect(fixture.captureCharFrame()).toContain("New upstream")
+    expect(fixture.captureCharFrame()).toContain("new upstream text")
   } finally {
     fixture.destroy()
   }
@@ -278,11 +310,11 @@ test("diff pane shows visible keep take edit labels", async () => {
     <DiffPane context={context} title="Demo item" threeWay={threeWay} active={() => true} onResolve={async () => {}} />
   ))
   try {
-    await fixture.waitForFrame((frame) => frame.includes("k keep mine"))
+    await fixture.waitForFrame((frame) => frame.includes("keep mine"))
     const frame = fixture.captureCharFrame()
     expect(frame).toContain("k keep mine")
     expect(frame).toContain("t take new")
-    expect(frame).toContain("e edit")
+    expect(frame).toContain("e edit merged")
   } finally {
     fixture.destroy()
   }

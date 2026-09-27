@@ -4,6 +4,7 @@ import { expandedTreeCounter, resetExpandedTreeCounter, tree, type TeamInput } f
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
 import { createSnapshot, renderInstructionsRoute } from "./tui.js"
+import { moveTo, selectedRow } from "./instructions-nav.js"
 
 function makeSyntheticInput() {
   const agents: AgentSource[] = []
@@ -181,45 +182,10 @@ test("realistic lab dataset benchmark: Enter -> tree rows and d -> confirm dialo
 
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
 
-  function dispatch(f: typeof fixture, key: string): boolean {
-    for (const cmd of f.commands()) {
-      if (typeof cmd.bind === "string" && cmd.bind.split(",").includes(key)) {
-        void cmd.run()
-        return true
-      }
-    }
-    return false
-  }
-
-  function selected(frame: string): string {
-    const line = frame.split("\n").find((entry) => entry.includes("›"))
-    return line ?? ""
-  }
-
-  async function move(f: typeof fixture, label: string) {
-    for (let i = 0; i < 60; i++) {
-      const before = f.captureCharFrame()
-      if (selected(before).includes(label)) return
-      dispatch(f, "down")
-      await f.waitForFrame((fr) => selected(fr) !== selected(before))
-    }
-    throw new Error(`never reached row "${label}"`)
-  }
-
-  async function exp(f: typeof fixture) {
-    const line = selected(f.captureCharFrame())
-    const rest = line.slice(line.indexOf("›") + 1)
-    if (/^\s*- /.test(rest)) return
-    dispatch(f, "right")
-    await new Promise((r) => setTimeout(r, 50))
-  }
-
-  await move(fixture, "Teams")
-  await exp(fixture)
-  await move(fixture, "Cobra")
-  await exp(fixture)
-  await move(fixture, "testttt")
+  // The sidebar lists teams open with their members: walk down to the member.
+  await moveTo(fixture, "Cobra")
+  await moveTo(fixture, "testttt")
 
   const settledBeforeD = fixture.captureCharFrame()
-  expect(selected(settledBeforeD)).toContain("testttt")
+  expect(selectedRow(settledBeforeD)).toContain("testttt")
 })

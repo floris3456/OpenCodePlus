@@ -23,6 +23,105 @@ export function unifiedDiff(original: string, modified: string, range: DiffRange
   return out.join("\n") + "\n"
 }
 
+export interface Merged {
+  readonly text: string
+  /** Regions both sides changed differently; each is fenced with conflict markers in `text`. */
+  readonly conflicts: number
+}
+
+/**
+ * Line three-way merge (diff3 style): the changes `original → upstream` are
+ * applied onto `mine`. Regions both sides touched (overlapping, or an
+ * insertion at the edge of the other side's change) merge cleanly when both
+ * made the same change; otherwise they are fenced as
+ *
+ *   <<<<<<< yours / ======= / >>>>>>> upstream
+ */
+export function merge3(original: string, mine: string, upstream: string): Merged {
+  const base = linesOf(original)
+  const ours = regionsOf(base, linesOf(mine)).map((region) => ({ ...region, side: "mine" as const }))
+  const theirs = regionsOf(base, linesOf(upstream)).map((region) => ({ ...region, side: "upstream" as const }))
+  const all = [...ours, ...theirs].sort((left, right) => left.start - right.start || left.end - right.end)
+  const out: string[] = []
+  let cursor = 0
+  let conflicts = 0
+  let index = 0
+  while (index < all.length) {
+    const group = [all[index]!]
+    let end = all[index]!.end
+    index += 1
+    // Overlapping regions conflict; so does an insertion at the edge of
+    // another change (the order would be a guess). Two replacements of
+    // neighbouring lines do not: each side changed its own lines.
+    while (index < all.length && touches(all[index]!, end, group)) {
+      group.push(all[index]!)
+      end = Math.max(end, all[index]!.end)
+      index += 1
+    }
+    const start = group[0]!.start
+    out.push(...base.slice(cursor, start))
+    cursor = end
+    const mineRegions = group.filter((region) => region.side === "mine")
+    const upstreamRegions = group.filter((region) => region.side === "upstream")
+    const left = applyRegions(base, mineRegions, start, end)
+    const right = applyRegions(base, upstreamRegions, start, end)
+    if (mineRegions.length === 0) {
+      out.push(...right)
+      continue
+    }
+    if (upstreamRegions.length === 0 || left.join("\n") === right.join("\n")) {
+      out.push(...left)
+      continue
+    }
+    conflicts += 1
+    out.push("<<<<<<< yours", ...left, "=======", ...right, ">>>>>>> upstream")
+  }
+  out.push(...base.slice(cursor))
+  const trailing = mine.endsWith("\n") || (mine === "" && upstream.endsWith("\n"))
+  return { text: out.join("\n") + (trailing && out.length > 0 ? "\n" : ""), conflicts }
+}
+
+function touches(region: Region, end: number, group: readonly Region[]): boolean {
+  if (region.start < end) return true
+  if (region.start > end) return false
+  return region.start === region.end || group.some((other) => other.start === other.end && other.start === end)
+}
+
+interface Region {
+  /** Replaced base lines [start, end); start === end is a pure insertion. */
+  readonly start: number
+  readonly end: number
+  readonly lines: readonly string[]
+}
+
+function regionsOf(base: readonly string[], changed: readonly string[]): Region[] {
+  const regions: Region[] = []
+  let open: { start: number; end: number; lines: string[] } | undefined
+  for (const edit of script(base, changed)) {
+    if (edit.op === "keep") {
+      if (open !== undefined) regions.push(open)
+      open = undefined
+      continue
+    }
+    open ??= { start: edit.left, end: edit.left, lines: [] }
+    if (edit.op === "del") open.end = edit.left + 1
+    if (edit.op === "ins") open.lines.push(changed[edit.right] ?? "")
+  }
+  if (open !== undefined) regions.push(open)
+  return regions
+}
+
+function applyRegions(base: readonly string[], regions: readonly Region[], start: number, end: number): string[] {
+  const out: string[] = []
+  let cursor = start
+  for (const region of regions) {
+    out.push(...base.slice(cursor, region.start), ...region.lines)
+    cursor = region.end
+  }
+  out.push(...base.slice(cursor, end))
+  return out
+}
+
 function linesOf(text: string): string[] {
   if (text === "") return []
   const parts = text.split("\n")

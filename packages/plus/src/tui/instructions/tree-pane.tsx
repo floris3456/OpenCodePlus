@@ -1,18 +1,9 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { For, Show } from "solid-js"
 import { badgeLabels } from "../../instructions/from-label.js"
 import { controlKind, type TreeNode } from "../../instructions/tree.js"
 
 // The badge words are shared with `instructions_list` (from-label.ts).
 export { badgeLabels }
-
-export interface TreePaneProps {
-  context: Plugin.Context
-  nodes: () => TreeNode[]
-  expanded: () => ReadonlySet<string>
-  selectedId: () => string | undefined
-  loading: () => boolean
-}
 
 // Visible children come straight from the flat list: the next row is deeper.
 export function hasVisibleChildren(nodes: readonly TreeNode[], index: number): boolean {
@@ -81,72 +72,4 @@ export function controlLabels(node: TreeNode): string[] {
     ...(node.badges.mode ? [node.badges.mode] : []),
     ...(node.badges.disabled === undefined ? [] : ["Remote"]),
   ]
-}
-
-export function TreePane(props: TreePaneProps) {
-  return (
-    <box flexGrow={1} flexDirection="column" minHeight={0} paddingLeft={1} paddingRight={1}>
-      <text flexShrink={0} fg={props.context.theme.text.subdued}>
-        Instructions
-      </text>
-      <Show
-        when={!props.loading()}
-        fallback={
-          <text flexShrink={0} fg={props.context.theme.text.subdued}>
-            Loading…
-          </text>
-        }
-      >
-        <Show
-          when={props.nodes().length > 0}
-          fallback={
-            <text flexShrink={0} fg={props.context.theme.text.subdued}>
-              No instructions found
-            </text>
-          }
-        >
-          <scrollbox flexGrow={1}>
-            <For each={props.nodes()}>
-              {(node, index) => {
-                const visible = () => hasVisibleChildren(props.nodes(), index())
-                const marker = () => rowMarker(node, visible(), props.expanded())
-                const selected = () => node.id === props.selectedId()
-                return (
-                  <box
-                    flexDirection="row"
-                    height={1}
-                    flexShrink={0}
-                    backgroundColor={selected() ? props.context.theme.background.formfield.selected : undefined}
-                  >
-                    <text flexShrink={0} fg={props.context.theme.text.formfield.selected}>{selected() ? "›" : " "}</text>
-                    <text flexShrink={0} wrapMode="none" fg={node.badges.disabled === undefined ? props.context.theme.text.default : props.context.theme.text.formfield.disabled}>
-                      {"  ".repeat(node.depth)}
-                      {marker()} {node.label}
-                    </text>
-                    <Show when={node.badges.value !== undefined && node.badges.state === undefined}>
-                      <text flexShrink={1} fg={controlColor(props.context, node)} wrapMode="none" truncate>{` · ${node.badges.value}`}</text>
-                    </Show>
-                    <For each={controlLabels(node)}>
-                      {(label) => <text flexShrink={0} wrapMode="none" fg={controlColor(props.context, node)}> [{label}]</text>}
-                    </For>
-                    <For each={badgeLabels(node)}>
-                      {(label) => <text flexShrink={0} wrapMode="none" fg={badgeColor(props.context, label)}> [{label}]</text>}
-                    </For>
-                    {/* Provenance is secondary information about the row, so it takes the subdued text role. */}
-                    <Show when={provenanceSuffix(node)}>
-                      {(label) => (
-                        <text flexShrink={1} fg={props.context.theme.text.subdued} wrapMode="none" truncate>
-                          {` · ${label()}`}
-                        </text>
-                      )}
-                    </Show>
-                  </box>
-                )
-              }}
-            </For>
-          </scrollbox>
-        </Show>
-      </Show>
-    </box>
-  )
 }
