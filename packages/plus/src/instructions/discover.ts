@@ -613,12 +613,12 @@ function skillOrigin(skill: Skill.Info): ToolOrigin | undefined {
 }
 
 function skillGroup(skill: Skill.Info, directory: string): { group: Item["group"]; server?: string } {
-  // The teaching skill is Plus inventory, matched by its own id: an `origin`
+  // Plus-owned skills match by their stable ids: an `origin`
   // field would not survive core's skill state (core/src/plugin/host.ts adds
   // through Schema.decodeUnknownSync(Skill.Info), which drops undeclared
   // keys), so classification cannot rely on it. teaching.test.ts pins both
   // the stripping and this fallback.
-  if (skill.id === teachingSkillId) return { group: "plus" }
+  if (skill.id === teachingSkillId || skill.id === "opencodeplus-release") return { group: "plus" }
   const grouped = toolGroup(skillOrigin(skill))
   if (grouped.group !== "native") return grouped
   if (isProjectSkill(skill.location, directory)) return { group: "project" }

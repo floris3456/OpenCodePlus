@@ -187,3 +187,35 @@ test("a plugin origin does not survive Skill.Info decoding, so the skill matches
   const file = discovered.items.find((item) => item.id === teachingItemId)
   expect(file).toMatchObject({ kind: "system", group: "plus", title: "OpenCodePlus", text: teachingContent })
 })
+
+test("the release workflow is listed under Plus skills without relabeling unrelated skills", async () => {
+  await configDir()
+  const ctx = context()
+  const registration = await Effect.runPromise(Effect.scoped(ctx.skill.transform((editor) => {
+    for (const [id, location] of [
+      ["opencodeplus-release", "/config/opencodeplus/skills/opencodeplus-release/SKILL.md"],
+      ["opencode", "/builtin/opencode/SKILL.md"],
+      ["opencodeplus-unrelated", "/config/opencodeplus/skills/opencodeplus-unrelated/SKILL.md"],
+      ["project-workflow", "/workspace/.opencode/skills/project-workflow/SKILL.md"],
+    ]) {
+      editor.add(Schema.decodeUnknownSync(Skill.Info)({ id, name: id, location, content: "workflow" }))
+    }
+  })))
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  expect(discovered.items.filter((item) => item.kind === "skill").map((item) => [item.id, item.group])).toEqual([
+    ["skill:opencodeplus-release", "plus"],
+    ["skill:opencode", "native"],
+    ["skill:opencodeplus-unrelated", "native"],
+    ["skill:project-workflow", "project"],
+  ])
+  const snapshot = {
+    ...discovered,
+    records: [],
+    agents: [{ id: "release", scope: "global" as const, origin: "user" as const }],
+  }
+  const plus = query(snapshot, { where: "kind:item item:skill level:global agent:release group:plus" })
+  expect(plus.rows.map((row) => row.id)).toEqual(["item:global:release:skill:opencodeplus-release"])
+  const native = query(snapshot, { where: "kind:item item:skill level:global agent:release group:native opencodeplus-release" })
+  expect(native.rows).toEqual([])
+  await Effect.runPromise(registration.dispose)
+})
