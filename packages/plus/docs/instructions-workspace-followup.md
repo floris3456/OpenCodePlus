@@ -1,8 +1,11 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **Stages A–E implemented** (diff completeness, pane-resize
-extraction, level navigation, bulk expansion, help, resizable panels and the
-`W` keyboard resize mode). Only Stage F lab acceptance remains. This
+Status: **Stages A–F done** (diff completeness, pane-resize extraction, level
+navigation, bulk expansion, help, resizable panels plus the `W` keyboard
+resize mode, and live lab acceptance). The lab found and fixed one host
+regression from the upstream merge: the plugin runtime allowlist did not
+expose the extracted `createPaneResize`, so no plugin registered at all until
+it was added (`fix(tui): expose pane resize to plugin runtime modules`). This
 document is the implementation-ready plan for the follow-up work
 approved by the human owner of the `/instructions` screen. See
 "§16 Implementation status" for what shipped; the diagnostic material in §8
@@ -932,7 +935,108 @@ and this file are updated.
   `feat(plus): improve instructions navigation` and, for the resize scope,
   `feat(plus): resize instructions panels`.
 
-### Stage F — lab (not started)
+### Stage F — lab acceptance (done, 2026-09-28)
 
-Wide/narrow live acceptance (§12) remains pending for the shipped level,
-expansion, help and panel-resize work.
+Driven with `docs/team-v2/scripts/tui-lab.sh` (pilotty PTY) from this
+worktree in an isolated lab home/project; no configs or credentials copied,
+and every owned session/service was stopped after the run (see Limits).
+
+**Blocker found and fixed first.** With the merged upstream TUI host, the
+palette showed no plugin commands at all (`Instructions` missing, `/plugins`
+missing): the build-time plugin runtime allowlist
+(`packages/tui/src/plugin/runtime-plugin-support.bun.ts`) exposed only
+`Plugin`, `PluginContextProvider` and `usePlugin`, so the plus builtin's
+`import { createPaneResize } from "@opencode/plugin/tui"` failed and the whole
+builtins import rejected; a reconcile rejection is swallowed and only sets
+`ready`, which is why the failure was silent. Commit
+`3bf2d867e fix(tui): expose pane resize to plugin runtime modules` adds the
+export and a focused regression test in `packages/tui/test/plugin-source.test.ts`
+that loads a fixture plugin importing `createPaneResize` through the runtime
+transform and asserts identity with the host export. This was the whole
+Stage B review risk realized: the helper is shared through the plugin package,
+but the runtime module surface is an explicit allowlist.
+
+**Wide 130×45** (legacy decoding: the PTY does not run the Kitty protocol;
+`Shift+Tab` was sent as raw `CSI Z` and `Shift+Left`/`Shift+Right` as raw
+`CSI 1;2D`/`CSI 1;2C`, which is the legacy xterm spelling the alias set exists
+for):
+
+- Levels: `<`/`>`; raw `CSI Z` next and wrapping (Presets → Project); raw
+  `Shift+Left`/`Shift+Right` previous/next; `{`/`}` previous/next (`{` wraps
+  Project → Presets); `!`/`@`/`#`/`$` direct Project/Global/Defaults/Presets;
+  a mouse click on the `Global` tab. Switching kept the same owner, category
+  and row (e.g. `build › Settings › Enabled` survived Project ⇄ Global) and a
+  collapsed `Special` group stayed collapsed at both levels.
+- Panels: `W` (typed, the legacy shift+w spelling) and the `alt+w` alias
+  (raw `ESC w`) both entered the mode (the alias also left it, as a toggle);
+  footer
+  `←/[ narrow · →/] widen · tab switch panel · enter/esc save · W Owners 30 cols`;
+  single steps move the divider by one column (`[`: Owners 29 at column 29;
+  Inspector 39 at column 90); `Tab` and raw `CSI Z` cycle panels; `Enter` and
+  `Escape` save; widening past the limit stopped at **Owners 59**
+  (130 − inspector 39 − MIN_LIST 30 − 2 dividers) with the list still 30
+  columns, and the durable store
+  (`…/state/opencode/plus/tui/plugin.opencode.plus.opencode.plus.instructions.panels.json`)
+  held `{"owners":59,"inspector":39}`. Closing and reopening the screen and a
+  fresh client spawned on the same home both restored `[59,90]`. Two rapid
+  left-click pairs reset Owners to `30` and the Inspector to `40` (the 2/5
+  default), committed to the store.
+- `E`/`Ctrl+E`: with `edit` selected and collapsed in the Tools list, `E`
+  left `▸ edit` and expanded `▾ execute` (active row excluded from decision
+  and change); `Ctrl+E` then expanded `▾ edit` (included). Sidebar and narrow
+  list bulk collapses/expands matched the visible-row convergence. Lowercase
+  `e` opened the editor (`ctrl+s save`) and `Escape` cancelled.
+- Help: `?` requested `{ size: "xlarge", centered: true }`; measured geometry
+  at 130×45: 116-wide box with 7-column margins each side, content columns at
+  11 and 67 (two balanced columns, all six titles), 2-row top / 1-row bottom
+  margins (no quarter-height padding); no focused cursor behind the modal;
+  closing reproduced the pre-open frame exactly.
+- Diff: a review fixture was injected only in the lab home — a global
+  `customization` record (`tool:read`, upstream with line 100 changed) and a
+  project record (text changed at line 11 and 40–90, `basedOnText` the
+  120-line original). The Project tab showed `!1`; `n`, then the id filter,
+  reached the row and `Enter` opened the three tabs with counters
+  `+1/-1`, `+52/-52`, `+53/-53`. Scrolling top→bottom at split width showed
+  every one of the 120 lines in each tab, including `UPSTREAM line100` and
+  `line120`; switching tabs at one offset kept `line060` visible; `v`
+  toggled to unified.
+
+**Narrow 90×30:**
+
+- Two pages, no divider columns, `W`/`alt+W` absent (`cols` never appears in
+  the footer) and the saved `{30,40}` ignored; on returning to 130×45 the
+  saved widths came back (`[30,89]`). Entering the mode and widening Owners to
+  33 and then narrowing the PTY to 90×30 auto-saved the draft and left the
+  mode (footer back to browse, store `{"owners":33,"inspector":40}`); back at
+  130×45 the dividers returned at `[33,89]`.
+- Level keys (`>` `<` `{` `}` `!` `$`, raw `CSI Z`) worked and preserved the
+  place; `E`/`Ctrl+E` still collapsed/expanded the focused page.
+- Help was one column at `large` (88 columns in 90 → 1-column margins) with
+  all six groups; closing restored the frame except the terminal cursor
+  overlay position.
+- The diff was unified by default: all 120 lines were reachable in all three
+  tabs (line120 rendered under the cursor overlay as `line12[0]`), the
+  markers were correct, and tab switching at one offset kept `line060`.
+
+**Focused checks after the fix** (from the package directories): plus matrix
+244 pass / 2 pre-existing skips / 0 fail; `plugin-source.test.ts` plus the
+pane-resize pair 66 pass / 4 environment-only failures (3 need a `node`
+binary that is not installed, 1 watcher poll misses its 3 s deadline on the
+unmodified base too); `tsgo` clean in `plus`, `plugin` and `tui`; root
+`bun run check` clean (oxlint 0/0, turbo 36/36).
+
+**Limits of this lab run (honest):**
+
+- pilotty has no mouse move or drag, so hover-wins targeting and real divider
+  dragging could not be driven live; both are covered by the mockMouse tests
+  (`instructions-expand`, `instructions-panels`). Clicks, double-clicks and
+  tab clicks were driven for real.
+- pilotty snapshots carry no ANSI, so the semantic divider/hover colours and
+  the dim backdrop are asserted by the span-level tests
+  (`instructions-panels`, `help.test.tsx`) and by reading the theme
+  resolution; the live frames prove geometry, text and state only.
+- No model call was made: the review fixture is records injected into the
+  lab home, and the screen was opened with the palette, never by prompting.
+- The team-creation/tool-count paths were not modified by this work; the live
+  sidebar rendered the owner tool counts (`76 tools on (14 direct, 62 through
+  Code Mode)`) and the focused `presets`/`teams` tests stayed green.
