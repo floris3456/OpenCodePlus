@@ -117,12 +117,17 @@ async function navTo(fixture: TestFixture, label: string): Promise<void> {
   throw new Error(`never reached sidebar row "${label}"`)
 }
 
-// The list column of a wide frame: between the sidebar and the inspector.
+// The list column of a wide frame: between the two divider pipes.
 function listPane(frame: string): string {
   return frame
     .split("\n")
     .slice(2)
-    .map((line) => (line.split("│")[0] ?? "").slice(SIDEBAR))
+    .map((line) => {
+      const owners = line.indexOf("│")
+      if (owners === -1) return line.slice(SIDEBAR)
+      const inspector = line.indexOf("│", owners + 1)
+      return inspector === -1 ? line.slice(owners + 1) : line.slice(owners + 1, inspector)
+    })
     .join("\n")
 }
 
@@ -133,7 +138,12 @@ function inspector(frame: string): string {
     frame
       .split("\n")
       .slice(2)
-      .flatMap((line) => (line.includes("│") ? [line.slice(line.indexOf("│") + 1)] : []))
+      .flatMap((line) => {
+        const owners = line.indexOf("│", SIDEBAR)
+        if (owners === -1) return []
+        const at = line.indexOf("│", owners + 1)
+        return at === -1 ? [] : [line.slice(at + 1)]
+      })
       .join(""),
   )
 }

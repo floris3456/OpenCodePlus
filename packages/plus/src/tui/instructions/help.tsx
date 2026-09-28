@@ -20,7 +20,7 @@ export const HELP: readonly HelpGroup[] = [
       ["n / N", "next / previous row to review in this level"],
       ["E", "expand or collapse every other row in the hovered or focused pane"],
       ["ctrl+E", "the same, including the row under the cursor"],
-      ["W / alt+W", "resize the panels — next stage (not yet active)"],
+      ["W / alt+W", "resize the panels (wide): ←/[ narrow · →/] widen · tab switch · enter/esc save"],
       ["/", "filter this level as you type · esc clears"],
       ["esc", "back one step; from the sidebar it closes the screen"],
     ],

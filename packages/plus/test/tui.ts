@@ -5,6 +5,7 @@ import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Agent } from "@opencode/schema/agent"
 import { createComponent, createSignal } from "solid-js"
+import { createStore } from "solid-js/store"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import type {
   AddMcpInput,
@@ -189,6 +190,10 @@ export interface TestFixture {
   readonly dialogSets: readonly { readonly size?: string; readonly centered?: boolean }[]
   /** The last value a `storage.memory` key was saved with. */
   readonly memoryValue: (key: string) => unknown
+  /** The current value of a durable `storage.store` key (the shared backing map). */
+  readonly storeValue: (key: string) => unknown
+  /** Every key opened in `storage.memory`; durable keys must not appear here. */
+  readonly memoryKeys: () => string[]
   readonly mockMouse: MockMouse
   readonly emitChanged: (next?: Snapshot) => Promise<void>
   readonly emitProjectChanged: (status?: Partial<Status>) => Promise<void>
@@ -213,6 +218,8 @@ export interface RenderFixtureOptions {
   readonly rpcErrors?: Readonly<Record<string, TestRpcError>>
   readonly models?: readonly { providerID: string; modelID: string; variant?: string; name: string }[]
   readonly agents?: readonly Agent.Info[]
+  /** Durable `storage.store` backing cells shared across fixtures, to model a TUI restart. */
+  readonly storage?: Map<string, unknown>
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -264,6 +271,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   const layers: KeymapLayerCallback[] = []
   const dialogSets: { size?: string; centered?: boolean }[] = []
   const memoryCells = new Map<string, { value: unknown }>()
+  const storeCells = options.storage ?? new Map<string, unknown>()
   const [keymapMode, setKeymapMode] = createSignal("normal")
 
   function commands(): readonly TestKeymapCommand[] {
@@ -444,7 +452,19 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       },
     },
     storage: {
-      store: <T extends object>(_key: string, opts: { initial: T }) => [opts.initial, async () => {}],
+      // Durable cells backed by a shared map: the same map across fixtures
+      // models the TUI writing to disk and reopening.
+      store: <T extends object>(key: string, opts: { initial: T }) => {
+        const initial = (storeCells.get(key) as T | undefined) ?? opts.initial
+        const [value, setValue] = createStore<T>(initial)
+        const raw = structuredClone(initial) as T
+        const save = async (mutation: (draft: T) => void) => {
+          mutation(raw)
+          setValue(raw)
+          storeCells.set(key, structuredClone(raw))
+        }
+        return [value, save] as const
+      },
       memory: <T extends object>(key: string, opts: { initial: T }) => {
         const cell = memoryCells.get(key) ?? { value: opts.initial }
         memoryCells.set(key, cell)
@@ -571,6 +591,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     setKeymapMode: (mode) => setKeymapMode(mode),
     dialogSets,
     memoryValue: (key) => memoryCells.get(key)?.value,
+    storeValue: (key) => storeCells.get(key),
+    memoryKeys: () => [...memoryCells.keys()],
     mockMouse: output.mockMouse,
     emitChanged,
     emitProjectChanged,
@@ -596,6 +618,8 @@ export interface RenderRouteOptions {
   readonly rpcErrors?: Readonly<Record<string, TestRpcError>>
   readonly models?: readonly { providerID: string; modelID: string; variant?: string; name: string }[]
   readonly agents?: readonly Agent.Info[]
+  /** Durable `storage.store` backing cells shared across fixtures, to model a TUI restart. */
+  readonly storage?: Map<string, unknown>
 }
 
 export async function renderInstructionsRoute(options: RenderRouteOptions): Promise<TestFixture> {
@@ -609,6 +633,7 @@ export async function renderInstructionsRoute(options: RenderRouteOptions): Prom
     ...(options.rpcErrors === undefined ? {} : { rpcErrors: options.rpcErrors }),
     ...(options.models === undefined ? {} : { models: options.models }),
     ...(options.agents === undefined ? {} : { agents: options.agents }),
+    ...(options.storage === undefined ? {} : { storage: options.storage }),
     render: (context) =>
       createComponent(InstructionsRoute, {
         context,

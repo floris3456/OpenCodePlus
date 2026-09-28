@@ -29,9 +29,11 @@ Implementation status:
   and the terminal aliases, direct `Shift+1–4`, cross-level place and
   expansion mapping) and the non-resize part of Stage D (bulk `E` / `Ctrl+E`
   expansion) are implemented, as is §7's help work (centered, balanced
-  columns, workspace dimmed behind any dialog). Panel widths and the `W`
-  keyboard resize mode are still pending; they are documented below as the
-  next stage and are not bound yet.
+  columns, workspace dimmed behind any dialog). The resizable outer panels
+  (fixed Owners and Inspector widths around the flexible list, mouse drag with
+  double-click reset, durable client-local persistence) and the `W` / `alt+W`
+  keyboard resize mode are implemented too (Stage D of
+  `instructions-workspace-followup.md`).
 
 Priorities, from the owner of the screen:
 
@@ -283,6 +285,7 @@ the editor and the help dialog.
 | `[` `]`, `1`–`8` | category | category |
 | `<` `>` | level | level |
 | E / ctrl+E | expand / collapse all visible rows (E keeps the active row) | same |
+| W / alt+W (wide) | resize panels: ←/[ narrow, →/] widen, tab switch Owners/Inspector, enter/esc save | same |
 | space / ctrl+space | enable / select agent | toggle / select agent |
 | `e` | — | edit text |
 | `c` | — | compare with upstream (real diff) |
@@ -295,8 +298,10 @@ the editor and the help dialog.
 The mouse works too: click a row, a tab or a category; the wheel scrolls. A
 level switch keeps the same owner, category and selected row, and rewrites the
 sidebar/list expansion ids where the destination has the equivalent node;
-Presets deliberately keep their own selection. Panel widths and the `W` /
-`alt+W` keyboard resize mode are the next stage and are not bound yet.
+Presets deliberately keep their own selection. In wide mode the two outer
+panes are fixed-width with draggable divider columns between them and the
+flexible list; double-click resets a divider, `W` / `alt+W` resizes by
+keyboard (`←`/`[`, `→`/`]`, `tab`, `enter`/`esc`), and the widths persist.
 
 ### State that survives
 
@@ -304,7 +309,10 @@ The level, the owner per level, the category per owner, and the expansions are
 kept in `context.storage.memory` for the TUI session, so reopening
 `/instructions` returns to the same place. The level keys move that place and
 those expansions across a switch where the destination has the node. On first
-open the session's current agent is preselected.
+open the session's current agent is preselected. Panel widths are the one
+durable piece: they live in `context.storage.store` under
+`opencode.plus.instructions.panels` and survive a TUI restart (narrow mode
+ignores them, a wide terminal re-clamps and re-applies them).
 
 ### Mapping of every current capability
 

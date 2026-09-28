@@ -24,7 +24,12 @@ export async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** The focused pane's cursor row: the text after the cursor `▌`, up to the inspector's border. */
+/**
+ * The focused pane's cursor row: the text after the cursor `▌` up to that
+ * pane's right divider (the sidebar divider for a nav row, the inspector
+ * divider for a list row). In narrow mode there is no divider and the whole
+ * rest of the line is returned.
+ */
 export function selectedRow(frame: string): string {
   const line = frame.split("\n").find((entry) => entry.includes(CURSOR)) ?? ""
   const rest = line.slice(line.indexOf(CURSOR) + 1)

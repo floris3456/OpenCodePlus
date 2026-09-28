@@ -54,13 +54,13 @@ test("wide help has two equally starting columns and every group title", async (
   const right = ["Create and link", "Review (a row marked !)", "Colours and marks", "Filter"].map(start)
   expect(new Set(right).size).toBe(1)
   expect(right[0]).toBeGreaterThan(start("Move"))
-  // The level keys, bulk expansion and the reserved resize key are documented.
+  // The level keys, bulk expansion and the panel resize mode are documented.
   expect(frame).toContain("shift+tab")
   expect(frame).toContain("shift+[ ] { }")
   expect(frame).toContain("shift+1–4")
   expect(frame).toContain("ctrl+E")
   expect(frame).toContain("W / alt+W")
-  expect(frame).toContain("next stage")
+  expect(frame).toContain("resize the panels")
 })
 
 test("narrow help is one column with wrapped labels", async () => {

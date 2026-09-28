@@ -241,6 +241,25 @@ else of the focused pane; the active row is excluded and `ctrl+E` includes it.
 If any eligible row is collapsed the whole set expands, otherwise it all
 collapses. Lowercase `e` remains edit.
 
+In wide mode the sidebar is a fixed-width Owners pane and the inspector a
+fixed-width one, each separated from the middle list by a one-column divider;
+the list takes what is left. Each divider is mouse-draggable with the left
+button: dragging resizes its pane (the list absorbs the delta), double-clicking
+resets that pane (Owners `30`, Inspector two fifths of the space right of
+Owners), and hover, drag or the keyboard-selected pane highlights it (the
+raised hover role while hovered or dragged, the action role while `W` has it
+selected). Widths clamp so Owners and Inspector keep at least `24` columns and
+the list at least `30` including both dividers; saved preferences are re-clamped
+against the current terminal on every render, so narrow mode ignores them and a
+wide terminal brings them back. `W` / `alt+W` opens the keyboard resize mode in
+wide mode: `←` / `[` narrow the selected pane, `→` / `]` widen it, `tab` /
+`shift+tab` switch Owners ⇄ Inspector, and `enter` / `escape` (or the toggle
+key) save and leave; the footer names the selected pane and its current columns
+and no browse key runs while the mode is active. A terminal that becomes narrow
+saves the draft and leaves the mode. The widths are client-local durable state
+(`context.storage.store` under `opencode.plus.instructions.panels`); the
+selection view stays in `storage.memory`.
+
 Each sidebar owner row ends with the tools switched on for it (a right-aligned
 count, or a warning-coloured `no tools`; a zero beside state tags compacts to
 `0` so the mode/hidden tags keep the room), and the owner header line under the
@@ -283,8 +302,8 @@ rendered height (a group's estimated height is its title plus each key's
 wrapped label). While any dialog is open the workspace keeps its level,
 selection and expansions but renders unfocused behind the backdrop: rows drop
 the cursor and the focused selection colour, and closing restores the exact
-frame. Panel resize (`W` / `alt+W`) is documented as the next stage and is not
-bound yet.
+frame. The help table documents the panel resize mode (`W` / `alt+W`) and its
+keys.
 
 **Review (§3.6).** Enter on a review row whose `reviewOf` holds `state` or
 `pin` opens a choice (title `Review "<row>"`): `Keep yours (<yours>)` →

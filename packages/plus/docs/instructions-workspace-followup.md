@@ -1,9 +1,8 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **Stages A–C and the non-resize part of Stage D implemented**
-(diff completeness, pane-resize extraction, level navigation, bulk
-expansion, help); panel widths and the `W` keyboard resize mode (§5,
-G2–G3), the rest of Stage D, and Stage F lab acceptance remain planned. This
+Status: **Stages A–E implemented** (diff completeness, pane-resize
+extraction, level navigation, bulk expansion, help, resizable panels and the
+`W` keyboard resize mode). Only Stage F lab acceptance remains. This
 document is the implementation-ready plan for the follow-up work
 approved by the human owner of the `/instructions` screen. See
 "§16 Implementation status" for what shipped; the diagnostic material in §8
@@ -239,8 +238,9 @@ selected panel's divider highlight.
 - `defaultInspector(width, owners) = floor((width - owners) * 2 / 5)` — the
   current 3:2 list:inspector split of the area right of the sidebar.
 - `clampOwners(size, width, inspector)` =
-  `clamp(OWNERS_MIN, size, max(OWNERS_MIN, width - inspector - MIN_LIST))`;
-  `clampInspector(size, width, owners)` symmetric with `INSPECTOR_MIN`.
+  `clamp(OWNERS_MIN, size, max(OWNERS_MIN, width - inspector - MIN_LIST - DIVIDERS))`;
+  `clampInspector(size, width, owners)` symmetric with `INSPECTOR_MIN` (the
+  shipped implementation subtracts both divider columns, `DIVIDERS = 2`).
   Both are pure functions so the unit tests can pin every boundary and the
   two-panel clamp converges (each commit re-clamps against the peer's current
   effective size).
@@ -810,7 +810,7 @@ Commit: `feat(plus): improve instructions navigation` (local, branch `r4-8`).
   line + `max(1, ceil(label.length / (columnWidth - 14)))` per key);
   `HELP` gains the level keys, the `E` / `ctrl+E` rows and a `W / alt+W` row
   explicitly marked "next stage (not yet active)" — no resize binding is
-  registered.
+  registered at this commit (Stage D activates it).
 - Modal dim, exactly as §7.3: `modal = () => context.keymap.mode.current() ===
   "modal"`; the sidebar and list pass `focused = focus() === … && !modal()`,
   so behind any dialog the selected row drops the cursor and the focused
@@ -850,9 +850,12 @@ Focused matrix at this commit (from `packages/plus`): the three new files plus
 typecheck` clean. Root `bun run check` and the secret scan are recorded with
 Stage E below.
 
-### Stage D — bulk expansion (done, 2026-09-28); panels + resize mode (not started)
+### Stage D — bulk expansion + panels + resize mode (done, 2026-09-28)
 
-Implemented with the same commit for the non-resize parts of §6:
+Commit: `feat(plus): resize instructions panels` (local, branch `r4-8`).
+
+The non-resize part of §6 shipped earlier with
+`feat(plus): improve instructions navigation`:
 
 - `row.tsx` gains `onHoverChange` fired from `onMouseOver`/`onMouseOut`; the
   click activation and the selected/focused styling are unchanged.
@@ -865,26 +868,71 @@ Implemented with the same commit for the non-resize parts of §6:
   Lowercase `e` remains edit; the keys are browse-only and a pane with no
   eligible rows is a silent no-op.
 
-Not started (documented, deliberately not bound): `panels.ts` constants and
-clamps, the wide divider layout, mouse drag/double-click reset, `storage.store`
-width persistence, the `W`/`alt+W` keyboard resize mode and its divider
-highlight, `test/instructions-panels.test.tsx`, and the `W` keybinding.
-`HELP` documents `W / alt+W` as the next stage only.
+Panels and the `W` mode (§5, G2–G3) are implemented in the same commit:
 
-### Stage E — docs + integration (done for the A–D scope, 2026-09-28)
+- New `panels.ts` owns the whole layout algebra: `OWNERS_DEFAULT = 30`,
+  `OWNERS_MIN = 24`, `INSPECTOR_MIN = 24`, `MIN_LIST = 30`,
+  `DIVIDER_WIDTH`/`DIVIDERS = 2`, `defaultInspector(width, owners) =
+  floor((width - owners) * 2 / 5)`, `clampOwners`/`clampInspector`
+  (`clamp(min, size, width - peer - MIN_LIST - DIVIDERS)`, both clamps
+  accounting for the two divider columns) and `panelWidths(width, preferred)`
+  returning the effective `{ owners, inspector, list }`. The route reads the
+  pair from `storage.store` under `opencode.plus.instructions.panels`,
+  re-clamped every render; narrow mode ignores it and a wide terminal brings
+  it back.
+- Wide `Browse` is now `Owners (fixed) | divider | List (flexGrow 1) |
+  divider | Inspector (fixed)`; each divider is a one-column bordered box that
+  owns its mouse target (idle `border.base` line, raised hover while
+  hovered/dragged, action role while `W` selects it) and the inspector's old
+  `border={["left"]}` is gone. `createPaneResize` from `@opencode/plugin/tui`
+  is used twice (no plus→tui import); drag/drag-end/up live on the wide Browse
+  root so a drag continues outside the handle. Left-button only; double-click
+  resets Owners to `30` and Inspector to `defaultInspector(width, owners)`.
+  A mouse commit persists the pair, so the peer keeps the width it had during
+  the drag and the list absorbs exactly the dragged delta. The category-tab
+  digit heuristic reads `listWidth()` from the effective widths instead of
+  the old fixed 3/5 split.
+- `W` / `alt+W` keyboard mode (wide browse only, starts on Owners):
+  `←`/`[` narrow and `→`/`]` widen by one, `tab`/`shift+tab` cycle
+  Owners ⇄ Inspector, `enter`/`escape` and the toggle key save the draft pair
+  and leave. The resize branch of the keymap layer returns only its own
+  commands, so no browse key fires inside the mode; the footer shows the
+  selected pane and its current columns plus the keys. A terminal that
+  becomes narrow auto-saves the draft and leaves.
 
-- `SPEC.md` "Screen layout" now carries the level keys, the cross-level place
-  and expansion mapping, the Presets exception and the `E`/`ctrl+E` semantics;
-  a new "Help" paragraph covers centering, balanced columns and dimming, and
-  states that `W`/`alt+W` resize is next-stage and not bound.
-- `docs/instructions-redesign.md` implementation status, §2.4 and §4 keys are
-  updated the same way; "State that survives" notes the mapping.
-- This file's status and §16 are updated; resize is explicitly excluded.
+Tests (`test/instructions-panels.test.tsx`, 14 tests): pure defaults/clamps/
+`panelWidths` boundaries; the wide dividers between fixed panes; both mouse
+drags with the list absorbing the delta; right/middle-button refusal;
+drag-past-the-edge clamps; double-click resets for both panes; persistence
+across a route remount on one shared backing map with a `storage.memory`
+exclusion control; `W` entry/footer/divider highlight/steps/cycling/Enter and
+`alt+W` entry/Escape/`alt+W` toggle commits; keyboard clamps at the list
+minimum; narrow refusal, absent dividers and auto-save on narrowing; rendered
+digit-tab fit at the real effective list width; coexistence with
+Tab/Shift+Tab levels and `E`/`ctrl+E`. The fixture now models durable
+`storage.store` cells (a shared map across fixtures) and exposes
+`storeValue`/`memoryKeys`.
+
+`HELP` documents `W / alt+W` as active; `SPEC.md`, `instructions-redesign.md`
+and this file are updated.
+
+### Stage E — docs + integration (done, 2026-09-28)
+
+- `SPEC.md` "Screen layout" carries the level keys, the cross-level place
+  and expansion mapping, the Presets exception, the `E`/`ctrl+E` semantics,
+  the resizable wide panels (dividers, clamps, double-click reset, durable
+  widths) and the `W`/`alt+W` keyboard mode; the "Help" paragraph covers
+  centering, balanced columns and dimming.
+- `docs/instructions-redesign.md` implementation status, §4 keys and "State
+  that survives" are updated the same way, including the durable panel
+  widths.
+- This file's status and §16 are updated.
 - Focused matrix, plus typecheck, root `bun run check` and the secret scan
   pass; the work is committed locally as
-  `feat(plus): improve instructions navigation`.
+  `feat(plus): improve instructions navigation` and, for the resize scope,
+  `feat(plus): resize instructions panels`.
 
 ### Stage F — lab (not started)
 
 Wide/narrow live acceptance (§12) remains pending for the shipped level,
-expansion and help work and for the resize work when it lands.
+expansion, help and panel-resize work.

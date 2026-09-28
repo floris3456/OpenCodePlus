@@ -1,5 +1,5 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
-import type { Plugin } from "@opencode/plugin/tui"
+import { createPaneResize, type Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js"
 import type { Resolution } from "../../instructions/model.js"
@@ -12,6 +12,15 @@ import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
 import { EditorPane } from "./editor-pane.js"
 import { HELP_WIDE, HelpDialog } from "./help.js"
 import { Inspector } from "./inspector.js"
+import {
+  clampInspector,
+  clampOwners,
+  defaultInspector,
+  DIVIDERS,
+  OWNERS_DEFAULT,
+  PANELS_STORAGE_KEY,
+  panelWidths,
+} from "./panels.js"
 import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
@@ -20,7 +29,6 @@ import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCounts, tool
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
 export const WIDE_THRESHOLD = 110
-const SIDEBAR_WIDTH = 30
 
 type Focus = "nav" | "list"
 type Mode = "browse" | "edit" | "diff" | "split"
@@ -119,6 +127,108 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   // The dialog host pushes "modal" for the whole dialog stack (help, prompts):
   // the workspace keeps its state but renders unfocused behind the backdrop.
   const modal = () => props.context.keymap.mode.current() === "modal"
+
+  // Panel widths are client-local and durable (storage.store, not memory), so a
+  // dragged or W-resized layout survives reopening the screen and a TUI
+  // restart. The saved values are preferences: panels.ts clamps them to the
+  // terminal every render, and narrow mode ignores them entirely.
+  const [panels, savePanels] = props.context.storage.store<{ owners?: number; inspector?: number }>(PANELS_STORAGE_KEY, { initial: {} })
+  const savePanelLayout = (mutation: (draft: { owners?: number; inspector?: number }) => void) => {
+    void savePanels(mutation).catch((error) => console.error("Failed to persist instructions panel widths", error))
+  }
+  // The resting pair for the current terminal, from the stored preferences
+  // alone: the drag clamps read the peer's resting size from here, so the two
+  // resize instances never call each other's live size in a cycle.
+  const panelBase = () => panelWidths(dimensions().width, { owners: panels.owners, inspector: panels.inspector })
+  const ownersResize = createPaneResize({
+    value: () => panels.owners ?? OWNERS_DEFAULT,
+    defaultValue: () => OWNERS_DEFAULT,
+    clamp: (size) => clampOwners(size, dimensions().width, panelBase().inspector),
+    fromMouse: (event) => event.x + 1,
+    contains: (event, size) => event.x >= size - 1 && event.x <= size,
+    // A mouse commit persists the pair: the peer keeps the width it had during
+    // the drag, so the list absorbs exactly the dragged delta.
+    onCommit: (size) =>
+      savePanelLayout((draft) => {
+        draft.owners = size
+        draft.inspector = inspectorResize.size()
+      }),
+  })
+  const inspectorResize = createPaneResize({
+    value: () => panels.inspector ?? defaultInspector(dimensions().width, panelBase().owners),
+    defaultValue: () => defaultInspector(dimensions().width, panelBase().owners),
+    clamp: (size) => clampInspector(size, dimensions().width, ownersResize.size()),
+    fromMouse: (event) => dimensions().width - event.x - 1,
+    contains: (event, size) => event.x >= dimensions().width - size - 1 && event.x <= dimensions().width - size,
+    onCommit: (size) =>
+      savePanelLayout((draft) => {
+        draft.inspector = size
+        draft.owners = ownersResize.size()
+      }),
+  })
+
+  // W / alt+W keyboard resize mode: a draft pair seeded from the effective
+  // widths and committed to storage on exit (Enter, Escape or the toggle key).
+  // Browse commands do not run while it is active; a terminal that becomes
+  // narrow auto-saves and leaves.
+  const [resizing, setResizing] = createSignal<"owners" | "inspector">()
+  const [resizeDraft, setResizeDraft] = createSignal<{ owners: number; inspector: number }>()
+  const resizeWidths = () => {
+    const draft = resizeDraft()
+    return draft === undefined ? undefined : panelWidths(dimensions().width, draft)
+  }
+  const ownersWidth = () => {
+    const draft = resizeWidths()
+    return resizing() === undefined || draft === undefined ? ownersResize.size() : draft.owners
+  }
+  const inspectorWidth = () => {
+    const draft = resizeWidths()
+    return resizing() === undefined || draft === undefined ? inspectorResize.size() : draft.inspector
+  }
+
+  function startResize() {
+    if (!wide() || resizing() !== undefined) return
+    batch(() => {
+      setResizeDraft({ owners: ownersResize.size(), inspector: inspectorResize.size() })
+      setResizing("owners")
+    })
+  }
+
+  function stepResize(delta: number) {
+    const selected = resizing()
+    const draft = resizeWidths()
+    if (selected === undefined || draft === undefined) return
+    setResizeDraft(
+      selected === "owners"
+        ? { owners: clampOwners(draft.owners + delta, dimensions().width, draft.inspector), inspector: draft.inspector }
+        : { owners: draft.owners, inspector: clampInspector(draft.inspector + delta, dimensions().width, draft.owners) },
+    )
+  }
+
+  function cycleResize() {
+    setResizing((current) => (current === "owners" ? "inspector" : "owners"))
+  }
+
+  function commitResize() {
+    const draft = resizeDraft()
+    if (resizing() === undefined || draft === undefined) return
+    // Persist the draft as adjusted, not a re-clamp at a possibly narrower
+    // terminal: the preferences survive and re-clamp when wide again.
+    savePanelLayout((next) => {
+      next.owners = draft.owners
+      next.inspector = draft.inspector
+    })
+    batch(() => {
+      setResizing(undefined)
+      setResizeDraft(undefined)
+    })
+  }
+
+  createEffect(() => {
+    if (resizing() === undefined) return
+    if (wide()) return
+    commitResize()
+  })
 
   // The view survives closing and reopening the screen for the TUI session.
   const [saved, save] = props.context.storage.memory<{ view?: View }>("opencode.plus.instructions.view", { initial: {} })
@@ -993,6 +1103,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const inList = () => focus() === "list"
 
   function hints(): (readonly [string, string])[] {
+    if (resizing() !== undefined) {
+      const selected = resizing()!
+      return [
+        ["←/[", "narrow"],
+        ["→/]", "widen"],
+        ["tab", "switch panel"],
+        ["enter/esc", "save"],
+        ["W", `${selected === "owners" ? "Owners" : "Inspector"} ${selected === "owners" ? ownersWidth() : inspectorWidth()} cols`],
+      ]
+    }
     if (state.snapshot() === undefined) return [["esc", "back"]]
     if (filtering()) return [["type", "to filter"], ["↑↓", "move"], ["enter", "go to"], ["ctrl+space", "toggle"], ["esc", "clear filter"]]
     const node = current()
@@ -1036,6 +1156,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     // Focus views own their keys; the diff and the splitter leave esc to us.
     if (mode() === "edit") return { commands: [] }
     if (mode() !== "browse") return { commands: [{ bind: "escape", title: "Back", group: "Instructions", run: back }] }
+    if (resizing() !== undefined)
+      return {
+        commands: [
+          { bind: "left,[", title: "Narrow the panel", group: "Instructions", run: () => stepResize(-1) },
+          { bind: "right,]", title: "Widen the panel", group: "Instructions", run: () => stepResize(1) },
+          { bind: "tab,shift+tab", title: "Switch panel", group: "Instructions", run: cycleResize },
+          { bind: "return", title: "Save panel widths", group: "Instructions", run: commitResize },
+          { bind: "escape", title: "Save panel widths", group: "Instructions", run: commitResize },
+          { bind: "shift+w,alt+w", title: "Save panel widths", group: "Instructions", run: commitResize },
+        ],
+      }
     if (filtering())
       return {
         commands: [
@@ -1070,6 +1201,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "shift+4,$,shift+$", title: "Show Presets", group: "Instructions", run: () => showLevel("preset") },
         { bind: "shift+e", title: "Expand all rows", group: "Instructions", run: () => bulkExpand(false) },
         { bind: "ctrl+e", title: "Expand all rows including this one", group: "Instructions", run: () => bulkExpand(true) },
+        ...(wide() ? [{ bind: "shift+w,alt+w", title: "Resize panels", group: "Instructions", run: startResize }] : []),
         { bind: "[", title: "Previous category", group: "Instructions", run: () => switchCategory((index, count) => (index - 1 + count) % count) },
         { bind: "]", title: "Next category", group: "Instructions", run: () => switchCategory((index, count) => (index + 1) % count) },
         ...workspace().categories.map((category, index) => ({
@@ -1141,8 +1273,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return scale === undefined ? theme().text.base : scale[props.context.themeMode === "light" ? 800 : 200]
   }
 
-  // The digits go first when the tabs would not fit on one line.
-  const listWidth = () => (wide() ? Math.floor(((dimensions().width - SIDEBAR_WIDTH) * 3) / 5) - 2 : dimensions().width - 2)
+  // The digits go first when the tabs would not fit on one line. The list's
+  // real width: whatever the fixed Owners and Inspector (or the resize draft)
+  // leave between their divider columns.
+  const listWidth = () => (wide() ? Math.max(0, dimensions().width - ownersWidth() - inspectorWidth() - DIVIDERS) : dimensions().width - 2)
   const digits = () => workspace().categories.reduce((total, category) => total + category.label.length + 5, 0) <= listWidth()
 
   const CategoryTabs = () => (
@@ -1171,7 +1305,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   )
 
   const Sidebar = () => (
-    <box flexDirection="column" minHeight={0} flexGrow={wide() ? 0 : 1} width={wide() ? SIDEBAR_WIDTH : "100%"} flexShrink={0} backgroundColor={theme().background.raised.base}>
+    <box flexDirection="column" minHeight={0} flexGrow={wide() ? 0 : 1} width={wide() ? ownersWidth() : "100%"} flexShrink={0} backgroundColor={theme().background.raised.base}>
       <Show when={workspace().nav.length > 0} fallback={<text fg={theme().text.muted} paddingLeft={1}>{state.loading() ? "Loading…" : "Nothing at this level"}</text>}>
         <scrollbox flexGrow={1} minHeight={0} ref={(next: ScrollBoxRenderable) => (navScroll = next)} verticalScrollbarOptions={{ visible: false }}>
           <For each={workspace().nav}>
@@ -1319,25 +1453,71 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     />
   )
 
+  // One divider column per boundary: idle it shows the border line, hovered or
+  // dragged the raised hover state, and while it is the keyboard-selected panel
+  // the action highlight. Drag state lives on the wide Browse root so a drag
+  // keeps resizing outside the handle.
+  const Divider = (props: { readonly resize: ReturnType<typeof createPaneResize>; readonly active: boolean }) => (
+    <box
+      width={1}
+      height="100%"
+      flexShrink={0}
+      border={["left"]}
+      borderColor={theme().border.base}
+      backgroundColor={
+        props.active
+          ? theme().background.action.primary.hovered
+          : props.resize.hovered() || props.resize.resizing()
+            ? theme().background.raised.high
+            : undefined
+      }
+      onMouseOver={props.resize.onMouseOver}
+      onMouseOut={props.resize.onMouseOut}
+      onMouseDown={props.resize.onMouseDown}
+    />
+  )
+
   const Browse = () => (
-    <box flexDirection="row" flexGrow={1} minHeight={0}>
+    <box
+      flexDirection="row"
+      flexGrow={1}
+      minHeight={0}
+      onMouseDrag={(event) => {
+        ownersResize.onMouseDrag(event)
+        inspectorResize.onMouseDrag(event)
+      }}
+      onMouseDragEnd={(event) => {
+        ownersResize.onMouseDragEnd(event)
+        inspectorResize.onMouseDragEnd(event)
+      }}
+      onMouseUp={(event) => {
+        ownersResize.onMouseUp(event)
+        inspectorResize.onMouseUp(event)
+      }}
+    >
       <Show when={wide() || focus() === "nav"}>
         <Sidebar />
       </Show>
+      <Show when={wide()}>
+        <Divider resize={ownersResize} active={resizing() === "owners"} />
+      </Show>
       <Show when={wide() || focus() === "list"}>
         <box flexDirection={wide() ? "row" : "column"} flexGrow={1} minWidth={0} minHeight={0}>
-          <box flexDirection="column" flexGrow={wide() ? 3 : 1} flexShrink={1} flexBasis={0} minWidth={0} minHeight={0} overflow="hidden">
+          <box flexDirection="column" flexGrow={1} flexShrink={1} flexBasis={0} minWidth={0} minHeight={0} overflow="hidden">
             <List />
           </box>
+          <Show when={wide()}>
+            <Divider resize={inspectorResize} active={resizing() === "inspector"} />
+          </Show>
           <box
             flexDirection="column"
-            flexGrow={wide() ? 2 : 0}
+            flexGrow={0}
             flexShrink={0}
             overflow="hidden"
-            {...(wide() ? { flexBasis: 0 } : { height: Math.max(6, Math.floor(dimensions().height * 0.4)) })}
+            {...(wide() ? { width: inspectorWidth() } : { height: Math.max(6, Math.floor(dimensions().height * 0.4)) })}
             minWidth={0}
             minHeight={0}
-            border={wide() ? ["left"] : ["top"]}
+            border={wide() ? [] : ["top"]}
             borderColor={theme().border.base}
           >
             <Details />
