@@ -545,12 +545,10 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
     disposed = true
   }
 
-  // The row a group hangs under (the nearest shallower row above it).
+  // The row a group hangs under: the workspace passes its own parent map, so
+  // there is no flat-tree fallback to walk.
   function parentOf(node: TreeNode): TreeNode | undefined {
-    if (options.parentOf !== undefined) return options.parentOf(node)
-    const list = state.nodes()
-    const index = list.findIndex((entry) => entry.id === node.id)
-    return list.slice(0, Math.max(index, 0)).findLast((entry) => entry.depth < node.depth)
+    return options.parentOf?.(node)
   }
 
   function scopeFromModelsGroup(

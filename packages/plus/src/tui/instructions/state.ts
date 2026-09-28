@@ -144,8 +144,6 @@ export function toRpcRecords(
 export function createInstructionsState(context: Plugin.Context) {
   const plus = context.client.rpc(Definition)
   const [snapshot, setSnapshot] = createSignal<Snapshot | undefined>(undefined)
-  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
-  const [selectedId, setSelectedId] = createSignal<string | undefined>(undefined)
   const [filter, setFilter] = createSignal<string>("")
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
@@ -187,11 +185,6 @@ export function createInstructionsState(context: Plugin.Context) {
     return presetStateOfSnapshot(current)
   })
 
-  const allNodes = createMemo<TreeNode[]>(() => {
-    if (snapshot() === undefined) return []
-    return treeWith(expanded())
-  })
-
   let cachedFullTree:
     | {
         readonly revision: number
@@ -231,7 +224,7 @@ export function createInstructionsState(context: Plugin.Context) {
     if (raw.trim().length === 0) {
       lastMatched = new Set()
       cachedFullTree = undefined
-      return allNodes()
+      return []
     }
     // Reveal matches hidden inside collapsed ancestors: match against the
     // full logical tree and include each match with its ancestor chain.
@@ -296,25 +289,18 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
-  const selected = createMemo<TreeNode | undefined>(() => {
-    return nodes().find((node) => node.id === selectedId())
-  })
-
-  // A row a create flow wants selected (reveal): its ancestors are expanded
-  // and it is selected as soon as a snapshot carries it. Core reloads agents
-  // on a debounce, so that can be a later snapshot than the create's own
-  // refresh. Moving the cursor drops the wish.
-  let pending: { readonly expand: readonly string[]; readonly row: string } | undefined
+  // A row a create flow wants selected (reveal): the route switches to its
+  // level, opens the rows above it and selects it as soon as a snapshot
+  // carries it. Core reloads agents on a debounce, so that can be a later
+  // snapshot than the create's own refresh.
   const [revealed, setRevealed] = createSignal<{ readonly expand: readonly string[]; readonly row: string } | undefined>(undefined)
 
   function reveal(expand: readonly string[], row: string) {
-    pending = { expand, row }
     setRevealed({ expand, row })
-    applyPending()
   }
 
-  // The same rows tree() emits for the flat view, for any expansion set: the
-  // workspace view builds its sidebar and its category list from it.
+  // The rows a create flow asked for, or the current view (treeWith is the
+  // workspace's row source).
   function treeWith(open: ReadonlySet<string>): TreeNode[] {
     const memo = treeMemo()
     return memo === undefined ? [] : treeOf(memo, open)
@@ -332,29 +318,6 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
-  function applyPending(): boolean {
-    const wanted = pending
-    if (wanted === undefined) return false
-    const next = new Set([...expanded(), ...wanted.expand])
-    if (next.size !== expanded().size) setExpanded(next)
-    if (!nodes().some((node) => node.id === wanted.row)) return false
-    pending = undefined
-    setSelectedId(wanted.row)
-    return true
-  }
-
-  function ensureSelection() {
-    if (applyPending()) return
-    const list = nodes()
-    if (list.length === 0) {
-      setSelectedId(undefined)
-      return
-    }
-    const current = selectedId()
-    if (current !== undefined && list.some((node) => node.id === current)) return
-    setSelectedId(list[0].id)
-  }
-
   async function load() {
     if (disposed || disabled) return
     const requestGen = ++generation
@@ -362,14 +325,8 @@ export function createInstructionsState(context: Plugin.Context) {
     try {
       const fresh = await plus["instructions.snapshot"](undefined, { location: context.location })
       if (disposed || disabled || requestGen !== generation) return
-      const firstLoad = snapshot() === undefined
       setSnapshot(fresh)
-      if (firstLoad && expanded().size === 0) {
-        const roots = allNodes().filter((node) => node.kind === "root")
-        if (roots.length > 0) setExpanded(new Set(roots.map((node) => node.id)))
-      }
       setStatus("")
-      ensureSelection()
     } catch (error: unknown) {
       if (disposed || disabled || requestGen !== generation) return
       setStatus(errorMessage(error))
@@ -387,66 +344,12 @@ export function createInstructionsState(context: Plugin.Context) {
       if (disposed || disabled || requestGen !== generation) return
       setSnapshot(fresh)
       setStatus("Refreshed from host")
-      ensureSelection()
     } catch (error: unknown) {
       if (disposed || disabled || requestGen !== generation) return
       setStatus(errorMessage(error))
     } finally {
       if (!disposed && !disabled && requestGen === generation) setLoading(false)
     }
-  }
-
-  function toggleExpanded(id: string) {
-    setExpanded((previous) => {
-      const next = new Set(previous)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  function select(id: string) {
-    pending = undefined
-    setSelectedId(id)
-  }
-
-  function selectAgent(agentId: string): boolean {
-    if (disposed) return false
-    const current = snapshot()
-    if (!current) return false
-    const entry = current.agents.find((candidate) => candidate.id === agentId)
-    if (!entry) return false
-    const origin = entry.origin ?? "user"
-    const next = new Set(expanded())
-    // Agents live under their level's Agents group at every level, so reveal
-    // the whole chain down to the agent through the origin subgroup. Special
-    // agents nest under Native, so they need both the Native parent and the
-    // native:special child; other origins need only their own subgroup.
-    next.add(`root:${entry.scope}`)
-    next.add(`group:${entry.scope}:agents`)
-    next.add(`group:${entry.scope}:agents:${origin}`)
-    if (origin === "special") {
-      next.add(`group:${entry.scope}:agents:native`)
-      next.add(`group:${entry.scope}:agents:native:special`)
-    }
-    setExpanded(next)
-    setSelectedId(`agent:${entry.scope}:${agentId}`)
-    return true
-  }
-
-  function move(delta: number) {
-    pending = undefined
-    const list = nodes()
-    if (list.length === 0) return
-    const current = selectedId()
-    const index = list.findIndex((node) => node.id === current)
-    if (index === -1) {
-      const target = delta >= 0 ? list[0] : list[list.length - 1]
-      setSelectedId(target.id)
-      return
-    }
-    const next = Math.min(list.length - 1, Math.max(0, index + delta))
-    setSelectedId(list[next].id)
   }
 
   function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
@@ -540,10 +443,7 @@ export function createInstructionsState(context: Plugin.Context) {
       // the write still succeeded: report it, or an editor never closes.
       const latest = requestGen === generation
       if (result.ok) {
-        if (latest) {
-          setSnapshot(result.snapshot)
-          ensureSelection()
-        }
+        if (latest) setSnapshot(result.snapshot)
         setStatus(successStatus)
         return true
       }
@@ -552,7 +452,6 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus(
         `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${result.snapshot.revision}/${result.snapshot.globalRevision}); ${retryHint}`,
       )
-      ensureSelection()
       return false
     } catch (error: unknown) {
       if (disposed || disabled || requestGen !== generation) return false
@@ -1013,7 +912,6 @@ export function createInstructionsState(context: Plugin.Context) {
       disabled = true
       generation++
       setSnapshot(undefined)
-      setSelectedId(undefined)
       setLoading(false)
       setStatus("Project mode is disabled for this directory")
       return
@@ -1036,19 +934,11 @@ export function createInstructionsState(context: Plugin.Context) {
       nodes()
       return lastMatched
     },
-    allNodes,
-    selected,
-    selectedId,
-    expanded,
     filter,
     setFilter,
     status,
     setStatus,
     loading,
-    toggleExpanded,
-    select,
-    selectAgent,
-    move,
     toggle: toggleRow,
     cycle: cycleRow,
     setEnabled: setEnabledRow,
