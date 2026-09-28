@@ -938,7 +938,9 @@ and this file are updated.
 ### Stage F — lab acceptance (done, 2026-09-28)
 
 Driven with `docs/team-v2/scripts/tui-lab.sh` (pilotty PTY) from this
-worktree in an isolated lab home/project; no configs or credentials copied,
+worktree in the script's isolated lab home/project; nothing was copied into
+this repository or the evidence (the script seeds the throwaway home from the
+caller's non-secret config by its own design), no secret state was printed,
 and every owned session/service was stopped after the run (see Limits).
 
 **Blocker found and fixed first.** With the merged upstream TUI host, the
