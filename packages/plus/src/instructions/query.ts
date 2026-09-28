@@ -86,6 +86,79 @@ interface QueryState {
   readonly recs: Map<string, CustomizationRecord[]>
   readonly splits: Map<string, SplitRecord[]>
   readonly agents: Map<string, AgentSource>
+  readonly items: Map<string, Item[]>
+}
+
+/**
+ * The TUI filter's row set: the query engine's match semantics, with each
+ * match's ancestor chain taken from the candidate walk itself. Only matches
+ * and their ancestors are materialised, so a filter never builds the full
+ * tree.
+ */
+export interface MatchedTree {
+  /** Ids the filter itself matched (never ancestors). */
+  readonly matched: ReadonlySet<string>
+  /** Matched rows plus every match's ancestor chain, in tree order. */
+  readonly rows: readonly TreeNode[]
+}
+
+export function matchedTree(input: MemoInput, where: string, memo?: Memo): MatchedTree {
+  const needle = where.trim()
+  if (needle.length === 0) return { matched: new Set(), rows: [] }
+  const active = memo ?? buildMemo(input)
+  const state = queryState(active)
+  try {
+    const parsed = parseWhere(needle, state)
+    const candidates = collectCandidates(state, parsed, true)
+    const found = candidates.filter((candidate) => parsed.filters.every((filter) => filter.negate !== filter.test(candidate)))
+    const keep = new Set<Candidate>()
+    const matched = new Set<string>()
+    for (const candidate of found) {
+      const node = nodeOf(state, candidate)
+      if (node === undefined || !visibleRow(node)) continue
+      matched.add(candidate.id)
+      for (const ancestor of candidate.ancestors ?? []) keep.add(ancestor)
+      keep.add(candidate)
+    }
+    const rows = candidates.flatMap((candidate) => {
+      if (!keep.has(candidate)) return []
+      const node = nodeOf(state, candidate)
+      return node === undefined ? [] : [node]
+    })
+    return { matched, rows }
+  } catch {
+    return fallbackTree(state, needle.toLowerCase())
+  }
+}
+
+// Today's visible-row rule: section rows only when they can be toggled.
+function visibleRow(node: TreeNode): boolean {
+  return node.kind !== "section" || node.actions?.toggle === true
+}
+
+// The grammar-rejected fallback: a label/id substring across every root,
+// walking the lazy skeleton's cheap fields and materialising hits plus their
+// ancestor chains only.
+function fallbackTree(state: QueryState, needle: string): MatchedTree {
+  const order: Lazy[] = []
+  const matched: Lazy[] = []
+  const ancestors = new Map<string, readonly Lazy[]>()
+  const stack: Lazy[] = []
+  const walk = (lazy: Lazy) => {
+    order.push(lazy)
+    if ((lazy.kind !== "section" || lazy.actions.toggle === true) &&
+      (lazy.label.toLowerCase().includes(needle) || lazy.id.toLowerCase().includes(needle))) {
+      matched.push(lazy)
+      ancestors.set(lazy.id, [...stack])
+    }
+    stack.push(lazy)
+    for (const child of lazy.children()) walk(child)
+    stack.pop()
+  }
+  for (const root of skeletonOf(state.memo)) walk(root)
+  const keep = new Set<Lazy>(matched)
+  for (const lazy of matched) for (const ancestor of ancestors.get(lazy.id) ?? []) keep.add(ancestor)
+  return { matched: new Set(matched.map((lazy) => lazy.id)), rows: order.filter((lazy) => keep.has(lazy)).map(materialize) }
 }
 
 interface Candidate {
@@ -99,6 +172,8 @@ interface Candidate {
   readonly parent: Lazy | undefined
   readonly address: Address | undefined
   readonly sectionIds: readonly string[]
+  /** Pre-order ancestor path (root first), recorded only for filter row walks. */
+  readonly ancestors?: readonly Candidate[]
   node: TreeNode | undefined
   resolvedText: string | undefined
   upstreamText: string | undefined
@@ -145,7 +220,13 @@ function queryState(memo: Memo): QueryState {
     list.push(split)
     splits.set(key, list)
   }
-  return { memo, recs, splits, agents: new Map(memo.ctx.agents.map((agent) => [agent.id, agent])) }
+  const items = new Map<string, Item[]>()
+  for (const item of memo.ctx.items) {
+    const list = items.get(item.id) ?? []
+    list.push(item)
+    items.set(item.id, list)
+  }
+  return { memo, recs, splits, items, agents: new Map(memo.ctx.agents.map((agent) => [agent.id, agent])) }
 }
 
 function recsAt(state: QueryState, item: string, section: string | null): readonly CustomizationRecord[] {
@@ -178,7 +259,7 @@ function splitOfAddress(state: QueryState, address: Address): SplitRecord | unde
 
 function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "memberOf">): Item | undefined {
   if (isControl(itemId)) return controlItemFor(state.memo.ctx.items, { item: itemId, agent: owner, ...context })
-  const matches = state.memo.ctx.items.filter((entry) => entry.id === itemId)
+  const matches = state.items.get(itemId) ?? []
   if (owner === null) return matches[0]
   return matches.find((entry) => applies(entry, owner)) ?? matches[0]
 }
@@ -189,13 +270,28 @@ function lookupItem(state: QueryState, itemId: string, owner: string | null, con
 // tree. Section expansion is skipped when a positive structural term can
 // never match a section, or when the item itself fails a term its sections
 // necessarily fail (level, agent, and the upstream item attributes).
-function collectCandidates(state: QueryState, parsed: Parsed): Candidate[] {
+//
+// `chains` records each candidate's ancestor path from the walk's depth stack,
+// so a filtered row set can include its ancestors without a second whole-tree
+// walk. It costs one array per candidate, so only the filter path asks for it.
+function collectCandidates(state: QueryState, parsed: Parsed, chains = false): Candidate[] {
   const out: Candidate[] = []
   const seen = new Set<string>()
-  const push = (candidate: Omit<Candidate, "index" | "node" | "resolvedText" | "upstreamText">) => {
+  const stack: Candidate[] = []
+  const push = (candidate: Omit<Candidate, "index" | "node" | "resolvedText" | "upstreamText" | "ancestors">) => {
     if (seen.has(candidate.id)) return
     seen.add(candidate.id)
-    out.push({ ...candidate, index: out.length, node: undefined, resolvedText: undefined, upstreamText: undefined })
+    if (chains) while (stack.length > 0 && stack[stack.length - 1]!.depth >= candidate.depth) stack.pop()
+    const next: Candidate = {
+      ...candidate,
+      index: out.length,
+      ...(chains ? { ancestors: [...stack] } : {}),
+      node: undefined,
+      resolvedText: undefined,
+      upstreamText: undefined,
+    }
+    out.push(next)
+    if (chains) stack.push(next)
   }
   const skipRows = parsed.filters.some((filter) => filter.excludesSections)
   const wantsGroups = !skipRows || parsed.filters.some((filter) => filter.mentionsGroups === true)

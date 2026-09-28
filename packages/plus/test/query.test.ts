@@ -10,10 +10,11 @@ import {
   type SplitRecord,
 } from "../src/instructions/model.js"
 import { buildMemo, type TeamInput } from "../src/instructions/resolve-memo.js"
-import { query } from "../src/instructions/query.js"
+import { matchedTree, query } from "../src/instructions/query.js"
 import { itemOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
-import { expandedTree } from "../src/instructions/tree.js"
+import { expandedTree, type TreeNode } from "../src/instructions/tree.js"
+import { parentsOf } from "../src/tui/instructions/workspace.js"
 import { Plus } from "../src/rpc.js"
 import { badgeLabels } from "../src/tui/instructions/tree-pane.js"
 
@@ -854,4 +855,78 @@ test("run matches a live run's edit scope row after the snapshot boundary", () =
   expect(found).toContain(`item:project:crew/:${member}:perm:edit:run:${run.id}`)
   expect(found.every((id) => id.endsWith(`perm:edit:run:${run.id}`))).toBe(true)
   expect(query(scoped, { where: "run:w-0000000000000002" }).rows).toHaveLength(0)
+})
+
+// The TUI filter's row set must agree with the old full-materialise approach:
+// match on a fully expanded tree, then add each match's ancestor chain from
+// the pre-order list. matchedTree does the same from the candidate walk
+// without materialising unrelated rows.
+function oldFilterRows(
+  snapshot: ReturnType<typeof input>,
+  where: string,
+): { matched: Set<string>; rows: Set<string> } {
+  const full = expandedTree(snapshot)
+  const visible = (node: TreeNode) => node.kind !== "section" || node.actions?.toggle === true
+  let matched: TreeNode[]
+  try {
+    const ids = new Set(query(snapshot, { where, fields: ["id"] }).rows.map((row) => row.id))
+    matched = full.filter((node) => ids.has(node.id) && visible(node))
+  } catch {
+    const needle = where.trim().toLowerCase()
+    matched = full.filter(
+      (node) => visible(node) && (node.label.toLowerCase().includes(needle) || node.id.toLowerCase().includes(needle)),
+    )
+  }
+  const parents = parentsOf(full)
+  const rows = new Set<string>()
+  for (const node of matched) {
+    rows.add(node.id)
+    let ancestor = parents.get(node.id)
+    while (ancestor !== undefined) {
+      rows.add(ancestor.id)
+      ancestor = parents.get(ancestor.id)
+    }
+  }
+  return { matched: new Set(matched.map((node) => node.id)), rows }
+}
+
+test("matchedTree matches and chains agree with the full-materialise filter", () => {
+  const snapshot = input()
+  for (const where of [
+    "level:project bash",
+    "level:project Implementer",
+    "level:global kind:item",
+    "Implementer",
+    "kind:section level:project",
+    "has:sections level:project",
+    "text:e tokens:>0 upstream:e",
+  ]) {
+    const expected = oldFilterRows(snapshot, where)
+    const actual = matchedTree(snapshot, where)
+    expect([...actual.matched].sort()).toEqual([...expected.matched].sort())
+    expect([...actual.rows.map((node) => node.id)].sort()).toEqual([...expected.rows].sort())
+  }
+})
+
+test("matchedTree keeps the label/id fallback when the grammar rejects the filter", () => {
+  const snapshot = input({
+    items: [...items(), makeItem({ id: "tool:odd:name", kind: "tool", group: "native", title: "odd:name" })],
+  })
+  const where = "odd:name"
+  expect(() => query(snapshot, { where })).toThrow()
+  const expected = oldFilterRows(snapshot, where)
+  const actual = matchedTree(snapshot, where)
+  expect([...actual.matched].sort()).toEqual([...expected.matched].sort())
+  expect([...actual.rows.map((node) => node.id)].sort()).toEqual([...expected.rows].sort())
+  expect(actual.matched.has("item:project:Implementer:tool:odd:name")).toBe(true)
+})
+
+test("matchedTree scopes a level: filter to its root and keeps the root as an ancestor", () => {
+  const snapshot = input()
+  const result = matchedTree(snapshot, "level:project bash")
+  expect(result.rows.length).toBeGreaterThan(0)
+  expect(result.rows.every((node) => node.id.includes(":project:") || node.id === "root:project")).toBe(true)
+  const match = result.rows.find((node) => result.matched.has(node.id))
+  expect(match).toBeDefined()
+  expect(result.rows.some((node) => node.id === "root:project")).toBe(true)
 })

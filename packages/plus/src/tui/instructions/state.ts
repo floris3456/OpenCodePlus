@@ -14,7 +14,7 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
-import { buildTreeMemo, controlChoices, expandedTree, treeOf, withControlItems, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { buildTreeMemo, controlChoices, treeOf, withControlItems, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import { agentOf, contextOfSnapshot, itemOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
@@ -39,7 +39,7 @@ import {
   type ModelReviewChoice,
   type StateReviewChoice,
 } from "../../instructions/ops.js"
-import { query } from "../../instructions/query.js"
+import { matchedTree, query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 
 export type { TreeNode }
@@ -185,109 +185,22 @@ export function createInstructionsState(context: Plugin.Context) {
     return presetStateOfSnapshot(current)
   })
 
-  let cachedFullTree:
-    | {
-        readonly revision: number
-        readonly globalRevision: number
-        readonly tree: TreeNode[]
-      }
-    | undefined
-
-  function ancestorsOf(
-    all: readonly TreeNode[],
-    byId: ReadonlyMap<string, TreeNode>,
-    indexById: ReadonlyMap<string, number>,
-    node: TreeNode,
-  ): TreeNode[] {
-    // tree() emits the full logical pre-order list: ancestors of node are the
-    // nearest preceding rows with strictly smaller depth.
-    const index = indexById.get(node.id)
-    if (index === undefined) return []
-    const out: TreeNode[] = []
-    let depth = node.depth
-    for (let at = index - 1; at >= 0; at--) {
-      const candidate = all[at]
-      if (candidate === undefined) break
-      if (candidate.depth < depth) {
-        out.unshift(byId.get(candidate.id) ?? candidate)
-        depth = candidate.depth
-        if (depth <= 0) break
-      }
-    }
-    return out
-  }
-
-  // The rows the filter matched, as opposed to the ancestors shown with them.
+  // The filter's rows: matches plus their ancestor chains, materialised from
+  // the shared memo's candidate walk. Empty until a filter applies; the
+  // workspace list is the unfiltered view.
   let lastMatched: ReadonlySet<string> = new Set()
   const nodes = createMemo<TreeNode[]>(() => {
-    const raw = filter()
-    if (raw.trim().length === 0) {
+    const raw = filter().trim()
+    if (raw.length === 0) {
       lastMatched = new Set()
-      cachedFullTree = undefined
       return []
     }
-    // Reveal matches hidden inside collapsed ancestors: match against the
-    // full logical tree and include each match with its ancestor chain.
-    // Matches come from the shared query engine so the TUI and the tool
-    // layer filter the same rows. Code Mode rows are live and filter like any
-    // other row; the ancestor chain stays here, never in the engine.
-    const current = snapshot()
-    if (!current) return []
-    if (
-      cachedFullTree === undefined ||
-      cachedFullTree.revision !== current.revision ||
-      cachedFullTree.globalRevision !== current.globalRevision
-    ) {
-      cachedFullTree = {
-        revision: current.revision,
-        globalRevision: current.globalRevision,
-        tree: expandedTree({
-          items: itemsForTree(),
-          records: recordsForTree(),
-          agents: agentsForTree(),
-          teams: teamsForTree(),
-          ...presetStateForTree(),
-        }),
-      }
-    }
-    const full = cachedFullTree.tree
-    const matched = matchFilter(raw, full)
-    lastMatched = new Set(matched.map((node) => node.id))
-    const byId = new Map(full.map((node) => [node.id, node]))
-    const indexById = new Map(full.map((node, index) => [node.id, index] as const))
-    const included = new Map<string, TreeNode>()
-    for (const node of matched) {
-      for (const ancestor of ancestorsOf(full, byId, indexById, node)) included.set(ancestor.id, ancestor)
-      included.set(node.id, node)
-    }
-    return [...included.values()]
+    const memo = treeMemo()
+    if (memo === undefined) return []
+    const result = matchedTree(memoInput(), raw, memo)
+    lastMatched = result.matched
+    return [...result.rows]
   })
-
-  // Engine first so structured filters behave like the tool layer; anything
-  // the grammar rejects falls back to the legacy label/id substring match.
-  function matchFilter(raw: string, full: TreeNode[]): TreeNode[] {
-    const visible = (node: TreeNode) => node.kind !== "section" || node.actions?.toggle === true
-    try {
-      const ids = new Set(
-        query(
-          {
-            items: itemsForTree(),
-            records: recordsForTree(),
-            agents: agentsForTree(),
-            teams: teamsForTree(),
-            ...presetStateForTree(),
-          },
-          { where: raw, fields: ["id"] },
-        ).rows.map((row) => row.id),
-      )
-      return full.filter((node) => ids.has(node.id) && visible(node))
-    } catch {
-      const normalized = raw.trim().toLowerCase()
-      return full.filter(
-        (node) => visible(node) && (node.label.toLowerCase().includes(normalized) || node.id.toLowerCase().includes(normalized)),
-      )
-    }
-  }
 
   // A row a create flow wants selected (reveal): the route switches to its
   // level, opens the rows above it and selects it as soon as a snapshot
