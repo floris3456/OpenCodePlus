@@ -102,7 +102,15 @@ export function memoOf(ctx: BuildContext): Memo {
   }
 }
 
+// Counts memo builds so tests can prove a screen builds one memo per snapshot,
+// not one per tree() call. Not read in production.
+export const memoBuildCounter = { count: 0 }
+export function resetMemoBuildCounter(): void {
+  memoBuildCounter.count = 0
+}
+
 export function buildMemo(input: MemoInput): Memo {
+  memoBuildCounter.count++
   return memoOf(contextOf(input))
 }
 

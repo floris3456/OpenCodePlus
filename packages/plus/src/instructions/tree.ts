@@ -36,9 +36,8 @@ import type {
 import { fromLabel } from "./from-label.js"
 import { linkOf, type PresetEntry } from "./presets.js"
 import {
+  buildMemo,
   flagOf,
-  memoOf,
-  contextOf,
   splitOf,
   textEntryOf,
   wholeOf,
@@ -55,7 +54,7 @@ import { categoryLabel, categoryOfRow, categoryOrder, hostOf } from "./permissio
 import { curatedRuleMessage } from "./tool-permissions.js"
 
 export type { Memo }
-export { buildMemo } from "./resolve-memo.js"
+export { buildMemo }
 
 // Teams at all three tiers, including built-in defaults teams with no
 // filesystem path. This widens the shared memo input with the same `Level`
@@ -192,23 +191,27 @@ function asBaseInput(input: TreeInput): BaseMemoInput {
 }
 
 export function tree(input: TreeInput): TreeNode[] {
-  const ctx = contextOf(asBaseInput(input))
-  const expanded = input.expanded ?? new Set<string>()
-  return skeletonOf(memoOf(ctx)).flatMap((root) => emit(root, expanded))
+  return treeOf(buildTreeMemo(input), input.expanded ?? new Set<string>())
 }
 
-export const expandedTreeCounter = { count: 0 }
-export function resetExpandedTreeCounter(): void {
-  expandedTreeCounter.count = 0
+// The memo a screen builds once per snapshot; every tree-shaped view derives
+// its rows from this same memo instead of rebuilding context and cache per
+// call.
+export function buildTreeMemo(input: Omit<TreeInput, "expanded">): Memo {
+  return buildMemo(asBaseInput(input))
 }
 
-// Single-pass full expansion for filter matching: the skeleton already knows
-// every id without resolving anything, so walk it directly instead of
-// converging by repeated expanded builds. Output matches tree() with every id
-// expanded.
+// Rows for an expansion set over an already-built memo: one flatMap over the
+// lazy skeleton, resolving/emitting only the rows the expansion reaches.
+export function treeOf(memo: Memo, expanded: ReadonlySet<string>): TreeNode[] {
+  return skeletonOf(memo).flatMap((root) => emit(root, expanded))
+}
+
+// Single-pass full expansion oracle (tests and benches): the skeleton already
+// knows every id without resolving anything, so walk it directly. The TUI
+// filter no longer uses this; it materialises only matches and ancestors.
 export function expandedTree(input: Omit<TreeInput, "expanded">): TreeNode[] {
-  expandedTreeCounter.count++
-  const memo = memoOf(contextOf(asBaseInput(input)))
+  const memo = buildTreeMemo(input)
   return collectSkeleton(skeletonOf(memo)).map(materialize)
 }
 

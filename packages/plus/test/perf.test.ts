@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { fingerprint, type AgentSource, type Item } from "../src/instructions/model.js"
-import { expandedTreeCounter, resetExpandedTreeCounter, tree, type TeamInput } from "../src/instructions/tree.js"
+import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
+import { tree, type TeamInput } from "../src/instructions/tree.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
 import { createSnapshot, renderInstructionsRoute } from "./tui.js"
@@ -78,7 +79,7 @@ test("synthetic dataset: removalPlan, teamPlan, toggle and tree() each complete 
   expect(durTree).toBeLessThan(50)
 })
 
-test("expandedTree is not invoked on initial state load without a filter", async () => {
+test("initial state load builds exactly one resolution memo for the snapshot", async () => {
   const input = makeSyntheticInput()
   const snapshot = createSnapshot({
     revision: 1,
@@ -89,8 +90,8 @@ test("expandedTree is not invoked on initial state load without a filter", async
     teams: input.teams,
   })
 
-  resetExpandedTreeCounter()
-  expect(expandedTreeCounter.count).toBe(0)
+  resetMemoBuildCounter()
+  expect(memoBuildCounter.count).toBe(0)
 
   await using fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
@@ -99,7 +100,7 @@ test("expandedTree is not invoked on initial state load without a filter", async
   })
 
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-  expect(expandedTreeCounter.count).toBe(0)
+  expect(memoBuildCounter.count).toBe(1)
 })
 
 test("realistic lab dataset benchmark: Enter -> tree rows and d -> confirm dialog on Cobra/testttt", async () => {

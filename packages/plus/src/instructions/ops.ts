@@ -170,14 +170,14 @@ function memoOfInput(input: MemoInput): Memo {
   return buildMemo(input as unknown as Parameters<typeof buildMemo>[0])
 }
 
-function findNode(input: MemoInput, rowId: string): { memo: Memo; node: TreeNode } | undefined {
-  const memo = memoOfInput(input)
-  const lazy = findLazy(memo, rowId)
+function findNode(input: MemoInput, rowId: string, sharedMemo?: Memo): { memo: Memo; node: TreeNode } | undefined {
+  const active = sharedMemo ?? memoOfInput(input)
+  const lazy = findLazy(active, rowId)
   if (lazy === undefined) {
-    const node = controlRow(memo, rowId)
-    return node === undefined ? undefined : { memo, node }
+    const node = controlRow(active, rowId)
+    return node === undefined ? undefined : { memo: active, node }
   }
-  return { memo, node: materialize(lazy) }
+  return { memo: active, node: materialize(lazy) }
 }
 
 // Control rows can be addressed by the Tool before a client expands their
@@ -224,17 +224,17 @@ function entityControlId(memo: Memo, node: TreeNode, item: string): string | und
   return team === undefined ? undefined : `item:${team.level}:${team.team}/:${node.label}:${item}`
 }
 
-export function setAgentMode(input: MemoInput, rowId: string, mode: "primary" | "subagent" | "all"): OpResult {
-  const found = findNode(input, rowId)
+export function setAgentMode(input: MemoInput, rowId: string, mode: "primary" | "subagent" | "all", sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   const id = found === undefined ? undefined : entityControlId(found.memo, found.node, "setting:mode")
-  return id === undefined ? { refusal: `"${rowId}" is not an agent or member` } : saveText(input, id, mode)
+  return id === undefined ? { refusal: `"${rowId}" is not an agent or member` } : saveText(input, id, mode, sharedMemo)
 }
 
 /** Concrete control writes and implicit field changes, checked by execute.before. */
-export function instructionControlInputs(input: MemoInput, tool: string, value: unknown): Readonly<Record<string, unknown>>[] {
+export function instructionControlInputs(input: MemoInput, tool: string, value: unknown, sharedMemo?: Memo): Readonly<Record<string, unknown>>[] {
   if (typeof value !== "object" || value === null || !("id" in value) || typeof value.id !== "string") return []
   const fields = value as Record<string, unknown>
-  const found = findNode(input, value.id)
+  const found = findNode(input, value.id, sharedMemo)
   if (found === undefined) return []
   if (tool === "instructions_set" && fields.preset === undefined && found.node.address?.item === "setting:mode")
     return [{ ...fields, mode: fields.text ?? true }]
@@ -242,7 +242,7 @@ export function instructionControlInputs(input: MemoInput, tool: string, value: 
     ?? (found.node.address !== undefined && booleanControl(found.node.address.item) ? value.id : undefined)
   if (enabledId === undefined) return []
   if (tool === "instructions_reset") {
-    const plan = reset(input, value.id)
+    const plan = reset(input, value.id, sharedMemo)
     if ("refusal" in plan) return []
     return found.memo.ctx.customizations
       .filter((record) => !plan.records.some((remaining) => sameAddress(remaining, record)))
@@ -252,7 +252,7 @@ export function instructionControlInputs(input: MemoInput, tool: string, value: 
   const mode = fields.mode === undefined ? [] : [{ ...fields, id: entityControlId(found.memo, found.node, "setting:mode"), text: fields.mode }]
   const toggles = fields.state !== undefined || [fields.mode, fields.text, fields.pin, fields.resolve].every((field) => field === undefined)
   if (!toggles) return mode
-  const plan = fields.state === undefined ? toggle(input, value.id) : setEnabled(input, value.id, fields.state === "on")
+  const plan = fields.state === undefined ? toggle(input, value.id, sharedMemo) : setEnabled(input, value.id, fields.state === "on", sharedMemo)
   const address = controlRow(found.memo, enabledId)?.address
   if ("refusal" in plan || address === undefined) return mode
   const state = plan.records.find((record) => sameAddress(record, address))?.state
@@ -260,8 +260,8 @@ export function instructionControlInputs(input: MemoInput, tool: string, value: 
 }
 
 /** One row by id, found by descending the lazy tree (no full expansion). */
-export function findRow(input: MemoInput, rowId: string): TreeNode | undefined {
-  return findNode(input, rowId)?.node
+export function findRow(input: MemoInput, rowId: string, sharedMemo?: Memo): TreeNode | undefined {
+  return findNode(input, rowId, sharedMemo)?.node
 }
 
 // ---------------------------------------------------------------------------
@@ -500,12 +500,12 @@ function boundariesEqual(
   })
 }
 
-export function toggle(input: MemoInput, rowId: string): OpResult {
-  const found = findNode(input, rowId)
+export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const control = entityControlId(found.memo, node, "setting:enabled")
-  if (control !== undefined) return toggle(input, control)
+  if (control !== undefined) return toggle(input, control, sharedMemo)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
@@ -535,12 +535,12 @@ export function toggle(input: MemoInput, rowId: string): OpResult {
   }
 }
 
-export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpResult {
-  const found = findNode(input, rowId)
+export function setEnabled(input: MemoInput, rowId: string, value: boolean, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const control = entityControlId(found.memo, node, "setting:enabled")
-  if (control !== undefined) return setEnabled(input, control, value)
+  if (control !== undefined) return setEnabled(input, control, value, sharedMemo)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
@@ -564,8 +564,8 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean): OpR
   }
 }
 
-export function setPin(input: MemoInput, rowId: string, value: boolean): OpResult {
-  const found = findNode(input, rowId)
+export function setPin(input: MemoInput, rowId: string, value: boolean, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -593,8 +593,8 @@ export function setPin(input: MemoInput, rowId: string, value: boolean): OpResul
   }
 }
 
-export function saveText(input: MemoInput, rowId: string, text: string): OpResult {
-  const found = findNode(input, rowId)
+export function saveText(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -623,8 +623,8 @@ export function saveText(input: MemoInput, rowId: string, text: string): OpResul
   }
 }
 
-export function reset(input: MemoInput, rowId: string): OpResult {
-  const found = findNode(input, rowId)
+export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -668,8 +668,9 @@ export function saveSplit(
   input: MemoInput,
   rowId: string,
   boundaries: readonly { id: string; name: string; start: number }[],
+  sharedMemo?: Memo,
 ): OpResult {
-  const found = findNode(input, rowId)
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -708,8 +709,8 @@ export function saveSplit(
   }
 }
 
-export function addSection(input: MemoInput, rowId: string, name: string, text: string): OpResult {
-  const found = findNode(input, rowId)
+export function addSection(input: MemoInput, rowId: string, name: string, text: string, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -776,8 +777,9 @@ export function resolveReview(
   resolution: "keep" | "take" | "edit" | "merge",
   edited?: string,
   only?: readonly ReviewPart[],
+  sharedMemo?: Memo,
 ): OpResult {
-  const found = findNode(input, rowId)
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -852,8 +854,8 @@ export interface StateReviewChoice {
   readonly from: string
 }
 
-export function stateReviewChoice(input: MemoInput, rowId: string): StateReviewChoice | undefined {
-  const found = findNode(input, rowId)
+export function stateReviewChoice(input: MemoInput, rowId: string, sharedMemo?: Memo): StateReviewChoice | undefined {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return undefined
   const parts = (found.node.badges.reviewOf ?? []).filter((part) => part !== "text")
   if (parts.length === 0) return undefined
@@ -891,8 +893,8 @@ export interface ModelReviewChoice {
   readonly from?: string
 }
 
-export function modelReviewChoice(input: MemoInput, rowId: string): ModelReviewChoice | undefined {
-  const found = findNode(input, rowId)
+export function modelReviewChoice(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelReviewChoice | undefined {
+  const found = findNode(input, rowId, sharedMemo)
   const address = found?.node.address
   if (found === undefined || address === undefined || modelTargetOf(address) === undefined) return undefined
   const scope = modelScopeOf(address)
@@ -918,8 +920,8 @@ export function modelReviewChoice(input: MemoInput, rowId: string): ModelReviewC
 // Keep: the own active model re-records the active model above it now, so the
 // review clears and yours stays. Take: the own active flag goes, so the model
 // above wins again.
-export function resolveModelReview(input: MemoInput, rowId: string, resolution: "keep" | "take"): ModelOpResult {
-  const found = findNode(input, rowId)
+export function resolveModelReview(input: MemoInput, rowId: string, resolution: "keep" | "take", sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address
@@ -943,8 +945,8 @@ function modelUpstreamOf(memo: Memo, address: Address) {
   return agents.find((entry) => entry.id === owner && entry.scope === address.level)?.model ?? agents.find((entry) => entry.id === owner)?.model
 }
 
-export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
-  const found = findNode(input, rowId)
+export function removalPlan(input: MemoInput, rowId: string, sharedMemo?: Memo): RemovalPlan {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -1115,8 +1117,8 @@ export function removalPlan(input: MemoInput, rowId: string): RemovalPlan {
   return { refusal: `"${node.label}" cannot be deleted` }
 }
 
-export function teamPlan(input: MemoInput, rowId: string, desired?: boolean): TeamPlan {
-  const found = findNode(input, rowId)
+export function teamPlan(input: MemoInput, rowId: string, desired?: boolean, sharedMemo?: Memo): TeamPlan {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
@@ -1140,8 +1142,8 @@ export function teamPlan(input: MemoInput, rowId: string, desired?: boolean): Te
   }
 }
 
-export function refusalFor(input: MemoInput, rowId: string): string | undefined {
-  const found = findNode(input, rowId)
+export function refusalFor(input: MemoInput, rowId: string, sharedMemo?: Memo): string | undefined {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return unknownRowRefusal(rowId)
   const node = found.node
   const memo = found.memo
@@ -1199,8 +1201,8 @@ function modelScopeOf(address: Address): RecordScope & { readonly memberOf?: Tea
 // Space on a model row activates it exclusively at that level, creating the
 // local row when the candidate is inherited. Activating the already-active
 // row is a no-op that still reports success without writing.
-export function activateModelRow(input: MemoInput, rowId: string): ModelOpResult {
-  const found = findNode(input, rowId)
+export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address
@@ -1229,8 +1231,8 @@ export function activateModelRow(input: MemoInput, rowId: string): ModelOpResult
 
 // r on a model row clears only that level's active flag, leaving candidates
 // so the chain falls through. No active at this level refuses.
-export function resetModelRow(input: MemoInput, rowId: string): ModelOpResult {
-  const found = findNode(input, rowId)
+export function resetModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address
@@ -1244,8 +1246,8 @@ export function resetModelRow(input: MemoInput, rowId: string): ModelOpResult {
 
 // d on a model row deletes the candidate at this level only. Inherited rows
 // with no local record refuse: remove at the source level instead.
-export function removeModelRow(input: MemoInput, rowId: string): ModelOpResult {
-  const found = findNode(input, rowId)
+export function removeModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address

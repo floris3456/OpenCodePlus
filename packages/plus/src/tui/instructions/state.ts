@@ -14,7 +14,7 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
-import { controlChoices, expandedTree, tree, withControlItems, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { buildTreeMemo, controlChoices, expandedTree, treeOf, withControlItems, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import { agentOf, contextOfSnapshot, itemOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
@@ -188,16 +188,8 @@ export function createInstructionsState(context: Plugin.Context) {
   })
 
   const allNodes = createMemo<TreeNode[]>(() => {
-    const current = snapshot()
-    if (!current) return []
-    return tree({
-      items: itemsForTree(),
-      records: recordsForTree(),
-      agents: agentsForTree(),
-      teams: teamsForTree(),
-      ...presetStateForTree(),
-      expanded: expanded(),
-    })
+    if (snapshot() === undefined) return []
+    return treeWith(expanded())
   })
 
   let cachedFullTree:
@@ -324,23 +316,17 @@ export function createInstructionsState(context: Plugin.Context) {
   // The same rows tree() emits for the flat view, for any expansion set: the
   // workspace view builds its sidebar and its category list from it.
   function treeWith(open: ReadonlySet<string>): TreeNode[] {
-    if (!snapshot()) return []
-    return tree({
-      items: itemsForTree(),
-      records: recordsForTree(),
-      agents: agentsForTree(),
-      teams: teamsForTree(),
-      ...presetStateForTree(),
-      expanded: open,
-    })
+    const memo = treeMemo()
+    return memo === undefined ? [] : treeOf(memo, open)
   }
 
   // Row ids the shared query engine matches (the tool layer's grammar);
   // undefined when the grammar rejects the text.
   function queryIds(where: string): ReadonlySet<string> | undefined {
-    if (!snapshot()) return new Set()
+    const memo = treeMemo()
+    if (memo === undefined) return new Set()
     try {
-      return new Set(query(memoInput(), { where, fields: ["id"] }).rows.map((row) => row.id))
+      return new Set(query(memoInput(), { where, fields: ["id"] }, memo).rows.map((row) => row.id))
     } catch {
       return undefined
     }
@@ -587,6 +573,11 @@ export function createInstructionsState(context: Plugin.Context) {
     }
   }
 
+  // One resolution memo per snapshot. Every tree-shaped view and every row op
+  // derives from it, so a change or a keypress never rebuilds the resolve
+  // context; a new snapshot is a new memo.
+  const treeMemo = createMemo<Memo | undefined>(() => (snapshot() === undefined ? undefined : buildTreeMemo(memoInput())))
+
   async function persistModels(models: readonly ModelRecord[], successStatus: string, retryHint: string): Promise<boolean> {
     const current = snapshot()
     if (!current) {
@@ -602,14 +593,14 @@ export function createInstructionsState(context: Plugin.Context) {
   async function toggleRow(node: TreeNode): Promise<boolean> {
     if (node.kind === "team" && node.enabledRow === undefined) return toggleTeamRow(node)
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
-      const result = activateModelRow(memoInput(), node.id)
+      const result = activateModelRow(memoInput(), node.id, treeMemo())
       if ("refusal" in result) {
         setStatus(result.refusal)
         return false
       }
       return persistModels(result.models, result.status, result.retryHint)
     }
-    const result = toggle(memoInput(), node.enabledRow ?? node.id)
+    const result = toggle(memoInput(), node.enabledRow ?? node.id, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -632,7 +623,7 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus("No snapshot loaded")
       return false
     }
-    const plan = teamPlan(memoInput(), node.id)
+    const plan = teamPlan(memoInput(), node.id, undefined, treeMemo())
     if ("refusal" in plan) {
       setStatus(plan.refusal)
       return false
@@ -693,7 +684,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function setEnabledRow(node: TreeNode, value: boolean): Promise<boolean> {
-    const result = setEnabled(memoInput(), node.enabledRow ?? node.id, value)
+    const result = setEnabled(memoInput(), node.enabledRow ?? node.id, value, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -702,7 +693,7 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function setPinRow(node: TreeNode, value: boolean): Promise<boolean> {
-    const result = setPin(memoInput(), node.id, value)
+    const result = setPin(memoInput(), node.id, value, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -716,7 +707,7 @@ export function createInstructionsState(context: Plugin.Context) {
 
   async function saveTextRow(node: TreeNode, text: string): Promise<boolean> {
     if (blockedControlWrite(node)) return false
-    const result = saveText(memoInput(), node.id, text)
+    const result = saveText(memoInput(), node.id, text, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -727,14 +718,14 @@ export function createInstructionsState(context: Plugin.Context) {
   async function resetNode(node: TreeNode): Promise<boolean> {
     if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
-      const result = resetModelRow(memoInput(), node.id)
+      const result = resetModelRow(memoInput(), node.id, treeMemo())
       if ("refusal" in result) {
         setStatus(result.refusal)
         return false
       }
       return persistModels(result.models, result.status, result.retryHint)
     }
-    const result = reset(memoInput(), node.id)
+    const result = reset(memoInput(), node.id, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -758,14 +749,14 @@ export function createInstructionsState(context: Plugin.Context) {
   // the node captured when the editor opened, and retain every saved value.
   function blockedControlWrite(node: TreeNode): boolean {
     if (node.address?.item !== "compaction:model" && node.address?.item !== "compaction:instructions") return false
-    const reason = findRow(memoInput(), node.id)?.badges.disabled
+    const reason = findRow(memoInput(), node.id, treeMemo())?.badges.disabled
     if (reason === undefined) return false
     setStatus(reason)
     return true
   }
 
   async function cycleRow(node: TreeNode): Promise<boolean> {
-    const current = findRow(memoInput(), node.id)
+    const current = findRow(memoInput(), node.id, treeMemo())
     const choices = controlChoices(current?.address?.item)
     if (current === undefined || choices === undefined || current.actions?.edit !== true) return false
     const value = resolvedText(current)
@@ -777,7 +768,7 @@ export function createInstructionsState(context: Plugin.Context) {
     node: TreeNode,
     boundaries: readonly { id: string; name: string; start: number }[],
   ): Promise<boolean> {
-    const result = saveSplit(memoInput(), node.id, boundaries)
+    const result = saveSplit(memoInput(), node.id, boundaries, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -791,7 +782,7 @@ export function createInstructionsState(context: Plugin.Context) {
   // end keeps existing offsets stable, so the first add on an unsplit item
   // coherently splits its existing text plus the new section.
   async function addSectionRow(node: TreeNode, name: string, text: string): Promise<boolean> {
-    const result = addSection(memoInput(), node.id, name, text)
+    const result = addSection(memoInput(), node.id, name, text, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -804,7 +795,7 @@ export function createInstructionsState(context: Plugin.Context) {
   // three-way diff).
   async function resolveKeep(node: TreeNode, only?: readonly ReviewPart[]): Promise<boolean> {
     if (blockedControlWrite(node)) return false
-    const result = resolveReview(memoInput(), node.id, "keep", undefined, only)
+    const result = resolveReview(memoInput(), node.id, "keep", undefined, only, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -814,7 +805,7 @@ export function createInstructionsState(context: Plugin.Context) {
 
   async function resolveTake(node: TreeNode, only?: readonly ReviewPart[]): Promise<boolean> {
     if (blockedControlWrite(node)) return false
-    const result = resolveReview(memoInput(), node.id, "take", undefined, only)
+    const result = resolveReview(memoInput(), node.id, "take", undefined, only, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -824,15 +815,15 @@ export function createInstructionsState(context: Plugin.Context) {
 
   // §3.6: the two sides of a state/pin review, and of an active-model review.
   function reviewChoice(node: TreeNode): StateReviewChoice | undefined {
-    return stateReviewChoice(memoInput(), node.id)
+    return stateReviewChoice(memoInput(), node.id, treeMemo())
   }
 
   function modelReview(node: TreeNode): ModelReviewChoice | undefined {
-    return modelReviewChoice(memoInput(), node.id)
+    return modelReviewChoice(memoInput(), node.id, treeMemo())
   }
 
   async function resolveModel(node: TreeNode, resolution: "keep" | "take"): Promise<boolean> {
-    const result = resolveModelReview(memoInput(), node.id, resolution)
+    const result = resolveModelReview(memoInput(), node.id, resolution, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -842,7 +833,7 @@ export function createInstructionsState(context: Plugin.Context) {
 
   async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
     if (blockedControlWrite(node)) return false
-    const result = resolveReview(memoInput(), node.id, "edit", edited)
+    const result = resolveReview(memoInput(), node.id, "edit", edited, undefined, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -854,7 +845,7 @@ export function createInstructionsState(context: Plugin.Context) {
   // with the `Merged` status because the text was computed, not hand-written.
   async function resolveMerge(node: TreeNode, merged: string): Promise<boolean> {
     if (blockedControlWrite(node)) return false
-    const result = resolveReview(memoInput(), node.id, "merge", merged)
+    const result = resolveReview(memoInput(), node.id, "merge", merged, undefined, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -884,7 +875,7 @@ export function createInstructionsState(context: Plugin.Context) {
   // rows without remove actions never delete.
   async function remove(node: TreeNode): Promise<boolean> {
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
-      const result = removeModelRow(memoInput(), node.id)
+      const result = removeModelRow(memoInput(), node.id, treeMemo())
       if ("refusal" in result) {
         setStatus(result.refusal)
         return false
@@ -935,7 +926,7 @@ export function createInstructionsState(context: Plugin.Context) {
         return false
       }
     }
-    const plan = removalPlan(memoInput(), node.id)
+    const plan = removalPlan(memoInput(), node.id, treeMemo())
     if ("refusal" in plan) {
       setStatus(plan.refusal)
       return false
