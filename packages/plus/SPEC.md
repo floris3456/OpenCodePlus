@@ -272,6 +272,10 @@ change (original → new upstream), your change (original → yours) and take
 result (yours → new upstream) — where `k` keeps, `t` takes and `e` edits a
 three-way merge of the upstream change onto yours (`diff-lines.ts` `merge3`;
 conflicting regions are fenced and saving is refused until they are resolved).
+Each comparison renders both sides in full (`unifiedDiff` with complete
+context), so every tab carries the same continuous line universe with no
+unchanged text missing; the compact 3-line-context patch stays the default for
+`/diff`, the permission prompt, the editor preview and tool output.
 `c` opens the same pane read-only for any row whose text this level overrides. A model row
 under review offers `Keep yours (<model>)` (`acknowledgeActiveModel`: your
 active model re-records the model above) and `Take <from label> (<model

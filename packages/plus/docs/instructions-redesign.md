@@ -22,6 +22,11 @@ Implementation status:
   header all carry the number; the inspector has a `tools` fact. Zero reads
   `no tools` in warning colour with the next step (`l` link a preset, `4` turn
   tools on).
+- Follow-up (2026-09-28): the diff completeness defect is fixed (the
+  `instructions-workspace-followup.md` Stage A). `unifiedDiff` takes an
+  optional `context` and the three review comparisons pass
+  `Number.POSITIVE_INFINITY`; see §2.2. The level/panel/help/expansion work
+  from that plan is still pending.
 
 Priorities, from the owner of the screen:
 
@@ -97,6 +102,16 @@ three-way merge applies the upstream change onto yours; overlapping hunks get
 `<<<<<<< yours / ======= / >>>>>>> upstream` markers. The same view opens on
 demand (`c` compare) for any row whose text you have overridden, not only when
 flagged.
+
+Every comparison renders the **complete text of both sides** — one full-range
+hunk (`unifiedDiff` with `context: Number.POSITIVE_INFINITY`) instead of the
+compact 3-line context — so the three tabs share one continuous line universe:
+unchanged text far from any change is present in every tab, and switching tabs
+keeps the same lines in view. The `<diff>` renderer paints only the hunk lines
+it receives and has no gap/ellipsis row, which is why the compact patch made
+each tab show a different subset. Compact hunks remain the default of
+`unifiedDiff` and for `/diff`, the permission prompt, the editor preview
+(`ctrl+d`) and tool output.
 
 ### 2.3 Editor
 

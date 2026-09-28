@@ -72,7 +72,12 @@ export function DiffPane(props: DiffPaneProps) {
   const review = () => props.review !== false
   const comparisons = createMemo(() => comparisonsOf(props.threeWay, review()))
   const current = () => comparisons()[Math.min(tab(), comparisons().length - 1)]!
-  const patch = createMemo(() => unifiedDiff(current().left, current().right, { from: current().from, to: current().to }))
+  // Each tab shows both sides in full, so every tab shares one continuous line
+  // universe and no unchanged text is missing. Compact hunks (the default)
+  // stay for the tab counters and every non-review caller.
+  const patch = createMemo(() =>
+    unifiedDiff(current().left, current().right, { from: current().from, to: current().to }, { context: Number.POSITIVE_INFINITY }),
+  )
   const view = () => ((split() ?? dimensions().width >= 120) ? "split" : "unified")
 
   // e edits a merge of the upstream change onto yours, not yours alone.

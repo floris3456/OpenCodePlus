@@ -12,11 +12,19 @@ export interface DiffRange {
   readonly to: string
 }
 
-export function unifiedDiff(original: string, modified: string, range: DiffRange): string {
+export interface UnifiedDiffOptions {
+  /**
+   * Context lines kept around each change. `Number.POSITIVE_INFINITY` keeps
+   * every line in one hunk; the default is the compact 3 used by patches.
+   */
+  readonly context?: number
+}
+
+export function unifiedDiff(original: string, modified: string, range: DiffRange, options?: UnifiedDiffOptions): string {
   const left = linesOf(original)
   const right = linesOf(modified)
   const ops = script(left, right)
-  const hunks = hunksOf(ops)
+  const hunks = hunksOf(ops, options?.context ?? 3)
   if (hunks.length === 0) return ""
   const out = [`--- ${range.from}`, `+++ ${range.to}`]
   for (const hunk of hunks) out.push(...renderHunk(left, right, ops, hunk))
@@ -197,9 +205,7 @@ interface Hunk {
   readonly end: number
 }
 
-const context = 3
-
-function hunksOf(ops: readonly Edit[]): Hunk[] {
+function hunksOf(ops: readonly Edit[], context: number): Hunk[] {
   const changed = ops.map((op, index) => (op.op === "keep" ? -1 : index)).filter((index) => index >= 0)
   if (changed.length === 0) return []
   const hunks: Hunk[] = []

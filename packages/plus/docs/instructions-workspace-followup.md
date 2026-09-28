@@ -1,9 +1,10 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **planned, not implemented**. This document is the implementation-ready
-plan for the follow-up work approved by the human owner of the `/instructions`
-screen. It is a documentation artifact only; no source or test changes are part
-of this commit.
+Status: **Stage A (diff completeness) implemented**; Stages B–F remain
+planned. This document is the implementation-ready plan for the follow-up work
+approved by the human owner of the `/instructions` screen. See
+"§16 Implementation status" for what shipped; the diagnostic material in §8
+is kept as written.
 
 - Worktree: `worktrees/r4-8/opencode` (branch `r4-8`, base `04dfd7934`).
 - Product area: `@opencode/plus` TUI (`/instructions` workspace) plus the
@@ -690,3 +691,68 @@ All work described here is performed in this worktree on branch `r4-8` with
 local commits only. Nothing is pushed, rebased, force-updated, tagged or
 promoted; no candidate is activated. Release remains a separate, authorized
 workflow.
+
+## 16. Implementation status
+
+### Stage A — diff completeness (done, 2026-09-28)
+
+Commit: `fix(plus): render complete instruction diffs` (local, branch `r4-8`).
+
+Shipped exactly as §8.4 specifies:
+
+- `src/instructions/diff-lines.ts`: `unifiedDiff(original, modified, range,
+  options?)` with `UnifiedDiffOptions { context?: number }`; `hunksOf` takes the
+  context as a parameter. The default is 3, so every existing caller
+  (`tools.ts`, `editor-pane.tsx`, the `patchCounts` tab counters) keeps the
+  compact patch unchanged.
+- `src/tui/instructions/diff-pane.tsx`: the `patch()` memo passes
+  `{ context: Number.POSITIVE_INFINITY }`; this is the only caller that does.
+  The three comparisons (and the read-only `c` compare) therefore emit one
+  full-range hunk with continuous per-side line numbers. No scroll, tab, `v`,
+  `k`/`t`/`e` or merge3 behaviour changed; the scroll offset stays on the
+  scrollbox and survives a tab switch because the diff renderable is updated in
+  place.
+- No large-text cap and no changes-only toggle (still Deferred).
+
+Tests (all focused, from `packages/plus`):
+
+- `test/diff-lines.test.ts` — compact default preserved (two hunks, distant
+  lines elided, explicit `context: 3` identical to default); complete context
+  is one `@@ -1,120 +1,120 @@` hunk containing every line of both sides;
+  empty↔text and text↔empty counts; insertions at the start and end; missing
+  final newline; content lines that look like `@@`/`---`/`+++`/`=======`.
+- `test/instructions-diff-complete.test.tsx` — the §8.1 reproduction
+  (120 lines, `mine` changes 11 and 40–90, `upstream` line 100) rendered by the
+  real `DiffPane` and the real `<diff>` renderable:
+  - each of the three comparisons, scrolled top to bottom, shows every line of
+    both of its sides (including distant `line060`) and reaches `line001` /
+    `line120`;
+  - switching comparisons at one scroll offset keeps `line060` visible;
+  - the same completeness in narrow unified (100×30), where `v` still toggles
+    split/unified;
+  - a >300-char line wraps in narrow with its tail visible;
+  - no-final-newline text shows its last line without a phantom line;
+  - literal `<<<<<<< yours` / `=======` / `>>>>>>> upstream` content renders
+    completely in all comparisons;
+  - a complete patch with marker-like content mounts in a raw `<diff>` with no
+    `Error parsing diff` and every line present.
+  - Pre-fix control: the completeness assertions were run against the reverted
+    source and failed there (missing distant lines, unreachable `line060`, raw
+    patch missing most lines); the no-final-newline and long-line cases pass
+    both before and after, as regression guards.
+
+Focused matrix after the change: the two files above plus
+`test/instructions-diff-split.test.tsx`, `test/instructions-panes.test.tsx`,
+`test/workspace-route.test.tsx`, `test/instructions-escape.test.tsx` and
+`test/route.test.tsx` — 143 pass / 0 fail (2 pre-existing skips in
+`route.test.tsx`); `bun run typecheck` in `packages/plus` and
+`/home/bliss/OpenCodePlus/bin/bun run check` at the repository root clean.
+
+Docs updated for the fix: `SPEC.md` "Review (§3.6)" and
+`docs/instructions-redesign.md` (implementation-status bullet and §2.2).
+
+### Stages B–F
+
+Not started. G1 (levels), G2–G3 (panels/resize), G4 (bulk expansion), G5
+(help), Stage E integration and Stage F lab acceptance remain per §3–§7, §10,
+§12.
