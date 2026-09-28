@@ -122,7 +122,6 @@ control IDs and validation live in
 
 | Prefix | Meaning | Source |
 | --- | --- | --- |
-| `project.disabled:` | Plus is not active for the directory | `packages/plus/src/tools.ts:400`, `packages/plus/src/tools.ts:410` |
 | `row.unknown:` | No tree row matches the id | `packages/plus/src/tools.ts:425` |
 | `agent.protected:` | The addressed row belongs to a protected agent, or a delete cascade would drop such a row | `packages/plus/src/tools.ts:429`, `packages/plus/src/index.ts:2420` |
 | `delete.unconfirmed:` | `delete` was called without `confirm:true` | `packages/plus/src/tools.ts:369` |
@@ -643,9 +642,7 @@ model and rule write (`packages/plus/src/rpc.ts:406`,
 base, instruction and MCP writes, plus `team.setEnabled` and `team.runs.stop`,
 carry no `actor` (`packages/plus/src/rpc.ts:438`–
 `packages/plus/src/rpc.ts:502`, `packages/plus/src/rpc.ts:510`,
-`packages/plus/src/rpc.ts:632`); the `Empty`-input `project.enable` and
-`project.disable` toggles take no input object at all
-(`packages/plus/src/index.ts:1763`, `packages/plus/src/index.ts:1777`). A write
+`packages/plus/src/rpc.ts:632`). A write
 input without an `actor` cannot carry a tool actor over the RPC: where the
 handler takes an actor the boundary normalises it to `{ type: "tui" }`
 (`packages/plus/src/index.ts:2661`), so no tool-actor attribution and no
@@ -656,44 +653,40 @@ accepts an optional `actor` on every write
 
 | Method | Input → output | Declared errors | Definition |
 | --- | --- | --- | --- |
-| `project.status` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1101` |
-| `project.enable` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1105` |
-| `project.disable` | `Empty` → `PortableStatus` | — | `packages/plus/src/rpc.ts:1109` |
-| `instructions.snapshot` | `Empty` → `PortableSnapshot` | `project.disabled` | `packages/plus/src/rpc.ts:1113` |
-| `instructions.refresh` | `Empty` → `PortableSnapshot` | `project.disabled` | `packages/plus/src/rpc.ts:1120` |
-| `instructions.mutate` | `PortableMutateInput` → `PortableMutateResult` | `project.disabled`, `agent.protected` | `packages/plus/src/rpc.ts:1127` |
-| `instructions.log` | `PortableLogInput` → `PortableLogOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1135` |
-| `instructions.assembled` | `PortableAssembledInput` → `PortableAssembled` | `project.disabled`, `agent.unknown` | `packages/plus/src/rpc.ts:1142` |
-| `agent.create` | `PortableCreateAgentInput` → `PortableAgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1150` |
-| `agent.rename` | `PortableRenameAgentInput` → `PortableRenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1160` |
-| `agent.delete` | `PortableDeleteAgentInput` → `PortableAgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1171` |
-| `skill.create` | `PortableCreateSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1181` |
-| `skill.import` | `PortableImportSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1190` |
-| `skill.delete` | `PortableDeleteSkillInput` → `PortableSkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` | `packages/plus/src/rpc.ts:1199` |
-| `base.create` | `PortableCreateBaseInput` → `PortableBaseRef` | `project.disabled`, `base.exists`, `base.invalid` | `packages/plus/src/rpc.ts:1208` |
-| `base.delete` | `PortableDeleteBaseInput` → `PortableBaseRef` | `project.disabled`, `base.missing`, `base.invalid` | `packages/plus/src/rpc.ts:1217` |
-| `instruction.create` | `PortableCreateInstructionInput` → `PortableInstructionRef` | `project.disabled`, `instruction.exists`, `instruction.invalid` | `packages/plus/src/rpc.ts:1226` |
-| `instruction.delete` | `PortableDeleteInstructionInput` → `PortableInstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` | `packages/plus/src/rpc.ts:1235` |
-| `mcp.add` | `PortableAddMcpInput` → `PortableMcpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` | `packages/plus/src/rpc.ts:1244` |
-| `mcp.remove` | `PortableMcpRef` → `PortableMcpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` | `packages/plus/src/rpc.ts:1253` |
-| `team.create` | `PortableCreateTeamInput` → `PortableTeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` | `packages/plus/src/rpc.ts:1262` |
-| `team.setEnabled` | `PortableSetTeamEnabledInput` → `PortableTeamRef` | `project.disabled`, `team.unknown`, `team.invalid` | `packages/plus/src/rpc.ts:1273` |
-| `team.addAgent` | `PortableTeamAddAgentInput` → `PortableAgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1282` |
-| `team.removeAgent` | `PortableTeamRemoveAgentInput` → `PortableAgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1294` |
-| `team.delete` | `PortableDeleteTeamInput` → `PortableDeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1305` |
-| `team.list` | `Empty` → `PortableTeamListOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1315` |
+| `instructions.snapshot` | `Empty` → `PortableSnapshot` | `packages/plus/src/rpc.ts:1113` |
+| `instructions.refresh` | `Empty` → `PortableSnapshot` | `packages/plus/src/rpc.ts:1120` |
+| `instructions.mutate` | `PortableMutateInput` → `PortableMutateResult` | `agent.protected` | `packages/plus/src/rpc.ts:1127` |
+| `instructions.log` | `PortableLogInput` → `PortableLogOutput` | `packages/plus/src/rpc.ts:1135` |
+| `instructions.assembled` | `PortableAssembledInput` → `PortableAssembled` | `agent.unknown` | `packages/plus/src/rpc.ts:1142` |
+| `agent.create` | `PortableCreateAgentInput` → `PortableAgentRef` | `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1150` |
+| `agent.rename` | `PortableRenameAgentInput` → `PortableRenameAgentResult` | `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1160` |
+| `agent.delete` | `PortableDeleteAgentInput` → `PortableAgentRef` | `agent.missing`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1171` |
+| `skill.create` | `PortableCreateSkillInput` → `PortableSkillRef` | `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1181` |
+| `skill.import` | `PortableImportSkillInput` → `PortableSkillRef` | `skill.exists`, `skill.invalid` | `packages/plus/src/rpc.ts:1190` |
+| `skill.delete` | `PortableDeleteSkillInput` → `PortableSkillRef` | `skill.missing`, `skill.invalid` | `packages/plus/src/rpc.ts:1199` |
+| `base.create` | `PortableCreateBaseInput` → `PortableBaseRef` | `base.exists`, `base.invalid` | `packages/plus/src/rpc.ts:1208` |
+| `base.delete` | `PortableDeleteBaseInput` → `PortableBaseRef` | `base.missing`, `base.invalid` | `packages/plus/src/rpc.ts:1217` |
+| `instruction.create` | `PortableCreateInstructionInput` → `PortableInstructionRef` | `instruction.exists`, `instruction.invalid` | `packages/plus/src/rpc.ts:1226` |
+| `instruction.delete` | `PortableDeleteInstructionInput` → `PortableInstructionRef` | `instruction.missing`, `instruction.invalid` | `packages/plus/src/rpc.ts:1235` |
+| `mcp.add` | `PortableAddMcpInput` → `PortableMcpRef` | `mcp.exists`, `mcp.invalid` | `packages/plus/src/rpc.ts:1244` |
+| `mcp.remove` | `PortableMcpRef` → `PortableMcpRef` | `mcp.missing`, `mcp.invalid` | `packages/plus/src/rpc.ts:1253` |
+| `team.create` | `PortableCreateTeamInput` → `PortableTeamRef` | `team.exists`, `team.invalid`, `team.create`, `agent.protected` | `packages/plus/src/rpc.ts:1262` |
+| `team.setEnabled` | `PortableSetTeamEnabledInput` → `PortableTeamRef` | `team.unknown`, `team.invalid` | `packages/plus/src/rpc.ts:1273` |
+| `team.addAgent` | `PortableTeamAddAgentInput` → `PortableAgentRef` | `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1282` |
+| `team.removeAgent` | `PortableTeamRemoveAgentInput` → `PortableAgentRef` | `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1294` |
+| `team.delete` | `PortableDeleteTeamInput` → `PortableDeleteTeamResult` | `team.unknown`, `team.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1305` |
+| `team.list` | `Empty` → `PortableTeamListOutput` | `packages/plus/src/rpc.ts:1315` |
 | `team.runs.list` | `PortableTeamRunsListInput` → `PortableTeamRunsListOutput` | — | `packages/plus/src/rpc.ts:1322` |
 | `team.runs.stop` | `PortableTeamRunsStopInput` → `PortableTeamRunsStopOutput` | `E_BUSY`, `run.unknown` | `packages/plus/src/rpc.ts:1327` |
-| `model.add` | `PortableModelAddInput` → `PortableModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1335` |
-| `model.remove` | `PortableModelRemoveInput` → `PortableModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1345` |
-| `catalog.models` | `Empty` → `PortableCatalogModelsOutput` | `project.disabled` | `packages/plus/src/rpc.ts:1355` |
-| `rule.add` | `PortableRuleAddInput` → `PortableRuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1362` |
-| `rule.remove` | `PortableRuleRemoveInput` → `PortableRuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1372` |
-| `rule.update` | `PortableRuleUpdateInput` → `PortableRuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1382` |
+| `model.add` | `PortableModelAddInput` → `PortableModelRef` | `model.exists`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1335` |
+| `model.remove` | `PortableModelRemoveInput` → `PortableModelRef` | `model.missing`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1345` |
+| `catalog.models` | `Empty` → `PortableCatalogModelsOutput` | `packages/plus/src/rpc.ts:1355` |
+| `rule.add` | `PortableRuleAddInput` → `PortableRuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1362` |
+| `rule.remove` | `PortableRuleRemoveInput` → `PortableRuleRef` | `rule.missing`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1372` |
+| `rule.update` | `PortableRuleUpdateInput` → `PortableRuleRef` | `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1382` |
 
-Events: `project.changed` (`packages/plus/src/rpc.ts:1393`),
-`instructions.changed` (`packages/plus/src/rpc.ts:1396`) and `teams.changed`
-(`packages/plus/src/rpc.ts:1399`).
+Events: `instructions.changed` and `teams.changed`
+(`packages/plus/src/rpc.ts`).
 
 `team.list` returns teams, not runs (`packages/plus/src/rpc.ts:1315`); the
 agent-facing `team_list` tool lists runs visible to the caller's role (§5.2).

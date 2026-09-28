@@ -80,7 +80,7 @@ Agent settings use \`item:<level>:<owner>:setting:<field>\`: \`enabled\` and \`h
 
 Compaction rows are \`compaction:strategy\`, \`compaction:model\`, and \`compaction:instructions\`, all accepting \`text\`. Strategy is auto/local/remote. Auto follows the active model's policy; local uses the per-agent model (provider/model#variant), otherwise a configured maintenance compaction model, otherwise the active session model. Instructions inherit the maintenance compaction agent unless overridden; empty instructions explicitly clear the prompt, while Reset resumes inheritance. Remote uses provider capabilities and ignores local model/instruction values without discarding them; unsupported remote compaction fails explicitly. All scopes and agent/member presets support these rows. Filter with \`item:compaction\`.
 
-Permission rules are live: turning a rule \`off\` installs core deny rules \`{ action, resource, effect: "deny" }\` for that agent only (appended; core evaluates last-match-wins) and scrubs matching lines from tool descriptions, system parts, the base part, and catalog descriptions. \`show\` on a perm row previews the scrub and displays any refusal \`message\`. \`create({ kind:"rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds a custom rule — \`level\` defaults to \`project\`, and a rule with no \`agent\` is shared: it displays as the canonical Defaults row \`item:defaults::perm:<tool>:<id>\` without changing where it is stored; \`delete({ id, confirm:true })\` removes only user-created rules. \`set({ id, message })\` updates the refusal message shown to the model. An agent may change its own rules; only \`protectedAgents\` (enforced again at the shared API boundary when the actor is a tool), \`confirm:true\`, and project mode guard writes.
+Permission rules are live: turning a rule \`off\` installs core deny rules \`{ action, resource, effect: "deny" }\` for that agent only (appended; core evaluates last-match-wins) and scrubs matching lines from tool descriptions, system parts, the base part, and catalog descriptions. \`show\` on a perm row previews the scrub and displays any refusal \`message\`. \`create({ kind:"rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds a custom rule — \`level\` defaults to \`project\`, and a rule with no \`agent\` is shared: it displays as the canonical Defaults row \`item:defaults::perm:<tool>:<id>\` without changing where it is stored; \`delete({ id, confirm:true })\` removes only user-created rules. \`set({ id, message })\` updates the refusal message shown to the model. An agent may change its own rules; only \`protectedAgents\` (enforced again at the shared API boundary when the actor is a tool) and \`confirm:true\` refuse a write.
 
 Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` spans any run (including empty and spaces), \`?\` matches exactly one character. For shell the resource is the parsed command text, so \`git *\` also matches a bare \`git\` (core rewrites a trailing " *" into an optional group). For file tools the resource is the file path (\`*.env*\`, \`**/.git/**\`); for webfetch the URL (\`*github.com*\`); for subagent/skill the exact agent/skill id. Keywords derive from the pattern (head plus subcommands, stopping at wildcards/flags: \`"git push *"\` scrubs lines mentioning "git push", not every "git" line).
 
@@ -117,7 +117,6 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 
 - Only tool-actor writes are refused for agents listed in \`.opencodeplus/project.json\` \`protectedAgents\`; the refusal is enforced at the shared API boundary, not only in the tool wrapper, and \`instructions.mutate\` with a caller-supplied actor gets the same rule. TUI writes are unaffected.
 - \`delete\` needs \`confirm: true\`.
-- Project mode has no enable/disable tool.
 - Every successful write is logged with actor \`tool\`.
 
 | error | meaning |
@@ -128,7 +127,6 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 | \`delete.unconfirmed\` | retry with \`confirm: true\` |
 | \`view.unsupported\` | that view needs another id kind (\`assembled\` needs an agent row) |
 | \`agent.unknown\` | no agent has that id; \`list\` again for the current id |
-| \`project.disabled\` | project mode is off and no tool changes that |
 | \`preset.invalid\` | no preset answers to that name, or it is the wrong kind (an agent takes an agent or member preset, a team a team preset) |
 | \`preset.exists\` | a preset of that kind already has that id |
 | \`preset.readonly\` | OpenCode and Plus presets are not changed or deleted; create a User preset from one |

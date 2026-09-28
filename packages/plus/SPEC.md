@@ -1015,46 +1015,39 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 
 | Method | Input | Output | Errors |
 | --- | --- | --- | --- |
-| `project.status` | `void` | `Status` | — |
-| `project.enable` | `void` | `Status` | — |
-| `project.disable` | `void` | `Status` | — |
-| `instructions.snapshot` | `void` | `Snapshot` | `project.disabled` |
-| `instructions.refresh` | `void` | `Snapshot` | `project.disabled` |
-| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `project.disabled`, `agent.protected` |
-| `instructions.assembled` | `{ agent }` | `Assembled` | `project.disabled`, `agent.unknown` |
-| `agent.create` | `{ scope, id, preset?: PresetRef, actor? }` | `AgentRef` | `project.disabled`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid` |
-| `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `project.disabled`, `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
-| `agent.delete` | `{ scope, id, actor? }` | `AgentRef` | `project.disabled`, `agent.missing`, `agent.invalid`, `agent.protected` |
-| `skill.create` | `{ name, body }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
-| `skill.import` | `{ path }` | `SkillRef` | `project.disabled`, `skill.exists`, `skill.invalid` |
-| `skill.delete` | `{ id }` | `SkillRef` | `project.disabled`, `skill.missing`, `skill.invalid` |
-| `base.create` | `{ id, title, text }` | `BaseRef` | `project.disabled`, `base.exists`, `base.invalid` |
-| `base.delete` | `{ id }` | `BaseRef` | `project.disabled`, `base.missing`, `base.invalid` |
-| `instruction.create` | `{ name, text }` | `InstructionRef` | `project.disabled`, `instruction.exists`, `instruction.invalid` |
-| `instruction.delete` | `{ name }` | `InstructionRef` | `project.disabled`, `instruction.missing`, `instruction.invalid` |
-| `mcp.add` | `{ name, config }` | `McpRef` | `project.disabled`, `mcp.exists`, `mcp.invalid` |
-| `mcp.remove` | `{ name }` | `McpRef` | `project.disabled`, `mcp.missing`, `mcp.invalid` |
-| `team.create` | `{ level, team, preset?: team preset id, actor? }` | `TeamRef` | `project.disabled`, `team.exists`, `team.invalid`, `team.create`, `agent.protected` |
-| `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `project.disabled`, `team.unknown`, `team.invalid` |
-| `team.addAgent` | `{ level, team, id, preset?: PresetRef, actor? }` | `AgentRef` (at defaults `path` is the entry's row id) | `project.disabled`, `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid`, `entry.invalid`, `entry.exists` |
-| `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
-| `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `project.disabled`, `team.unknown`, `team.invalid`, `agent.protected` |
-| `team.list` | `void` | `TeamListOutput` | `project.disabled` |
-| `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
+| `instructions.snapshot` | `void` | `Snapshot` | `instructions.refresh` | `void` | `Snapshot` | `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `agent.protected` |
+| `instructions.assembled` | `{ agent }` | `Assembled` | `agent.unknown` |
+| `agent.create` | `{ scope, id, preset?: PresetRef, actor? }` | `AgentRef` | `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid` |
+| `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `agent.delete` | `{ scope, id, actor? }` | `AgentRef` | `agent.missing`, `agent.invalid`, `agent.protected` |
+| `skill.create` | `{ name, body }` | `SkillRef` | `skill.exists`, `skill.invalid` |
+| `skill.import` | `{ path }` | `SkillRef` | `skill.exists`, `skill.invalid` |
+| `skill.delete` | `{ id }` | `SkillRef` | `skill.missing`, `skill.invalid` |
+| `base.create` | `{ id, title, text }` | `BaseRef` | `base.exists`, `base.invalid` |
+| `base.delete` | `{ id }` | `BaseRef` | `base.missing`, `base.invalid` |
+| `instruction.create` | `{ name, text }` | `InstructionRef` | `instruction.exists`, `instruction.invalid` |
+| `instruction.delete` | `{ name }` | `InstructionRef` | `instruction.missing`, `instruction.invalid` |
+| `mcp.add` | `{ name, config }` | `McpRef` | `mcp.exists`, `mcp.invalid` |
+| `mcp.remove` | `{ name }` | `McpRef` | `mcp.missing`, `mcp.invalid` |
+| `team.create` | `{ level, team, preset?: team preset id, actor? }` | `TeamRef` | `team.exists`, `team.invalid`, `team.create`, `agent.protected` |
+| `team.setEnabled` | `{ level, team, enabled }` | `TeamRef` | `team.unknown`, `team.invalid` |
+| `team.addAgent` | `{ level, team, id, preset?: PresetRef, actor? }` | `AgentRef` (at defaults `path` is the entry's row id) | `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid`, `entry.invalid`, `entry.exists` |
+| `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
+| `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `team.unknown`, `team.invalid`, `agent.protected` |
+| `team.list` | `void` | `TeamListOutput` | `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
 | `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `E_BUSY`, `run.unknown` |
-| `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.exists`, `model.invalid`, `agent.protected` |
-| `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `project.disabled`, `model.missing`, `model.invalid`, `agent.protected` |
-| `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `project.disabled` |
-| `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.exists`, `rule.invalid`, `agent.protected` |
-| `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `project.disabled`, `rule.missing`, `rule.invalid`, `agent.protected` |
-| `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `project.disabled`, `rule.invalid`, `agent.protected` |
-| `entry.create` | `{ catalogue, name, team?, preset?: PresetRef, actor? }` | `EntryRef` | `project.disabled`, `entry.invalid`, `entry.exists`, `preset.invalid` |
-| `entry.delete` | `{ catalogue, name?, team?, actor? }` | `EntryRef` (`removed`) | `project.disabled`, `entry.invalid`, `entry.missing` |
-| `entry.rename` | `{ catalogue, name, team?, to, actor? }` | `EntryRef` | `project.disabled`, `entry.invalid`, `entry.exists`, `entry.missing` |
-| `preset.create` | `{ kind: "agent", id, from?: PresetRef, actor? }` or `{ kind: "team", id, from?: team preset id, actor? }` | `PresetResult` | `project.disabled`, `preset.invalid`, `preset.exists` |
-| `preset.addMember` | `{ team, id, from?: PresetRef, actor? }` | `PresetResult` | `project.disabled`, `preset.invalid`, `preset.exists`, `preset.readonly` |
-| `preset.delete` | `{ ref: PresetRef, confirm?, actor? }` | `PresetResult` | `project.disabled`, `preset.invalid`, `preset.readonly`, `preset.inUse` |
-| `link.set` | `{ level, agent, team?, catalogue?, preset: PresetRef \| null, actor? }` | `LinkResult` | `project.disabled`, `link.invalid`, `link.cycle`, `preset.invalid`, `preset.readonly`, `agent.protected` |
+| `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.exists`, `model.invalid`, `agent.protected` |
+| `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.missing`, `model.invalid`, `agent.protected` |
+| `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
+| `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `rule.missing`, `rule.invalid`, `agent.protected` |
+| `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.invalid`, `agent.protected` |
+| `entry.create` | `{ catalogue, name, team?, preset?: PresetRef, actor? }` | `EntryRef` | `entry.invalid`, `entry.exists`, `preset.invalid` |
+| `entry.delete` | `{ catalogue, name?, team?, actor? }` | `EntryRef` (`removed`) | `entry.invalid`, `entry.missing` |
+| `entry.rename` | `{ catalogue, name, team?, to, actor? }` | `EntryRef` | `entry.invalid`, `entry.exists`, `entry.missing` |
+| `preset.create` | `{ kind: "agent", id, from?: PresetRef, actor? }` or `{ kind: "team", id, from?: team preset id, actor? }` | `PresetResult` | `preset.invalid`, `preset.exists` |
+| `preset.addMember` | `{ team, id, from?: PresetRef, actor? }` | `PresetResult` | `preset.invalid`, `preset.exists`, `preset.readonly` |
+| `preset.delete` | `{ ref: PresetRef, confirm?, actor? }` | `PresetResult` | `preset.invalid`, `preset.readonly`, `preset.inUse` |
+| `link.set` | `{ level, agent, team?, catalogue?, preset: PresetRef \| null, actor? }` | `LinkResult` | `link.invalid`, `link.cycle`, `preset.invalid`, `preset.readonly`, `agent.protected` |
 
 Presets, entries and links (DESIGN §4, §5, §7). `agent.create` and
 `team.addAgent` write the preset's `mode` and `description` (OpenCode presets:
@@ -1169,7 +1162,7 @@ refusal is unreachable over RPC; the `PlusApi` results for those three
 methods carry the `agent.protected` variant for the tool callers that do pass
 an actor.
 
-Events: `project.changed`, `instructions.changed`, `teams.changed`.
+Events: `instructions.changed`, `teams.changed`.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
@@ -1237,7 +1230,6 @@ export interface AssembledTool {
 
 ### Errors
 
-- `project.disabled`: `{ directory: string }`
 - `agent.exists`: `{ path: string }`
 - `agent.missing`: `{ path: string }`
 - `agent.invalid`: `{ id: string, reason: string }`
@@ -1403,7 +1395,7 @@ RPC surface (`rpc.ts`, `index.ts`):
   member (`agent.protected`); an omitted
   preset creates an empty team. Creation does NOT enable:
   the new team has no record, so the next snapshot lists it as DISABLED until
-  `team.setEnabled` toggles it. Gated by project mode (`project.disabled`).
+  `team.setEnabled` toggles it.
   Fails with `team.invalid` on invalid name, `team.exists` when the directory
   already exists, or `team.create` when the write itself fails. Logs `team.create`
   to the owning store with the caller's actor on success only; the file write
@@ -1413,7 +1405,7 @@ RPC surface (`rpc.ts`, `index.ts`):
   scope dialog; `group:defaults:teams` creates a team entry instead
   (§"TUI create, link and review").
 - `team.setEnabled` (`SetTeamEnabledInput` → `TeamRef`): toggles one team at
-  any of the three tiers. Gated by project mode (`project.disabled`). Fails
+  any of the three tiers. Fails
   with `team.invalid` on invalid name, or `team.unknown` when the team is not
   found (no directory on disk at that level for project/global, no built-in
   with that name for defaults). A defaults record routes to the global store.
@@ -1447,15 +1439,15 @@ RPC surface (`rpc.ts`, `index.ts`):
   An enabled team is first disabled (reusing `team.setEnabled false` logic so
   member agents unregister from the host and registrations dispose), then the
   team directory is removed recursively (`fs.rm`), and any `TeamRecord` for that
-  level and team is removed from the store. Fails with `project.disabled` when
-  project mode is disabled, `team.invalid` on invalid name or when directory
-  escapes the teams root, or `team.unknown` when the team directory is not found.
+  level and team is removed from the store. `team.invalid` on invalid name or
+  when directory escapes the teams root, or `team.unknown` when the team
+  directory is not found.
   Returns `{ level, team, removedMembers }`. Logs `team.delete` with the caller's actor.
 - `team.list` (`Empty` → `TeamListOutput`): returns `{ teams: [{ level, team, enabled, members: [{ id, mode }] }] }`.
   Cheap read of discovered teams and their enabled states without computing an instructions snapshot.
   Discovered teams are sorted by level then team name; members are sorted by id in discoverTeams order.
-- `team.runs.list` (`TeamRunsListInput` → `TeamRunsListOutput`): returns `{ runs: [{ id, role, state, task, head, worktree, lastUsed, sessionID, parent }] }` for this data root (`teamsDataDir()`), sorted by `lastUsed` descending. When `all` is false or omitted, hides superseded and reaped runs. Namespace-wide human read independent of project mode.
-- `team.runs.stop` (`TeamRunsStopInput` → `TeamRunsStopOutput`): stops any run in the namespace by ID without ownership checks (`idle` transitions to `stopping → stopped`, `dead` reconciles to `stopped`, `working` returns error `E_BUSY`, terminal runs like `superseded`/`reaped` remain preserved). Returns `{ run, state }`. Namespace-wide human operation independent of project mode.
+- `team.runs.list` (`TeamRunsListInput` → `TeamRunsListOutput`): returns `{ runs: [{ id, role, state, task, head, worktree, lastUsed, sessionID, parent }] }` for this data root (`teamsDataDir()`), sorted by `lastUsed` descending. When `all` is false or omitted, hides superseded and reaped runs. Namespace-wide human read independent of the project store.
+- `team.runs.stop` (`TeamRunsStopInput` → `TeamRunsStopOutput`): stops any run in the namespace by ID without ownership checks (`idle` transitions to `stopping → stopped`, `dead` reconciles to `stopped`, `working` returns error `E_BUSY`, terminal runs like `superseded`/`reaped` remain preserved). Returns `{ run, state }`. Namespace-wide human operation independent of the project store.
 
 Implemented: the `Teams` tree group beside `Agents` under the `Project`,
 `Global`, and `Defaults` roots (`tree.ts`), always present even when empty
@@ -1969,17 +1961,17 @@ the field, and `removed` is terminal for it.
   `worktree` only**, not a general lost-update fix; other fields written from a
   stale copy can still be overwritten.
 
-### Project mode resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
+### Project config resolution, worktrees and activation (`project.ts`, `teams/worktree.ts`, `teams/run.ts`, `index.ts`)
 
 - `project.read(directory)` resolves **upward**: it walks parent directories until it finds a
-  `.opencodeplus/project.json` or reaches the filesystem root, and the nearest config wins. A session
-  opened below an enabled checkout therefore reads the same project, and `project.status` reports
-  `enabled: true` for it. A config carrying `enabled: false` is an explicit opt-out: it stops the walk
-  and reports disabled, so a nested directory can leave an enabled ancestor's project. A directory with
-  no config anywhere in its ancestry stays disabled. `enable` returns the resolved config unchanged when
-  one already exists upward and otherwise writes `.opencodeplus/project.json` in the directory it was
-  given; `disable` writes the explicit marker there (the nearest resolved config with `enabled: false`)
-  instead of deleting a file the upward walk would immediately re-inherit.
+  `.opencodeplus/project.json` or reaches the filesystem root, and the nearest config wins. Every
+  directory therefore reads a config — the defaults when none exists. A legacy config carrying
+  `enabled: false` is not an opt-out: it is the nearest config and stops the walk like any other.
+  `project.ensure(directory)` writes `.opencodeplus/project.json` with the defaults **only** when no
+  config exists at or above the directory, so it never shadows an ancestor's `protectedAgents`. The
+  `.opencodeplus` directory appears only when a project-scoped write lands there: `store.save` when the
+  project store changes, a project log line (`appendForLevel`), or a project-level team create/add. An
+  empty project store is never written into a directory that has none.
 - `worktree.create` resolves the new directory to an absolute path, creates its parent chain before
   `git worktree add` runs, and returns the `realpath` of the created directory. A brand-new data root
   has no `worktrees/` yet: the first `delegate` must hand the host a directory that
@@ -1995,7 +1987,7 @@ the field, and `removed` is terminal for it.
   outside the parent's tree — so `activationDirectory(directory)` (`index.ts`) returns the recorded
   `projectDirectory` when `teams/run.ts` `byDirectory` finds the run that owns the Location, else the
   Location's own directory; `activate` and `refreshFromHost` both resolve through it, and
-  `project.read` then reads the parent's project config. `byDirectory` compares canonical paths, so a
+  `project.read` then reads the parent's config. `byDirectory` compares canonical paths, so a
   symlinked or relative data root still matches its run.
 - `delegate` writes the starting child run to disk **before** the host creates its session. Creating the
   session activates Plus in the new worktree, and the periodic sweep collects any worktree no run record
@@ -2003,19 +1995,18 @@ the field, and `removed` is terminal for it.
   worktree is removed before the host's `FileSystem.realPath` resolves it. The pre-registration makes
   the orphan scan claim the directory immediately, and activation resolves the run by directory because
   no session id exists yet; the session id is written on the same record once the host returns it.
-- Every `createPlusApi` handler (project guards, `snapshot`, `mutate`, `log`, `assembled`, and the
-  agent/skill/base/instruction/mcp/team/rule writes), `project.status`, `activate`, `refreshFromHost`,
+- Every `createPlusApi` handler (`snapshot`, `mutate`, `log`, `assembled`, and the
+  agent/skill/base/instruction/mcp/team/rule writes), `activate`, `refreshFromHost`,
   `publishFresh` (including its team discovery and team policy rows) and `applySessionModel` resolve
   their project directory through `activationDirectory`, so a child worktree's API sees and edits the
-  project its run recorded. `project.enable` and `project.disable` act on the Location's own directory,
-  never the inherited one.
+  project its run recorded.
 
 ## §11 Tools, log, and query
 
 Agent-facing Code Mode namespace `instructions` (`teaching.ts` pins the
-user-visible contract). All tools require project mode (`project.disabled`
-otherwise); no tool enables or disables project mode. Every successful write
-is logged with actor `tool`.
+user-visible contract). All tools work in every directory; a project-scoped
+write creates `.opencodeplus` on demand and no tool toggles project state. Every
+successful write is logged with actor `tool`.
 
 ### Tool surface
 
@@ -2712,7 +2703,6 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 | `delete.unconfirmed` | retry with `confirm: true` |
 | `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; OpenCode applies AGENTS.md files |
 | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
-| `project.disabled` | project mode is off and no tool changes that |
 
 ## Search MCP server (`src/search/mcp.ts`, `src/search/bin.ts`, `src/search/register.ts`)
 

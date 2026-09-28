@@ -1,6 +1,6 @@
 # @opencode/plus
 
-An OpenCode V2 plugin adding an opt-in per-directory "Project mode" plus an Instructions screen for viewing and customizing what each agent sees: tools, base prompts, skills, and system instructions. The server plugin (`src/index.ts`, RPC id `opencode.plus`) discovers inventory, persists customizations across two stores, and applies them through the public plugin API; the TUI plugin (`src/tui`) renders the tree, detail, diff, and splitter panes.
+An OpenCode V2 plugin adding an Instructions screen for viewing and customizing what each agent sees: tools, base prompts, skills, and system instructions. Plus is active in every directory; project-scoped customizations come from the nearest `.opencodeplus/project.json` upward. The server plugin (`src/index.ts`, RPC id `opencode.plus`) discovers inventory, persists customizations across two stores, and applies them through the public plugin API; the TUI plugin (`src/tui`) renders the tree, detail, diff, and splitter panes.
 
 ## Running it
 
@@ -140,7 +140,7 @@ Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl
 
 Teams: project teams in `<project>/.opencodeplus/teams/<team>/<id>.md`, global teams in `<configDir>/opencodeplus/teams/<team>/<id>.md`, Defaults overlay in `<configDir>/opencodeplus/teams-defaults/<team>/<id>.md` (same-id overlay files replace built-in members, new ids append; still `level: "defaults"`).
 
-RPC (`src/rpc.ts`, id `opencode.plus`): `project.status/enable/disable`, `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/list`, `team.runs.list/stop` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier with optional `template` and optional `fields` overriding template defaults, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `project.changed`, `instructions.changed`, `teams.changed`. The binding contract is `SPEC.md`.
+RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/list`, `team.runs.list/stop` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier with optional `template` and optional `fields` overriding template defaults, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `instructions.changed`, `teams.changed`. The binding contract is `SPEC.md`.
 
 ## Team tab
 
@@ -154,7 +154,7 @@ Arrow-down in the composer switches to the `Team` tab, which lists runs in the c
 
 ## Tools
 
-Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` pins the contract, `instructions-tools` skill carries the details). Agents call `tools.instructions.list({...})` inside `execute`, never as native tools. The tools exist only while project mode is enabled (`project.disabled` otherwise), and no tool enables or disables project mode.
+Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` pins the contract, `instructions-tools` skill carries the details). Agents call `tools.instructions.list({...})` inside `execute`, never as native tools. The tools exist in every directory; a project-scoped write creates `.opencodeplus` on demand and no tool toggles it.
 
 | tool | input |
 | --- | --- |
@@ -187,7 +187,7 @@ Row ids name one row everywhere: the TUI filter, tool calls, log targets, and er
 
 `<level>` is `project`, `global`, or `defaults`.
 
-Guards: a write whose actor is a tool cannot change a row belonging to an agent listed in `.opencodeplus/project.json` `protectedAgents` — through the tools, the RPC, or `instructions.mutate` — and fails with `agent.protected`; the TUI writes those rows normally. The guard covers the item-record cascade as well: deleting a rule, skill, base template or MCP server as a tool actor is refused when any protected agent holds a customization or split for that item, and the refusal is decided before anything is written. `delete` needs `confirm: true`; no tool enables or disables project mode; every successful write is logged with actor `tool`.
+Guards: a write whose actor is a tool cannot change a row belonging to an agent listed in `.opencodeplus/project.json` `protectedAgents` — through the tools, the RPC, or `instructions.mutate` — and fails with `agent.protected`; the TUI writes those rows normally. The guard covers the item-record cascade as well: deleting a rule, skill, base template or MCP server as a tool actor is refused when any protected agent holds a customization or split for that item, and the refusal is decided before anything is written. `delete` needs `confirm: true`; every successful write is logged with actor `tool`.
 
 Log format is `Plus.LogEntry` (`src/rpc.ts`): `{ ts, actor: { type: tui|tool, agent?, sessionID?, messageID? }, op, target, summary, revision }`. Project writes append to `<project>/.opencodeplus/instructions/log.jsonl`, global/defaults writes to `<configDir>/opencodeplus/instructions/log.jsonl`. The log's own `where` grammar is small: a bare word matches over op, target, summary, and actor agent; keyed tokens are `actor:tui|tool`, `agent:<text>`, `op:<text>`, `target:<prefix>`, `session:<text>`, `since:<instant>` / `before:<instant>` (ISO date or `<n><s|m|h|d|w>` age).
 
@@ -292,8 +292,7 @@ member of an enabled team gets a `team.*` wildcard deny, so it sees no
 
 ## Team runs
 
-Team tools live in `src/teams` and are registered for every Plus instance, with
-or without project mode. The namespace holds fourteen tools that all work —
+Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds fourteen tools that all work —
 `delegate`, `finish`, `followup`, `integrate`, `checkpoint`, `set_checks`,
 `supersede`, `stop`, `status`, `wait`, `get_context`, `diff`, `list` and
 `check`. Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
@@ -407,20 +406,21 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
     state is a FIFO queue keyed by `(sessionID, messageID, CallID)`, each call claims its own entry,
     and the reply observer writes the line for the invocation its request named — so a sibling that
     completes first cannot consume a pending call's refusal line.
-- Project mode resolves **upward**: `project.read(directory)` walks parent directories to the nearest
-  `.opencodeplus/project.json`, so any session below an enabled checkout reads the same project. A
-  config carrying `enabled: false` is an explicit opt-out: it stops the walk and reports disabled.
-  `project.disable` writes that marker in the directory it is given instead of deleting the file, so a
-  nested directory can leave an enabled ancestor's project; `project.enable` replaces the marker.
+- Project customizations resolve **upward**: `project.read(directory)` walks parent directories to the
+  nearest `.opencodeplus/project.json` and answers the defaults when there is none, so every session is
+  always active. A legacy config carrying `enabled: false` is just the nearest config: it stops the walk
+  and supplies whatever it holds. `project.ensure` writes the defaults only when no config exists at or
+  above the directory, so an inherited `protectedAgents` is never shadowed by a child write. The
+  `.opencodeplus` directory itself appears only when a project-scoped write happens there: a project
+  store change, a project log line, or a project-level team create/add.
 - Team worktrees are not Plus projects: `team_delegate` writes no `.opencodeplus/project.json` into a
   child worktree, and removal is a plain `git worktree remove`. The child's run records the parent's
   project directory as `projectDirectory` **before the host creates the session**, and Plus activation
-  for the child session resolves project mode through that directory (the worktree itself sits outside
+  for the child session resolves the project through that directory (the worktree itself sits outside
   the parent's tree). Registering the starting run first also keeps the periodic GC from collecting the
-  new worktree as an orphan in the window before the record would otherwise be written, and the RPC
-  project guards, `snapshot`, `mutate` and `project.status` resolve the same directory as activation, so
-  a child chat sees and edits the project it inherited. `project.enable`/`project.disable` still act on
-  the Location's own directory.
+  new worktree as an orphan in the window before the record would otherwise be written, and `snapshot`,
+  `mutate` and the other RPC methods resolve the same directory as activation, so a child chat sees and
+  edits the project it inherited.
 - `worktree.create` returns the canonical directory and creates its parent chain before `git worktree
   add`, so the first delegate in a brand-new data root hands the host a directory it can `realpath`.
 
@@ -469,11 +469,11 @@ Only what is provably impossible, with what was tried:
 
 ## Shortcut
 
-- `ctrl+x p` (`<leader>p`) toggles project mode after displaying a confirmation dialog.
+- `ctrl+x p` (`<leader>p`) opens the Instructions screen (the `plus.instructions.open` command).
 - Commands live in the `Project` group and are reachable from the command palette:
-  - `plus.project.toggle` ("Toggle project mode"): prompts for confirmation and enables or disables project mode for the current directory.
-  - `plus.project.status` ("Show project mode status"): shows a toast with the active project mode directory (enabled only when project mode is active).
-  - `plus.instructions.open` ("Instructions", slash `/instructions`): opens the Instructions screen (enabled only when project mode is active).
+  - `plus.instructions.open` ("Instructions", `<leader>p`, slash `/instructions`): opens the Instructions screen; pressed while it is already open it is a no-op.
+  - `plus.agent.create` / `plus.agent.rename` / `plus.agent.delete`: agent file actions.
+  - `plus.team.select`: opens the agent picker filtered to teams.
 
 ## Development notes
 
