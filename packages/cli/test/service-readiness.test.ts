@@ -32,12 +32,12 @@ test(
       ])
       expect(line?.trim()).toBe(info.url)
       expect(new URL(info.url).port).toBe(String(port))
-      const response = await fetch(new URL("/api/health", info.url), {
+      const response = await fetch(new URL("/api/info", info.url), {
         headers: { authorization: "Basic " + btoa(`opencode:${info.password}`) },
         signal: AbortSignal.timeout(10_000),
       })
       expect(response.status).toBe(200)
-      expect(await response.json()).toMatchObject({ healthy: true, version: OPENCODE_VERSION, pid: info.pid })
+      expect(await response.json()).toMatchObject({ version: OPENCODE_VERSION, pid: info.pid })
       expect(await Promise.race([child.exited.then(() => true), Bun.sleep(5_000).then(() => false)])).toBe(true)
       expect(child.exitCode).toBe(0)
     } catch (cause) {

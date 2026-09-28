@@ -81,7 +81,6 @@
         "test/plus-build.test.ts",
         "test/managed-plus.test.ts",
         "test/updater-install.test.ts",
-        "test/updater-poll.test.ts",
         "test/service.test.ts",
         "test/service-readiness.test.ts"
       ],

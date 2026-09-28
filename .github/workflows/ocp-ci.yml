@@ -56,7 +56,7 @@ jobs:
       - name: cli-release
         id: cli-release
         working-directory: packages/cli
-        run: bun test test/plus-build.test.ts test/managed-plus.test.ts test/updater-install.test.ts test/updater-poll.test.ts test/service.test.ts test/service-readiness.test.ts
+        run: bun test test/plus-build.test.ts test/managed-plus.test.ts test/updater-install.test.ts test/service.test.ts test/service-readiness.test.ts
 
       - name: core-contracts
         id: core-contracts

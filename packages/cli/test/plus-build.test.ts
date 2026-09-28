@@ -137,11 +137,11 @@ describe("plus build configuration", () => {
 
   test("upstream build configuration is unchanged", () => {
     const config = resolveBuildConfig()
-    expect(config.binary).toBe("opencode2")
+    expect(config.binary).toBe("opencode")
     expect(config.channel).toBe(Script.channel)
     expect(config.version).toBe(Script.version)
     expect(config.entrypoints).toEqual(["./src/index.ts"])
-    expect(config.define.OPENCODE_CLI_NAME).toBe(JSON.stringify("opencode2"))
+    expect(config.define.OPENCODE_CLI_NAME).toBe(JSON.stringify("opencode"))
     expect(config.define.OPENCODE_CHANNEL).toBe(JSON.stringify(Script.channel))
     expect(config.define.OPENCODE_VERSION).toBe(JSON.stringify(Script.version))
     expect(config.define.OPENCODE_PRODUCT).toBe(JSON.stringify(null))

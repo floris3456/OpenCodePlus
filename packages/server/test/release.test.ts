@@ -461,10 +461,10 @@ it.live("every route on this surface is fenced by the real authorization middlew
     const authorized = yield* read(server, "rel_req_1")
     expect(authorized.status).toBe(404)
 
-    const refused = yield* Effect.promise(() => fetch(new URL("/api/server", server.base)))
+    const refused = yield* Effect.promise(() => fetch(new URL("/api/info", server.base)))
     expect(refused.status).toBe(401)
 
-    const allowed = yield* Effect.promise(() => fetch(new URL("/api/server", server.base), { headers: server.headers }))
+    const allowed = yield* Effect.promise(() => fetch(new URL("/api/info", server.base), { headers: server.headers }))
     expect(allowed.status).toBe(200)
   }),
 )
