@@ -24,7 +24,7 @@ import type { AgentSource, CustomizationRecord, EntryRecord, Item, Level, LinkRe
 import { chainContext } from "../src/instructions/presets.js"
 import { query } from "../src/instructions/query.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
+import { agentHarness, modelHarness, context, modelInfo, modelRef, promptHarness, skillHarness } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 // Plus cannot depend on @opencode/core (core depends on Plus), so this
 // regression reads core's own template sources and renderer by path. That
@@ -92,7 +92,7 @@ function skillInfo(id: string, content: string): Skill.Info {
   return Skill.Info.make({
     id: Skill.ID.make(id),
     name: Skill.Name.make(id),
-    location: AbsolutePath.make(`/skills/${id}.md`),
+    path: AbsolutePath.make(`/skills/${id}.md`),
     content,
   })
 }
@@ -157,6 +157,7 @@ function toolDomainFor(tools: readonly (Tool.Info & { readonly id: string })[]) 
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,
+    list: () => Effect.succeed(live),
     hook: () => Effect.die("unused tool.hook"),
   }
 }
@@ -481,7 +482,7 @@ test("only the active base template is applied", async () => {
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -519,7 +520,7 @@ test("a stored base edit for a non-active template leaves system[0] alone", asyn
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -554,7 +555,7 @@ test("a non-obvious model id takes the host classification, not a provider guess
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "trinity-ultra": "trinity" }),
-    catalog: catalogHarness([modelInfo("acme", "trinity-ultra")]),
+    model: modelHarness([modelInfo("acme", "trinity-ultra")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -583,7 +584,7 @@ test("a custom-system agent keeps its own system[0]", async () => {
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -709,7 +710,7 @@ test("a request model switch gets the request model's customization, not the con
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt", "kimi-k2": "kimi" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -754,7 +755,7 @@ test("a customized raw base template renders tool guidance instead of the placeh
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -794,7 +795,7 @@ test("appending after a customized base template preserves rendered tool guidanc
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -836,7 +837,7 @@ test("a customized gpt base keeps astra-rendered tool guidance on a gpt-6 reques
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-6": "gpt" }, { "gpt-6": PROMPT_ASTRA }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-6", "GPT 6")]),
+    model: modelHarness([modelInfo("openai", "gpt-6", "GPT 6")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -881,7 +882,7 @@ test("live system prompt with mismatched prefix leaves system[0] untouched", asy
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -922,7 +923,7 @@ test("live system prompt with mismatched suffix leaves system[0] untouched", asy
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
@@ -961,7 +962,7 @@ test("an untouched base template with a trailing newline installs no base plan",
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o")]),
     tool: toolDomainFor([nativeTool("reader", "read things")]),
     session: {
       hook: (name, callback) => {
@@ -1161,7 +1162,7 @@ test("the base template follows the switched model family per request", async ()
   const ctx = context({
     agent: agents.domain,
     prompt: promptHarness(baseTemplates, { "gpt-4o": "gpt", "kimi-k2": "kimi" }),
-    catalog: catalogHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
+    model: modelHarness([modelInfo("openai", "gpt-4o"), modelInfo("moonshot", "kimi-k2")]),
     session: {
       hook: (name, callback) => {
         if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)

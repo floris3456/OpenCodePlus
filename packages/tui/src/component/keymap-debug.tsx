@@ -6,7 +6,7 @@ import { useTheme } from "../context/theme"
 export function KeymapDebug() {
   const keymap = Keymap.use()
   const renderer = useRenderer()
-  const theme = useTheme("overlay")
+  const theme = useTheme()
   const [entries, setEntries] = createSignal<readonly string[]>([])
   const [lastRaw, setLastRaw] = createSignal("")
 
@@ -35,17 +35,17 @@ export function KeymapDebug() {
       left={0}
       right={0}
       flexDirection="column"
-      backgroundColor={theme.background.feedback.info.default}
+      backgroundColor={theme.background.feedback.info.base}
       border={["top"]}
-      borderColor={theme.text.feedback.info.default}
+      borderColor={theme.text.feedback.info.base}
       paddingLeft={2}
       paddingRight={2}
       paddingTop={1}
       paddingBottom={1}
     >
-      <text fg={theme.text.feedback.info.default}>Keymap debug</text>
+      <text fg={theme.text.feedback.info.base}>Keymap debug</text>
       <For each={entries()}>
-        {(line) => <text fg={theme.text.feedback.info.default}>{line}</text>}
+        {(line) => <text fg={theme.text.feedback.info.base}>{line}</text>}
       </For>
     </box>
   )

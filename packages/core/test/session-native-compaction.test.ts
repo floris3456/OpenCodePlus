@@ -22,11 +22,14 @@ import { SessionProviderContext } from "@opencode/core/session/provider-context"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionStore } from "@opencode/core/session/store"
-import { Model } from "@opencode/schema/model"
+import { Model } from "@opencode/core/model"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { DateTime, Deferred, Effect, Fiber, Schema } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer, Schema } from "effect"
 import { testEffect } from "./lib/effect"
 
+const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
+const models = Layer.mock(SessionRunnerModel.Service, { resolve: () => Effect.die("unused model.resolve") })
+const catalog = Layer.mock(Model.Service, { available: () => Effect.succeed([]) })
 const it = testEffect(
   LayerNode.compile(
     LayerNode.group([
@@ -41,12 +44,18 @@ const it = testEffect(
       llmClient,
     ]),
     {
-      replacements: [Bus.node.replace(Bus.configured({ persist: true }))],
+      replacements: [
+        Bus.node.replace(Bus.configured({ persist: true })),
+        Agent.node.replace(agents),
+        Model.node.replace(catalog),
+        SessionRunnerModel.node.replace(models),
+      ],
     },
   ),
 )
 
-const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Compaction, policy = true) {
+const setup = Effect.fnUntraced(function* (options: { endpoint?: boolean; config?: Agent.Compaction; policy?: boolean } = {}) {
+  const endpoint = options.endpoint ?? false
   const db = (yield* Database.Service).db
   const bus = yield* Bus.Service
   const inbox = yield* SessionInbox.Service
@@ -56,7 +65,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
   const hooks = yield* PluginHooks.Service
   const blocked = Deferred.makeUnsafe<void>()
   const hanging = Promise.withResolvers<Response>()
-  const state = { failure: false, flaky: false, hang: false, overflow: false, localFailure: false, calls: 0, config }
+const state = { failure: false, flaky: false, hang: false, overflow: false, calls: 0, config: options.config }
   const bodies: Record<string, unknown>[] = []
   const headers: Headers[] = []
   const server = yield* Effect.acquireRelease(
@@ -86,7 +95,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
             )
           }
           const trigger = JSON.stringify(bodies.at(-1)).includes("compaction_trigger")
-          if (state.overflow && (trigger || state.localFailure))
+          if (state.overflow && trigger)
             return Response.json(
               {
                 error: {
@@ -112,7 +121,6 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
               ],
               usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
             })
-          const output = trigger ? [checkpoint] : []
           const summary = state.overflow
             ? [
                 {
@@ -131,6 +139,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
                 .map((event) => `data: ${JSON.stringify(event)}\n\n`)
                 .join("")
             : ""
+          const output = trigger ? [checkpoint] : []
           return new Response(
             `${summary}data: ${JSON.stringify({
               type: "response.completed",
@@ -163,7 +172,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
       cost: [],
       limit: { context: 200_000, output: 32_000 },
-      compaction: policy ? { mode: "provider" } : undefined,
+compaction: options.policy === false ? undefined : { type: "native" },
     },
   )
   const sessionID = SessionSchema.ID.create()
@@ -216,8 +225,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
       model,
       initial: history.initial,
       messages: history.messages,
-      instructionUpdate: history.instructionUpdate,
-      agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), compaction: state.config } },
+agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), compaction: state.config } },
       tools: {
         definitions: [
           ToolDefinition.make({ name: "read", description: "Read a file", inputSchema: { type: "object" } }),
@@ -226,14 +234,11 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
       },
     }
   })
+  // Opens the compaction's message as the runner does when it delivers `/compact`.
   const compact = Effect.gen(function* () {
-    return yield* compaction.compactManual({
-      session,
-      messages: yield* store.context(sessionID),
-      inputID: SessionMessage.ID.create(),
-      resolveContext: () => load,
-      prepare: requests.compaction,
-    })
+    const inputID = SessionMessage.ID.create()
+    yield* bus.publish(SessionEvent.Compaction.Started, { sessionID, reason: "manual", recent: "", inputID })
+    return yield* compaction.compact({ reason: "manual", context: yield* load, inputID })
   })
   const checkpoint = Effect.gen(function* () {
     const messages = (yield* load).messages
@@ -248,8 +253,9 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
   })
   return {
     compact,
-    automatic: Effect.gen(function* () {
-      return yield* compaction.compact({ context: yield* load, prepare: requests.compaction })
+    // An automatic compaction that skips the "is it due" check, which a context this small never passes.
+    overflow: Effect.gen(function* () {
+      return yield* compaction.compact({ reason: "overflow", context: yield* load })
     }),
     checkpoint,
     prompt,
@@ -263,6 +269,7 @@ const setup = Effect.fnUntraced(function* (endpoint = false, config?: Agent.Comp
     store,
     hooks,
     model,
+    compaction,
   }
 })
 
@@ -271,31 +278,31 @@ for (const endpoint of [false, true]) {
     `explicit remote agent strategy uses ${endpoint ? "endpoint" : "trigger"} capability without provider policy or local overrides`,
     () =>
       Effect.gen(function* () {
-        const fixture = yield* setup(
+        const fixture = yield* setup({
           endpoint,
-          {
+          config: {
             strategy: "remote",
             model: Model.Ref.parse("unavailable/local-model"),
             system: "LOCAL CUSTOMIZATION MUST NOT BE SENT",
           },
-          false,
-        )
+          policy: false,
+        })
         yield* fixture.prompt("Original user")
         expect(yield* fixture.compact).toEqual({ status: "completed" })
         expect(yield* fixture.checkpoint).toHaveProperty("messages")
         expect(fixture.bodies).toHaveLength(1)
         expect(fixture.bodies[0].model).toBe("gpt-5.4-mini")
       expect(JSON.stringify(fixture.bodies[0])).not.toContain("LOCAL CUSTOMIZATION")
-      expect(fixture.state.config).toEqual({
+        expect(fixture.state.config).toEqual({
           strategy: "remote",
           model: Model.Ref.parse("unavailable/local-model"),
-        system: "LOCAL CUSTOMIZATION MUST NOT BE SENT",
-      })
-      yield* fixture.prompt("Continue with remote compaction")
-      expect(yield* fixture.automatic).toEqual({ status: "completed" })
-      expect(fixture.bodies).toHaveLength(2)
-      expect(fixture.bodies[1].model).toBe("gpt-5.4-mini")
-      expect(JSON.stringify(fixture.bodies[1])).not.toContain("LOCAL CUSTOMIZATION")
+          system: "LOCAL CUSTOMIZATION MUST NOT BE SENT",
+        })
+        yield* fixture.prompt("Continue with remote compaction")
+        expect(yield* fixture.compact).toEqual({ status: "completed" })
+        expect(fixture.bodies).toHaveLength(2)
+        expect(fixture.bodies[1].model).toBe("gpt-5.4-mini")
+        expect(JSON.stringify(fixture.bodies[1])).not.toContain("LOCAL CUSTOMIZATION")
       }),
   )
 }
@@ -323,12 +330,16 @@ it.live("forced local agent compaction bypasses remote and re-expands existing p
 
 it.live("explicit remote agent overflow fails without automatic local fallback", () =>
   Effect.gen(function* () {
-    const fixture = yield* setup(false, { strategy: "remote" })
+    const fixture = yield* setup({ config: { strategy: "remote" } })
     yield* fixture.prompt("Original durable request")
-    fixture.state.overflow = true
-    expect(yield* fixture.automatic).toMatchObject({ status: "failed", error: { type: "provider.invalid-request" } })
-    expect(fixture.bodies).toHaveLength(1)
-    expect(JSON.stringify(fixture.bodies[0])).toContain("compaction_trigger")
+    expect(yield* fixture.overflow).toMatchObject({
+      status: "failed",
+      error: {
+        type: "provider.unsupported-operation",
+        message: expect.stringContaining("Remote compaction cannot recover"),
+      },
+    })
+    expect(fixture.bodies).toHaveLength(0)
     expect(
       (yield* fixture.load).messages.some((message) => message.type === "compaction" && message.status === "completed"),
     ).toBe(false)
@@ -337,7 +348,7 @@ it.live("explicit remote agent overflow fails without automatic local fallback",
 
 it.live("explicit remote agent strategy rejects hook-supplied local summaries", () =>
   Effect.gen(function* () {
-    const fixture = yield* setup(false, { strategy: "remote" })
+    const fixture = yield* setup({ config: { strategy: "remote" } })
     yield* fixture.prompt("Original user")
     yield* fixture.hooks.register("session", "compaction", (event) =>
       Effect.sync(() => {
@@ -436,20 +447,22 @@ it.live(
 
 it.live("manual and automatic endpoint compaction keep the provider replacement unchanged", () =>
   Effect.gen(function* () {
-    const fixture = yield* setup(true)
+    const fixture = yield* setup({ endpoint: true })
     yield* fixture.prompt("Original user")
     expect(yield* fixture.compact).toEqual({ status: "completed" })
-    expect(yield* fixture.automatic).toEqual({ status: "completed" })
+    yield* fixture.prompt("Later user")
+    expect(yield* fixture.overflow).toEqual({ status: "completed" })
     const replacement = SessionProviderContext.decode(yield* fixture.checkpoint)
     expect(replacement[0]?.content).toEqual([Message.text("endpoint retained")])
     expect(JSON.stringify(replacement)).not.toContain("Original user")
     expect(fixture.state.calls).toBe(2)
     expect(fixture.headers[0]?.get("x-http-hook")).toBe("compaction")
+    expect(fixture.bodies[0]).toMatchObject({ tools: [expect.objectContaining({ name: "read" })] })
     expect(fixture.bodies[0]).not.toHaveProperty("context_management")
   }),
 )
 
-it.live("only known automatic native overflow falls back locally and failed recovery retains the checkpoint", () =>
+it.live("automatic native failures, interruptions, and overflows retain the checkpoint", () =>
   Effect.gen(function* () {
     const fixture = yield* setup()
     yield* fixture.prompt("Original durable request")
@@ -457,12 +470,12 @@ it.live("only known automatic native overflow falls back locally and failed reco
     const installed = yield* fixture.checkpoint
     yield* fixture.prompt("Recent request")
     fixture.state.failure = true
-    expect(yield* fixture.automatic).toMatchObject({ status: "failed", error: { type: "provider.rate-limit" } })
+    expect(yield* fixture.overflow).toMatchObject({ status: "failed", error: { type: "provider.rate-limit" } })
     expect(fixture.state.calls).toBe(2)
     expect(yield* fixture.checkpoint).toEqual(installed)
     fixture.state.failure = false
     fixture.state.hang = true
-    const pending = yield* fixture.automatic.pipe(Effect.forkScoped)
+    const pending = yield* fixture.overflow.pipe(Effect.forkScoped)
     yield* Deferred.await(fixture.blocked)
     yield* Fiber.interrupt(pending)
     expect((yield* fixture.load).messages.at(-1)).toMatchObject({
@@ -472,19 +485,12 @@ it.live("only known automatic native overflow falls back locally and failed reco
     })
     expect(yield* fixture.checkpoint).toEqual(installed)
     fixture.state.hang = false
+    // Overflow retries natively, with the provider's window, and gives up once nothing is left to shrink.
     fixture.state.overflow = true
-    fixture.state.localFailure = true
-    expect(yield* fixture.automatic).toMatchObject({ status: "failed" })
-    expect(fixture.state.calls).toBe(5)
+    expect(yield* fixture.overflow).toMatchObject({ status: "failed", error: { type: "compaction.failed" } })
+    expect(fixture.state.calls).toBe(4)
+    expect(JSON.stringify(fixture.bodies[3])).toContain("encrypted_1")
     expect(yield* fixture.checkpoint).toEqual(installed)
-    expect(JSON.stringify(fixture.bodies[4])).toContain("Original durable request")
-    expect(JSON.stringify(fixture.bodies[4])).not.toContain("encrypted_1")
-    fixture.state.localFailure = false
-    expect(yield* fixture.automatic).toEqual({ status: "completed", recoveredOverflow: true })
-    expect(fixture.state.calls).toBe(7)
-    expect((yield* fixture.load).messages).toContainEqual(
-      expect.objectContaining({ type: "compaction", summary: "## Objective\n- Recovered locally" }),
-    )
   }),
 )
 
@@ -550,8 +556,8 @@ test("retained user budget counts attachments and drops whole oldest messages", 
     ...user("x".repeat(63_000 * 4)),
     files: [{ mime: "image/png", data: "aGVsbG8=", source: { type: "inline" as const } }],
   }
-  expect(SessionCompaction.retainUsers([user("old"), newest], model, 64_000)).toEqual([])
+  expect(SessionCompaction.recentUserMessages([user("old"), newest], model, 64_000)).toEqual([])
   expect(
-    SessionCompaction.retainUsers([user("x".repeat(63_000 * 4)), { ...newest, text: "new" }], model, 64_000),
+    SessionCompaction.recentUserMessages([user("x".repeat(63_000 * 4)), { ...newest, text: "new" }], model, 64_000),
   ).toHaveLength(1)
 })

@@ -15,7 +15,7 @@ import { load, save } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
-import { agentHarness, agentInfo, catalogHarness, context, defaultHostTemplates, fullContext, mcpHarness, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, modelHarness, context, defaultHostTemplates, fullContext, mcpHarness, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
@@ -667,7 +667,7 @@ test("two publishes with an active model keep an identical fingerprint and do no
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
     skill,
     tool: tools.domain,
@@ -1584,7 +1584,7 @@ test("session.created uses the cached active model without rediscovery", async (
   const ctx = context({
     location,
     agent: countingAgent,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
     skill: countingSkill,
     tool: tools.domain,
@@ -1667,7 +1667,7 @@ test("two publishes with a host-owned agent and absent upstream keep an identica
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
     skill,
     tool: tools.domain,
@@ -1726,7 +1726,7 @@ test("two publishes with a family-changing activation keep an identical fingerpr
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "gpt" }),
     skill,
     tool: tools.domain,
@@ -1786,7 +1786,7 @@ test("session.created without an agent adopts the default agent's model", async 
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-2": "general" }),
     skill,
     tool: tools.domain,
@@ -1856,7 +1856,7 @@ test("a shared change from another Location reaches this Location without discov
   const ctxA = context({
     location: partsA.location,
     agent: agentsA.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-9": "general" }),
     skill: partsA.skill,
     tool: partsA.tools.domain,
@@ -1878,7 +1878,7 @@ test("a shared change from another Location reaches this Location without discov
   const ctxB = context({
     location: partsB.location,
     agent: agentsB.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "nova-9": "general" }),
     skill: partsB.skill,
     tool: partsB.tools.domain,
@@ -1936,7 +1936,7 @@ test("snapshot reports the Plus-active base for a file-backed agent", async () =
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(defaultHostTemplates, { "nova-1": "general", "claude-fable-5": "claude" }),
     skill,
     tool: tools.domain,

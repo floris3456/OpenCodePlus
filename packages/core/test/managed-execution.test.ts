@@ -19,7 +19,6 @@ import { Shell } from "@opencode/core/shell"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Workspace } from "@opencode/core/workspace"
 import { WorkspaceDriver } from "@opencode/core/workspace/driver"
-import { Worktree } from "@opencode/core/worktree"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { Cause, Effect, Exit, Layer } from "effect"
@@ -360,7 +359,7 @@ describe("placed plugin host", () => {
       ).toBeInstanceOf(PluginHost.PlacedHostAccessError)
       expect(
         yield* host.integration.connection
-          .resolve({ type: "credential", id: "cred_probe", label: "probe" })
+          .resolve({ type: "credential", id: "cred_probe", label: "probe", method: "key" })
           .pipe(Effect.flip),
       ).toBeInstanceOf(PluginHost.PlacedHostAccessError)
     }),
@@ -408,26 +407,6 @@ describe("placed plugin host", () => {
         { key: "token", value: "placed" },
       ])
       expect(yield* PluginHost.storage(kv, "probe").get("token")).toBeUndefined()
-    }),
-  )
-
-  pluginIt.live("routes a plugin call to the placement it names, not the ambient one", () =>
-    Effect.gen(function* () {
-      const plugins = yield* Plugin.Service
-      const host = yield* PluginHost.make(plugins)
-      const hostDirectory = host.location.directory
-
-      // This host carries no workspace, so a request naming one must refuse rather than
-      // quietly answer from the host's own worktrees. Both spellings of the placement route
-      // the same way: the wire shape, and the `Location.Ref` every response hands back.
-      const named = Location.Ref.make({ directory: hostDirectory, workspaceID })
-      expect(yield* host.worktree.list({ location: named }).pipe(Effect.flip)).toBeInstanceOf(
-        Worktree.UnsupportedLocationError,
-      )
-      expect(
-        yield* host.worktree.list({ location: { directory: hostDirectory, workspace: workspaceID } }).pipe(Effect.flip),
-      ).toBeInstanceOf(Worktree.UnsupportedLocationError)
-      expect(yield* host.worktree.list({ location: { directory: hostDirectory } })).toEqual([])
     }),
   )
 })

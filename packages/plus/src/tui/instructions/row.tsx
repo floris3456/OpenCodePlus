@@ -80,18 +80,18 @@ export function RowLine(props: RowLineProps) {
   const heading = () => props.row.role === "catalogue" || (props.row.role === "group" && props.row.depth === 0 && !props.sidebar)
   const background = () => {
     if (!props.selected) return undefined
-    return props.focused ? theme().background.action.primary.focused : theme().background.surface.overlay
+    return props.focused ? theme().background.action.primary.focused : theme().background.raised.high
   }
   const labelColor = () => {
     if (props.selected && props.focused) return theme().text.action.primary.focused
     if (node().badges.disabled !== undefined) return theme().text.formfield.disabled
-    if (off() || props.row.context === true || (props.row.role === "group" && props.sidebar)) return theme().text.subdued
-    return theme().text.default
+    if (off() || props.row.context === true || (props.row.role === "group" && props.sidebar)) return theme().text.muted
+    return theme().text.base
   }
   const gutter = () => {
     const attention = attentionOf(node())
-    if (attention === "review") return theme().text.feedback.warning.default
-    if (attention === "modified") return theme().text.feedback.info.default
+    if (attention === "review") return theme().text.feedback.warning.base
+    if (attention === "modified") return theme().text.feedback.info.base
     return undefined
   }
   const marker = () => (props.row.expandable ? (props.row.expanded ? "▾" : "▸") : " ")
@@ -120,15 +120,15 @@ export function RowLine(props: RowLineProps) {
       }}
     >
       {/* The cursor (focused pane only) takes the gutter; the marks at the end keep saying why it is coloured. */}
-      <text flexShrink={0} fg={props.selected && props.focused ? labelColor() : gutter() ?? theme().text.subdued}>
+      <text flexShrink={0} fg={props.selected && props.focused ? labelColor() : gutter() ?? theme().text.muted}>
         {props.selected && props.focused ? CURSOR : gutter() === undefined ? " " : "▎"}
       </text>
-      <text flexShrink={0} wrapMode="none" fg={theme().text.subdued}>
+      <text flexShrink={0} wrapMode="none" fg={theme().text.muted}>
         {`${"  ".repeat(Math.max(0, props.row.depth))}${marker()} `}
       </text>
       <Show when={glyphOf(node())}>
         {(glyph) => (
-          <text flexShrink={0} fg={props.selected && props.focused ? labelColor() : off() ? theme().text.subdued : theme().text.formfield.selected}>
+          <text flexShrink={0} fg={props.selected && props.focused ? labelColor() : off() ? theme().text.muted : theme().text.formfield.selected}>
             {`${glyph()} `}
           </text>
         )}
@@ -145,29 +145,29 @@ export function RowLine(props: RowLineProps) {
       </text>
       <box flexGrow={1} minWidth={1} />
       <Show when={detail().length > 0}>
-        <text flexShrink={3} minWidth={0} wrapMode="none" truncate fg={props.selected && props.focused ? labelColor() : valueRow() ? theme().text.formfield.default : node().badges.active === true ? theme().text.formfield.selected : theme().text.subdued}>
+        <text flexShrink={3} minWidth={0} wrapMode="none" truncate fg={props.selected && props.focused ? labelColor() : valueRow() ? theme().text.formfield.base : node().badges.active === true ? theme().text.formfield.selected : theme().text.muted}>
           {`${detail()} `}
         </text>
       </Show>
       <Show when={props.tools}>
         {(count) => (
-          <text flexShrink={0} wrapMode="none" fg={props.selected && props.focused ? labelColor() : theme().text.subdued}>
+          <text flexShrink={0} wrapMode="none" fg={props.selected && props.focused ? labelColor() : theme().text.muted}>
             {`${String(count()).padStart(3)} `}
           </text>
         )}
       </Show>
       <Show when={props.tools === 0}>
-        <text flexShrink={0} wrapMode="none" fg={theme().text.feedback.warning.default}>
+        <text flexShrink={0} wrapMode="none" fg={theme().text.feedback.warning.base}>
           {"no tools "}
         </text>
       </Show>
       <Show when={node().owner?.linkMissing === true}>
-        <text flexShrink={0} wrapMode="none" fg={theme().text.feedback.warning.default}>
+        <text flexShrink={0} wrapMode="none" fg={theme().text.feedback.warning.base}>
           {"missing preset "}
         </text>
       </Show>
       <Show when={marks().length > 0}>
-        <text flexShrink={0} wrapMode="none" fg={marks().includes("!") ? theme().text.feedback.warning.default : theme().text.feedback.info.default}>
+        <text flexShrink={0} wrapMode="none" fg={marks().includes("!") ? theme().text.feedback.warning.base : theme().text.feedback.info.base}>
           {`${marks()} `}
         </text>
       </Show>
@@ -181,10 +181,10 @@ export function KeyHints(props: { readonly context: Plugin.Context; readonly hin
     <text flexShrink={0} wrapMode="none" truncate paddingLeft={1}>
       {props.hints.map(([key, label], index) => (
         <>
-          <span style={{ fg: props.context.theme.text.default }}>
+          <span style={{ fg: props.context.theme.text.base }}>
             <b>{key}</b>
           </span>
-          <span style={{ fg: props.context.theme.text.subdued }}>{` ${label}${index < props.hints.length - 1 ? "   " : ""}`}</span>
+          <span style={{ fg: props.context.theme.text.muted }}>{` ${label}${index < props.hints.length - 1 ? "   " : ""}`}</span>
         </>
       ))}
     </text>

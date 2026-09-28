@@ -86,7 +86,6 @@ async function createTestComposer(input: {
                 "composer.terminal.up": "up",
                 "composer.terminal.down": "down",
               },
-              session: { terminal: true },
             })}
           >
             <StorageProvider>

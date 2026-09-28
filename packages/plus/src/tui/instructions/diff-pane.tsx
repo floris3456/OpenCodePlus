@@ -158,18 +158,18 @@ export function DiffPane(props: DiffPaneProps) {
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingLeft={1} paddingRight={1}>
       <box flexDirection="row" flexShrink={0} gap={1}>
-        <text flexShrink={0} fg={theme().text.default} attributes={TextAttributes.BOLD}>
+        <text flexShrink={0} fg={theme().text.base} attributes={TextAttributes.BOLD}>
           {props.title}
         </text>
         <Show when={props.path}>
           {(path) => (
-            <text flexGrow={1} minWidth={0} wrapMode="none" truncate fg={theme().text.subdued}>
+            <text flexGrow={1} minWidth={0} wrapMode="none" truncate fg={theme().text.muted}>
               {path()}
             </text>
           )}
         </Show>
-        <Show when={review()} fallback={<text flexShrink={0} fg={theme().text.subdued}>compare</text>}>
-          <text flexShrink={0} fg={theme().text.feedback.warning.default}>
+        <Show when={review()} fallback={<text flexShrink={0} fg={theme().text.muted}>compare</text>}>
+          <text flexShrink={0} fg={theme().text.feedback.warning.base}>
             needs review: upstream changed since your edit
           </text>
         </Show>
@@ -185,8 +185,8 @@ export function DiffPane(props: DiffPaneProps) {
                   const selected = () => index() === Math.min(tab(), comparisons().length - 1)
                   return (
                     <text flexShrink={0} wrapMode="none" onMouseUp={() => setTab(index())}>
-                      <span style={{ fg: theme().text.subdued }}>{`${index() + 1} `}</span>
-                      <span style={{ fg: selected() ? theme().text.default : theme().text.subdued }}>
+                      <span style={{ fg: theme().text.muted }}>{`${index() + 1} `}</span>
+                      <span style={{ fg: selected() ? theme().text.base : theme().text.muted }}>
                         {selected() ? <b><u>{comparison.label}</u></b> : comparison.label}
                       </span>
                       <span style={{ fg: theme().diff.text.added }}>{` +${counts().added}`}</span>
@@ -196,14 +196,14 @@ export function DiffPane(props: DiffPaneProps) {
                 }}
               </For>
             </box>
-            <text flexShrink={0} fg={theme().text.subdued}>
+            <text flexShrink={0} fg={theme().text.muted}>
               {`${current().from} → ${current().to}`}
             </text>
             <Show
               when={patch().length > 0}
               fallback={
                 <box flexGrow={1} paddingTop={1}>
-                  <text fg={theme().text.subdued}>No differences</text>
+                  <text fg={theme().text.muted}>No differences</text>
                 </box>
               }
             >
@@ -214,7 +214,7 @@ export function DiffPane(props: DiffPaneProps) {
                   showLineNumbers={true}
                   width="100%"
                   wrapMode="word"
-                  fg={theme().text.default}
+                  fg={theme().text.base}
                   addedBg={theme().diff.background.added}
                   removedBg={theme().diff.background.removed}
                   contextBg={theme().diff.background.context}
@@ -230,12 +230,12 @@ export function DiffPane(props: DiffPaneProps) {
           </>
         }
       >
-        <text flexShrink={0} fg={theme().text.subdued} paddingTop={1}>
+        <text flexShrink={0} fg={theme().text.muted} paddingTop={1}>
           {review() ? "Merged: the upstream change applied onto yours" : "Yours"}
         </text>
         <Show when={notice()}>
           {(line) => (
-            <text flexShrink={0} fg={conflicts() > 0 || CONFLICT_MARKER.test(draft()) ? theme().text.feedback.warning.default : theme().text.subdued} wrapMode="word">
+            <text flexShrink={0} fg={conflicts() > 0 || CONFLICT_MARKER.test(draft()) ? theme().text.feedback.warning.base : theme().text.muted} wrapMode="word">
               {line()}
             </text>
           )}
@@ -243,7 +243,7 @@ export function DiffPane(props: DiffPaneProps) {
         <textarea
           flexGrow={1}
           initialValue={draft()}
-          textColor={theme().text.formfield.default}
+          textColor={theme().text.formfield.base}
           focusedTextColor={theme().text.formfield.focused}
           cursorColor={theme().text.formfield.focused}
           ref={(next) => {

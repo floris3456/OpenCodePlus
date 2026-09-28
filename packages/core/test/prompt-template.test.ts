@@ -17,12 +17,13 @@ describe("PromptTemplate", () => {
   })
 
   test("raw returns the template optimize renders for the model", () => {
-    // The gpt-6 rule lives here so the OpenAI optimize plugin and the
-    // plugin-host seam can never drift: gpt-6 classifies as gpt but
+    // The astra rule lives here so the OpenAI optimize plugin and the
+    // plugin-host seam can never drift: an astra id classifies as gpt but
     // renders the astra text.
-    expect(PromptTemplate.raw({ id: "gpt-6", name: "GPT 6" })).toBe(PROMPT_ASTRA)
-    expect(PromptTemplate.raw({ id: "openai/gpt-6-mini", name: "GPT 6 Mini" })).toBe(PROMPT_ASTRA)
-    expect(PromptTemplate.raw({ id: "OpenAI/GPT-6", name: "GPT 6" })).toBe(PROMPT_ASTRA)
+    expect(PromptTemplate.raw({ id: "gpt-6", name: "GPT 6" })).toBe(PROMPT_GPT)
+    expect(PromptTemplate.raw({ id: "gpt-6-astra", name: "GPT 6 Astra" })).toBe(PROMPT_ASTRA)
+    expect(PromptTemplate.raw({ id: "openai/gpt-5-astra", name: "GPT 5 Astra" })).toBe(PROMPT_ASTRA)
+    expect(PromptTemplate.raw({ id: "OpenAI/GPT-6-astra", name: "GPT 6 Astra" })).toBe(PROMPT_ASTRA)
     expect(PromptTemplate.raw({ id: "gpt-5", name: "GPT 5" })).toBe(PROMPT_GPT)
     const byId = new Map(PromptTemplate.templates.map((template) => [template.id, template.text]))
     expect(PromptTemplate.raw({ id: "moonshot/kimi-k2", name: "Kimi" })).toBe(byId.get("kimi"))

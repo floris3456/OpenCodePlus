@@ -228,6 +228,7 @@ const emptyMcpLayer = Layer.succeed(
     prompts: () => Effect.succeed([]),
     prompt: () => Effect.undefined,
     resourceCatalog: () => Effect.succeed(Mcp.ResourceCatalog.make({ resources: [], templates: [] })),
+    resources: () => Effect.succeed(Mcp.ResourceCatalog.make({ resources: [], templates: [] })),
     readResource: () => Effect.undefined,
   }),
 )

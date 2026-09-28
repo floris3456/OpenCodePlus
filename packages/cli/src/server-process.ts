@@ -2,7 +2,6 @@ export * as ServerProcess from "./server-process"
 
 import { NodeServices } from "@effect/platform-node"
 import { Service, type DiscoverOptions } from "@opencode/client/effect/service"
-import { ServiceStatus } from "@opencode/protocol/groups/health"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_VERSION } from "./version"
@@ -13,8 +12,8 @@ import { PersistentPty } from "@opencode/schema/persistent-pty"
 import { HttpServer } from "effect/unstable/http"
 import { Env } from "./env"
 import { ServiceConfig } from "./services/service-config"
+import { RetainedImage } from "./services/retained-image"
 import { ServiceRegistration } from "./services/service-registration"
-import { Updater } from "./services/updater"
 import { WebUi } from "./services/web-ui"
 import { databasePath } from "./database-path"
 
@@ -66,6 +65,9 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           ? yield* Service.incumbent({ ...serviceOptions, url: serviceURL(hostname, port) })
           : undefined
       if (incumbent !== undefined) return
+      // Keep a package-manager or curl install replaceable while the service runs; Desktop updates its own copy.
+      if (options.mode === "service" && process.platform === "win32" && RetainedImage.installed(global.home))
+        yield* RetainedImage.retain(global.cache, "service")
       const { start } = yield* Effect.promise(() => import("@opencode/server/process"))
       const environmentPassword = yield* Env.password
       // Keep the lease credential out of the environment inherited by tools.
@@ -158,21 +160,6 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       const url = HttpServer.formatAddress(server.address)
       console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
       if (foreground && !environmentPassword) console.log(`server password ${password}`)
-      yield* Updater.Service.pipe(
-        Effect.flatMap((updater) =>
-          Updater.pollUpdates({
-            check: updater.run().pipe(
-              Effect.flatMap((result) => {
-                if (!result) return Effect.void
-                if (result.type === "available") return server.updateAvailable(result.version)
-                return server.updated(result.version)
-              }),
-            ),
-          }),
-        ),
-        Effect.provide(Updater.layer),
-        Effect.forkScoped,
-      )
       return yield* options.mode === "service"
         ? server.shutdown
         : options.mode === "stdio"
@@ -196,16 +183,21 @@ const recognizeIncumbent = Effect.fnUntraced(function* (options: DiscoverOptions
   return Option.isSome(found)
 })
 
-const decodeHealthProbe = Schema.decodeUnknownOption(ServiceStatus.Health)
+const decodeInfoProbe = Schema.decodeUnknownOption(
+  Schema.Struct({
+    version: Schema.String,
+    pid: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+)
 
 const foreignOccupant = Effect.fnUntraced(function* (hostname: string, port: number) {
   const url = serviceURL(hostname, port)
   return yield* Effect.promise(() =>
-    fetch(new URL("/api/health", url), { signal: AbortSignal.timeout(2_000) }).then(
+    fetch(new URL("/api/info", url), { signal: AbortSignal.timeout(2_000) }).then(
       (response) =>
         response
           .json()
-          .then((body) => !Option.isSome(decodeHealthProbe(body)) && response.status === 200)
+          .then((body) => !Option.isSome(decodeInfoProbe(body)) && response.status === 200)
           .catch(() => response.status === 200),
       // Connection refused and other fetch failures are not proof of a
       // foreign occupant: a slow starter may simply not be listening yet.

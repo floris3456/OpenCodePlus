@@ -13,6 +13,7 @@ import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { Session } from "@opencode/core/session"
 import { Agent } from "@opencode/core/agent"
 import { Location } from "@opencode/core/location"
+import { Model } from "@opencode/core/model"
 import { Project } from "@opencode/core/project"
 import { AbsolutePath } from "@opencode/core/schema"
 import { ConfigCompaction } from "@opencode/schema/config/compaction"
@@ -35,6 +36,9 @@ const resolved = SessionRunnerModel.resolved(model, {
   limit,
 })
 const config = Config.testLayer()
+const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
+const models = Layer.mock(SessionRunnerModel.Service, { resolve: () => Effect.succeed(resolved) })
+const modelCatalog = Layer.mock(Model.Service, { available: () => Effect.succeed([]) })
 const it = testEffect(
   Layer.merge(
     config,
@@ -48,6 +52,9 @@ const it = testEffect(
             }),
           ),
           Config.node.replace(config),
+          Agent.node.replace(agents),
+          Model.node.replace(modelCatalog),
+          SessionRunnerModel.node.replace(models),
         ],
       },
     ),
@@ -57,7 +64,11 @@ describe("ConfigCompactionPlugin.Plugin", () => {
   it.live("merges settings and reloads changed config", () =>
     Effect.gen(function* () {
       const compaction = yield* SessionCompaction.Service
-      const modelRequests = yield* SessionModelRequest.Service
+      // An automatic compaction that is not due is skipped.
+      const due = (input: typeof nearInput) =>
+        compaction
+          .compact({ reason: "auto", context: input.context })
+          .pipe(Effect.map((outcome) => outcome.status !== "skipped"))
       const config = yield* Config.Test
       const bus = yield* Bus.Service
       yield* config.setEntries([
@@ -77,9 +88,9 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       ])
       yield* ConfigCompactionPlugin.Plugin.effect(host({ event: { subscribe: () => bus.subscribe(Event.Updated) } }))
 
-      expect(compaction.required(nearInput)).toBe(false)
-      const started = yield* bus
-        .subscribe(SessionEvent.Compaction.Started)
+      expect(yield* due(nearInput)).toBe(false)
+      const ended = yield* bus
+        .subscribe(SessionEvent.Compaction.Ended)
         .pipe(Stream.runHead, Effect.forkScoped({ startImmediately: true }))
       const messages = [
         SessionMessage.User.make({
@@ -96,15 +107,13 @@ describe("ConfigCompactionPlugin.Plugin", () => {
         }),
       ]
       expect(
-        yield* compaction.compactManual({
-          session,
-          resolveContext: () => Effect.succeed({ ...nearInput.context, messages, instructionUpdate: "" }),
-          prepare: modelRequests.compaction,
-          messages,
+        yield* compaction.compact({
+          reason: "manual",
+          context: { ...nearInput.context, messages },
           inputID: SessionMessage.ID.make("msg_compaction_manual"),
         }),
       ).toEqual({ status: "completed" })
-      expect(Option.getOrThrow(yield* Fiber.join(started)).data.recent).toContain("Recent context")
+      expect(Option.getOrThrow(yield* Fiber.join(ended)).data.recent).toContain("Recent context")
 
       yield* config.setEntries([
         new Document({
@@ -119,12 +128,12 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       yield* bus.publish(Event.Updated, {})
       yield* Effect.gen(function* () {
         for (let attempt = 0; attempt < 200; attempt++) {
-          if (compaction.required(nearInput)) return
+          if (yield* due(nearInput)) return
           yield* Effect.sleep("10 millis")
         }
         yield* Effect.die(new Error("Timed out waiting for compaction config reload"))
       })
-      expect(compaction.required(bufferedInput)).toBe(false)
+      expect(yield* due(bufferedInput)).toBe(false)
 
       yield* config.setEntries([
         new Document({
@@ -134,7 +143,7 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       ])
       yield* bus.publish(Event.Updated, {})
       for (let attempt = 0; attempt < 200; attempt++) {
-        if (compaction.required(bufferedInput)) return
+        if (yield* due(bufferedInput)) return
         yield* Effect.sleep("10 millis")
       }
       yield* Effect.die(new Error("Timed out waiting for compaction config reload"))

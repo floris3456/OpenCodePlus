@@ -1044,36 +1044,36 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   const Tabs = () => (
     <box flexDirection="row" flexShrink={0} height={1} paddingLeft={1} paddingRight={1} gap={2}>
-      <text flexShrink={0} fg={theme().text.default} attributes={TextAttributes.BOLD}>
+      <text flexShrink={0} fg={theme().text.base} attributes={TextAttributes.BOLD}>
         Instructions
       </text>
       <For each={workspace().levels}>
         {(entry) => (
           <text flexShrink={0} wrapMode="none" onMouseUp={() => showLevel(entry.id)}>
-            <span style={{ fg: entry.id === level() ? theme().text.action.secondary.hovered : theme().text.subdued }}>
+            <span style={{ fg: entry.id === level() ? theme().text.action.secondary.hovered : theme().text.muted }}>
               {entry.id === level() ? <b><u>{entry.label}</u></b> : entry.label}
             </span>
             <Show when={entry.review > 0}>
-              <span style={{ fg: theme().text.feedback.warning.default }}>{` !${entry.review}`}</span>
+              <span style={{ fg: theme().text.feedback.warning.base }}>{` !${entry.review}`}</span>
             </Show>
           </text>
         )}
       </For>
       <box flexGrow={1} />
       <Show when={state.loading()}>
-        <text flexShrink={0} fg={theme().text.subdued}>
+        <text flexShrink={0} fg={theme().text.muted}>
           …
         </text>
       </Show>
-      <text flexShrink={0} fg={theme().text.default} onMouseUp={openHelp}>
-        ?<span style={{ fg: theme().text.subdued }}> help</span>
+      <text flexShrink={0} fg={theme().text.base} onMouseUp={openHelp}>
+        ?<span style={{ fg: theme().text.muted }}> help</span>
       </text>
     </box>
   )
 
   const categoryColor = (index: number) => {
     const scale = theme().categorical[index % theme().categorical.length]
-    return scale === undefined ? theme().text.default : scale[props.context.themeMode === "light" ? 800 : 200]
+    return scale === undefined ? theme().text.base : scale[props.context.themeMode === "light" ? 800 : 200]
   }
 
   // The digits go first when the tabs would not fit on one line.
@@ -1088,15 +1088,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           const review = () => category.badges.reviewCount ?? 0
           return (
             <text flexShrink={0} wrapMode="none" onMouseUp={() => switchCategory(index())}>
-              <span style={{ fg: theme().text.subdued }}>{digits() ? `${index() + 1} ` : ""}</span>
-              <span style={{ fg: selected() ? categoryColor(index()) : theme().text.subdued }}>
+              <span style={{ fg: theme().text.muted }}>{digits() ? `${index() + 1} ` : ""}</span>
+              <span style={{ fg: selected() ? categoryColor(index()) : theme().text.muted }}>
                 {selected() ? <b><u>{category.label}</u></b> : category.label}
               </span>
               <Show when={category.id.endsWith(":tools") ? toolCount(workspace().owner?.key) : undefined}>
-                {(count) => <span style={{ fg: count().on === 0 ? theme().text.feedback.warning.default : theme().text.subdued }}>{` ${count().on}`}</span>}
+                {(count) => <span style={{ fg: count().on === 0 ? theme().text.feedback.warning.base : theme().text.muted }}>{` ${count().on}`}</span>}
               </Show>
               <Show when={review() > 0}>
-                <span style={{ fg: theme().text.feedback.warning.default }}>{` !${review()}`}</span>
+                <span style={{ fg: theme().text.feedback.warning.base }}>{` !${review()}`}</span>
               </Show>
             </text>
           )
@@ -1106,8 +1106,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   )
 
   const Sidebar = () => (
-    <box flexDirection="column" minHeight={0} flexGrow={wide() ? 0 : 1} width={wide() ? SIDEBAR_WIDTH : "100%"} flexShrink={0} backgroundColor={theme().background.surface.offset}>
-      <Show when={workspace().nav.length > 0} fallback={<text fg={theme().text.subdued} paddingLeft={1}>{state.loading() ? "Loading…" : "Nothing at this level"}</text>}>
+    <box flexDirection="column" minHeight={0} flexGrow={wide() ? 0 : 1} width={wide() ? SIDEBAR_WIDTH : "100%"} flexShrink={0} backgroundColor={theme().background.raised.base}>
+      <Show when={workspace().nav.length > 0} fallback={<text fg={theme().text.muted} paddingLeft={1}>{state.loading() ? "Loading…" : "Nothing at this level"}</text>}>
         <scrollbox flexGrow={1} minHeight={0} ref={(next: ScrollBoxRenderable) => (navScroll = next)} verticalScrollbarOptions={{ visible: false }}>
           <For each={workspace().nav}>
             {(row) => (
@@ -1148,16 +1148,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         when={filtering()}
         fallback={
           <box flexDirection="column" flexShrink={0} paddingLeft={1}>
-            <Show when={workspace().owner} fallback={<text fg={theme().text.subdued}>Select an agent, member or preset</text>}>
+            <Show when={workspace().owner} fallback={<text fg={theme().text.muted}>Select an agent, member or preset</text>}>
               {(owner) => (
                 <text flexShrink={0} wrapMode="none" truncate>
-                  <span style={{ fg: theme().text.default }}>
+                  <span style={{ fg: theme().text.base }}>
                     <b>{owner().label}</b>
                   </span>
-                  <span style={{ fg: theme().text.subdued }}>{`  ${[owner().node.badges.mode, owner().node.badges.state, ownerSource(owner().node)].filter((part) => part !== undefined).join(" · ")}`}</span>
+                  <span style={{ fg: theme().text.muted }}>{`  ${[owner().node.badges.mode, owner().node.badges.state, ownerSource(owner().node)].filter((part) => part !== undefined).join(" · ")}`}</span>
                   <Show when={toolCount(owner().key)}>
                     {(count) => (
-                      <span style={{ fg: count().on === 0 ? theme().text.feedback.warning.default : theme().text.subdued }}>{` · ${toolWords(count())}`}</span>
+                      <span style={{ fg: count().on === 0 ? theme().text.feedback.warning.base : theme().text.muted }}>{` · ${toolWords(count())}`}</span>
                     )}
                   </Show>
                 </text>
@@ -1168,14 +1168,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         }
       >
         <box flexDirection="row" flexShrink={0} paddingLeft={1} gap={1}>
-          <text flexShrink={0} fg={theme().text.default}>
+          <text flexShrink={0} fg={theme().text.base}>
             /
           </text>
           <input
             flexGrow={1}
             value={filterText()}
             placeholder={`filter ${LEVELS.find((entry) => entry.id === level())?.label}: words or key:value`}
-            placeholderColor={theme().text.subdued}
+            placeholderColor={theme().text.muted}
             focusedBackgroundColor={theme().background.formfield.focused}
             focusedTextColor={theme().text.formfield.focused}
             cursorColor={theme().text.formfield.focused}
@@ -1192,7 +1192,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       <Show
         when={listRows().length > 0}
         fallback={
-          <text paddingLeft={1} fg={theme().text.subdued}>
+          <text paddingLeft={1} fg={theme().text.muted}>
             {filtering() ? (state.filter().trim().length === 0 ? "Type to filter" : "No matches") : workspace().category?.add === undefined ? "Nothing here" : "Nothing here yet · a adds one"}
           </text>
         }
@@ -1262,7 +1262,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
             minWidth={0}
             minHeight={0}
             border={wide() ? ["left"] : ["top"]}
-            borderColor={theme().border.default}
+            borderColor={theme().border.base}
           >
             <Details />
           </box>
@@ -1272,17 +1272,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   )
 
   return (
-    <box width="100%" height="100%" flexDirection="column" backgroundColor={theme().background.default}>
+    <box width="100%" height="100%" flexDirection="column" backgroundColor={theme().background.base}>
       <Show
         when={state.snapshot() !== undefined}
         fallback={
           <box flexGrow={1} minHeight={0} flexDirection="column" paddingLeft={1} paddingRight={1}>
-            <text fg={theme().text.feedback.info.default}>{state.status() || "No snapshot loaded"}</text>
+            <text fg={theme().text.feedback.info.base}>{state.status() || "No snapshot loaded"}</text>
           </box>
         }
       >
         <Tabs />
-        <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.subdued}>
+        <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.muted}>
           {mode() === "browse" ? breadcrumb() : ""}
         </text>
         <Show when={mode() === "browse"}>
@@ -1303,7 +1303,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         </Show>
         <Show when={mode() === "diff" ? target() : undefined}>
           {(node) => (
-            <Show when={state.threeWay(node())} fallback={<text paddingLeft={1} fg={theme().text.subdued}>Nothing to compare · esc back</text>}>
+            <Show when={state.threeWay(node())} fallback={<text paddingLeft={1} fg={theme().text.muted}>Nothing to compare · esc back</text>}>
               {(three) => (
                 <DiffPane
                   context={props.context}
@@ -1334,7 +1334,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       </Show>
       <Show when={state.status()}>
         {(line) => (
-          <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.feedback.info.default}>
+          <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.feedback.info.base}>
             {line()}
           </text>
         )}

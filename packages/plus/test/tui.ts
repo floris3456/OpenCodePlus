@@ -57,13 +57,22 @@ export function createTestTheme() {
 
   const green = RGBA.fromHex("#00ff00")
   const red = RGBA.fromHex("#ff0000")
-  const stateful = (base: RGBA, focused: RGBA) => ({ default: base, focused, selected: focused, hovered: focused, pressed: focused, disabled: gray })
+  const stateful = (base: RGBA, focused: RGBA) => {
+    const states = { base, hovered: focused, focused, pressed: focused, selected: focused, disabled: gray }
+    return {
+      ...states,
+      state: (input: Partial<Record<"hovered" | "focused" | "pressed" | "selected" | "disabled", boolean>>) =>
+        states[
+          (["hovered", "focused", "pressed", "selected", "disabled"] as const).find((key) => input[key]) ?? "base"
+        ],
+    }
+  }
   const scale = (color: RGBA) => Object.fromEntries([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950].map((step) => [step, color]))
 
   return {
     categorical: [scale(blue), scale(green), scale(yellow), scale(red)],
-    border: { default: gray },
-    scrollbar: { default: gray },
+    border: { base: gray },
+    scrollbar: { base: gray },
     diff: {
       text: { added: green, removed: red, context: white, hunkHeader: gray },
       background: { added: black, removed: black, context: black },
@@ -71,39 +80,27 @@ export function createTestTheme() {
       lineNumber: { text: gray, background: { added: black, removed: black } },
     },
     text: {
-      default: white,
-      subdued: gray,
+      base: white,
+      muted: gray,
       action: { primary: stateful(white, white), secondary: stateful(gray, white), destructive: stateful(red, red) },
-      formfield: {
-        default: white,
-        selected: white,
-        focused: white,
-        hovered: white,
-        disabled: gray,
-      },
+      formfield: stateful(white, white),
       feedback: {
-        info: { default: blue, subdued: gray },
-        warning: { default: yellow, subdued: gray },
-        error: { default: yellow, subdued: gray },
-        success: { default: blue, subdued: gray },
+        info: { base: blue, muted: gray },
+        warning: { base: yellow, muted: gray },
+        error: { base: yellow, muted: gray },
+        success: { base: blue, muted: gray },
       },
     },
     background: {
-      default: black,
-      surface: { offset: black, overlay: selectedBg },
+      base: black,
+      raised: { base: black, high: selectedBg, max: selectedBg },
       action: { primary: stateful(selectedBg, selectedBg), secondary: stateful(black, selectedBg), destructive: stateful(red, red) },
-      formfield: {
-        default: black,
-        selected: selectedBg,
-        focused: selectedBg,
-        hovered: selectedBg,
-        disabled: black,
-      },
+      formfield: stateful(black, selectedBg),
       feedback: {
-        info: { default: black },
-        warning: { default: black },
-        error: { default: black },
-        success: { default: black },
+        info: { base: black },
+        warning: { base: black },
+        error: { base: black },
+        success: { base: black },
       },
     },
   }

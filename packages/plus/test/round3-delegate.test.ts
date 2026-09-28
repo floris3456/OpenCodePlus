@@ -165,7 +165,7 @@ test("hostBridge speaks the documented session routes with basic auth", async ()
       }),
     )
     await Effect.runPromise(bridge.domain.wait({ sessionID: created.id }))
-    const interrupted = await Effect.runPromise(bridge.domain.interrupt({ sessionID: created.id, continue: true }))
+    const interrupted = await Effect.runPromise(bridge.domain.interrupt({ sessionID: created.id, resume: true }))
     expect(interrupted.interrupted).toBe(true)
     const got = await Effect.runPromise(bridge.domain.get({ sessionID: Session.ID.make("ses_fixture_1") }))
     expect(String(got.id)).toBe("ses_fixture_1")
@@ -175,7 +175,7 @@ test("hostBridge speaks the documented session routes with basic auth", async ()
       "POST /api/session/ses_fixture_1/prompt",
       "POST /api/session/ses_fixture_1/model",
       "POST /api/session/ses_fixture_1/wait",
-      "POST /api/session/ses_fixture_1/interrupt?continue=true",
+      "POST /api/session/ses_fixture_1/interrupt?resume=true",
       "GET /api/session/ses_fixture_1",
     ])
     const expectedAuth = `Basic ${Buffer.from(`opencode:${FIXTURE_PASSWORD}`, "utf8").toString("base64")}`

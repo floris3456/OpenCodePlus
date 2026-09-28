@@ -416,13 +416,13 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   const black = RGBA.fromHex("#000000")
   const testTheme = {
     text: {
-      default: white,
-      subdued: gray,
-      action: { primary: { default: white, selected: white, focused: white } },
+      base: white,
+      muted: gray,
+      action: { primary: { base: white, selected: white, focused: white } },
     },
     background: {
-      default: black,
-      action: { primary: { default: black, selected: black, focused: black } },
+      base: black,
+      action: { primary: { base: black, selected: black, focused: black } },
     },
   }
 
@@ -573,8 +573,8 @@ test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working s
   const white = RGBA.fromHex("#ffffff")
   const black = RGBA.fromHex("#000000")
   const testTheme = {
-    text: { default: white, subdued: white, action: { primary: { default: white, selected: white, focused: white } } },
-    background: { default: black, action: { primary: { default: black, selected: black, focused: black } } },
+    text: { base: white, muted: white, action: { primary: { base: white, selected: white, focused: white } } },
+    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
   }
 
   const context: any = {
@@ -683,8 +683,8 @@ test("TeamMonitorTab ctrl+d surfaces warning toast when stop RPC is rejected", a
   const white = RGBA.fromHex("#ffffff")
   const black = RGBA.fromHex("#000000")
   const testTheme = {
-    text: { default: white, subdued: white, action: { primary: { default: white, selected: white, focused: white } } },
-    background: { default: black, action: { primary: { default: black, selected: black, focused: black } } },
+    text: { base: white, muted: white, action: { primary: { base: white, selected: white, focused: white } } },
+    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
   }
 
   const context: any = {

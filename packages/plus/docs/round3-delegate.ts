@@ -114,7 +114,7 @@ export async function resolveLabTargets(input: LabTargetInput): Promise<LabTarge
 }
 
 export interface HostCall {
-  readonly method: "GET" | "POST"
+  readonly method: "GET" | "POST" | "PATCH"
   readonly path: string
   readonly status: number
 }
@@ -138,7 +138,7 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
   const calls: HostCall[] = []
   const authorization = `Basic ${Buffer.from(`opencode:${options.password}`, "utf8").toString("base64")}`
 
-  async function request(method: "GET" | "POST", requestPath: string, body?: unknown): Promise<unknown> {
+  async function request(method: "GET" | "POST" | "PATCH", requestPath: string, body?: unknown): Promise<unknown> {
     const response = await fetchImpl(`${baseUrl}${requestPath}`, {
       method,
       headers: {
@@ -205,7 +205,7 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
     command: (input) =>
       Effect.promise(async () => {
         await request("POST", `/api/session/${segment(input.sessionID)}/command`, {
-          command: input.command,
+          name: input.name,
           text: input.text,
         })
       }),
@@ -224,20 +224,21 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
       }),
     interrupt: (input) =>
       Effect.promise(async () => {
-        const query = input.continue === undefined ? "" : `?continue=${input.continue ? "true" : "false"}`
+        const query = input.resume === undefined ? "" : `?resume=${input.resume ? "true" : "false"}`
         const requestPath = `/api/session/${segment(input.sessionID)}/interrupt${query}`
         const body = (await request("POST", requestPath)) as { interrupted?: unknown } | undefined
         return { interrupted: body?.interrupted === true }
       }),
-    rename: (input) =>
+    update: (input) =>
       Effect.promise(async () => {
-        await request("POST", `/api/session/${segment(input.sessionID)}/rename`, { title: input.title })
+        await request("PATCH", `/api/session/${segment(input.sessionID)}`, {
+          ...(input.title === undefined ? {} : { title: input.title }),
+        })
       }),
     move: (input) =>
       Effect.promise(async () => {
         await request("POST", `/api/session/${segment(input.sessionID)}/move`, {
           directory: input.directory,
-          ...(input.workspaceID === undefined ? {} : { workspaceID: input.workspaceID }),
         })
       }),
     wait: (input) =>

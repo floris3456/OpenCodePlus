@@ -9,7 +9,7 @@ import { load, save, type StoredRecord } from "../../src/instructions/store.js"
 import { enable } from "../../src/project.js"
 import {
   agentHarness,
-  catalogHarness,
+  modelHarness,
   context,
   defaultHostTemplates,
   fullContext,
@@ -94,7 +94,7 @@ async function publishOnce(project: string, records: readonly StoredRecord[]): P
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness([]),
+    model: modelHarness([]),
     prompt: promptHarness(defaultHostTemplates),
     skill,
     tool: tools.domain,
@@ -237,7 +237,7 @@ test("disabling a pinned team removes its roles even with the model record retai
   const ctx = context({
     location,
     agent: agents.domain,
-    catalog: catalogHarness([]),
+    model: modelHarness([]),
     prompt: promptHarness(defaultHostTemplates, { "nova-2": "general", "": "general" }),
     skill,
     tool: tools.domain,

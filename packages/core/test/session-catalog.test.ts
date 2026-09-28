@@ -3,7 +3,6 @@ import { LanguageModel } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Agent } from "@opencode/core/agent"
 import { AISDK } from "@opencode/core/aisdk"
-import { Catalog } from "@opencode/core/catalog"
 import { CodeModeCatalog } from "@opencode/core/codemode/catalog"
 import { CodeModeInstructions } from "@opencode/core/codemode/instructions"
 import { Command } from "@opencode/core/command"
@@ -77,6 +76,7 @@ const permissionLayer = Layer.succeed(
     get: () => Effect.succeed(undefined),
     forSession: () => Effect.succeed([]),
     list: () => Effect.succeed([]),
+    close: Effect.void,
   }),
 )
 
@@ -96,7 +96,6 @@ const testLayer = AppNodeBuilder.build(
     Plugin.node,
     Agent.node,
     AISDK.node,
-    Catalog.node,
     Command.node,
     Integration.node,
     KV.node,

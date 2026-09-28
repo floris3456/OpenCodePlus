@@ -203,7 +203,7 @@ export function createActiveTeam(context: Plugin.Context) {
       render() {
         return (
           <Show when={activeTeam()}>
-            {(team) => <text fg={context.theme.text.subdued}>{` · team ${team().name}`}</text>}
+            {(team) => <text fg={context.theme.text.muted}>{` · team ${team().name}`}</text>}
           </Show>
         )
       },
@@ -454,7 +454,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       when={visibleRuns().length > 0}
       fallback={
         <box paddingLeft={1}>
-          <text fg={props.context.theme.text.subdued}>
+          <text fg={props.context.theme.text.muted}>
             {showInactive() ? "No inactive runs" : "No active runs"}
           </text>
         </box>
@@ -475,7 +475,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
                     ? props.context.theme.background.action.primary.focused
                     : isCurrent()
                       ? props.context.theme.background.action.primary.selected
-                      : props.context.theme.background.action.primary.default
+                      : props.context.theme.background.action.primary.base
                 }
                 onMouseMove={() => setStore("selected", index())}
                 onMouseUp={() => {
@@ -490,7 +490,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
                         ? props.context.theme.text.action.primary.focused
                         : isCurrent()
                           ? props.context.theme.text.action.primary.selected
-                          : props.context.theme.text.action.primary.default
+                          : props.context.theme.text.action.primary.base
                     }
                     attributes={isSelected() ? TextAttributes.BOLD : undefined}
                     wrapMode="none"
@@ -502,7 +502,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
                   fg={
                     isSelected()
                       ? props.context.theme.text.action.primary.focused
-                      : props.context.theme.text.subdued
+                      : props.context.theme.text.muted
                   }
                   wrapMode="none"
                 >

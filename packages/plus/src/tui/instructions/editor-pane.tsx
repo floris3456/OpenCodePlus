@@ -83,17 +83,17 @@ export function EditorPane(props: EditorPaneProps) {
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingLeft={1} paddingRight={1}>
       <box flexDirection="row" flexShrink={0} gap={1}>
-        <text flexShrink={0} fg={theme().text.default} attributes={TextAttributes.BOLD}>
+        <text flexShrink={0} fg={theme().text.base} attributes={TextAttributes.BOLD}>
           {props.title}
         </text>
         <Show when={props.path}>
           {(path) => (
-            <text flexGrow={1} minWidth={0} wrapMode="none" truncate fg={theme().text.subdued}>
+            <text flexGrow={1} minWidth={0} wrapMode="none" truncate fg={theme().text.muted}>
               {path()}
             </text>
           )}
         </Show>
-        <text flexShrink={0} fg={dirty() ? theme().text.feedback.info.default : theme().text.subdued}>
+        <text flexShrink={0} fg={dirty() ? theme().text.feedback.info.base : theme().text.muted}>
           {dirty() ? "edited" : "editing"}
         </text>
       </box>
@@ -101,14 +101,14 @@ export function EditorPane(props: EditorPaneProps) {
         when={!preview()}
         fallback={
           <scrollbox flexGrow={1} minHeight={0} paddingTop={1}>
-            <Show when={dirty()} fallback={<text fg={theme().text.subdued}>No changes yet</text>}>
+            <Show when={dirty()} fallback={<text fg={theme().text.muted}>No changes yet</text>}>
               <diff
                 diff={unifiedDiff(props.initial, draft(), { from: "before", to: "after" })}
                 view={dimensions().width >= 120 ? "split" : "unified"}
                 showLineNumbers={true}
                 width="100%"
                 wrapMode="word"
-                fg={theme().text.default}
+                fg={theme().text.base}
                 addedBg={theme().diff.background.added}
                 removedBg={theme().diff.background.removed}
                 contextBg={theme().diff.background.context}
@@ -127,7 +127,7 @@ export function EditorPane(props: EditorPaneProps) {
           <textarea
             flexGrow={1}
             initialValue={draft()}
-            textColor={theme().text.formfield.default}
+            textColor={theme().text.formfield.base}
             focusedTextColor={theme().text.formfield.focused}
             cursorColor={theme().text.formfield.focused}
             ref={(next) => {

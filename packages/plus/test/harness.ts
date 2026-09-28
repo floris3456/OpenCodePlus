@@ -1,12 +1,13 @@
 import type { AgentDomain } from "@opencode/plugin/effect/agent"
 import type { AISDKDomain } from "@opencode/plugin/effect/aisdk"
-import type { CatalogDomain } from "@opencode/plugin/effect/catalog"
 import type { CommandDomain } from "@opencode/plugin/effect/command"
 import type { EventDomain } from "@opencode/plugin/effect/event"
 import type { IntegrationDomain } from "@opencode/plugin/effect/integration"
 import type { MCPDomain } from "@opencode/plugin/effect/mcp"
+import type { ModelDomain } from "@opencode/plugin/effect/model"
 import type { PermissionDomain } from "@opencode/plugin/effect/permission"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { ProviderDomain } from "@opencode/plugin/effect/provider"
 import type { ReferenceDomain } from "@opencode/plugin/effect/reference"
 import type { RpcDomain } from "@opencode/plugin/effect/rpc"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
@@ -34,9 +35,9 @@ import path from "node:path"
 import { idFromPath, parseFrontmatter, resolveDirectory } from "../src/agents/files.js"
 import { agentBody } from "../src/instructions/discover.js"
 
-export type Overrides = Partial<Omit<Context, "options" | "session" | "catalog" | "prompt">> & {
+export type Overrides = Partial<Omit<Context, "options" | "session" | "model" | "prompt">> & {
   readonly session?: Partial<Context["session"]>
-  readonly catalog?: Context["catalog"]
+  readonly model?: Context["model"]
   readonly prompt?: Context["prompt"]
 }
 
@@ -68,40 +69,22 @@ function aisdkDomain(): AISDKDomain {
   return { hook: die("unused aisdk.hook") }
 }
 
-function catalogDomain(models: Model.Info[] = []): CatalogDomain {
+function modelDomain(models: Model.Info[] = []): ModelDomain {
+  const location = { directory: AbsolutePath.make("/workspace") }
   return {
-    provider: {
-      list: die("unused catalog.provider.list"),
-      get: die("unused catalog.provider.get"),
-    },
-    model: {
-      list: () =>
-        Effect.succeed({
-          location: new Location.Info({
-            directory: AbsolutePath.make("/workspace"),
-            project: {
-              id: Project.ID.global,
-              directory: AbsolutePath.make("/workspace"),
-              canonical: AbsolutePath.make("/workspace"),
-            },
-          }),
-          data: models,
-        }),
-      default: () =>
-        Effect.succeed({
-          location: new Location.Info({
-            directory: AbsolutePath.make("/workspace"),
-            project: {
-              id: Project.ID.global,
-              directory: AbsolutePath.make("/workspace"),
-              canonical: AbsolutePath.make("/workspace"),
-            },
-          }),
-          data: models[0],
-        }),
-    },
-    transform: die("unused catalog.transform"),
-    reload: die("unused catalog.reload"),
+    list: () => Effect.succeed({ location, data: models }),
+    default: () => Effect.succeed({ location, data: models[0] }),
+    transform: die("unused model.transform"),
+    reload: die("unused model.reload"),
+  }
+}
+
+function providerDomain(): ProviderDomain {
+  return {
+    list: die("unused provider.list"),
+    get: die("unused provider.get"),
+    transform: die("unused provider.transform"),
+    reload: die("unused provider.reload"),
   }
 }
 
@@ -192,7 +175,6 @@ function permissionDomain(): PermissionDomain {
     list: die("unused permission.list"),
     get: die("unused permission.get"),
     reply: die("unused permission.reply"),
-    rules: die("unused permission.rules"),
     hook: die("unused permission.hook"),
   }
 }
@@ -584,6 +566,7 @@ export function toolHarness(entries: readonly { id: string; description: string;
         Effect.sync(() => {
           rebuild()
         }),
+      list: () => Effect.succeed(Array.from(live.values())),
       hook: die("unused tool.hook"),
     },
     tools: live,
@@ -671,15 +654,15 @@ export function promptHarness(
   return promptDomain(templates, classifications, raws)
 }
 
-export function catalogHarness(models: Model.Info[]): CatalogDomain {
-  return catalogDomain(models)
+export function modelHarness(models: Model.Info[]): ModelDomain {
+  return modelDomain(models)
 }
 
 export function skillInfo(id: string, content: string, locationPath = `/skills/${id}.md`): Skill.Info {
   return Skill.Info.make({
     id: Skill.ID.make(id),
     name: Skill.Name.make(id),
-    location: AbsolutePath.make(locationPath),
+    path: AbsolutePath.make(locationPath),
     content,
   })
 }
@@ -740,7 +723,7 @@ export function fullContext(options: {
   return context({
     location,
     agent: agentState.domain,
-    catalog: catalogDomain(models),
+    model: modelDomain(models),
     prompt: promptDomain(templates, classifications, options.raws),
     skill: skillDomain,
     tool: tools.domain,
@@ -779,6 +762,7 @@ function toolDomain(): ToolDomain {
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,
+    list: die("unused tool.list"),
     hook: die("unused tool.hook"),
   }
 }
@@ -787,7 +771,7 @@ function vcsDomain(): VcsDomain {
   return {
     get: die("unused vcs.get"),
     base: die("unused vcs.base"),
-    branches: die("unused vcs.branches"),
+    branch: { list: die("unused vcs.branch.list") },
     status: die("unused vcs.status"),
     diff: die("unused vcs.diff"),
     transform: die("unused vcs.transform"),
@@ -824,7 +808,7 @@ function sessionDomain(overrides: Partial<SessionDomain> = {}): SessionDomain {
     prompt: overrides.prompt ?? die("unused session.prompt"),
     generate: overrides.generate ?? die("unused session.generate"),
     command: overrides.command ?? die("unused session.command"),
-    rename: overrides.rename ?? die("unused session.rename"),
+    update: overrides.update ?? die("unused session.update"),
     move: overrides.move ?? die("unused session.move"),
     synthetic: overrides.synthetic ?? die("unused session.synthetic"),
     interrupt: overrides.interrupt ?? die("unused session.interrupt"),
@@ -850,7 +834,8 @@ export function context(overrides: Overrides = {}): Context {
     options: {},
     agent: overrides.agent ?? agentDomain(),
     aisdk: overrides.aisdk ?? aisdkDomain(),
-    catalog: overrides.catalog ?? catalogDomain([]),
+    model: overrides.model ?? modelDomain([]),
+    provider: overrides.provider ?? providerDomain(),
     command: overrides.command ?? commandDomain(),
     event: overrides.event ?? eventDomain(),
     experimental: overrides.experimental ?? {

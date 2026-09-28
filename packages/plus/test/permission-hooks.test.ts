@@ -74,6 +74,7 @@ async function installed(table: PermissionTable, state: EnforcementState = enfor
     tool: {
       transform: () => registration(),
       reload: () => Effect.void,
+      list: () => Effect.succeed([]),
       hook: ((name: string, callback: never) => {
         if (name === "execute.before") recorded.before = callback
         if (name === "execute.after") recorded.after = callback

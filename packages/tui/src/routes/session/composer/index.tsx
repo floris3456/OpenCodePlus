@@ -1,4 +1,4 @@
-import { createEffect, createMemo, For, onCleanup, Show, useContext, createContext } from "solid-js"
+import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../../../context/theme"
@@ -9,32 +9,10 @@ import { ShellTab } from "./shell-tab"
 import { TerminalsTab } from "./terminals-tab"
 import { PluginComposerTabs } from "./team-monitor-tab"
 import { useConfig } from "../../../config"
+import { ComposerContext, type ComposerTab } from "./context"
 
 export { composerPluginTabs } from "./team-monitor-tab"
-
-export interface ComposerHint {
-  label: string
-  shortcut: string
-}
-
-interface Tab {
-  id: string
-  label: string
-  hints?: () => ComposerHint[]
-  onClose?: () => void
-}
-
-const ComposerContext = createContext<{
-  register: (tab: Tab) => () => void
-  active: (id: string) => boolean
-  close: () => void
-}>()
-
-export function useComposerTab() {
-  const ctx = useContext(ComposerContext)
-  if (!ctx) throw new Error("useComposerTab must be used within a Composer")
-  return ctx
-}
+export { useComposerTab, type ComposerHint } from "./context"
 
 export type ComposerProps = {
   sessionID: string
@@ -45,15 +23,15 @@ export type ComposerProps = {
 }
 
 export function Composer(props: ComposerProps) {
-  const theme = useTheme("elevated")
+  const theme = useTheme()
   const config = useConfig().data
 
   const [store, setStore] = createStore({
-    tabs: {} as Record<string, Tab>,
+    tabs: {} as Record<string, ComposerTab>,
     active: "",
   })
 
-  const tabList = createMemo(() => Object.values(store.tabs).filter((t): t is Tab => Boolean(t && t.id)))
+  const tabList = createMemo(() => Object.values(store.tabs).filter((t): t is ComposerTab => Boolean(t && t.id)))
   const activeTab = createMemo(() => tabList().find((t) => t.id === store.active))
   const footerHints = createMemo(() => activeTab()?.hints?.() ?? [])
 
@@ -79,7 +57,7 @@ export function Composer(props: ComposerProps) {
   }
 
   const ctx = {
-    register(tab: Tab) {
+    register(tab: ComposerTab) {
       setStore("tabs", tab.id, tab)
       if (!store.active) setStore("active", tab.id)
       return () => setStore("tabs", tab.id, undefined!)
@@ -122,8 +100,8 @@ export function Composer(props: ComposerProps) {
         <box
           {...SplitBorder}
           border={["left"]}
-          borderColor={theme.border.default}
-          backgroundColor={theme.background.default}
+          borderColor={theme.border.base}
+          backgroundColor={theme.background.raised.base}
           paddingLeft={1}
           paddingRight={2}
           paddingTop={1}
@@ -134,7 +112,7 @@ export function Composer(props: ComposerProps) {
               <Show
                 when={tabList().length > 1}
                 fallback={
-                  <text fg={theme.text.default} attributes={TextAttributes.BOLD}>
+                  <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
                     {tabList()[0]?.label ?? ""}
                   </text>
                 }
@@ -145,7 +123,7 @@ export function Composer(props: ComposerProps) {
                       const isActive = createMemo(() => store.active === t.id)
                       return (
                         <text
-                          fg={isActive() ? theme.text.default : theme.text.subdued}
+                          fg={isActive() ? theme.text.base : theme.text.muted}
                           attributes={isActive() ? TextAttributes.BOLD : undefined}
                         >
                           {t.label}
@@ -155,7 +133,7 @@ export function Composer(props: ComposerProps) {
                   </For>
                 </box>
               </Show>
-              <text fg={theme.text.subdued} onMouseUp={close}>
+              <text fg={theme.text.muted} onMouseUp={close}>
                 esc
               </text>
             </box>
@@ -169,19 +147,19 @@ export function Composer(props: ComposerProps) {
               <For each={footerHints()}>
                 {(hint) => (
                   <text>
-                    <span style={{ fg: theme.text.default }}>
+                    <span style={{ fg: theme.text.base }}>
                       <b>{hint.label}</b>{" "}
                     </span>
-                    <span style={{ fg: theme.text.subdued }}>{hint.shortcut}</span>
+                    <span style={{ fg: theme.text.muted }}>{hint.shortcut}</span>
                   </text>
                 )}
               </For>
               <Show when={tabList().length > 1}>
                 <text>
-                  <span style={{ fg: theme.text.default }}>
+                  <span style={{ fg: theme.text.base }}>
                     <b>tabs</b>{" "}
                   </span>
-                  <span style={{ fg: theme.text.subdued }}>←/→</span>
+                  <span style={{ fg: theme.text.muted }}>←/→</span>
                 </text>
               </Show>
             </box>

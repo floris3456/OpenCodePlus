@@ -173,12 +173,12 @@ export function Splitter(props: SplitterProps) {
 
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingLeft={1} paddingRight={1}>
-      <text flexShrink={0} fg={props.context.theme.text.default}>
+      <text flexShrink={0} fg={props.context.theme.text.base}>
         {props.title} · split into sections
       </text>
       <Show when={status()}>
         {(line) => (
-          <text flexShrink={0} fg={props.context.theme.text.subdued}>
+          <text flexShrink={0} fg={props.context.theme.text.muted}>
             {line()}
           </text>
         )}
@@ -186,31 +186,31 @@ export function Splitter(props: SplitterProps) {
       <scrollbox flexGrow={1}>
         <For each={lines()}>
           {(line, index) => (
-            <text flexShrink={0} fg={props.context.theme.text.default}>
+            <text flexShrink={0} fg={props.context.theme.text.base}>
               {rowText(line, index())}
             </text>
           )}
         </For>
-        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+        <text flexShrink={0} fg={props.context.theme.text.muted}>
           Sections preview
         </text>
         <For each={manual(props.text, build()).sections}>
           {(section) => (
-            <text flexShrink={0} fg={props.context.theme.text.default}>
+            <text flexShrink={0} fg={props.context.theme.text.base}>
               {` ${section.name} (chars ${section.start}–${section.end})`}
             </text>
           )}
         </For>
       </scrollbox>
       <Show when={naming() !== undefined}>
-        <text flexShrink={0} fg={props.context.theme.text.subdued}>
+        <text flexShrink={0} fg={props.context.theme.text.muted}>
           Name section
         </text>
         <textarea
           height={1}
           wrapMode="none"
           initialValue={nameDraft()}
-          textColor={props.context.theme.text.formfield.default}
+          textColor={props.context.theme.text.formfield.base}
           focusedTextColor={props.context.theme.text.formfield.focused}
           cursorColor={props.context.theme.text.formfield.focused}
           ref={(next) => {
@@ -222,7 +222,7 @@ export function Splitter(props: SplitterProps) {
           }}
         />
       </Show>
-      <text flexShrink={0} fg={props.context.theme.text.subdued}>
+      <text flexShrink={0} fg={props.context.theme.text.muted}>
         {hint()}
       </text>
     </box>

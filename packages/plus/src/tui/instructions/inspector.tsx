@@ -125,12 +125,12 @@ export function Inspector(props: InspectorProps) {
   const theme = () => props.context.theme
   const tone = (fact: Fact) =>
     fact[2] === "warning"
-      ? theme().text.feedback.warning.default
+      ? theme().text.feedback.warning.base
       : fact[2] === "info"
-        ? theme().text.feedback.info.default
+        ? theme().text.feedback.info.base
         : fact[2] === "subdued"
-          ? theme().text.subdued
-          : theme().text.default
+          ? theme().text.muted
+          : theme().text.base
   const value = (node: TreeNode, snapshot: Snapshot) => {
     const item = node.address?.item
     if (item === undefined || controlKind(item) === undefined) return undefined
@@ -146,33 +146,33 @@ export function Inspector(props: InspectorProps) {
     <box flexGrow={1} flexDirection="column" minHeight={0} minWidth={0} paddingLeft={1} paddingRight={1}>
       <Show
         when={props.node()}
-        fallback={<text fg={theme().text.subdued}>Nothing selected</text>}
+        fallback={<text fg={theme().text.muted}>Nothing selected</text>}
       >
         {(node) => (
           <scrollbox flexGrow={1} minHeight={0} ref={(scroll: ScrollBoxRenderable) => props.ref?.(scroll)} verticalScrollbarOptions={{ visible: false }}>
             <box flexDirection="row" flexShrink={0}>
-              <text flexGrow={1} minWidth={0} wrapMode="none" truncate fg={theme().text.default} attributes={TextAttributes.BOLD}>
+              <text flexGrow={1} minWidth={0} wrapMode="none" truncate fg={theme().text.base} attributes={TextAttributes.BOLD}>
                 {props.label() ?? node().label}
               </text>
-              <text flexShrink={0} fg={theme().text.subdued}>
+              <text flexShrink={0} fg={theme().text.muted}>
                 {kindWord(node())}
               </text>
             </box>
-            <text flexShrink={0} fg={theme().text.subdued} wrapMode="word">
+            <text flexShrink={0} fg={theme().text.muted} wrapMode="word">
               {props.path()}
             </text>
             <Show when={props.snapshot()}>
               {(snapshot) => (
                 <box flexDirection="column" flexShrink={0} paddingTop={1}>
                   <Show when={value(node(), snapshot())}>
-                    {(current) => <Fact context={props.context} fact={["value", current(), "value"]} color={theme().text.formfield.default} />}
+                    {(current) => <Fact context={props.context} fact={["value", current(), "value"]} color={theme().text.formfield.base} />}
                   </Show>
                   <Show when={props.tools?.()}>
                     {(count) => (
                       <Fact
                         context={props.context}
                         fact={["tools", `${toolWords(count())} · ${count().total} in all${count().on === 0 ? " · this agent cannot act: link a preset (l) or turn tools on (4)" : ""}`]}
-                        color={count().on === 0 ? theme().text.feedback.warning.default : theme().text.default}
+                        color={count().on === 0 ? theme().text.feedback.warning.base : theme().text.base}
                       />
                     )}
                   </Show>
@@ -181,7 +181,7 @@ export function Inspector(props: InspectorProps) {
                   </For>
                   <For each={notesOf(node(), snapshot())}>
                     {(line) => (
-                      <text flexShrink={0} fg={node().badges.disabled === undefined ? theme().text.subdued : theme().text.formfield.disabled} wrapMode="word">
+                      <text flexShrink={0} fg={node().badges.disabled === undefined ? theme().text.muted : theme().text.formfield.disabled} wrapMode="word">
                         {line}
                       </text>
                     )}
@@ -192,7 +192,7 @@ export function Inspector(props: InspectorProps) {
                         when={node().address?.section === null}
                         fallback={
                           <text
-                            fg={sectionExcluded(node(), snapshot()) ? theme().text.subdued : theme().text.default}
+                            fg={sectionExcluded(node(), snapshot()) ? theme().text.muted : theme().text.base}
                             attributes={excludedAttributes(sectionExcluded(node(), snapshot()))}
                             wrapMode="word"
                           >
@@ -203,7 +203,7 @@ export function Inspector(props: InspectorProps) {
                         <For each={(() => { const whole = wholeItemText(node(), snapshot()); return renderRanges(whole.text, whole.ranges) })()}>
                           {(part) => (
                             <text
-                              fg={part.excluded ? theme().text.subdued : theme().text.default}
+                              fg={part.excluded ? theme().text.muted : theme().text.base}
                               attributes={excludedAttributes(part.excluded)}
                               wrapMode="word"
                             >
@@ -227,7 +227,7 @@ export function Inspector(props: InspectorProps) {
 function Fact(props: { readonly context: Plugin.Context; readonly fact: Fact; readonly color: RGBA }) {
   return (
     <box flexDirection="row" flexShrink={0}>
-      <text flexShrink={0} width={12} fg={props.context.theme.text.subdued}>
+      <text flexShrink={0} width={12} fg={props.context.theme.text.muted}>
         {props.fact[0]}
       </text>
       <text flexGrow={1} minWidth={0} fg={props.color} wrapMode="word">

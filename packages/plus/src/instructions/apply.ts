@@ -712,9 +712,8 @@ async function addSkillCopies(
           id: Skill.ID.make(id),
           name: Skill.Name.make(original.name),
           ...(original.description === undefined ? {} : { description: original.description }),
-          ...(original.slash === undefined ? {} : { slash: original.slash }),
           ...(original.autoinvoke === undefined ? {} : { autoinvoke: original.autoinvoke }),
-          location: original.location,
+          path: original.path,
           content: copy.text,
         }),
       )
@@ -884,7 +883,11 @@ async function applySession(
         if (agent.base !== undefined) pins.set(agent.id, agent.base)
       }
       const catalog = await Effect.runPromise(
-        ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+        ctx.model.list().pipe(
+          Effect.catchCause(() =>
+            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+          ),
+        ),
       )
       const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
       const customByAgent = await readCustomSystem(ctx, input.agents)

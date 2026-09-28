@@ -1540,7 +1540,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (config === undefined)
         return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const catalog = await Effect.runPromise(
-        ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+        ctx.model.list().pipe(
+          Effect.catchCause(() =>
+            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+          ),
+        ),
       )
       const models = catalog.data.flatMap((entry): Plus.CatalogModel[] => {
         const providerID = String(entry.providerID)
@@ -1581,7 +1585,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       const catalog = await Effect.runPromise(
-        ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+        ctx.model.list().pipe(
+          Effect.catchCause(() =>
+            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+          ),
+        ),
       )
       if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
@@ -3927,12 +3935,20 @@ async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemp
       ? [...fallbackBaseTemplates().filter((template) => !userIds.has(template.id)), ...user]
       : [...templates.filter((template) => !userIds.has(template.id)).map((template) => ({ ...template })), ...user]
   const catalog = await Effect.runPromise(
-    ctx.catalog.model.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Model.Info[] }))),
+    ctx.model.list().pipe(
+      Effect.catchCause(() =>
+        Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+      ),
+    ),
   )
   const fallback = await Effect.runPromise(
-    ctx.catalog.model
+    ctx.model
       .default()
-      .pipe(Effect.catchCause(() => Effect.succeed({ data: undefined as Model.Info | undefined }))),
+      .pipe(
+        Effect.catchCause(() =>
+          Effect.succeed({ data: undefined as Model.Info | undefined, location: { directory: ctx.location.directory } }),
+        ),
+      ),
   )
   const active = (agent: Agent.Info): string | undefined => {
     const model = resolveCatalogModel(agent, catalog.data, fallback.data)

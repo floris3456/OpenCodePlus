@@ -626,7 +626,7 @@ function skillGroup(skill: Skill.Info, directory: string): {
   if (skill.id === teachingSkillId || skill.id === "opencodeplus-release") return { group: "plus" }
   // A user-authored skill is classified by where its SKILL.md lives, so the
   // four creation scopes surface as their own groups.
-  const scoped = skillDirectoryScope(skill.location, directory)
+  const scoped = skillDirectoryScope(skill.path, directory)
   if (scoped !== undefined)
     return { group: scoped.scope, scope: scoped.scope, ...(scoped.preset === undefined ? {} : { preset: scoped.preset }) }
   const grouped = toolGroup(skillOrigin(skill))

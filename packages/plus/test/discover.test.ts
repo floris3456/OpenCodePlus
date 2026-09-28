@@ -23,7 +23,7 @@ import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
 import { chainContext } from "../src/instructions/presets.js"
-import { agentHarness, catalogHarness, context, modelInfo, modelRef, promptHarness, skillHarness, type PromptClassificationTable } from "./harness.js"
+import { agentHarness, modelHarness, context, modelInfo, modelRef, promptHarness, skillHarness, type PromptClassificationTable } from "./harness.js"
 
 const roots: string[] = []
 const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -108,7 +108,7 @@ function skill(id: string, content: string, locationPath: string): Skill.Info {
   return Skill.Info.make({
     id: Skill.ID.make(id),
     name: Skill.Name.make(id),
-    location: AbsolutePath.make(locationPath),
+    path: AbsolutePath.make(locationPath),
     content,
   })
 }
@@ -137,7 +137,7 @@ function fullContext(options: {
       transform: () => Effect.die("unused agent.transform"),
       reload: () => Effect.die("unused agent.reload"),
     },
-    catalog: catalogHarness(options.models ?? []),
+    model: modelHarness(options.models ?? []),
     prompt: promptHarness(options.templates ?? [], options.classifications),
     skill: {
       list: () => Effect.succeed({ location: loc, data: skills }),
@@ -151,6 +151,7 @@ function fullContext(options: {
           return { dispose: Effect.void }
         }),
       reload: () => Effect.die("unused tool.reload"),
+      list: () => Effect.succeed(tools),
       hook: () => Effect.die("unused tool.hook"),
     },
     mcp: {
@@ -177,7 +178,7 @@ function skillInfo(id: string, content: string): Skill.Info {
   return Skill.Info.make({
     id: Skill.ID.make(id),
     name: Skill.Name.make(id),
-    location: AbsolutePath.make(`/skills/${id}.md`),
+    path: AbsolutePath.make(`/skills/${id}.md`),
     content,
   })
 }
@@ -209,6 +210,7 @@ function toolDomainFor(tools: readonly (Tool.Info & { readonly id: string })[]) 
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,
+    list: () => Effect.succeed(live),
     hook: () => Effect.die("unused tool.hook"),
   }
 }
@@ -1014,7 +1016,7 @@ test("discover -> apply honors active base classification", async () => {
   const ctx = context({
     location: discoverCtx.location,
     agent: agents.domain,
-    catalog: catalogHarness(models),
+    model: modelHarness(models),
     prompt: promptHarness(templates, { "trinity-ultra": "trinity" }),
     skill: skills.domain,
     tool: toolDomainFor([nativeTool("reader", "read things")]),

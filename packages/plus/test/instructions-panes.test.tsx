@@ -326,7 +326,7 @@ test("review and unsupported badges own yellow and nothing else borrows it", () 
   const gray = RGBA.fromHex("#888888")
   const context = {
     theme: {
-      text: { feedback: { warning: { default: yellow } }, subdued: gray },
+      text: { feedback: { warning: { base: yellow } }, muted: gray },
     },
   } as unknown as Parameters<typeof badgeColor>[0]
   expect(badgeColor(context, "review")).toBe(yellow)
@@ -439,7 +439,7 @@ test("tree rows carry the from-label suffix only when inherited, and the review 
   expect(badgeLabels(row)).toContain("to review (state)")
   const yellow = RGBA.fromHex("#ffff00")
   const gray = RGBA.fromHex("#888888")
-  const context = { theme: { text: { feedback: { warning: { default: yellow } }, subdued: gray } } } as unknown as Parameters<typeof badgeColor>[0]
+  const context = { theme: { text: { feedback: { warning: { base: yellow } }, muted: gray } } } as unknown as Parameters<typeof badgeColor>[0]
   expect(badgeColor(context, "to review (state)")).toBe(yellow)
 })
 

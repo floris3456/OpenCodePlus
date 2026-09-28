@@ -38,14 +38,14 @@ export function active(model: { readonly id: string; readonly name: string }) {
 }
 
 // The RAW template text the optimize plugins render for this model. This is
-// the single owner of the gpt-6 -> astra selection: OpenAIPlugin renders
-// exactly this, and the plugin host exposes it so Plus aligns tool guidance
-// against what core actually rendered rather than the classification's
-// canonical template. Family comes from active so the two cannot disagree;
-// only gpt subdivides, and that rule lives here alone.
+// the single owner of the astra selection: OpenAIPlugin renders exactly this,
+// and the plugin host exposes it so Plus aligns tool guidance against what
+// core actually rendered rather than the classification's canonical template.
+// Family comes from active so the two cannot disagree; only gpt subdivides,
+// and that rule lives here alone.
 export function raw(model: { readonly id: string; readonly name: string }): string | undefined {
   const family = active(model)
-  if (family === "gpt") return model.id.toLowerCase().includes("gpt-6") ? PROMPT_ASTRA : PROMPT_GPT
+  if (family === "gpt") return model.id.toLowerCase().includes("astra") ? PROMPT_ASTRA : PROMPT_GPT
   if (family === "kimi") return PROMPT_KIMI
   if (family === "trinity") return PROMPT_TRINITY
   if (family === "muse") return PROMPT_META

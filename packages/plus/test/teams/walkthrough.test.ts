@@ -337,6 +337,7 @@ test("[20c] a non-member catalog has zero team tools; an implementer-preset memb
           return { dispose: Effect.void }
         }),
       reload: () => Effect.void,
+      list: () => Effect.succeed([]),
       hook: () => Effect.die("unused tool.hook"),
     },
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },

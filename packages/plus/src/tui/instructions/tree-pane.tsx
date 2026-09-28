@@ -55,15 +55,15 @@ export function badgeColor(context: Plugin.Context, label: string) {
   // inactive, and pinned describe row state and stay plain subdued body text
   // like every other non-review badge: pinned in particular must never borrow
   // warning yellow.
-  if (isReviewLabel(label)) return context.theme.text.feedback.warning.default
-  if (label === "unsupported") return context.theme.text.feedback.warning.default
+  if (isReviewLabel(label)) return context.theme.text.feedback.warning.base
+  if (label === "unsupported") return context.theme.text.feedback.warning.base
   // A link to a deleted preset: the rows fall through until it is relinked.
-  if (label === "missing preset") return context.theme.text.feedback.warning.default
-  return context.theme.text.subdued
+  if (label === "missing preset") return context.theme.text.feedback.warning.base
+  return context.theme.text.muted
 }
 
 export function controlColor(context: Plugin.Context, node: TreeNode) {
-  return node.badges.disabled === undefined ? context.theme.text.formfield.default : context.theme.text.formfield.disabled
+  return node.badges.disabled === undefined ? context.theme.text.formfield.base : context.theme.text.formfield.disabled
 }
 
 export function controlLabels(node: TreeNode): string[] {

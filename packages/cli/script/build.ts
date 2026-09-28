@@ -31,7 +31,7 @@ export const allTargets: {
   { os: "win32", arch: "x64", avx2: false },
 ]
 
-export function targetName(item: (typeof allTargets)[number], binary = "opencode2") {
+export function targetName(item: (typeof allTargets)[number], binary = "opencode") {
   return [
     binary,
     item.os === "win32" ? "windows" : item.os,
@@ -86,7 +86,7 @@ export interface ResolvedBuildConfig {
 }
 
 export function resolveBuildConfig(options: BuildOptions = {}): ResolvedBuildConfig {
-  const binary = options.binary ?? "opencode2"
+  const binary = options.binary ?? "opencode"
   const channel = options.channel ?? options.identity?.channel ?? Script.channel
   const version = options.version ?? options.identity?.version ?? Script.version
   const entrypoints = options.entrypoints ?? ["./src/index.ts"]
@@ -170,7 +170,7 @@ export async function build(options: BuildOptions = {}) {
       }))
       build.onLoad({ filter: /^opencode-app-assets$/, namespace: "opencode" }, () => ({
         loader: "js",
-        contents: `export default ${JSON.stringify(appArchive)}`,
+        contents: `export default ${appArchive}`,
       }))
     },
   }
@@ -236,6 +236,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
         ...(executablePath ? { executablePath } : {}),
         outfile: path.join(outdir, name, "bin", config.binary),
         execArgv: [
+          "--smol",
           `--user-agent=opencode/${config.channel}/${config.version}/cli`,
           "--use-system-ca",
           "--no-warnings",

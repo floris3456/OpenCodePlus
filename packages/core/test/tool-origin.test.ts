@@ -18,12 +18,12 @@ import { testEffect } from "./lib/effect"
 const mcp = Layer.mock(Mcp.Service, {
   tools: () =>
     Effect.succeed([
-      new Mcp.Tool({
+      {
         server: Mcp.ServerName.make("my.server"),
         name: "search",
         description: "Search",
         inputSchema: { type: "object", properties: {} },
-      }),
+      } satisfies Mcp.Tool,
     ]),
 })
 

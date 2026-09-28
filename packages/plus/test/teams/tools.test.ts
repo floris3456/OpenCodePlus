@@ -847,6 +847,7 @@ function makeTestPermissionService(
 
   const service: Permission.Interface = {
     ask: () => Effect.die("unused ask"),
+    close: Effect.void,
     assert: (input) =>
       Effect.gen(function* () {
         const winningRule = rules

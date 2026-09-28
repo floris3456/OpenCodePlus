@@ -34,7 +34,7 @@ import { registerInstructionTools } from "../src/tools.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
-import { agentHarness, agentInfo, catalogHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -1324,7 +1324,7 @@ test("create model, activate through set, list with item:model and active, then 
   expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
   const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { providerID: string }
   expect(deleted).toMatchObject({ providerID: "acme" })
-  void catalogHarness
+  void modelHarness
 })
 
 test("create model preserves the selected member owner and returns its addressable row", async () => {

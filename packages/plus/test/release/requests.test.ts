@@ -78,8 +78,8 @@ function seamSpy(readStatus?: (requestID: string) => ReleaseResult): SeamSpy {
 // that reaches for authority fail loudly instead of silently no-oping.
 function guardSeam(seam: ReleaseDomain): ReleaseDomain {
   return new Proxy(seam, {
-    get: (target, property, receiver) => {
-      if (property === "submit" || property === "status") return Reflect.get(target, property, receiver)
+    get: (target, property) => {
+      if (property === "submit" || property === "status") return target[property]
       throw new Error(`plugin reached release seam operation ${String(property)}`)
     },
   })

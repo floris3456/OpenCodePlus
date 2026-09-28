@@ -60,7 +60,7 @@ function hostFor(agents: readonly string[]) {
     agent: harness.domain,
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
     tool: { ...toolHarness().domain, hook: tool.hook },
-    permission: { list: unused, get: unused, reply: unused, rules: unused, hook: permission.hook },
+    permission: { list: unused, get: unused, reply: unused, hook: permission.hook },
     shell: { hook: shell.hook },
   })
   return { ctx, harness, tool, permission, shell }

@@ -116,7 +116,8 @@ const fixture = Effect.gen(function* () {
       ],
     },
   )
-  yield* opencode.plugin.awaitActivation({ location })
+  // Plugin activation is awaited inside the server's RPC handler now (upstream removed the
+  // dedicated activation endpoint), so the first RPC call is already ordered after it.
   const plus = opencode.rpc(Plus.Definition)
   yield* plus["project.enable"](undefined, { location })
   yield* plus["agent.create"]({ scope: "project", id: targetID, preset: { kind: "agent", id: "build" } }, { location })

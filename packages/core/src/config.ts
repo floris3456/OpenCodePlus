@@ -4,17 +4,9 @@ import { makeLocationNode } from "@opencode/util/effect/app-node"
 import os from "os"
 import path from "path"
 import { isDeepStrictEqual } from "node:util"
-import { type ParseError, parse } from "jsonc-parser"
+import { applyEdits, modify, type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, FiberMap, Layer, Option, PubSub, Ref, Schema, Semaphore, Stream } from "effect"
-import {
-  AgentsDirectory,
-  ClaudeDirectory,
-  Directory,
-  Document,
-  Info,
-  type Entry,
-  Event,
-} from "@opencode/schema/config"
+import { Directory, Document, Info, type Patch, type Entry, Event } from "@opencode/schema/config"
 import { Credential } from "./credential.js"
 import { Bus } from "./bus.js"
 import { Watcher } from "./filesystem/watcher.js"
@@ -37,12 +29,19 @@ export function latest<K extends keyof Info>(entries: readonly Entry[], key: K):
 export interface Interface {
   /** Returns location config documents and discovery sources from lowest to highest priority. */
   readonly entries: () => Effect.Effect<Entry[]>
+  /** Compatibility roots consumed by internal compatibility plugins. */
+  readonly compatibility?: () => Effect.Effect<{
+    readonly claude: readonly AbsolutePath[]
+    readonly agents: readonly AbsolutePath[]
+  }>
   /**
    * Streams raw filesystem updates under config roots. Config owns root
    * topology and watch reconciliation; domain owners filter this feed for the
    * source files they parse and rebuild their own state.
    */
   readonly changes: () => Stream.Stream<Watcher.Update>
+  /** Updates supported global config fields while preserving unrelated JSONC content. */
+  readonly update?: (patch: Patch) => Effect.Effect<void, FSUtil.Error>
 }
 
 export const Options = Schema.Struct({
@@ -67,13 +66,20 @@ export interface TestInterface extends Interface {
 export class Test extends Context.Service<Test, TestInterface>()("@opencode/Config/Test") {}
 
 /** In-memory config for tests: static entries with replaceable state and a test-driven change feed. */
-export const testLayer = (initial: Entry[] = []) =>
+export const testLayer = (
+  initial: Entry[] = [],
+  compatibility: { readonly claude: readonly AbsolutePath[]; readonly agents: readonly AbsolutePath[] } = {
+    claude: [],
+    agents: [],
+  },
+) =>
   Layer.effectContext(
     Effect.gen(function* () {
       const entries = yield* Ref.make(initial)
       const updates = yield* PubSub.unbounded<Watcher.Update>()
       const service = Test.of({
         entries: () => Ref.get(entries),
+        compatibility: () => Effect.succeed(compatibility),
         changes: () => Stream.fromPubSub(updates),
         setEntries: (next) => Ref.set(entries, next),
         emitChange: (update) => PubSub.publish(updates, update).pipe(Effect.asVoid),
@@ -91,9 +97,11 @@ export const layer = (options?: Options) =>
       const watcher = yield* Watcher.Service
       const bus = yield* Bus.Service
       const credentials = yield* Credential.Service
+      const globalService = yield* Global.Service
       const wellknown = yield* WellKnown.Service
       const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
       const reloadLock = Semaphore.makeUnsafe(1)
+      const updateLock = Semaphore.makeUnsafe(1)
       const decodeOptions = { errors: "all", onExcessProperty: "ignore", propertyOrder: "original" } as const
       const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
       const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string) {
@@ -235,8 +243,6 @@ export const layer = (options?: Options) =>
       })
 
       const load = Effect.fn("Config.load")(function* (sources: ConfigDiscovery.Sources) {
-        const claude = yield* Effect.filter(sources.claude, (path) => fs.isDir(path))
-        const agents = yield* Effect.filter(sources.agents, (path) => fs.isDir(path))
         const direct = yield* Effect.forEach(sources.direct, (filepath) => loadFile(filepath)).pipe(
           Effect.orDie,
           Effect.map((entries) => entries.filter((entry): entry is Document => entry !== undefined)),
@@ -275,8 +281,6 @@ export const layer = (options?: Options) =>
         )
         return [
           ...(yield* loadWellknown().pipe(Effect.orDie)),
-          ...claude.map((path) => new ClaudeDirectory({ type: "claude", path })),
-          ...agents.map((path) => new AgentsDirectory({ type: "agents", path })),
           ...globalSupplementary,
           ...explicit,
           ...direct,
@@ -286,6 +290,7 @@ export const layer = (options?: Options) =>
       })
 
       const initial = yield* ConfigDiscovery.discover(options)
+      let sources = initial
       let configs = yield* load(initial)
       const updates = yield* PubSub.unbounded<Watcher.Update>()
       const reloads = yield* PubSub.sliding<void>(1)
@@ -311,10 +316,14 @@ export const layer = (options?: Options) =>
 
       const reload = Effect.fn("Config.reload")(
         function* () {
-          const sources = yield* ConfigDiscovery.discover(options)
-          const next = yield* load(sources)
-          yield* reconcile(sources)
-          if (isDeepStrictEqual(configs, next)) return
+          const discovered = yield* ConfigDiscovery.discover(options)
+          const next = yield* load(discovered)
+          yield* reconcile(discovered)
+          const compatibilityChanged =
+            !isDeepStrictEqual(sources.claude, discovered.claude) ||
+            !isDeepStrictEqual(sources.agents, discovered.agents)
+          if (isDeepStrictEqual(configs, next) && !compatibilityChanged) return
+          sources = discovered
           configs = next
           yield* bus.publish(Event.Updated, {})
         },
@@ -369,12 +378,40 @@ export const layer = (options?: Options) =>
       )
       yield* reloadLock.withPermit(reconcile(initial))
 
+      const update = Effect.fn("Config.update")(
+        function* (patch: Patch) {
+          const directory = initial.global ?? AbsolutePath.make(globalService.config)
+          const candidates = ConfigDiscovery.names.map((name) => path.join(directory, name))
+          const filepath = (yield* Effect.filter(candidates, fs.isFile)).at(-1) ?? path.join(directory, "opencode.jsonc")
+          const text = (yield* fs.readFileStringSafe(filepath)) ?? "{}\n"
+          const updated = yield* Effect.try({
+            try: () =>
+              applyEdits(
+                text,
+                modify(text, ["shell"], patch.shell ?? undefined, {
+                  formattingOptions: { tabSize: 2, insertSpaces: true },
+                }),
+              ),
+            catch: (cause) => new FSUtil.FileSystemError({ method: "config.update", cause }),
+          })
+          yield* fs.writeWithDirs(filepath, updated.endsWith("\n") ? updated : `${updated}\n`)
+          yield* requestReload
+        },
+        (effect) => updateLock.withPermit(effect),
+      )
+
       return Service.of({
         entries: Effect.fnUntraced(function* () {
           if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
           return configs
         }),
+        compatibility: () =>
+          Effect.all({
+            claude: Effect.filter(sources.claude, fs.isDir),
+            agents: Effect.filter(sources.agents, fs.isDir),
+          }),
         changes: () => Stream.fromPubSub(updates),
+        update,
       })
     }),
   )

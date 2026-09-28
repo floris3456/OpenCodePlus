@@ -56,6 +56,7 @@ function toolDomainFor(tools: readonly (Tool.Info & { readonly id: string })[]) 
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,
+    list: () => Effect.succeed(live),
     hook: () => Effect.die("unused tool.hook"),
   }
 }

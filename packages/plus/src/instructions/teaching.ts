@@ -202,7 +202,7 @@ export async function installTeaching(ctx: Context): Promise<Registration[]> {
         id: Skill.ID.make(teachingSkillId),
         name: Skill.Name.make(teachingSkillId),
         description: teachingSkillDescription,
-        location: AbsolutePath.make(teachingSkillLocation()),
+        path: AbsolutePath.make(teachingSkillLocation()),
         content: teachingSkillContent,
       }),
     )

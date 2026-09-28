@@ -21,8 +21,8 @@ import { useAttention } from "../context/attention"
 import { useStorage } from "../context/storage"
 import { useSessionTabs } from "../context/session-tabs"
 import { useOptionalPanel } from "../context/panel"
-import { abbreviateHome } from "../util/path-format"
 import { useLocal } from "../context/local"
+import { abbreviateHome } from "../util/path-format"
 import { DialogAgent } from "../component/dialog-agent"
 import { composerPluginTabs } from "../routes/session/composer/team-monitor-tab"
 
@@ -99,7 +99,27 @@ export function createPluginContext(input: {
   const dialogApi = createDialogApi(host.dialog, provide)
   const toastApi: Toast = {
     show(options) {
-      host.toast.show({ ...options, variant: options.variant ?? "info" })
+      const toast = {
+        title: options.title,
+        message: options.message,
+        variant: options.variant ?? "info",
+        duration: options.duration,
+      }
+      const sessionID = options.sessionID
+      if (sessionID === undefined) {
+        host.toast.show(toast)
+        return
+      }
+      const route = host.route.data
+      if (route.type === "session" && host.data.session.root(route.sessionID) === host.data.session.root(sessionID)) {
+        host.toast.show(toast)
+        return
+      }
+      host.toast.show({
+        ...toast,
+        title: toast.title ?? host.data.session.get(sessionID)?.title,
+        action: { label: "Open", run: () => host.route.navigate({ type: "session", sessionID }) },
+      })
     },
   }
   // Unregistering after deactivation is a no-op: deactivate already resets
@@ -266,6 +286,22 @@ export function createPluginContext(input: {
           }
           input.owned.push(async () => cleanup())
           return cleanup
+        },
+      },
+      model: {
+        current() {
+          const selection = host.local.model.selection()
+          if (!selection) return
+          return { providerID: selection.providerID, modelID: selection.modelID, variant: selection.variant }
+        },
+        variant: {
+          list: () => host.local.model.variant.list(),
+          set(variant) {
+            if (!host.local.model.selection()) return false
+            if (variant !== undefined && !host.local.model.variant.list().includes(variant)) return false
+            host.local.model.variant.set(variant)
+            return true
+          },
         },
       },
       slot(value: SlotClaim) {

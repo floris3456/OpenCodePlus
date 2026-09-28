@@ -77,16 +77,16 @@ export function HelpDialog(props: { readonly context: Plugin.Context }) {
   const columns = () => (dimensions().width >= HELP_WIDE ? [HELP.slice(0, 2), HELP.slice(2)] : [HELP])
   const Group = (group: { readonly title: string; readonly keys: readonly (readonly [string, string])[] }) => (
     <box flexDirection="column" flexShrink={0}>
-      <text fg={theme().text.default} attributes={TextAttributes.BOLD}>
+      <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
         {group.title}
       </text>
       <For each={group.keys}>
         {([key, label]) => (
           <box flexDirection="row">
-            <text fg={theme().text.default} width={14} flexShrink={0}>
+            <text fg={theme().text.base} width={14} flexShrink={0}>
               {key}
             </text>
-            <text fg={theme().text.subdued} flexGrow={1} minWidth={0} wrapMode="word">
+            <text fg={theme().text.muted} flexGrow={1} minWidth={0} wrapMode="word">
               {label}
             </text>
           </box>
@@ -97,10 +97,10 @@ export function HelpDialog(props: { readonly context: Plugin.Context }) {
   return (
     <box flexDirection="column" paddingLeft={4} paddingRight={4} paddingBottom={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
-        <text fg={theme().text.default} attributes={TextAttributes.BOLD}>
+        <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
           Instructions
         </text>
-        <text fg={theme().text.subdued} onMouseUp={() => props.context.ui.dialog.clear()}>
+        <text fg={theme().text.muted} onMouseUp={() => props.context.ui.dialog.clear()}>
           esc
         </text>
       </box>

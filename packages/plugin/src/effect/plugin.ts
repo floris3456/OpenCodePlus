@@ -6,14 +6,15 @@ import type { PluginOptions } from "../options.js"
 import type { App } from "../app.js"
 import type { AgentDomain } from "./agent.js"
 import type { AISDKDomain } from "./aisdk.js"
-import type { CatalogDomain } from "./catalog.js"
 import type { CommandDomain } from "./command.js"
 import type { EventDomain } from "./event.js"
 import type { IntegrationDomain } from "./integration.js"
 import type { InstructionDomain } from "./instruction.js"
 import type { MCPDomain } from "./mcp.js"
+import type { ModelDomain } from "./model.js"
 import type { PermissionDomain } from "./permission.js"
 import type { PromptDomain } from "./prompt.js"
+import type { ProviderDomain } from "./provider.js"
 import type { ReferenceDomain } from "./reference.js"
 import type { RpcDomain } from "./rpc.js"
 import type { SessionDomain } from "./session.js"
@@ -63,7 +64,6 @@ export interface Context {
   readonly options: PluginOptions
   readonly agent: AgentDomain
   readonly aisdk: AISDKDomain
-  readonly catalog: CatalogDomain
   readonly command: CommandDomain
   readonly event: EventDomain
   readonly experimental: {
@@ -72,10 +72,12 @@ export interface Context {
   readonly integration: IntegrationDomain
   readonly instruction: InstructionDomain
   readonly mcp: MCPDomain
+  readonly model: ModelDomain
   readonly generate: GenerateApi<unknown>
   readonly permission: PermissionDomain
   readonly plugin: Pick<PluginApi<unknown>, "list">
   readonly prompt: PromptDomain
+  readonly provider: ProviderDomain
   readonly reference: ReferenceDomain
   /**
    * The in-process release seam, backed by the host's durable release store.
