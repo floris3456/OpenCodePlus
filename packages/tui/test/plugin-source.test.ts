@@ -7,7 +7,7 @@ import "../src/plugin/runtime-plugin-support.bun"
 import { createPluginSources } from "../src/plugin/source"
 import { createSourceWatcher } from "../src/plugin/watch"
 import { createSignal } from "solid-js"
-import { Plugin } from "@opencode/plugin/tui"
+import { Plugin, createPaneResize, usePlugin } from "@opencode/plugin/tui"
 import { tmpdir } from "./fixture/fixture"
 
 test("a fresh local plugin generation observes edited helper exports", async () => {
@@ -111,6 +111,22 @@ test("a missing package dependency reloads when it is installed", async () => {
 
   expect(changes).toBeGreaterThan(count)
   expect((await sources.read(entry.href)).module).toMatchObject({ default: "installed" })
+})
+
+test("plugin sources import the shared pane resize helper from the host module", async () => {
+  await using sources = await fixture()
+  const entry = new URL("tui.ts", sources.url)
+  await Bun.write(
+    entry,
+    `import { Plugin, createPaneResize, usePlugin } from "@opencode/plugin/tui"
+    export default { Plugin, createPaneResize, usePlugin }`,
+  )
+  const loaded = (await sources.read(entry.href)).module
+  if (typeof loaded !== "object" || loaded === null || !("default" in loaded)) throw new Error("Missing plugin fixture")
+  const exported = loaded.default
+  if (typeof exported !== "object" || exported === null || !("createPaneResize" in exported))
+    throw new Error("Missing helper export")
+  expect(exported.createPaneResize).toBe(createPaneResize)
 })
 
 test("shared runtime and ordinary package identities survive plugin generations", async () => {
