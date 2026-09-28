@@ -1,8 +1,10 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **Stages A–B implemented** (diff completeness, pane-resize
-extraction); Stages C–F remain planned. This document is the
-implementation-ready plan for the follow-up work
+Status: **Stages A–C and the non-resize part of Stage D implemented**
+(diff completeness, pane-resize extraction, level navigation, bulk
+expansion, help); panel widths and the `W` keyboard resize mode (§5,
+G2–G3), the rest of Stage D, and Stage F lab acceptance remain planned. This
+document is the implementation-ready plan for the follow-up work
 approved by the human owner of the `/instructions` screen. See
 "§16 Implementation status" for what shipped; the diagnostic material in §8
 is kept as written.
@@ -783,8 +785,106 @@ Commit: `refactor(plugin): share pane resize controller` (local, branch `r4-8`).
   `/home/bliss/OpenCodePlus/bin/bun run check` workspace check valid.
 - Protocol/HttpApi untouched; no generated client files changed.
 
-### Stages C–F
+### Stage C — level navigation + help (done, 2026-09-28)
 
-Not started. G1 (levels), G2–G3 (panels/resize), G4 (bulk expansion), G5
-(help), Stage E integration and Stage F lab acceptance remain per §3–§7, §10,
-§12.
+Commit: `feat(plus): improve instructions navigation` (local, branch `r4-8`).
+
+- `route.tsx` level keys, exactly as §3.1/§4: `shift+tab` switches to the next
+  level (wrapping) and is removed from the pane toggle; `tab` alone keeps pane
+  switching. Browse-only comma binds: `shift+left,shift+[,{,shift+{` previous
+  and `shift+right,shift+],},shift+}` next; `shift+1,!,shift+!` Project,
+  `shift+2,@,shift+@` Global, `shift+3,#,shift+#` Defaults,
+  `shift+4,$,shift+$` Presets. `<`/`>` and the mouse tabs are untouched. The
+  keys are absent while filtering and in edit/diff/split modes; the host's
+  `modal` mode disables the whole browse layer while a dialog is open.
+- `showLevel` maps `navCollapsed`, `listOpen` and `listCollapsed` through the
+  same anchored `^(<kind>):<from>:` → `^(<kind>):<next>:` rewrite as the
+  owner/category/row, so an equivalent destination row stays open and
+  collapsed; ids the destination lacks stay inert. Presets keep their
+  deliberate separate selection (owner/category/row mapping still returns
+  early for `preset`), while their expansions are still rewritten.
+- Help, exactly as §7: `openHelp` calls
+  `ui.dialog.set({ size: …, centered: true })` after `show()`; the fixed
+  2/4 split is replaced by exported `helpColumns`/`helpHeight`, which choose
+  the contiguous cut minimising the taller column's estimated height (1 title
+  line + `max(1, ceil(label.length / (columnWidth - 14)))` per key);
+  `HELP` gains the level keys, the `E` / `ctrl+E` rows and a `W / alt+W` row
+  explicitly marked "next stage (not yet active)" — no resize binding is
+  registered.
+- Modal dim, exactly as §7.3: `modal = () => context.keymap.mode.current() ===
+  "modal"`; the sidebar and list pass `focused = focus() === … && !modal()`,
+  so behind any dialog the selected row drops the cursor and the focused
+  background while the route's selection/expansion signals are never written.
+
+Tests (new, from `packages/plus`):
+
+- `test/instructions-levels.test.tsx` — shift+tab next/wrap and tab-only pane
+  toggle; every previous/next alias (`shift+left`, `shift+[`, `{`, `shift+{`;
+  `shift+right`, `shift+]`, `}`, `shift+}`); every direct alias (`shift+1..4`,
+  `!@#$`, `shift+!@#$`); `<`/`>` regression; preservation of owner, category,
+  row, `listOpen` and `navCollapsed` across Project↔Global; the Presets
+  separate-selection exception (observed through the saved view); a mouse tab
+  click (mockMouse); narrow width; absence while filtering/editing.
+- `test/instructions-expand.test.tsx` — E excludes and ctrl+E includes the
+  active row; any-collapsed expands all and an all-expanded pane collapses
+  all; the focused sidebar collapses/re-expands; hovered pane wins over the
+  keyboard focus in both directions; lowercase `e` still edits; narrow list
+  page; no eligible rows is a silent no-op.
+- `test/help.test.tsx` — the splitter keeps every group in order and its
+  taller column equals the best contiguous cut; `dialog.set` receives
+  `{ centered: true }` with `xlarge` at 130 and `large` at 100; wide frame has
+  two equally starting columns with all six titles; narrow frame is one
+  column with wrapped labels; with the keymap mode `modal` the selected row's
+  background is `background.raised.high` with no cursor, and restoring `base`
+  reproduces the exact pre-modal frame.
+- `test/tui.ts` fixture additions used by those tests: `mockMouse`, `flush`
+  (hover dispatch), a writable keymap `mode.current`, recorded `dialog.set`
+  calls, and a `storage.memory` backing map. The test theme's focused action
+  background is now distinct from `raised.high` so the dim/restore assertion
+  is meaningful.
+
+Focused matrix at this commit (from `packages/plus`): the three new files plus
+`workspace-route`, `instructions-escape`, `instructions-panes`,
+`instructions-diff-split`, `instructions-diff-complete`, `diff-lines` and
+`route.test.tsx` — 165 pass / 2 pre-existing skips / 0 fail; `bun run
+typecheck` clean. Root `bun run check` and the secret scan are recorded with
+Stage E below.
+
+### Stage D — bulk expansion (done, 2026-09-28); panels + resize mode (not started)
+
+Implemented with the same commit for the non-resize parts of §6:
+
+- `row.tsx` gains `onHoverChange` fired from `onMouseOver`/`onMouseOut`; the
+  click activation and the selected/focused styling are unchanged.
+- `route.tsx` tracks `hovered: { pane, key } | undefined`. `E` (`shift+e`)
+  bulk-toggles every expandable visible row of the hovered pane, else the
+  focused pane; the hovered row, else the selected row of that pane, is the
+  active row and is excluded (ctrl+E includes it). If any eligible row is
+  collapsed everything expands, otherwise everything collapses; sidebar rows
+  edit `navCollapsed`, list rows edit `listOpen`/`listCollapsed` directly.
+  Lowercase `e` remains edit; the keys are browse-only and a pane with no
+  eligible rows is a silent no-op.
+
+Not started (documented, deliberately not bound): `panels.ts` constants and
+clamps, the wide divider layout, mouse drag/double-click reset, `storage.store`
+width persistence, the `W`/`alt+W` keyboard resize mode and its divider
+highlight, `test/instructions-panels.test.tsx`, and the `W` keybinding.
+`HELP` documents `W / alt+W` as the next stage only.
+
+### Stage E — docs + integration (done for the A–D scope, 2026-09-28)
+
+- `SPEC.md` "Screen layout" now carries the level keys, the cross-level place
+  and expansion mapping, the Presets exception and the `E`/`ctrl+E` semantics;
+  a new "Help" paragraph covers centering, balanced columns and dimming, and
+  states that `W`/`alt+W` resize is next-stage and not bound.
+- `docs/instructions-redesign.md` implementation status, §2.4 and §4 keys are
+  updated the same way; "State that survives" notes the mapping.
+- This file's status and §16 are updated; resize is explicitly excluded.
+- Focused matrix, plus typecheck, root `bun run check` and the secret scan
+  pass; the work is committed locally as
+  `feat(plus): improve instructions navigation`.
+
+### Stage F — lab (not started)
+
+Wide/narrow live acceptance (§12) remains pending for the shipped level,
+expansion and help work and for the resize work when it lands.

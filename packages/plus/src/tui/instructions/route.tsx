@@ -116,6 +116,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const state = createInstructionsState(props.context)
   const dimensions = useTerminalDimensions()
   const wide = () => dimensions().width >= WIDE_THRESHOLD
+  // The dialog host pushes "modal" for the whole dialog stack (help, prompts):
+  // the workspace keeps its state but renders unfocused behind the backdrop.
+  const modal = () => props.context.keymap.mode.current() === "modal"
 
   // The view survives closing and reopening the screen for the TUI session.
   const [saved, save] = props.context.storage.memory<{ view?: View }>("opencode.plus.instructions.view", { initial: {} })
@@ -128,6 +131,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   const [navCollapsed, setNavCollapsed] = createSignal<ReadonlySet<string>>(new Set(initial?.navCollapsed))
   const [listOpen, setListOpen] = createSignal<ReadonlySet<string>>(new Set(initial?.listOpen))
   const [listCollapsed, setListCollapsed] = createSignal<ReadonlySet<string>>(new Set(initial?.listCollapsed))
+  // The row under the mouse: E / ctrl+E target its pane and exclude it as the
+  // active row; without a hover they use the focused pane and its selection.
+  const [hovered, setHovered] = createSignal<{ readonly pane: Focus; readonly key: string }>()
   const [focus, setFocus] = createSignal<Focus>(initial?.focus ?? "nav")
   const [mode, setMode] = createSignal<Mode>("browse")
   const [target, setTarget] = createSignal<TreeNode | undefined>(undefined)
@@ -397,7 +403,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   // < > keep what you look at: the same agent, category and row one level
   // over (build › Tools › shell at Project, then at Global), when it exists
-  // there; otherwise that level's own last place.
+  // there; otherwise that level's own last place. Expansion sets follow the
+  // same anchored rewrite, so an equivalent row stays open too; ids the
+  // destination lacks stay inert. Presets keep their own selection by design.
   function switchLevel(delta: number) {
     const index = LEVELS.findIndex((entry) => entry.id === level())
     showLevel(LEVELS[(index + delta + LEVELS.length) % LEVELS.length]!.id)
@@ -407,12 +415,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const from = level()
     if (next === from) return
     const across = (id: string | undefined) => (id === undefined ? undefined : id.replace(new RegExp(`^(\\w+):${from}:`), `$1:${next}:`))
+    const remap = (ids: ReadonlySet<string>) => new Set([...ids].map((id) => across(id)!))
     const owner = workspace().owner
     const ownerThere = owner?.role === "owner" && owner.node.kind === "agent" ? across(owner.key) : undefined
     const category = across(workspace().category?.id)
     const row = across(listRow()?.key)
     batch(() => {
       setLevel(next)
+      setNavCollapsed(remap(navCollapsed()))
+      setListOpen(remap(listOpen()))
+      setListCollapsed(remap(listCollapsed()))
       if (ownerThere === undefined || next === "preset") return
       setOwners({ ...owners(), [next]: ownerThere })
       if (focus() === "nav" || navSelected()[next] === undefined) setNavSelected({ ...navSelected(), [next]: ownerThere })
@@ -456,6 +468,50 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     } else {
       opened.delete(row.node.id)
       closed.add(row.node.id)
+    }
+    batch(() => {
+      setListOpen(opened)
+      setListCollapsed(closed)
+    })
+  }
+
+  function hoverRow(pane: Focus, key: string, hovering: boolean) {
+    setHovered((current) => {
+      if (hovering) return { pane, key }
+      return current?.pane === pane && current.key === key ? undefined : current
+    })
+  }
+
+  // E / ctrl+E: every expandable visible row of the hovered pane (falling back
+  // to the focused pane and its selected row). A mixed pane converges — any
+  // collapsed row means expand all, otherwise collapse all. The active row is
+  // excluded for E and included for ctrl+E; nothing eligible is a silent no-op.
+  function bulkExpand(includeActive: boolean) {
+    const pane = hovered()?.pane ?? focus()
+    const rows = pane === "nav" ? workspace().nav : listRows()
+    const active = hovered()?.pane === pane ? hovered()?.key : pane === "nav" ? navRow()?.key : listRow()?.key
+    const eligible = rows.filter((row) => row.expandable && (includeActive || row.key !== active))
+    if (eligible.length === 0) return
+    const expand = eligible.some((row) => !row.expanded)
+    if (pane === "nav") {
+      const collapsed = new Set(navCollapsed())
+      for (const row of eligible) {
+        if (expand) collapsed.delete(row.node.id)
+        else collapsed.add(row.node.id)
+      }
+      setNavCollapsed(collapsed)
+      return
+    }
+    const opened = new Set(listOpen())
+    const closed = new Set(listCollapsed())
+    for (const row of eligible) {
+      if (expand) {
+        opened.add(row.node.id)
+        closed.delete(row.node.id)
+      } else {
+        opened.delete(row.node.id)
+        closed.add(row.node.id)
+      }
     }
     batch(() => {
       setListOpen(opened)
@@ -902,7 +958,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   function openHelp() {
     props.context.ui.dialog.show(() => <HelpDialog context={props.context} />)
-    props.context.ui.dialog.set({ size: dimensions().width >= HELP_WIDE ? "xlarge" : "large" })
+    // replace() resets centered, so the options must follow show().
+    props.context.ui.dialog.set({ size: dimensions().width >= HELP_WIDE ? "xlarge" : "large", centered: true })
   }
 
   function escape() {
@@ -1002,9 +1059,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "right", title: "Open", group: "Instructions", run: right },
         { bind: "return", title: "Open or edit", group: "Instructions", run: enter },
         { bind: "tab", title: "Switch pane", group: "Instructions", run: toggleFocus },
-        { bind: "shift+tab", title: "Switch pane", group: "Instructions", run: toggleFocus },
+        { bind: "shift+tab", title: "Next level", group: "Instructions", run: () => switchLevel(1) },
+        { bind: "shift+left,shift+[,{,shift+{", title: "Previous level", group: "Instructions", run: () => switchLevel(-1) },
+        { bind: "shift+right,shift+],},shift+}", title: "Next level", group: "Instructions", run: () => switchLevel(1) },
         { bind: "<", title: "Previous level", group: "Instructions", run: () => switchLevel(-1) },
         { bind: ">", title: "Next level", group: "Instructions", run: () => switchLevel(1) },
+        { bind: "shift+1,!,shift+!", title: "Show Project", group: "Instructions", run: () => showLevel("project") },
+        { bind: "shift+2,@,shift+@", title: "Show Global", group: "Instructions", run: () => showLevel("global") },
+        { bind: "shift+3,#,shift+#", title: "Show Defaults", group: "Instructions", run: () => showLevel("defaults") },
+        { bind: "shift+4,$,shift+$", title: "Show Presets", group: "Instructions", run: () => showLevel("preset") },
+        { bind: "shift+e", title: "Expand all rows", group: "Instructions", run: () => bulkExpand(false) },
+        { bind: "ctrl+e", title: "Expand all rows including this one", group: "Instructions", run: () => bulkExpand(true) },
         { bind: "[", title: "Previous category", group: "Instructions", run: () => switchCategory((index, count) => (index - 1 + count) % count) },
         { bind: "]", title: "Next category", group: "Instructions", run: () => switchCategory((index, count) => (index + 1) % count) },
         ...workspace().categories.map((category, index) => ({
@@ -1117,7 +1182,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 sidebar
                 {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key)?.on } : {})}
                 selected={row.key === navRow()?.key}
-                focused={focus() === "nav"}
+                focused={focus() === "nav" && !modal()}
+                onHoverChange={(hovering) => hoverRow("nav", row.key, hovering)}
                 onSelect={() => {
                   selectNav(row)
                   setFocus("nav")
@@ -1214,7 +1280,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 row={row}
                 quiet={selfPreset()}
                 selected={row.key === listRow()?.key}
-                focused={focus() === "list"}
+                focused={focus() === "list" && !modal()}
+                onHoverChange={(hovering) => hoverRow("list", row.key, hovering)}
                 onSelect={() => {
                   selectList(row)
                   setFocus("list")

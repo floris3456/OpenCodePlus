@@ -70,6 +70,8 @@ export interface RowLineProps {
   readonly tools?: number
   readonly onSelect?: () => void
   readonly onActivate?: () => void
+  /** The mouse entered/left this row: E / ctrl+E target the hovered pane. */
+  readonly onHoverChange?: (hovering: boolean) => void
 }
 
 export function RowLine(props: RowLineProps) {
@@ -120,6 +122,8 @@ export function RowLine(props: RowLineProps) {
       height={1}
       flexShrink={0}
       backgroundColor={background()}
+      onMouseOver={() => props.onHoverChange?.(true)}
+      onMouseOut={() => props.onHoverChange?.(false)}
       // A click selects; a click on the row already selected opens it.
       onMouseDown={() => {
         armed = props.selected && props.focused

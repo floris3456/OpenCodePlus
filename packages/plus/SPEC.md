@@ -226,6 +226,21 @@ presets, Defaults entries, and the Defaults catalogues as `Every agent` /
 category's own subtree as the list, and an inspector. Row ids, actions and
 every mutation are the tree's; `workspaceOf` only decides which rows are open.
 
+Levels also switch with `shift+tab` (next, wrapping; it is no longer a pane
+toggle — `tab` alone switches panes), with `shift+left` / `shift+[` (`{`,
+`shift+{`) previous and `shift+right` / `shift+]` (`}`, `shift+}`) next, and
+with `shift+1`–`4` (plus the legacy `!@#$` and their shifted spellings) to jump
+straight to Project, Global, Defaults or Presets. A switch keeps the same
+owner, category, selected row and the sidebar/list expansion ids when the
+destination has the equivalent node (the ids are rewritten level over level;
+ids the destination lacks stay inert). Presets deliberately keep their own
+selection instead.
+
+`E` bulk-toggles every expandable visible row of the pane under the mouse,
+else of the focused pane; the active row is excluded and `ctrl+E` includes it.
+If any eligible row is collapsed the whole set expands, otherwise it all
+collapses. Lowercase `e` remains edit.
+
 Each sidebar owner row ends with the tools switched on for it (a right-aligned
 count, or a warning-coloured `no tools`; a zero beside state tags compacts to
 `0` so the mode/hidden tags keep the room), and the owner header line under the
@@ -259,6 +274,17 @@ a shipped preset of its own). Defaults entry rows add what they match
 named: <t>` / `matches teams named: <t>`) and `now` (`matching now`) computed
 from the snapshot's agents and teams with `matchesName`. Every addressed row
 names its `address` with its catalogue.
+
+**Help (`help.tsx`).** `?` opens the help dialog centered on both axes
+(`ui.dialog.set({ centered: true })`, xlarge from 124 columns, large below).
+Below 124 columns it is one column; from 124 it shows two columns, split at
+the contiguous group boundary that minimises the taller column's estimated
+rendered height (a group's estimated height is its title plus each key's
+wrapped label). While any dialog is open the workspace keeps its level,
+selection and expansions but renders unfocused behind the backdrop: rows drop
+the cursor and the focused selection colour, and closing restores the exact
+frame. Panel resize (`W` / `alt+W`) is documented as the next stage and is not
+bound yet.
 
 **Review (§3.6).** Enter on a review row whose `reviewOf` holds `state` or
 `pin` opens a choice (title `Review "<row>"`): `Keep yours (<yours>)` →

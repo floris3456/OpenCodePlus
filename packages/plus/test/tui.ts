@@ -1,6 +1,6 @@
 import type { CliRenderer, CapturedFrame } from "@opentui/core"
 import { RGBA } from "@opentui/core"
-import { createTestRenderer } from "@opentui/core/testing"
+import { createTestRenderer, type MockMouse } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Agent } from "@opencode/schema/agent"
@@ -54,6 +54,7 @@ export function createTestTheme() {
   const yellow = RGBA.fromHex("#ffff00")
   const blue = RGBA.fromHex("#0000ff")
   const selectedBg = RGBA.fromHex("#333333")
+  const focusedBg = RGBA.fromHex("#555555")
 
   const green = RGBA.fromHex("#00ff00")
   const red = RGBA.fromHex("#ff0000")
@@ -94,7 +95,9 @@ export function createTestTheme() {
     background: {
       base: black,
       raised: { base: black, high: selectedBg, max: selectedBg },
-      action: { primary: stateful(selectedBg, selectedBg), secondary: stateful(black, selectedBg), destructive: stateful(red, red) },
+      // focused is distinct from raised.high so tests can tell the focused
+      // cursor row from the unfocused one behind a dialog.
+      action: { primary: stateful(focusedBg, focusedBg), secondary: stateful(black, selectedBg), destructive: stateful(red, red) },
       formfield: stateful(black, selectedBg),
       feedback: {
         info: { base: black },
@@ -178,6 +181,15 @@ export interface TestFixture {
   /** The same frame with styled spans, for semantic colour assertions. */
   readonly captureSpans: () => CapturedFrame
   readonly waitForFrame: (predicate: (frame: string) => boolean) => Promise<string>
+  /** Settle scheduled renders (mouse hover dispatch) before asserting. */
+  readonly flush: () => Promise<void>
+  /** The host keymap mode: "modal" while a dialog is open. */
+  readonly setKeymapMode: (mode: string) => void
+  /** Every ui.dialog.set call the rendered component made, in order. */
+  readonly dialogSets: readonly { readonly size?: string; readonly centered?: boolean }[]
+  /** The last value a `storage.memory` key was saved with. */
+  readonly memoryValue: (key: string) => unknown
+  readonly mockMouse: MockMouse
   readonly emitChanged: (next?: Snapshot) => Promise<void>
   readonly emitProjectChanged: (status?: Partial<Status>) => Promise<void>
   readonly emitAgents: (agents: readonly Agent.Info[] | undefined) => void
@@ -250,6 +262,9 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   const instructionsListeners = new Set<RpcListener>()
   const projectListeners = new Set<RpcListener>()
   const layers: KeymapLayerCallback[] = []
+  const dialogSets: { size?: string; centered?: boolean }[] = []
+  const memoryCells = new Map<string, { value: unknown }>()
+  const [keymapMode, setKeymapMode] = createSignal("normal")
 
   function commands(): readonly TestKeymapCommand[] {
     return [...layers]
@@ -424,18 +439,29 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       pending: () => [],
       active: () => [],
       mode: {
-        current: () => "normal",
+        current: keymapMode,
         push: () => () => {},
       },
     },
     storage: {
       store: <T extends object>(_key: string, opts: { initial: T }) => [opts.initial, async () => {}],
-      memory: <T extends object>(_key: string, opts: { initial: T }) => [opts.initial, () => {}],
+      memory: <T extends object>(key: string, opts: { initial: T }) => {
+        const cell = memoryCells.get(key) ?? { value: opts.initial }
+        memoryCells.set(key, cell)
+        const save = (mutation: (draft: T) => void) => {
+          const draft = structuredClone(cell.value) as T
+          mutation(draft)
+          cell.value = draft
+        }
+        return [cell.value as T, save] as const
+      },
     },
     ui: {
       dialog: {
         show: () => {},
-        set: () => {},
+        set: (options: { readonly size?: "medium" | "large" | "xlarge"; readonly centered?: boolean }) => {
+          dialogSets.push(options)
+        },
         clear: () => {},
         alert: async () => {},
         confirm: async (input: unknown) => {
@@ -541,6 +567,11 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     captureCharFrame: () => output.captureCharFrame(),
     captureSpans: () => output.captureSpans(),
     waitForFrame: (predicate) => output.waitForFrame(predicate),
+    flush: () => output.flush(),
+    setKeymapMode: (mode) => setKeymapMode(mode),
+    dialogSets,
+    memoryValue: (key) => memoryCells.get(key)?.value,
+    mockMouse: output.mockMouse,
     emitChanged,
     emitProjectChanged,
     emitAgents: (next) => setAgents(next),

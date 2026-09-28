@@ -25,8 +25,13 @@ Implementation status:
 - Follow-up (2026-09-28): the diff completeness defect is fixed (the
   `instructions-workspace-followup.md` Stage A). `unifiedDiff` takes an
   optional `context` and the three review comparisons pass
-  `Number.POSITIVE_INFINITY`; see §2.2. The level/panel/help/expansion work
-  from that plan is still pending.
+  `Number.POSITIVE_INFINITY`; see §2.2. Stage C-level navigation (Shift+Tab
+  and the terminal aliases, direct `Shift+1–4`, cross-level place and
+  expansion mapping) and the non-resize part of Stage D (bulk `E` / `Ctrl+E`
+  expansion) are implemented, as is §7's help work (centered, balanced
+  columns, workspace dimmed behind any dialog). Panel widths and the `W`
+  keyboard resize mode are still pending; they are documented below as the
+  next stage and are not bound yet.
 
 Priorities, from the owner of the screen:
 
@@ -120,9 +125,12 @@ change as a diff before saving, esc asks before discarding a changed draft.
 
 ### 2.4 Help, footer, status
 
-`?` opens a help dialog (grouped keys, the filter grammar). The footer shows at
-most ~8 context-relevant keys in OpenCode's style (bold key, dim label). The
-status line keeps the last result.
+`?` opens a help dialog (grouped keys, the filter grammar), centered on both
+axes, one column below 124 columns and two height-balanced columns from there;
+while it (or any dialog) is open the workspace keeps its state but renders
+unfocused behind the backdrop. The footer shows at most ~8 context-relevant
+keys in OpenCode's style (bold key, dim label). The status line keeps the last
+result.
 
 ## 3. The four designs
 
@@ -268,9 +276,13 @@ the editor and the help dialog.
 | ↑ ↓ / PgUp PgDn / Home End | move | move |
 | → / enter | into the list (a team: expand) | expand / open (edit, review, rule, number, cycle) |
 | ← | collapse / parent | collapse / parent, at top level → sidebar |
-| tab / shift+tab | switch pane | switch pane |
+| tab | switch pane | switch pane |
+| shift+tab | next level (wrapping) | next level (wrapping) |
+| shift+← / shift+right, shift+[ / shift+] (`{` `}` aliases) | previous / next level | previous / next level |
+| shift+1–4 (`!` `@` `#` `$` aliases) | jump to Project / Global / Defaults / Presets | same |
 | `[` `]`, `1`–`8` | category | category |
 | `<` `>` | level | level |
+| E / ctrl+E | expand / collapse all visible rows (E keeps the active row) | same |
 | space / ctrl+space | enable / select agent | toggle / select agent |
 | `e` | — | edit text |
 | `c` | — | compare with upstream (real diff) |
@@ -280,14 +292,19 @@ the editor and the help dialog.
 | `?` | help dialog | help dialog |
 | esc | close the screen | back to the sidebar (filter: clear first) |
 
-The mouse works too: click a row, a tab or a category; the wheel scrolls.
+The mouse works too: click a row, a tab or a category; the wheel scrolls. A
+level switch keeps the same owner, category and selected row, and rewrites the
+sidebar/list expansion ids where the destination has the equivalent node;
+Presets deliberately keep their own selection. Panel widths and the `W` /
+`alt+W` keyboard resize mode are the next stage and are not bound yet.
 
 ### State that survives
 
 The level, the owner per level, the category per owner, and the expansions are
 kept in `context.storage.memory` for the TUI session, so reopening
-`/instructions` returns to the same place. On first open the session's current
-agent is preselected.
+`/instructions` returns to the same place. The level keys move that place and
+those expansions across a switch where the destination has the node. On first
+open the session's current agent is preselected.
 
 ### Mapping of every current capability
 

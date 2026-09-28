@@ -3,16 +3,24 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For } from "solid-js"
 
-export const HELP: readonly (readonly [string, readonly (readonly [string, string])[]])[] = [
+export type HelpGroup = readonly [string, readonly (readonly [string, string])[]]
+
+export const HELP: readonly HelpGroup[] = [
   [
     "Move",
     [
       ["tab", "switch between the sidebar and the list"],
+      ["shift+tab", "next level (wraps) · < > goes back / forward"],
+      ["shift+← →", "previous / next level (same gesture)"],
+      ["shift+[ ] { }", "previous / next level (terminal aliases)"],
+      ["shift+1–4", "Project / Global / Defaults / Presets (! @ # $ too)"],
       ["↑↓ pgup pgdn", "move (home / end: first / last)"],
       ["→ / ←", "open or into the list / close or back to the sidebar"],
-      ["< >", "previous / next level (Project, Global, Defaults, Presets)"],
       ["[ ]  1-8", "previous / next category, or jump to one"],
       ["n / N", "next / previous row to review in this level"],
+      ["E", "expand or collapse every other row in the hovered or focused pane"],
+      ["ctrl+E", "the same, including the row under the cursor"],
+      ["W / alt+W", "resize the panels — next stage (not yet active)"],
       ["/", "filter this level as you type · esc clears"],
       ["esc", "back one step; from the sidebar it closes the screen"],
     ],
@@ -70,17 +78,50 @@ export const HELP: readonly (readonly [string, readonly (readonly [string, strin
 /** From this terminal width the help opens extra large, in two columns. */
 export const HELP_WIDE = 124
 
+/**
+ * One column of the xlarge dialog: 116 columns less its 8 columns of padding,
+ * split in two with a 4-column gap.
+ */
+export const HELP_COLUMN_WIDTH = 52
+
+/** A group's rendered height at this column width: title plus wrapped labels. */
+export function helpHeight(group: HelpGroup, columnWidth: number): number {
+  const labelWidth = Math.max(1, columnWidth - 14)
+  return 1 + group[1].reduce((total, [, label]) => total + Math.max(1, Math.ceil(label.length / labelWidth)), 0)
+}
+
+/**
+ * Split the groups into the two contiguous columns that minimise the taller
+ * column's estimated height, preserving group order. The estimator is an
+ * approximation: it only has to keep the real table balanced as it changes.
+ */
+export function helpColumns(groups: readonly HelpGroup[], columnWidth: number): readonly (readonly HelpGroup[])[] {
+  let cut = 0
+  let best = Number.POSITIVE_INFINITY
+  for (let at = 1; at < groups.length; at++) {
+    const height = Math.max(
+      groups.slice(0, at).reduce((total, group) => total + helpHeight(group, columnWidth), 0),
+      groups.slice(at).reduce((total, group) => total + helpHeight(group, columnWidth), 0),
+    )
+    if (height < best) {
+      best = height
+      cut = at
+    }
+  }
+  return cut === 0 ? [groups] : [groups.slice(0, cut), groups.slice(cut)]
+}
+
 export function HelpDialog(props: { readonly context: Plugin.Context }) {
   const theme = () => props.context.theme
   const dimensions = useTerminalDimensions()
-  // Two columns when there is room; the dialog scrolls when there is not.
-  const columns = () => (dimensions().width >= HELP_WIDE ? [HELP.slice(0, 2), HELP.slice(2)] : [HELP])
-  const Group = (group: { readonly title: string; readonly keys: readonly (readonly [string, string])[] }) => (
+  // Two balanced columns when there is room; the dialog scrolls when there is not.
+  const columns = () => (dimensions().width >= HELP_WIDE ? helpColumns(HELP, HELP_COLUMN_WIDTH) : [HELP])
+  const Group = (props: { readonly group: HelpGroup }) => (
     <box flexDirection="column" flexShrink={0}>
       <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
-        {group.title}
+        {props.group[0]}
       </text>
-      <For each={group.keys}>
+      <For each={props.group[1]}>
         {([key, label]) => (
           <box flexDirection="row">
             <text fg={theme().text.base} width={14} flexShrink={0}>
@@ -109,7 +150,7 @@ export function HelpDialog(props: { readonly context: Plugin.Context }) {
           <For each={columns()}>
             {(column) => (
               <box flexDirection="column" flexGrow={1} flexBasis={0} minWidth={0} gap={1}>
-                <For each={column}>{([title, keys]) => <Group title={title} keys={keys} />}</For>
+                <For each={column}>{(group) => <Group group={group} />}</For>
               </box>
             )}
           </For>
