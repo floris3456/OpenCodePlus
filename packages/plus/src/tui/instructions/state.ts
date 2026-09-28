@@ -816,9 +816,32 @@ export function createInstructionsState(context: Plugin.Context) {
       return false
     }
   }
-  void load()
+  // `instructions.changed` arrives in bursts (one write can emit several, and
+  // the host reloads on its own debounce). At most one load runs at a time;
+  // any event while it runs schedules exactly one trailing load. The
+  // generation guard still decides which answer may write the snapshot.
+  let reloadInFlight = false
+  let reloadQueued = false
+  async function requestReload(): Promise<void> {
+    if (reloadInFlight) {
+      reloadQueued = true
+      return
+    }
+    reloadInFlight = true
+    try {
+      await load()
+    } finally {
+      reloadInFlight = false
+      if (reloadQueued && !disposed && !disabled) {
+        reloadQueued = false
+        void requestReload()
+      }
+    }
+  }
+
+  void requestReload()
   const unsubscribeInstructions = plus.events.on("instructions.changed", () => {
-    void load()
+    void requestReload()
   })
   const unsubscribeProject = plus.events.on("project.changed", (event) => {
     if (!event.data.enabled) {

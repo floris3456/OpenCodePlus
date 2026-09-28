@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test"
+import { onCleanup } from "solid-js"
 import { fingerprint, type AgentSource, type Item } from "../src/instructions/model.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { tree, type TeamInput } from "../src/instructions/tree.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
-import { createSnapshot, renderInstructionsRoute } from "./tui.js"
-import { moveTo, selectedRow } from "./instructions-nav.js"
+import { createInstructionsState, type InstructionsState } from "../src/tui/instructions/state.js"
+import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
+import { moveTo, selectedRow, sleep } from "./instructions-nav.js"
 
 function makeSyntheticInput() {
   const agents: AgentSource[] = []
@@ -101,6 +103,32 @@ test("initial state load builds exactly one resolution memo for the snapshot", a
 
   await fixture.waitForFrame((frame) => frame.includes("Instructions"))
   expect(memoBuildCounter.count).toBe(1)
+})
+
+test("a burst of instructions.changed events coalesces to one trailing reload", async () => {
+  const first = createSnapshot({ revision: 1, globalRevision: 1 })
+  const second = createSnapshot({ revision: 2, globalRevision: 2 })
+  let state: InstructionsState | undefined
+  await using fixture = await renderPlusFixture({
+    snapshots: [first, second],
+    width: 120,
+    height: 40,
+    render: (context) => {
+      state = createInstructionsState(context)
+      onCleanup(state.dispose)
+      return null
+    },
+  })
+  await fixture.waitForFrame(() => state?.snapshot() !== undefined)
+  expect(fixture.fake.snapshotCalls).toBe(1)
+  expect(state?.snapshot()?.revision).toBe(1)
+
+  // Five events in the same tick: one load starts and the rest queue exactly
+  // one trailing load, so the burst costs two snapshot reads, not five.
+  await Promise.all([0, 1, 2, 3, 4].map(() => fixture.emitChanged()))
+  await fixture.waitForFrame(() => state?.snapshot()?.revision === 2)
+  await sleep(50)
+  expect(fixture.fake.snapshotCalls).toBe(3)
 })
 
 test("realistic lab dataset benchmark: Enter -> tree rows and d -> confirm dialog on Cobra/testttt", async () => {

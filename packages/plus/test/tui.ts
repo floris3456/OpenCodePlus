@@ -145,6 +145,8 @@ export interface FakeRpc {
   readonly dialogSelects: unknown[][]
   readonly dialogConfirms: unknown[][]
   readonly agentSelects: string[]
+  /** How many `instructions.snapshot` RPCs have been served. */
+  snapshotCalls: number
 }
 
 export interface TestPromptInput {
@@ -261,6 +263,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     dialogSelects: [],
     dialogConfirms: [],
     agentSelects: [],
+    snapshotCalls: 0,
   }
   const promptScript = [...(options.dialogs?.prompts ?? [])]
   const selectScript = [...(options.dialogs?.selects ?? [])]
@@ -301,7 +304,10 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     renderer: output.renderer,
     client: {
       rpc: () => ({
-        "instructions.snapshot": async () => nextSnapshot(),
+        "instructions.snapshot": async () => {
+          fake.snapshotCalls++
+          return nextSnapshot()
+        },
         "instructions.refresh": async () => nextSnapshot(),
         "instructions.mutate": async (input: MutateInput) => {
           fake.mutateInputs.push(input)
