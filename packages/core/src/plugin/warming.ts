@@ -3,11 +3,20 @@ export * as WarmingPlugin from "./warming.js"
 import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { Session } from "@opencode/schema/session"
-import { Clock, Duration, Effect, Scope } from "effect"
+import { Clock, Duration, Effect, Fiber, Scope } from "effect"
 import { Config } from "../config.js"
 import { ConfigWarming } from "../config/warming.js"
 import { Model } from "../model.js"
 import { Provider } from "../provider.js"
+
+type ActiveSession = {
+  last: number
+  expires: number
+  settings: ConfigWarming.Resolved
+  /** Bumped per schedule so a loop replaced during a fork stops instead of sleeping on. */
+  epoch: number
+  fiber?: Fiber.Fiber<void>
+}
 
 export const Plugin = define({
   id: "opencode.warming",
@@ -35,30 +44,47 @@ export const Plugin = define({
     })
 
     const scope = yield* Scope.Scope
-    const sessions = new Map<Session.ID, { last: number; expires: number; settings: ConfigWarming.Resolved }>()
-    const loop: (sessionID: Session.ID) => Effect.Effect<void> = Effect.fn("WarmingPlugin.loop")(function* (sessionID) {
-      const current = sessions.get(sessionID)
-      if (!current) return
+    const sessions = new Map<Session.ID, ActiveSession>()
+    const loop: (sessionID: Session.ID, epoch: number) => Effect.Effect<void> = Effect.fn("WarmingPlugin.loop")(
+      function* (sessionID, epoch) {
+        const current = sessions.get(sessionID)
+        // A newer schedule owns this session; a replaced loop must not sleep or warm.
+        if (current?.epoch !== epoch) return
 
-      const now = yield* Clock.currentTimeMillis
-      const next = Math.min(current.last + Duration.toMillis(current.settings.interval), current.expires)
-      if (now < next) {
-        yield* Effect.sleep(Duration.millis(next - now))
-        return yield* loop(sessionID)
-      }
-      if (now >= current.expires) {
-        sessions.delete(sessionID)
-        return
-      }
+        const now = yield* Clock.currentTimeMillis
+        const next = Math.min(current.last + Duration.toMillis(current.settings.interval), current.expires)
+        if (now < next) {
+          yield* Effect.sleep(Duration.millis(next - now))
+          return yield* loop(sessionID, epoch)
+        }
+        if (now >= current.expires) {
+          if (sessions.get(sessionID) === current) sessions.delete(sessionID)
+          return
+        }
 
-      const last = current.last
-      yield* Effect.logInfo("warming session", { sessionID, last })
-      yield* ctx.session
-        .generate({ sessionID, prompt: current.settings.prompt })
-        .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
-      const latest = sessions.get(sessionID)
-      if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
-      return yield* loop(sessionID)
+        const last = current.last
+        yield* Effect.logInfo("warming session", { sessionID, last })
+        yield* ctx.session
+          .generate({ sessionID, prompt: current.settings.prompt })
+          .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
+        const latest = sessions.get(sessionID)
+        if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
+        return yield* loop(sessionID, epoch)
+      },
+    )
+
+    // External activity replaces the scheduled loop, so interval and duration changes
+    // apply from the next hook event instead of the replaced loop's old wake-up.
+    const reschedule = Effect.fn("WarmingPlugin.reschedule")(function* (sessionID: Session.ID, active: ActiveSession) {
+      const epoch = active.epoch + 1
+      active.epoch = epoch
+      if (active.fiber) yield* Fiber.interrupt(active.fiber)
+      const fiber = yield* loop(sessionID, epoch).pipe(
+        Effect.catchCause((cause) => Effect.logError("session warming loop failed", { sessionID, cause })),
+        Effect.forkIn(scope),
+      )
+      // A concurrent hook may have scheduled a newer loop while this fork started.
+      if (active.epoch === epoch) active.fiber = fiber
     })
 
     const hook = (event: SessionHooks["context"]) =>
@@ -68,8 +94,14 @@ export const Plugin = define({
 
         const active = sessions.get(event.sessionID)
         const settings = yield* loadSettings(event.model)
+        // The warming request itself runs this hook from the session's loop; never
+        // interrupt or reschedule that loop from inside its own generate call.
+        if (active?.fiber?.id === (yield* Effect.fiberId)) return
         if (!settings) {
-          sessions.delete(event.sessionID)
+          if (active) {
+            sessions.delete(event.sessionID)
+            if (active.fiber) yield* Fiber.interrupt(active.fiber)
+          }
           return
         }
 
@@ -91,20 +123,17 @@ export const Plugin = define({
           active.last = now
           active.expires = now + duration
           active.settings = settings
+          yield* reschedule(event.sessionID, active)
           return
         }
-        sessions.set(event.sessionID, { last: now, expires: now + duration, settings })
+        const scheduled: ActiveSession = { last: now, expires: now + duration, settings, epoch: 0 }
+        sessions.set(event.sessionID, scheduled)
         yield* Effect.logInfo("scheduled session warming", {
           sessionID: event.sessionID,
           interval: settings.interval,
           expires: now + duration,
         })
-        yield* loop(event.sessionID).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logError("session warming loop failed", { sessionID: event.sessionID, cause }),
-          ),
-          Effect.forkIn(scope),
-        )
+        yield* reschedule(event.sessionID, scheduled)
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)

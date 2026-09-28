@@ -1,3 +1,4 @@
+import { Message } from "@opencode/ai"
 import { describe, expect } from "bun:test"
 import { Config } from "@opencode/core/config"
 import { ConfigProviderPlugin } from "@opencode/core/config/plugin/provider"
@@ -71,17 +72,35 @@ const loadCatalog = Effect.fn("loadCatalog")(function* (config: Config.Interface
   yield* ConfigProviderPlugin.Plugin.effect(host).pipe(Effect.provideService(Config.Service, config))
 })
 
-const activate = Effect.fn("activateWarming")(function* (calls: WarmCall[], config: Config.Interface) {
+const activate = Effect.fn("activateWarming")(function* (
+  calls: WarmCall[],
+  config: Config.Interface,
+  // When set, a recorded warm request also raises the session generate hook from
+  // the same fiber, matching how the host invokes hooks from inside the loop.
+  internal?: Map<Session.ID, Model.Ref>,
+) {
   const plugin = yield* Plugin.Service
   const sessions = yield* Session.Service
+  const hooks = yield* PluginHooks.Service
   const host = yield* PluginHost.make(plugin).pipe(
     Effect.provideService(
       Session.Service,
       Session.Service.of({
         ...sessions,
         generate: (input) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             calls.push({ sessionID: input.sessionID, prompt: input.prompt })
+            const model = internal?.get(input.sessionID)
+            if (!model) return ""
+            yield* hooks.trigger("session", "generate", {
+              sessionID: input.sessionID,
+              agent: Agent.ID.make("build"),
+              model,
+              system: [],
+              messages: [Message.user(input.prompt)],
+              tools: {},
+              options: {},
+            })
             return ""
           }),
       }),
@@ -98,7 +117,12 @@ const makeSessions = Effect.fn("makeSessions")(function* () {
   return { parent: parent.id, child: child.id }
 })
 
-const trigger = Effect.fn("triggerContext")(function* (sessionID: Session.ID, model: Model.Ref) {
+const trigger = Effect.fn("triggerContext")(function* (
+  sessionID: Session.ID,
+  model: Model.Ref,
+  internal?: Map<Session.ID, Model.Ref>,
+) {
+  internal?.set(sessionID, model)
   const hooks = yield* PluginHooks.Service
   const event: SessionHooks["context"] = {
     sessionID,
@@ -110,6 +134,24 @@ const trigger = Effect.fn("triggerContext")(function* (sessionID: Session.ID, mo
     options: {},
   }
   yield* hooks.trigger("session", "context", event)
+})
+
+const triggerGenerate = Effect.fn("triggerGenerate")(function* (
+  sessionID: Session.ID,
+  model: Model.Ref,
+  prompt: string,
+) {
+  const hooks = yield* PluginHooks.Service
+  const event: SessionHooks["generate"] = {
+    sessionID,
+    agent: Agent.ID.make("build"),
+    model,
+    system: [],
+    messages: [Message.user(prompt)],
+    tools: {},
+    options: {},
+  }
+  yield* hooks.trigger("session", "generate", event)
 })
 
 const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
@@ -256,6 +298,69 @@ describe("WarmingPlugin", () => {
       }),
   )
 
+  it.effect("applies a slower to faster interval change on the next hook event", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({
+        id: "alpha",
+        models: [
+          { id: "slow", warming: scoped({ prompt: "slow", interval: "4 minutes" }) },
+          { id: "fast", warming: scoped({ prompt: "fast", interval: "1 second" }) },
+        ],
+      })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "slow"))
+      yield* advance(1)
+      expect(callsFor(calls, sessions.parent)).toEqual([])
+
+      yield* trigger(sessions.parent, ref("alpha", "fast"))
+      yield* advance(1)
+      const warmed = callsFor(calls, sessions.parent)
+      expect(warmed.length).toBeGreaterThan(0)
+      expect(warmed.every((call) => call.prompt === "fast")).toBe(true)
+    }),
+  )
+
+  it.effect("expires a session on a shortened duration from the next hook event", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({
+        id: "alpha",
+        models: [
+          { id: "long", warming: scoped({ prompt: "long", interval: "4 minutes" }) },
+          { id: "short", warming: scoped({ prompt: "short", interval: "1 second", duration: "2 seconds" }) },
+        ],
+      })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "long"))
+      // Let the long schedule enter its four-minute sleep before the switch.
+      yield* advance(1)
+      expect(callsFor(calls, sessions.parent)).toEqual([])
+
+      yield* trigger(sessions.parent, ref("alpha", "short"))
+      yield* advance(1)
+      const warmed = callsFor(calls, sessions.parent).length
+      expect(warmed).toBeGreaterThan(0)
+      expect(callsFor(calls, sessions.parent).at(-1)?.prompt).toBe("short")
+
+      // The two-second window ends before the replaced four-minute interval or hour-long duration.
+      yield* advance(1)
+      expect(callsFor(calls, sessions.parent).length).toBe(warmed)
+      yield* cross("4 minutes")
+      expect(callsFor(calls, sessions.parent).length).toBe(warmed)
+    }),
+  )
+
   it.effect("never warms subagents", () =>
     Effect.gen(function* () {
       const config = yield* makeConfig([
@@ -323,6 +428,49 @@ describe("WarmingPlugin", () => {
       yield* advance(2)
       expect(callsFor(calls, sessions.parent).length).toBeGreaterThan(0)
       expect(callsFor(calls, sessions.parent).at(-1)?.prompt).toBe("model")
+    }),
+  )
+
+  it.effect("does not extend warming for a request carrying the warming prompt", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "3 seconds" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* advance(2)
+      const warmed = callsFor(calls, sessions.parent).length
+      expect(warmed).toBeGreaterThan(0)
+
+      yield* triggerGenerate(sessions.parent, ref("alpha", "m1"), "global")
+      expect(callsFor(calls, sessions.parent).length).toBe(warmed)
+
+      yield* advance(1)
+      yield* cross("10 seconds")
+      expect(callsFor(calls, sessions.parent).length).toBe(warmed)
+    }),
+  )
+
+  it.effect("keeps its own schedule when a warming request raises session hooks", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      const internal = new Map<Session.ID, Model.Ref>()
+      yield* activate(calls, config.service, internal)
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"), internal)
+      yield* advance(3)
+      const warmed = callsFor(calls, sessions.parent)
+      expect(warmed.length).toBeGreaterThanOrEqual(3)
+      expect(warmed.every((call) => call.prompt === "global")).toBe(true)
     }),
   )
 })
