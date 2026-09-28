@@ -261,11 +261,11 @@ test("alt+W enters, Escape commits the draft, and alt+W toggles out", async () =
   expect(dispatch(fixture, "tab")).toBe(true)
   await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 40 cols"))
   expect(dispatch(fixture, "[")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 39 cols"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 41 cols"))
   expect(dispatch(fixture, "shift+w")).toBe(true)
   await fixture.waitForFrame((frame) => footer(frame).includes("esc close"))
-  expect(panels(fixture)).toEqual({ owners: 31, inspector: 39 })
-  expect(dividerColumns(fixture)).toEqual([31, 90])
+  expect(panels(fixture)).toEqual({ owners: 31, inspector: 41 })
+  expect(dividerColumns(fixture)).toEqual([31, 88])
 })
 
 test("keyboard clamps stop at the list minimum", async () => {
@@ -283,12 +283,63 @@ test("keyboard clamps stop at the list minimum", async () => {
   await inspector.waitForFrame((frame) => footer(frame).includes("W Owners 30 cols"))
   expect(dispatch(inspector, "tab")).toBe(true)
   await inspector.waitForFrame((frame) => footer(frame).includes("W Inspector 40 cols"))
-  for (let step = 0; step < 80; step++) dispatch(inspector, "]")
+  // Left / [ move the Inspector's divider left, widening it until the list
+  // reaches its minimum: 130 - owners 30 - MIN_LIST - dividers = 68 columns,
+  // with the divider at 130 - 68 - 1 = 61.
+  for (let step = 0; step < 80; step++) dispatch(inspector, "[")
   await inspector.waitForFrame((frame) => footer(frame).includes(`W Inspector ${130 - 30 - MIN_LIST - DIVIDERS} cols`))
+  expect(dividerColumns(inspector)).toEqual([30, 61])
+  // Right / ] move it right and narrow the Inspector to its own minimum.
+  for (let step = 0; step < 80; step++) dispatch(inspector, "]")
+  await inspector.waitForFrame((frame) => footer(frame).includes(`W Inspector ${INSPECTOR_MIN} cols`))
+  expect(dividerColumns(inspector)).toEqual([30, 105])
   expect(dispatch(inspector, "return")).toBe(true)
   await inspector.waitForFrame((frame) => footer(frame).includes("esc close"))
-  expect(panels(inspector)).toEqual({ owners: 30, inspector: 68 })
-  expect(dividerColumns(inspector)).toEqual([30, 61])
+  expect(panels(inspector)).toEqual({ owners: 30, inspector: INSPECTOR_MIN })
+  expect(dividerColumns(inspector)).toEqual([30, 105])
+})
+
+test("keyboard steps move the selected divider in the arrow's direction", async () => {
+  await using fixture = await open()
+  expect(dispatch(fixture, "shift+w")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Owners 30 cols"))
+  // Owners: Left / [ move its divider one column left, Right / ] one right.
+  expect(dispatch(fixture, "left")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Owners 29 cols"))
+  expect(dividerColumns(fixture)).toEqual([29, 89])
+  expect(dispatch(fixture, "]")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Owners 30 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 89])
+  expect(dispatch(fixture, "[")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Owners 29 cols"))
+  expect(dividerColumns(fixture)).toEqual([29, 89])
+  expect(dispatch(fixture, "right")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Owners 30 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 89])
+  // Inspector: its divider is the panel's left edge, so Left / [ widen it and
+  // move the divider left while Right / ] narrow it and move the divider right.
+  expect(dispatch(fixture, "tab")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 40 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 89])
+  expect(dispatch(fixture, "left")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 41 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 88])
+  expect(dispatch(fixture, "]")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 40 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 89])
+  expect(dispatch(fixture, "[")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 41 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 88])
+  expect(dispatch(fixture, "right")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 40 cols"))
+  expect(dividerColumns(fixture)).toEqual([30, 89])
+  // Enter saves the pair and leaves; the committed divider renders.
+  expect(dispatch(fixture, "[")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("W Inspector 41 cols"))
+  expect(dispatch(fixture, "return")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc close"))
+  expect(panels(fixture)).toEqual({ owners: 30, inspector: 41 })
+  expect(dividerColumns(fixture)).toEqual([30, 88])
 })
 
 test("narrow mode refuses the mode and has no dividers; narrowing while resizing auto-saves and exits", async () => {

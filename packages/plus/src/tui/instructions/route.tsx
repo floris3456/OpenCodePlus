@@ -194,14 +194,18 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     })
   }
 
-  function stepResize(delta: number) {
+  // Left / [ move the selected divider one column left, Right / ] one right.
+  // The keys move the divider, not the panel: Owners grows with its divider,
+  // while the Inspector's divider is the panel's left edge, so the Inspector
+  // grows when the divider moves left (the width delta is reversed there).
+  function moveDivider(direction: -1 | 1) {
     const selected = resizing()
     const draft = resizeWidths()
     if (selected === undefined || draft === undefined) return
     setResizeDraft(
       selected === "owners"
-        ? { owners: clampOwners(draft.owners + delta, dimensions().width, draft.inspector), inspector: draft.inspector }
-        : { owners: draft.owners, inspector: clampInspector(draft.inspector + delta, dimensions().width, draft.owners) },
+        ? { owners: clampOwners(draft.owners + direction, dimensions().width, draft.inspector), inspector: draft.inspector }
+        : { owners: draft.owners, inspector: clampInspector(draft.inspector - direction, dimensions().width, draft.owners) },
     )
   }
 
@@ -1106,8 +1110,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (resizing() !== undefined) {
       const selected = resizing()!
       return [
-        ["←/[", "narrow"],
-        ["→/]", "widen"],
+        ["←/[", "move divider left"],
+        ["→/]", "move divider right"],
         ["tab", "switch panel"],
         ["enter/esc", "save"],
         ["W", `${selected === "owners" ? "Owners" : "Inspector"} ${selected === "owners" ? ownersWidth() : inspectorWidth()} cols`],
@@ -1159,8 +1163,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (resizing() !== undefined)
       return {
         commands: [
-          { bind: "left,[", title: "Narrow the panel", group: "Instructions", run: () => stepResize(-1) },
-          { bind: "right,]", title: "Widen the panel", group: "Instructions", run: () => stepResize(1) },
+          { bind: "left,[", title: "Move the divider left", group: "Instructions", run: () => moveDivider(-1) },
+          { bind: "right,]", title: "Move the divider right", group: "Instructions", run: () => moveDivider(1) },
           { bind: "tab,shift+tab", title: "Switch panel", group: "Instructions", run: cycleResize },
           { bind: "return", title: "Save panel widths", group: "Instructions", run: commitResize },
           { bind: "escape", title: "Save panel widths", group: "Instructions", run: commitResize },

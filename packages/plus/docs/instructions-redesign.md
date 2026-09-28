@@ -33,7 +33,10 @@ Implementation status:
   (fixed Owners and Inspector widths around the flexible list, mouse drag with
   double-click reset, durable client-local persistence) and the `W` / `alt+W`
   keyboard resize mode are implemented too (Stage D of
-  `instructions-workspace-followup.md`).
+  `instructions-workspace-followup.md`). The resize keys were corrected after
+  the lab acceptance (Stage G there): they move the selected divider left/right
+  rather than a global narrow/widen, so the Inspector's width moves opposite
+  the key while the Owners width moves with it.
 
 Priorities, from the owner of the screen:
 
@@ -285,7 +288,7 @@ the editor and the help dialog.
 | `[` `]`, `1`–`8` | category | category |
 | `<` `>` | level | level |
 | E / ctrl+E | expand / collapse all visible rows (E keeps the active row) | same |
-| W / alt+W (wide) | resize panels: ←/[ narrow, →/] widen, tab switch Owners/Inspector, enter/esc save | same |
+| W / alt+W (wide) | resize panels: ←/[ move divider left, →/] move divider right, tab switch Owners/Inspector, enter/esc save | same |
 | space / ctrl+space | enable / select agent | toggle / select agent |
 | `e` | — | edit text |
 | `c` | — | compare with upstream (real diff) |
@@ -301,7 +304,9 @@ sidebar/list expansion ids where the destination has the equivalent node;
 Presets deliberately keep their own selection. In wide mode the two outer
 panes are fixed-width with draggable divider columns between them and the
 flexible list; double-click resets a divider, `W` / `alt+W` resizes by
-keyboard (`←`/`[`, `→`/`]`, `tab`, `enter`/`esc`), and the widths persist.
+keyboard (`←`/`[` move the selected divider left, `→`/`]` move it right; the
+Inspector's width moves opposite the key, `tab`, `enter`/`esc`), and the
+widths persist.
 
 ### State that survives
 

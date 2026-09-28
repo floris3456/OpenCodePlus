@@ -252,10 +252,12 @@ selected). Widths clamp so Owners and Inspector keep at least `24` columns and
 the list at least `30` including both dividers; saved preferences are re-clamped
 against the current terminal on every render, so narrow mode ignores them and a
 wide terminal brings them back. `W` / `alt+W` opens the keyboard resize mode in
-wide mode: `←` / `[` narrow the selected pane, `→` / `]` widen it, `tab` /
-`shift+tab` switch Owners ⇄ Inspector, and `enter` / `escape` (or the toggle
-key) save and leave; the footer names the selected pane and its current columns
-and no browse key runs while the mode is active. A terminal that becomes narrow
+wide mode: `←` / `[` move the selected divider one column left and `→` / `]`
+move it right, so Owners widens as its divider moves right while the Inspector
+widens as its divider moves left (`tab` / `shift+tab` switch Owners ⇄
+Inspector, and `enter` / `escape` (or the toggle key) save and leave); the
+footer names the selected pane and its current columns and no browse key runs
+while the mode is active. A terminal that becomes narrow
 saves the draft and leaves the mode. The widths are client-local durable state
 (`context.storage.store` under `opencode.plus.instructions.panels`); the
 selection view stays in `storage.memory`.

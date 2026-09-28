@@ -1,8 +1,9 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **Stages A–F done** (diff completeness, pane-resize extraction, level
+Status: **Stages A–G done** (diff completeness, pane-resize extraction, level
 navigation, bulk expansion, help, resizable panels plus the `W` keyboard
-resize mode, and live lab acceptance). The lab found and fixed one host
+resize mode, live lab acceptance, and the post-acceptance resize-direction
+correction). The lab found and fixed one host
 regression from the upstream merge: the plugin runtime allowlist did not
 expose the extracted `createPaneResize`, so no plugin registered at all until
 it was added (`fix(tui): expose pane resize to plugin runtime modules`). This
@@ -35,10 +36,11 @@ is kept as written.
   across TUI restarts, and narrow mode is unaffected while saved widths return
   in wide mode.
 - G3 — Keyboard resize mode without `Ctrl+M`: uppercase `W` (`shift+w`)
-  primary, `alt+w` alias; starts at Owners; `Left` / `[` narrow,
-  `Right` / `]` widen, `Tab` / `Shift+Tab` cycle Owners/Inspector,
-  `Enter` or `Escape` save and exit; footer and the active semantic divider
-  highlight.
+  primary, `alt+w` alias; starts at Owners; `Left` / `[` move the selected
+  divider left and `Right` / `]` move it right (the Inspector's width moves
+  opposite its divider, see §3.3), `Tab` / `Shift+Tab` cycle
+  Owners/Inspector, `Enter` or `Escape` save and exit; footer and the active
+  semantic divider highlight.
 - G4 — Bulk row expansion: `E` toggles all expandable rows in the
   hovered/focused Owners or list pane except the active row; `Ctrl+E` includes
   the active row; if any eligible row is collapsed expand all, otherwise
@@ -191,15 +193,19 @@ is kept as written.
 
 | Key | Action |
 |---|---|
-| `left`, `[` | narrow the selected panel by 1 column |
-| `right`, `]` | widen the selected panel by 1 column |
+| `left`, `[` | move the selected divider one column left |
+| `right`, `]` | move the selected divider one column right |
 | `tab`, `shift+tab` | cycle Owners → Inspector → Owners |
 | `return` | save widths and leave resize mode |
 | `escape` | save widths and leave resize mode |
 | `shift+w`, `alt+w` | save widths and leave (toggle) |
 
-No other browse command fires while resize mode is active. Footer and the
-selected panel's divider highlight.
+The keys move the divider, not the panel's width: Owners grows as its divider
+moves right, and the Inspector's divider is the panel's left edge, so the
+Inspector grows as the divider moves left (its width delta is the negative of
+the key direction). Clamps, persistence, save/exit and the mouse mappings are
+unchanged. No other browse command fires while resize mode is active. Footer
+and the selected panel's divider highlight.
 
 ## 4. Level navigation
 
@@ -309,7 +315,7 @@ selected panel's divider highlight.
   changes the pane focus, selected row, category or expansion.
 - The keymap layer gains a resize branch that returns only the resize
   commands; the footer uses `KeyHints` with
-  `←/[ narrow · →/] widen · tab panel · enter/esc save`.
+  `←/[ move divider left · →/] move divider right · tab panel · enter/esc save`.
 - The selected panel's divider gets the active highlight (5.6); the other
   divider stays idle.
 
@@ -330,7 +336,9 @@ selected panel's divider highlight.
   same for Inspector; shrinking the terminal re-clamps on render.
 - Double-click resets Owners to 30 and Inspector to `defaultInspector`.
 - Keyboard mode: `W` enters (footer changes, divider highlighted), `Left`/`[`
-  and `Right`/`]` move by 1, `Tab`/`Shift+Tab` cycles, `Enter` and `Escape`
+  and `Right`/`]` move the selected divider by one column (asserted on the
+  divider column, not just the stored width; the Inspector's width moves
+  opposite the key), `Tab`/`Shift+Tab` cycles, `Enter` and `Escape`
   save and exit, focus/selection unchanged.
 - Persistence: a shared storage backing map across two fixtures — drag in
   fixture A, destroy, render fixture B with the same map, assert the saved
@@ -679,6 +687,9 @@ Deferred (in scope, not in this plan):
   keeps pane switching.
 - `Enter` and `Escape` are equivalent save-and-exit in resize mode; widths
   persist on exit (mouse persists on release/double-click).
+- Resize keys move the selected divider, not a global panel width: `Left`/`[`
+  left, `Right`/`]` right. The Inspector width therefore moves opposite the
+  key (Stage G corrected this after lab acceptance).
 - Panel widths use the durable `storage.store`; the selection `View` stays in
   `storage.memory`.
 - Level changes map selection *and* expansion sets "where possible".
@@ -901,7 +912,9 @@ Panels and the `W` mode (§5, G2–G3) are implemented in the same commit:
   and leave. The resize branch of the keymap layer returns only its own
   commands, so no browse key fires inside the mode; the footer shows the
   selected pane and its current columns plus the keys. A terminal that
-  becomes narrow auto-saves the draft and leaves.
+  becomes narrow auto-saves the draft and leaves. (Stage G corrects the step
+  direction: at this commit the selected panel's width followed the key, so
+  the Inspector's divider moved opposite the arrow.)
 
 Tests (`test/instructions-panels.test.tsx`, 14 tests): pure defaults/clamps/
 `panelWidths` boundaries; the wide dividers between fixed panes; both mouse
@@ -1042,3 +1055,46 @@ unmodified base too); `tsgo` clean in `plus`, `plugin` and `tui`; root
 - The team-creation/tool-count paths were not modified by this work; the live
   sidebar rendered the owner tool counts (`76 tools on (14 direct, 62 through
   Code Mode)`) and the focused `presets`/`teams` tests stayed green.
+
+### Stage G — resize direction correction (done, 2026-09-28)
+
+Commit: `fix(plus): align inspector resize arrows` (local, branch `r4-8`).
+
+Bug found after the Stage F acceptance: in `W` resize mode the Owners keys
+were spatially consistent (`[` moved its divider left) but the Inspector keys
+were not, because the step applied the arrow's delta to the panel width
+instead of to the divider. `Left` / `[` moved the Inspector divider right and
+`Right` / `]` moved it left.
+
+Fix: the step is now divider-direction based (`moveDivider(direction)` in
+`route.tsx`): the `left,[` bind passes `-1` and `right,]` passes `1`; Owners
+take that delta directly and the Inspector takes its negative, because its
+divider is the panel's left edge. Every clamp (`clampOwners` /
+`clampInspector`), the draft persistence and save/exit paths
+(`Enter`/`Escape`/toggle), the auto-save on narrowing, and every mouse mapping
+are unchanged. The footer, the help row and the keymap titles now read
+`move divider left` / `move divider right` instead of `narrow` / `widen`,
+because the width effect is not global: Owners widens as its divider moves
+right, the Inspector widens as its divider moves left.
+
+Focused regression tests (`test/instructions-panels.test.tsx`, all asserted on
+the rendered divider columns as well as the stored widths):
+
+- Owners: `Left` / `[` move the divider one column left (x 30 → 29);
+  `Right` / `]` one column right (x 29 → 30).
+- Inspector after `Tab`: `Left` / `[` move the divider left (40 → 41 cols,
+  x 89 → 88) and widen the panel; `Right` / `]` move it right (41 → 40 cols)
+  and narrow it.
+- Inspector clamps: repeated `[` widen to the list-minimum boundary
+  (68 cols, divider x 61) and repeated `]` narrow to `INSPECTOR_MIN`
+  (24 cols, divider x 105), committed and re-rendered after `Enter`.
+- Persistence and Enter/Escape: the new direction test commits with `Enter`
+  (`{ owners: 30, inspector: 41 }`, dividers `[30, 88]`); the updated `alt+W`
+  test commits an Inspector step with the toggle key; the remount test still
+  proves `storage.store`; the mouse drag, double-click and narrow-mode tests
+  are untouched and stay green.
+
+The Stage F lab readings for the Inspector step (`[`: Inspector 39 at column
+90, footer `←/[ narrow · →/] widen`) are the pre-correction direction and are
+kept as written historical evidence; no new live lab run was performed for
+this correction, which is pinned by the tests above.
