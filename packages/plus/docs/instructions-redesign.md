@@ -1,7 +1,27 @@
 # /instructions redesign
 
-Status: design A chosen for implementation (2026-09-27). B, C and D are kept
-here as the alternatives that were weighed.
+Status: design A implemented (2026-09-28). B, C and D are kept here as the
+alternatives that were weighed.
+
+Implementation status:
+
+- The workspace view ships in `src/tui/instructions/` (`route.tsx`, `workspace.ts`,
+  `row.tsx`, `inspector.tsx`, `diff-pane.tsx`, `editor-pane.tsx`, `splitter.tsx`,
+  `help.tsx`, `dialogs.tsx`), with `test/workspace.test.ts` and
+  `test/workspace-route.test.tsx` beside the existing route tests.
+- The shared foundation (§2) is in: semantic row colours, the real diff with
+  the three comparisons and the merged edit (`k` / `t` / `e`), the full-width
+  editor with `ctrl+d` preview and discard confirm, the help dialog, the live
+  filter, `n`/`N` review jumps, and view survival in
+  `context.storage.memory`.
+- Tool counts per owner (not in the original design; added with the
+  workspace): see §4 and §4's capability mapping. `toolCounts()` in
+  `workspace.ts` counts the rows switched on under each owner's Tools group,
+  splitting out unpinned Code Mode tools as `through Code Mode` (a pinned one
+  is direct). The sidebar owner row, the Tools category tab and the owner
+  header all carry the number; the inspector has a `tools` fact. Zero reads
+  `no tools` in warning colour with the next step (`l` link a preset, `4` turn
+  tools on).
 
 Priorities, from the owner of the screen:
 
@@ -205,15 +225,24 @@ the editor and the help dialog.
   subheaders (OpenCode, Plus, User, Special). Rows are owners (agents, team
   members, special agents, presets, Defaults entries, "Every agent" and
   "Every member") and containers (teams, which list their members). Team-level
-  actions (space enable, d delete, l link, a add member) happen here.
+  actions (space enable, d delete, l link, a add member) happen here. An owner
+  row's tail carries the tools switched on for it (right-aligned number, or a
+  warning-coloured `no tools`; a zero beside state tags stays as a compact
+  warning `0` so the tags keep the room).
 - **Main**: the category tabs of the selected owner (number, name, review count),
   then the category's own subtree as a list. Origin subgroups (OpenCode,
   OpenCodePlus, MCP, Code Mode) are header rows, and items expand inline to
-  sections and permissions.
+  sections and permissions. Above the tabs the owner's header line adds its
+  identity (`build  primary · on`); a second line carries the tool count as
+  `72 tools on (14 direct, 58 through Code Mode)`, or
+  `no tools on · link a preset (l) or turn tools on (4)` at zero. The Tools
+  category tab names the owner's count too.
 - **Inspector**: a compact key/value card (kind, address, state, provenance,
   preset link, enforcement, model, matches), then the text with excluded
   sections struck through. Group rows get a summary (counts on/off/set
-  here/review) instead of "No item details".
+  here/review) instead of "No item details". Owner rows add a `tools` fact
+  (`72 tools on (14 direct, 58 through Code Mode) · 75 in all`), and at zero
+  the same next step as the header.
 - **Focus views**: the editor, the review/compare diff, and the section splitter
   take the full body. Esc returns to where you were.
 
@@ -264,6 +293,7 @@ agent is preselected.
 | detail pane | inspector card |
 | status line, toasts | same |
 | open-with-agent (after create) | same (selects the owner) |
+| (new) tools switched on per owner | sidebar owner tail, Tools category tab, owner header line, inspector `tools` fact |
 
 ## 5. Functional fixes delivered alongside
 

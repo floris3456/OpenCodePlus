@@ -407,3 +407,13 @@ export function toolWords(count: ToolCount): string {
   const split = count.codemode === 0 ? "" : ` (${direct} direct, ${count.codemode} through Code Mode)`
   return `${count.on} tool${count.on === 1 ? "" : "s"} on${split}`
 }
+
+/**
+ * The owner header's tools line: the same counts as toolWords, and for an
+ * owner that can act on nothing the way out of it. The inspector keeps the
+ * fuller account (total rows, why it cannot act).
+ */
+export function toolHint(count: ToolCount): string {
+  if (count.on === 0) return "no tools on · link a preset (l) or turn tools on (4)"
+  return toolWords(count)
+}

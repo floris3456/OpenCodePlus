@@ -1,4 +1,4 @@
-import type { CliRenderer } from "@opentui/core"
+import type { CliRenderer, CapturedFrame } from "@opentui/core"
 import { RGBA } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
@@ -175,6 +175,8 @@ export interface TestFixture {
   readonly renderer: CliRenderer
   readonly fake: FakeRpc
   readonly captureCharFrame: () => string
+  /** The same frame with styled spans, for semantic colour assertions. */
+  readonly captureSpans: () => CapturedFrame
   readonly waitForFrame: (predicate: (frame: string) => boolean) => Promise<string>
   readonly emitChanged: (next?: Snapshot) => Promise<void>
   readonly emitProjectChanged: (status?: Partial<Status>) => Promise<void>
@@ -537,6 +539,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     renderer: output.renderer,
     fake,
     captureCharFrame: () => output.captureCharFrame(),
+    captureSpans: () => output.captureSpans(),
     waitForFrame: (predicate) => output.waitForFrame(predicate),
     emitChanged,
     emitProjectChanged,

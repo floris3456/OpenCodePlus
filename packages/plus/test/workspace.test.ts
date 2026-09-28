@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { tree, type TeamInput } from "../src/instructions/tree.js"
-import { reviewTargets, workspaceOf, type WorkspaceInput } from "../src/tui/instructions/workspace.js"
+import { reviewTargets, toolCounts, toolWords, workspaceOf, type WorkspaceInput } from "../src/tui/instructions/workspace.js"
 
 const agents: AgentSource[] = [
   { id: "build", scope: "defaults", origin: "native", base: "gpt" },
@@ -20,13 +20,13 @@ const items: Item[] = [
 
 const teams: TeamInput[] = [{ level: "project", team: "crew", enabled: true, agents: ["helper"] }]
 
-function rowsOf(records: CustomizationRecord[] = []) {
+function rowsOf(records: CustomizationRecord[] = [], source: readonly Item[] = items) {
   let calls = 0
   return {
     calls: () => calls,
     rows: (open: ReadonlySet<string>) => {
       calls += 1
-      return tree({ items, records, agents, teams, expanded: open })
+      return tree({ items: source, records, agents, teams, expanded: open })
     },
   }
 }
@@ -139,4 +139,58 @@ test("review targets name the owner, category and rows to open for every row und
     },
   ])
   expect(reviewTargets(source.rows, "global")).toEqual([])
+})
+
+test("tool counts read each owner's switched-on tools and split out Code Mode", () => {
+  // A plain tool, a Code Mode tool (reached only through `execute`) and a
+  // pinned Code Mode tool (its own direct row): all scoped to build alone.
+  const tools: Item[] = [
+    { ...item("tool:bash", "tool", "bash", "run commands"), agents: ["build"] },
+    { ...item("tool:coder", "tool", "coder", "code mode tool"), agents: ["build"], codemode: true },
+    { ...item("tool:writer", "tool", "writer", "pinned code mode tool"), agents: ["build"], codemode: true, pinned: true },
+  ]
+  const source = rowsOf([], tools)
+  const codemode = (id: string) => tools.some((entry) => entry.id === id && entry.codemode === true)
+  const counts = toolCounts(source.rows, "project", codemode)
+  expect(counts.get("agent:project:build")).toEqual({ on: 3, codemode: 1, total: 3 })
+  expect(toolWords(counts.get("agent:project:build")!)).toBe("3 tools on (2 direct, 1 through Code Mode)")
+  // An agent the tool rows do not name reads zero, not a missing entry.
+  expect(counts.get("agent:project:Implementer")).toEqual({ on: 0, codemode: 0, total: 0 })
+  expect(toolWords(counts.get("agent:project:Implementer")!)).toBe("no tools on")
+})
+
+test("tool counts key the shared Defaults inventories by their Every agent row", () => {
+  const tools: Item[] = [
+    item("tool:bash", "tool", "bash", "run commands"),
+    { ...item("tool:coder", "tool", "coder", "code mode tool"), codemode: true },
+  ]
+  // Shared inventory rows fall back to off, so the on counts come from the
+  // Defaults records each catalogue reads.
+  const records: CustomizationRecord[] = tools.flatMap((entry) => [
+    {
+      type: "customization",
+      level: "defaults",
+      agent: null,
+      item: entry.id,
+      section: null,
+      state: "on",
+      basedOn: entry.fingerprint,
+      updated: "2026-09-27T00:00:00.000Z",
+    },
+    {
+      type: "customization",
+      level: "defaults",
+      agent: null,
+      catalogue: "teams",
+      item: entry.id,
+      section: null,
+      state: "on",
+      basedOn: entry.fingerprint,
+      updated: "2026-09-27T00:00:00.000Z",
+    },
+  ])
+  const source = rowsOf(records, tools)
+  const counts = toolCounts(source.rows, "defaults", (id) => tools.some((entry) => entry.id === id && entry.codemode === true))
+  expect(counts.get("group:defaults:agents#every")).toEqual({ on: 2, codemode: 1, total: 2 })
+  expect(counts.get("group:defaults:teams#every")).toEqual({ on: 2, codemode: 1, total: 2 })
 })

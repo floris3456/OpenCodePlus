@@ -101,8 +101,19 @@ export function RowLine(props: RowLineProps) {
     const value = props.sidebar === true ? undefined : rowMeta(node())
     return value === props.quiet ? undefined : value
   }
-  const detail = () => [meta(), ...rowTags(node(), props.sidebar === true)].filter((part) => part !== undefined).join(" · ")
+  const tags = () => rowTags(node(), props.sidebar === true)
+  const detail = () => [meta(), ...tags()].filter((part) => part !== undefined).join(" · ")
   const marks = () => marksOf(node())
+  // The tail keeps its tags when the row is tight: the label's floor is low
+  // (8) and the detail shrinks gently with it, so a state tag is never
+  // crowded out of the 30-column sidebar. A zero count beside tags collapses
+  // to "0" for the same reason; the owner header and the inspector keep the
+  // words and the hint.
+  const tools = (): { readonly text: string; readonly warning: boolean } | undefined => {
+    if (props.tools === undefined) return undefined
+    if (props.tools > 0) return { text: `${String(props.tools).padStart(3)} `, warning: false }
+    return tags().length > 0 ? { text: "0 ", warning: true } : { text: "no tools ", warning: true }
+  }
   return (
     <box
       flexDirection="row"
@@ -135,7 +146,7 @@ export function RowLine(props: RowLineProps) {
       </Show>
       <text
         flexShrink={1}
-        minWidth={Math.min(props.row.label.length, 14)}
+        minWidth={Math.min(props.row.label.length, 8)}
         wrapMode="none"
         truncate
         fg={labelColor()}
@@ -143,23 +154,18 @@ export function RowLine(props: RowLineProps) {
       >
         {props.row.label}
       </text>
-      <box flexGrow={1} minWidth={1} />
+      <box flexGrow={1} minWidth={1} flexShrink={0} />
       <Show when={detail().length > 0}>
-        <text flexShrink={3} minWidth={0} wrapMode="none" truncate fg={props.selected && props.focused ? labelColor() : valueRow() ? theme().text.formfield.base : node().badges.active === true ? theme().text.formfield.selected : theme().text.muted}>
+        <text flexShrink={1} minWidth={0} wrapMode="none" truncate fg={props.selected && props.focused ? labelColor() : valueRow() ? theme().text.formfield.base : node().badges.active === true ? theme().text.formfield.selected : theme().text.muted}>
           {`${detail()} `}
         </text>
       </Show>
-      <Show when={props.tools}>
-        {(count) => (
-          <text flexShrink={0} wrapMode="none" fg={props.selected && props.focused ? labelColor() : theme().text.muted}>
-            {`${String(count()).padStart(3)} `}
+      <Show when={tools()}>
+        {(tail) => (
+          <text flexShrink={0} wrapMode="none" fg={tail().warning ? theme().text.feedback.warning.base : props.selected && props.focused ? labelColor() : theme().text.muted}>
+            {tail().text}
           </text>
         )}
-      </Show>
-      <Show when={props.tools === 0}>
-        <text flexShrink={0} wrapMode="none" fg={theme().text.feedback.warning.base}>
-          {"no tools "}
-        </text>
       </Show>
       <Show when={node().owner?.linkMissing === true}>
         <text flexShrink={0} wrapMode="none" fg={theme().text.feedback.warning.base}>

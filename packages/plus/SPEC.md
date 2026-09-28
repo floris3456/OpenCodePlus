@@ -226,6 +226,18 @@ presets, Defaults entries, and the Defaults catalogues as `Every agent` /
 category's own subtree as the list, and an inspector. Row ids, actions and
 every mutation are the tree's; `workspaceOf` only decides which rows are open.
 
+Each sidebar owner row ends with the tools switched on for it (a right-aligned
+count, or a warning-coloured `no tools`; a zero beside state tags compacts to
+`0` so the mode/hidden tags keep the room), and the owner header line under the
+tabs adds a second line `N tools on (D direct, C through Code Mode)` — an
+unpinned Code Mode tool counts through Code Mode, a pinned one as direct —
+or `no tools on · link a preset (l) or turn tools on (4)` at zero. The Tools
+category tab names the same count. Counts come from `toolCounts()` over each
+owner's Tools group with its own expansion set, so they never depend on what
+the user has open; the inspector's `tools` fact adds the total row count
+(`N tools on (D direct, C through Code Mode) · T in all`) and the same next
+step at zero.
+
 **Rows** (`row.tsx`). `●`/`○` is on/off; `◆` and an info-coloured gutter mark a
 value set at this level; `!` (`!N` for N below) and a warning gutter mark a
 review. An inheriting row shows its `badges.fromLabel` dim at the right

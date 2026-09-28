@@ -3,14 +3,18 @@
 // compare, and the live filter's go-to.
 import { expect, test } from "bun:test"
 import { fingerprint } from "../src/instructions/model.js"
-import type { Snapshot } from "../src/rpc.js"
+import type { Plus, Snapshot } from "../src/rpc.js"
 import { breadcrumb, dispatch, reach, selectedRow, sleep } from "./instructions-nav.js"
-import { createSnapshot, renderInstructionsRoute } from "./tui.js"
+import { createSnapshot, createTestTheme, renderInstructionsRoute } from "./tui.js"
 
 const build = { id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }
 
 function tool(id: string, title: string, text: string) {
   return { id, kind: "tool" as const, group: "native" as const, title, text, enabled: true, fingerprint: fingerprint(text) }
+}
+
+function toolItem(id: string, title: string, extra: Partial<Plus.SnapshotItem>): Plus.SnapshotItem {
+  return { ...tool(id, title, "run\n"), ...extra }
 }
 
 // bash at Project was edited when upstream read "old"; upstream now reads "new".
@@ -162,4 +166,42 @@ test("the filter lands on the match, toggles it in place with ctrl+space, and en
   expect(dispatch(fixture, "return")).toBe(true)
   await fixture.waitForFrame((frame) => !frame.includes("esc clear filter") && selectedRow(frame).includes("read"))
   expect(breadcrumb(fixture.captureCharFrame())).toContain("build › Tools › OpenCode › read")
+})
+
+test("sidebar owners and the Tools tab carry the switched-on count beside the owner header's split", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [
+      createSnapshot({
+        agents: [build],
+        items: [
+          toolItem("tool:shell", "shell", {}),
+          toolItem("tool:coder", "coder", { codemode: true }),
+          toolItem("tool:writer", "writer", { codemode: true, pinned: true }),
+        ],
+      }),
+    ],
+    width: 130,
+    height: 45,
+  })
+  // The owner header reflows its own line: 3 on, the pinned Code Mode tool
+  // counted direct, the unpinned one through Code Mode.
+  await fixture.waitForFrame((frame) => frame.includes("3 tools on (2 direct, 1 through Code Mode)"))
+  const frame = fixture.captureCharFrame()
+  // The sidebar is 30 columns at this width; the row's number is right-aligned.
+  expect(selectedRow(frame).slice(0, 29).trimEnd().endsWith("3")).toBe(true)
+  expect(frame).toContain("Tools 3")
+})
+
+test("an owner with nothing switched on warns no tools and says how to turn some on", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build] })],
+    width: 130,
+    height: 45,
+  })
+  await fixture.waitForFrame((frame) => frame.includes("no tools on · link a preset (l) or turn tools on (4)"))
+  const spans = fixture.captureSpans().lines.flatMap((line) => line.spans)
+  const sidebar = spans.find((span) => span.text === "no tools ")
+  expect(sidebar).toBeDefined()
+  expect(sidebar?.fg.equals(createTestTheme().text.feedback.warning.base)).toBe(true)
+  expect(fixture.captureCharFrame()).toContain("Tools 0")
 })

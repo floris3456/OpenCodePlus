@@ -15,7 +15,7 @@ import { Inspector } from "./inspector.js"
 import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
-import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCounts, toolWords, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCounts, toolHint, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -1150,17 +1150,26 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           <box flexDirection="column" flexShrink={0} paddingLeft={1}>
             <Show when={workspace().owner} fallback={<text fg={theme().text.muted}>Select an agent, member or preset</text>}>
               {(owner) => (
-                <text flexShrink={0} wrapMode="none" truncate>
-                  <span style={{ fg: theme().text.base }}>
-                    <b>{owner().label}</b>
-                  </span>
-                  <span style={{ fg: theme().text.muted }}>{`  ${[owner().node.badges.mode, owner().node.badges.state, ownerSource(owner().node)].filter((part) => part !== undefined).join(" · ")}`}</span>
+                <box flexDirection="column" flexShrink={0}>
+                  <text flexShrink={0} wrapMode="none" truncate>
+                    <span style={{ fg: theme().text.base }}>
+                      <b>{owner().label}</b>
+                    </span>
+                    <span style={{ fg: theme().text.muted }}>{`  ${[owner().node.badges.mode, owner().node.badges.state, ownerSource(owner().node)].filter((part) => part !== undefined).join(" · ")}`}</span>
+                  </text>
                   <Show when={toolCount(owner().key)}>
                     {(count) => (
-                      <span style={{ fg: count().on === 0 ? theme().text.feedback.warning.base : theme().text.muted }}>{` · ${toolWords(count())}`}</span>
+                      <text
+                        flexShrink={0}
+                        wrapMode="none"
+                        truncate
+                        fg={count().on === 0 ? theme().text.feedback.warning.base : theme().text.muted}
+                      >
+                        {toolHint(count())}
+                      </text>
                     )}
                   </Show>
-                </text>
+                </box>
               )}
             </Show>
             <CategoryTabs />
