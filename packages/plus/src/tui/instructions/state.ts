@@ -865,6 +865,7 @@ export function createInstructionsState(context: Plugin.Context) {
 
   return {
     snapshot,
+    memo: treeMemo,
     nodes,
     matched: (): ReadonlySet<string> => {
       nodes()

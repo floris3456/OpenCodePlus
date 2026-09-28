@@ -68,6 +68,30 @@ test("control availability does not resolve hidden subtrees for structural query
   expect(memo.section.size).toBe(0)
 })
 
+test("detail facts resolve identically through the shared memo", () => {
+  const snapshot = controlSnapshot([
+    controlRecord("setting:mode", { level: "global", text: "subagent" }),
+    controlRecord("setting:mode", { text: "all", basedOnText: "subagent", basedOn: controlItems()[1].fingerprint }),
+    controlRecord("compaction:model", { text: "acme/small", basedOnText: "acme/big", basedOn: controlItems()[0].fingerprint }),
+  ], { teams: [{ level: "project", team: "crew", enabled: true, agents: ["build"] }] })
+  const input = memoInputOf(snapshot)
+  const memo = buildMemo(input)
+  const nodes = expandedTree(input)
+  for (const id of [
+    "agent:project:build",
+    "team:project:crew:build",
+    "item:project:build:setting:mode",
+    "item:project:crew/:build:setting:mode",
+    "item:project:build:compaction:model",
+  ]) {
+    const node = row(nodes, id)
+    expect(resolvedText(node, snapshot, memo)).toBe(resolvedText(node, snapshot))
+    expect(provenanceLine(node, snapshot, memo)).toBe(provenanceLine(node, snapshot))
+    expect(controlDetail(node, snapshot, memo)).toEqual(controlDetail(node, snapshot))
+    expect(sectionRows(node, snapshot, memo)).toEqual(sectionRows(node, snapshot))
+  }
+})
+
 test("team control baselines resolve by controlTeam in tree and details instead of borrowing another team's values", () => {
   const snapshot = controlSnapshot([], {
     agents: [{ id: "worker", scope: "project", origin: "user", fileBacked: true }],

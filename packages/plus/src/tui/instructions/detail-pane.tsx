@@ -5,30 +5,44 @@ import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelI
 import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
 import { categorySummary } from "../../instructions/permission-catalog.js"
 import { presetLabels } from "../../instructions/presets.js"
+import { rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo } from "../../instructions/resolve-memo.js"
 import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from "../../instructions/snapshot.js"
 import { controlKind, controlValue, withControlItems, type TreeNode } from "../../instructions/tree.js"
 import type { Level, Plus, Snapshot } from "../../rpc.js"
 import { presetName } from "../preset-picker.js"
 
-
-
-function agentsOf(snapshot: Snapshot): AgentSource[] {
-  return snapshot.agents.map(agentOf)
+// Everything the inspector derives from a snapshot once. The inspector renders
+// per keystroke, so rebuilding the item/record/scope projections per fact made
+// a tool row cost ~15 ms; one entry per snapshot brings it under 2 ms.
+interface Derived {
+  readonly items: readonly Item[]
+  readonly customizations: readonly CustomizationRecord[]
+  readonly splits: readonly SplitRecord[]
+  readonly models: readonly ModelRecord[]
+  readonly agents: readonly AgentSource[]
+  readonly scopes: ReturnType<typeof contextOfSnapshot>
+  /** presetKey → label, for "from preset X". */
+  readonly labels: ReadonlyMap<string, string>
 }
 
-function itemsOf(snapshot: Snapshot): readonly Item[] {
-  return withControlItems(snapshot.items.map(itemOf))
-}
+const derivedCache = new WeakMap<Snapshot, Derived>()
 
-function customizationsOf(snapshot: Snapshot): CustomizationRecord[] {
-  return snapshot.records
-    .map(recordOf)
-    .filter((record): record is CustomizationRecord => record.type === "customization")
-}
-
-function splitsOf(snapshot: Snapshot): SplitRecord[] {
-  return snapshot.records.map(recordOf).filter((record): record is SplitRecord => record.type === "split")
+function derivedOf(snapshot: Snapshot): Derived {
+  const cached = derivedCache.get(snapshot)
+  if (cached !== undefined) return cached
+  const records = snapshot.records.map(recordOf)
+  const value: Derived = {
+    items: withControlItems(snapshot.items.map(itemOf)),
+    customizations: records.filter((record): record is CustomizationRecord => record.type === "customization"),
+    splits: records.filter((record): record is SplitRecord => record.type === "split"),
+    models: records.filter((record): record is ModelRecord => record.type === "model"),
+    agents: snapshot.agents.map(agentOf),
+    scopes: contextOfSnapshot(snapshot),
+    labels: presetLabels(listingOfSnapshot(snapshot)),
+  }
+  derivedCache.set(snapshot, value)
+  return value
 }
 
 function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
@@ -39,19 +53,22 @@ function upstreamFor(items: readonly Item[], address: Address): Item | undefined
   return matches.find((entry) => applies(entry, owner)) ?? matches[0]
 }
 
+// The row's resolved value: through the shared memo when the inspector has it,
+// so a row the tree already resolved is a cache hit, not a fresh resolve.
+function resolveAt(derived: Derived, address: Address, item: Item, memo?: Memo): Resolved {
+  if (memo === undefined)
+    return resolve({ upstream: item, records: derived.customizations, splits: derived.splits, scopes: derived.scopes, address })
+  if (address.section === null) return wholeOf(memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
+  return sectionResolveOf(memo, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address))
+}
+
 function isModelAddress(address: Address): boolean {
   return address.item.startsWith("model:")
 }
 
-function modelsOfSnapshot(snapshot: Snapshot): ModelRecord[] {
-  return snapshot.records
-    .map(recordOf)
-    .filter((record): record is ModelRecord => record.type === "model")
-}
-
-function upstreamModelOf(snapshot: Snapshot, agent: string | null): { providerID: string; modelID: string; variant?: string } | undefined {
+function upstreamModelOf(derived: Derived, agent: string | null): { providerID: string; modelID: string; variant?: string } | undefined {
   if (agent === null) return undefined
-  const entry = agentsOf(snapshot).find((candidate) => candidate.id === agent)
+  const entry = derived.agents.find((candidate) => candidate.id === agent)
   return entry?.model
 }
 
@@ -63,9 +80,10 @@ export function modelDetail(
   if (address === undefined || !isModelAddress(address)) return undefined
   const parsed = parseModelItemId(address.item)
   if (parsed === undefined) return undefined
-  const scopes = contextOfSnapshot(snapshot)
-  const models = modelsOfSnapshot(snapshot)
-  const upstream = upstreamModelOf(snapshot, address.agent)
+  const derived = derivedOf(snapshot)
+  const scopes = derived.scopes
+  const models = derived.models
+  const upstream = upstreamModelOf(derived, address.agent)
   // The row's whole address: a member's or Special agent's team, the Teams
   // catalogue — the chain its tree row resolves.
   const input = {
@@ -90,22 +108,17 @@ export function modelDetail(
   }
 }
 
-export function resolveNode(node: TreeNode, snapshot: Snapshot): Resolved | undefined {
+export function resolveNode(node: TreeNode, snapshot: Snapshot, memo?: Memo): Resolved | undefined {
   const address = node.address
   if (address === undefined) return undefined
-  const upstream = upstreamFor(itemsOf(snapshot), address)
+  const derived = derivedOf(snapshot)
+  const upstream = upstreamFor(derived.items, address)
   if (upstream === undefined) return undefined
-  return resolve({
-    upstream,
-    records: customizationsOf(snapshot),
-    splits: splitsOf(snapshot),
-    scopes: contextOfSnapshot(snapshot),
-    address,
-  })
+  return resolveAt(derived, address, upstream, memo)
 }
 
-export function resolvedText(node: TreeNode, snapshot: Snapshot): string {
-  const resolved = resolveNode(node, snapshot)
+export function resolvedText(node: TreeNode, snapshot: Snapshot, memo?: Memo): string {
+  const resolved = resolveNode(node, snapshot, memo)
   if (!resolved) return "No item details"
   return resolved.text
 }
@@ -113,37 +126,35 @@ export function resolvedText(node: TreeNode, snapshot: Snapshot): string {
 export function scrubInfo(
   node: TreeNode,
   snapshot: Snapshot,
+  memo?: Memo,
 ): { hidden: number; preview: readonly string[]; keywords: readonly string[] } | undefined {
   const address = node.address
   if (address === undefined) return undefined
+  const derived = derivedOf(snapshot)
   if (address.item.startsWith("perm:")) {
-    const upstream = upstreamFor(itemsOf(snapshot), address)
+    const upstream = upstreamFor(derived.items, address)
     if (upstream?.kind !== "perm") return undefined
     const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
     if (keywords.length === 0) return { hidden: 0, preview: [], keywords: [] }
-    const parent = itemsOf(snapshot).find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
+    const parent = derived.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
     if (parent === undefined) return { hidden: 0, preview: [], keywords }
     const scrubbed = scrubLines(parent.text, keywords)
     return { hidden: scrubbed.hidden, preview: scrubbed.preview, keywords }
   }
-  const items = itemsOf(snapshot)
-  const records = customizationsOf(snapshot)
-  const splits = splitsOf(snapshot)
-  const scopes = contextOfSnapshot(snapshot)
-  const keywords = items.flatMap((item) => {
+  const keywords = derived.items.flatMap((item) => {
     if (item.kind !== "perm" || item.keywords === undefined) return []
     const owner = address.agent
     if (owner === null) {
       if (item.agents !== undefined) return []
     } else if (!applies(item, owner)) return []
     // The same owner, team and catalogue as the row: only the item differs.
-    const state = resolve({ upstream: item, records, splits, scopes, address: { ...address, item: item.id, section: null } })
+    const state = resolveAt(derived, { ...address, item: item.id, section: null }, item, memo)
     if (state.enabled) return []
     return [...item.keywords]
   })
   const unique = [...new Set(keywords)]
   if (unique.length === 0) return undefined
-  const resolved = resolveNode(node, snapshot)
+  const resolved = resolveNode(node, snapshot, memo)
   if (resolved === undefined) return undefined
   const scrubbed = scrubLines(resolved.text, unique)
   if (scrubbed.hidden === 0) return undefined
@@ -165,7 +176,8 @@ export function permDetail(
 } | undefined {
   const address = node.address
   if (address === undefined) return undefined
-  const upstream = upstreamFor(itemsOf(snapshot), address)
+  const derived = derivedOf(snapshot)
+  const upstream = upstreamFor(derived.items, address)
   if (upstream?.kind !== "perm") return undefined
   const parsed = parsePermItemId(address.item)
   if (parsed === undefined) return undefined
@@ -237,7 +249,7 @@ export function isEditable(node: TreeNode | undefined): boolean {
   return node.actions?.edit === true
 }
 
-export function controlDetail(node: TreeNode, snapshot: Snapshot): string[] {
+export function controlDetail(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   if (node.enabledRow !== undefined) return [
     node.badges.state === "off" ? "Off: this agent cannot be selected or launched." : "On: this agent is enabled.",
     node.badges.hidden === true ? "Hidden: omitted from the picker; enablement is separate." : "Visible: picker availability also depends on Mode.",
@@ -245,7 +257,7 @@ export function controlDetail(node: TreeNode, snapshot: Snapshot): string[] {
   ]
   const item = node.address?.item
   if (item === undefined || controlKind(item) === undefined) return []
-  const resolved = resolveNode(node, snapshot)
+  const resolved = resolveNode(node, snapshot, memo)
   if (resolved === undefined) return []
   const help = item === "setting:enabled" ? "Off disables the agent. Its settings remain editable so it can be re-enabled."
     : item === "setting:hidden" ? "On hides the agent from the picker; it does not disable the agent."
@@ -275,17 +287,17 @@ export function displayLevel(level: Resolved["source"] | Address["level"]): stri
 // source for state and text, or "state: from preset Orchestrator · text:
 // upstream" when they differ. A value this level sets reads "set here
 // (Project)".
-export function provenanceLine(node: TreeNode, snapshot: Snapshot): string | undefined {
+export function provenanceLine(node: TreeNode, snapshot: Snapshot, memo?: Memo): string | undefined {
   const address = node.address
   if (address === undefined) return node.enabledRow === undefined ? undefined : `enabled: ${node.badges.fromLabel ?? "inherited"}`
-  const labels = presetLabels(listingOfSnapshot(snapshot))
+  const labels = derivedOf(snapshot).labels
   const say = (from: From) => {
     const label = fromLabel(from, { labels, level: address.level })
     return label === "set here" ? `set here (${displayLevel(address.level)})` : label
   }
   const control = controlKind(address.item)
   if (control !== undefined) {
-    const resolved = resolveNode(node, snapshot)
+    const resolved = resolveNode(node, snapshot, memo)
     if (resolved === undefined) return undefined
     return `value: ${say(control === "toggle" ? resolved.from : resolved.textFrom)}`
   }
@@ -297,7 +309,7 @@ export function provenanceLine(node: TreeNode, snapshot: Snapshot): string | und
   }
   const from = node.badges.from
   if (from === undefined) {
-    const resolved = resolveNode(node, snapshot)
+    const resolved = resolveNode(node, snapshot, memo)
     if (!resolved) return undefined
     return `state: ${say(resolved.from)} · text: ${say(resolved.textFrom)}`
   }
@@ -332,7 +344,7 @@ export function matchLines(node: TreeNode, snapshot: Snapshot): string[] {
   const listed = (names: readonly string[]) => (names.length === 0 ? "matching now: nothing yet" : `matching now: ${names.join(", ")}`)
   if (entry.catalogue === "agents") {
     const name = entry.name ?? node.label
-    return [`matches agents named: ${name}`, listed([...new Set(snapshot.agents.map((agent) => agent.id))].filter((id) => matchesName(name, id)))]
+    return [`matches agents named: ${name}`, listed([...new Set(derivedOf(snapshot).agents.map((agent) => agent.id))].filter((id) => matchesName(name, id)))]
   }
   const pattern = entry.team ?? "*"
   const teams = (snapshot.teams ?? []).filter((team) => matchesName(pattern, team.team))
@@ -350,21 +362,21 @@ export interface SectionRow {
   readonly excluded: boolean
 }
 
-export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
+export function sectionRows(node: TreeNode, snapshot: Snapshot, memo?: Memo): SectionRow[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
   if (controlKind(address.item) !== undefined) return []
   if (isModelAddress(address)) return []
-  const upstream = upstreamFor(itemsOf(snapshot), address)
+  const derived = derivedOf(snapshot)
+  const upstream = upstreamFor(derived.items, address)
   if (upstream === undefined) return []
-  const records = customizationsOf(snapshot)
-  const splits = splitsOf(snapshot)
-  const scopes = contextOfSnapshot(snapshot)
-  const whole = resolve({ upstream, records, splits, scopes, address })
-  const split = resolveSplit({ text: whole.text, title: upstream.title, splits, scopes, address })
+  const whole = resolveAt(derived, address, upstream, memo)
+  const split =
+    memo === undefined
+      ? resolveSplit({ text: whole.text, title: upstream.title, splits: derived.splits, scopes: derived.scopes, address })
+      : splitOf(memo, address.level, address.agent, upstream, address.catalogue, rowTeamOf(address))
   return split.sections.map((section) => {
-    const sectionAddress: Address = { ...address, section: section.id }
-    const sectionResolved = resolve({ upstream, records, splits, scopes, address: sectionAddress })
+    const sectionResolved = resolveAt(derived, { ...address, section: section.id }, upstream, memo)
     return { id: section.id, name: section.name, excluded: !sectionResolved.enabled }
   })
 }
@@ -372,13 +384,13 @@ export function sectionRows(node: TreeNode, snapshot: Snapshot): SectionRow[] {
 export function parentItemTitle(node: TreeNode, snapshot: Snapshot): string | undefined {
   const address = node.address
   if (address === undefined || address.section === null) return undefined
-  return upstreamFor(itemsOf(snapshot), address)?.title
+  return upstreamFor(derivedOf(snapshot).items, address)?.title
 }
 
-export function sectionExcluded(node: TreeNode, snapshot: Snapshot): boolean {
+export function sectionExcluded(node: TreeNode, snapshot: Snapshot, memo?: Memo): boolean {
   const address = node.address
   if (address === undefined || address.section === null) return false
-  const resolved = resolveNode(node, snapshot)
+  const resolved = resolveNode(node, snapshot, memo)
   if (!resolved) return false
   return !resolved.enabled
 }
@@ -392,21 +404,21 @@ export interface ExcludedRange {
 // section ranges struck through. Ranges come from resolveSplit + section
 // ranges (never string matching): excluded parents cover their full range,
 // leaf ranges keep text from doubling, matching assemble() semantics.
-export function excludedRanges(node: TreeNode, snapshot: Snapshot): ExcludedRange[] {
+export function excludedRanges(node: TreeNode, snapshot: Snapshot, memo?: Memo): ExcludedRange[] {
   const address = node.address
   if (address === undefined || address.section !== null) return []
   if (controlKind(address.item) !== undefined) return []
-  const upstream = upstreamFor(itemsOf(snapshot), address)
+  const derived = derivedOf(snapshot)
+  const upstream = upstreamFor(derived.items, address)
   if (upstream === undefined) return []
-  const records = customizationsOf(snapshot)
-  const splits = splitsOf(snapshot)
-  const scopes = contextOfSnapshot(snapshot)
-  const whole = resolve({ upstream, records, splits, scopes, address })
-  const split = resolveSplit({ text: whole.text, title: upstream.title, splits, scopes, address })
+  const whole = resolveAt(derived, address, upstream, memo)
+  const split =
+    memo === undefined
+      ? resolveSplit({ text: whole.text, title: upstream.title, splits: derived.splits, scopes: derived.scopes, address })
+      : splitOf(memo, address.level, address.agent, upstream, address.catalogue, rowTeamOf(address))
   const excluded = new Set<string>()
   for (const section of split.sections) {
-    const sectionAddress: Address = { ...address, section: section.id }
-    const sectionResolved = resolve({ upstream, records, splits, scopes, address: sectionAddress })
+    const sectionResolved = resolveAt(derived, { ...address, section: section.id }, upstream, memo)
     if (!sectionResolved.enabled) excluded.add(section.id)
   }
   if (excluded.size === 0) return []
@@ -456,10 +468,10 @@ export function excludedAttributes(excluded: boolean) {
   return excluded ? TextAttributes.STRIKETHROUGH : undefined
 }
 
-export function wholeItemText(node: TreeNode, snapshot: Snapshot): { text: string; ranges: ExcludedRange[] } {
-  const text = resolvedText(node, snapshot)
+export function wholeItemText(node: TreeNode, snapshot: Snapshot, memo?: Memo): { text: string; ranges: ExcludedRange[] } {
+  const text = resolvedText(node, snapshot, memo)
   if (node.address?.section !== null) return { text, ranges: [] }
-  return { text, ranges: excludedRanges(node, snapshot) }
+  return { text, ranges: excludedRanges(node, snapshot, memo) }
 }
 
 export function renderRanges(text: string, ranges: readonly ExcludedRange[]): { body: string; excluded: boolean }[] {

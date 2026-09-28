@@ -1455,6 +1455,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         return out
       }}
       ref={(next) => (inspectorScroll = next)}
+      memo={() => state.memo()}
       tools={() => {
         const row = currentRow()
         return row !== undefined && (row.role === "owner" || row.role === "every") ? toolCount(row.key) : undefined
