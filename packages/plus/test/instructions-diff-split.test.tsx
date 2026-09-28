@@ -92,11 +92,13 @@ test("diff pane renders each comparison as a real diff", async () => {
     expect(send(fixture, "2")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("my customized text"))
     expect(fixture.captureCharFrame()).toContain("original upstream → yours")
-    // 3: yours → new upstream, what take would do.
+    // 3: yours → merged result, the three-way merge take would accept. Both
+    // sides changed the same line, so the proposal carries conflict markers.
     expect(send(fixture, "3")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("yours → new upstream"))
+    await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
     expect(fixture.captureCharFrame()).toContain("my customized text")
     expect(fixture.captureCharFrame()).toContain("new upstream text")
+    expect(fixture.captureCharFrame()).toContain("<<<<<<< yours")
     expect(fixture.captureCharFrame()).toContain("needs review")
   } finally {
     fixture.destroy()
@@ -127,16 +129,16 @@ test("a compare that is not a review shows your change only and offers no keep o
   }
 })
 
-test("diff pane resolution callbacks fire for keep and take", async () => {
-  const seen: string[] = []
+test("diff pane resolution callbacks fire for keep and a clean take result", async () => {
+  const seen: { resolution: string; edited?: string }[] = []
   const fixture = await mount((context) => (
     <DiffPane
       context={context}
       title="Demo item"
-      threeWay={threeWay}
+      threeWay={{ original: "one\ntwo\n", mine: "one\ntwo mine\n", upstream: "one upstream\ntwo\n" }}
       active={() => true}
-      onResolve={async (resolution) => {
-        seen.push(resolution)
+      onResolve={async (resolution, edited) => {
+        seen.push({ resolution, edited })
       }}
     />
   ))
@@ -145,7 +147,11 @@ test("diff pane resolution callbacks fire for keep and take", async () => {
     expect(send(fixture, "k")).toBe(true)
     expect(send(fixture, "t")).toBe(true)
     await waitFor(() => seen.length === 2)
-    expect(seen).toEqual(["keep", "take"])
+    // A clean merge persists the merged text, not raw upstream.
+    expect(seen).toEqual([
+      { resolution: "keep", edited: undefined },
+      { resolution: "merge", edited: "one upstream\ntwo mine\n" },
+    ])
   } finally {
     fixture.destroy()
   }
@@ -313,7 +319,7 @@ test("diff pane shows visible keep take edit labels", async () => {
     await fixture.waitForFrame((frame) => frame.includes("keep mine"))
     const frame = fixture.captureCharFrame()
     expect(frame).toContain("k keep mine")
-    expect(frame).toContain("t take new")
+    expect(frame).toContain("t take merged")
     expect(frame).toContain("e edit merged")
   } finally {
     fixture.destroy()

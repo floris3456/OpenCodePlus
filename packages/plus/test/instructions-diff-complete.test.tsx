@@ -104,11 +104,11 @@ const reviewText = {
   upstream: upstreamLines.join("\n") + "\n",
 }
 
-/** Every content line either side of a comparison can show. */
+/** Every content line either side of a comparison can show (tab 3 is yours → the merged result). */
 function expectedLinesOf(tab: number): string[] {
   if (tab === 1) return [...sourceLines, ...upstreamLines]
   if (tab === 2) return [...sourceLines, ...mineLines]
-  return [...mineLines, ...upstreamLines]
+  return [...mineLines, `UPSTREAM ${numbered(100)}`]
 }
 
 async function selectTab(fixture: Fixture, tab: number): Promise<void> {
@@ -214,8 +214,11 @@ test("text without a final newline renders its last line in every comparison", a
     expect(fixture.captureCharFrame()).toContain("BETA")
     await selectTab(fixture, 3)
     const frame = fixture.captureCharFrame()
+    // Take result is yours → the merged result: upstream's clean change is
+    // applied onto yours, so upstream's own last line is not a side any more.
     expect(frame).toContain("BETA")
-    expect(frame).toContain("beta")
+    expect(frame).toContain("ALPHA")
+    expect(frame).not.toContain("beta")
     expect(frame).not.toContain("Error parsing diff")
   } finally {
     fixture.destroy()

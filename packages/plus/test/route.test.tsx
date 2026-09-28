@@ -6,7 +6,7 @@ import path from "node:path"
 import { createComponent } from "solid-js"
 import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
-import { resolve, scopesOf } from "../src/instructions/model.js"
+import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { enable } from "../src/project.js"
 import { load, save } from "../src/instructions/store.js"
@@ -1121,6 +1121,53 @@ async function gotoMcpItem(fixture: TestFixture): Promise<void> {
   await goto(fixture, "item:defaults::mcp:sample", "sample")
 }
 
+// A clean merge: mine appended a line, upstream changed another line with a
+// gap between them, so the Take result applies both.
+function mergeSnapshot(): Snapshot {
+  return createSnapshot({
+    items: [
+      mcpItem({
+        text: "one\ntwo upstream\nthree\nfour\n",
+        fingerprint: fingerprint("one\ntwo upstream\nthree\nfour\n"),
+      }),
+    ],
+    records: [
+      {
+        type: "customization" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "mcp:sample",
+        section: null,
+        text: "one\ntwo\nthree\nfour\ncustom tail\n",
+        basedOn: "fp-old",
+        basedOnText: "one\ntwo\nthree\nfour\n",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+}
+
+// A fast-forward: mine equals the original, so the merge is exactly the new
+// upstream and t can only drop the override.
+function fastForwardSnapshot(): Snapshot {
+  return createSnapshot({
+    items: [mcpItem({ text: "one\ntwo upstream\n", fingerprint: fingerprint("one\ntwo upstream\n") })],
+    records: [
+      {
+        type: "customization" as const,
+        level: "defaults" as const,
+        agent: null,
+        item: "mcp:sample",
+        section: null,
+        text: "one\ntwo\n",
+        basedOn: "fp-old",
+        basedOnText: "one\ntwo\n",
+        updated: "2026-09-14T00:00:00.000Z",
+      },
+    ],
+  })
+}
+
 // Narrow: the sidebar and the owner are two pages; the inspector sits under
 // the list. Esc goes back to the sidebar page, → on the owner opens it again.
 test("narrow list page opens with right and closes with escape", async () => {
@@ -1164,15 +1211,74 @@ test("enter on a yellow node opens the three-pane diff and k keeps mine", async 
   }
 })
 
-test("enter on a yellow node resolves t take upstream", async () => {
+test("t on a conflicted Take result opens the merged editor and cannot save until resolved", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     dispatch(fixture, "t")
+    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
+    const editor = fixture.renderer.currentFocusedEditor
+    // The same proposal e opens: both sides changed the only line, so the
+    // markers are present and nothing has been persisted or acknowledged.
+    expect(editor?.plainText).toBe("<<<<<<< yours\nmine\n=======\nnew-upstream\n>>>>>>> upstream")
+    expect(fixture.captureCharFrame()).toContain("cannot be applied automatically")
+    expect(fixture.fake.mutateInputs).toEqual([])
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
+    expect(fixture.fake.mutateInputs).toEqual([])
+    editor?.setText("merged text")
+    dispatch(fixture, "ctrl+s")
+    await fixture.waitForFrame((frame) => frame.includes('Edited "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "merged text" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("t on a clean merge persists the merged text and clears the review only after t", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [mergeSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoMcpItem(fixture)
+    expect(selectedRow(fixture.captureCharFrame())).toContain("!")
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    // Computing and reading the Take result resolves nothing by itself.
+    dispatch(fixture, "3")
+    await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
+    expect(fixture.captureCharFrame()).toContain("needs review")
+    expect(fixture.fake.mutateInputs).toEqual([])
+    dispatch(fixture, "t")
+    await fixture.waitForFrame((frame) => frame.includes('Merged "sample"'))
+    expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({
+      type: "customization",
+      item: "mcp:sample",
+      text: "one\ntwo upstream\nthree\nfour\ncustom tail\n",
+      basedOn: fingerprint("one\ntwo upstream\nthree\nfour\n"),
+      basedOnText: "one\ntwo upstream\nthree\nfour\n",
+      acknowledged: fingerprint("one\ntwo upstream\nthree\nfour\n"),
+    })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("t on a clean fast-forward drops the override only after t", async () => {
+  const fixture = await renderInstructionsRoute({ snapshots: [fastForwardSnapshot()], width: 120, height: 40 })
+  try {
+    await gotoMcpItem(fixture)
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    // Still under review until the user presses t; nothing has been written.
+    expect(fixture.captureCharFrame()).toContain("needs review")
+    expect(fixture.fake.mutateInputs).toEqual([])
+    dispatch(fixture, "t")
     await fixture.waitForFrame((frame) => frame.includes("Took upstream"))
     expect(fixture.fake.mutateInputs.length).toBe(1)
+    expect(fixture.fake.mutateInputs[0].records.some((record) => record.type === "customization")).toBe(false)
   } finally {
     fixture.destroy()
   }
@@ -3749,7 +3855,7 @@ test("take on a state review drops yours; with text under review too the diff fo
     const record = second.fake.mutateInputs[0].records.find((entry) => entry.type === "customization" && entry.item === "tool:bash")
     expect(record).toMatchObject({ text: "mine", basedOnText: "old" })
     expect(record !== undefined && "state" in record).toBe(false)
-    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t take new")))
+    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t take merged")))
   } finally {
     second.destroy()
   }

@@ -879,7 +879,7 @@ export interface ThreeWay {
   readonly upstream: string
 }
 
-export type Resolution = "keep" | "take" | "edit"
+export type Resolution = "keep" | "take" | "edit" | "merge"
 
 export interface MergeFields {
   readonly text?: string | null
@@ -1020,6 +1020,10 @@ export function resolveResolution(
     records[index] = dropped
     return records
   }
+  // merge writes the same record an edit does — the accepted take-result text,
+  // based on and acknowledging the current upstream — and differs only in the
+  // op-level status (`Merged "…"` vs `Edited "…"`), so accepting a computed
+  // merge never claims a hand edit.
   if (edited === undefined) return records
   if (
     existing !== undefined &&

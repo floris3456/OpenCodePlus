@@ -2,7 +2,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
-import { merge3, unifiedDiff } from "../../instructions/diff-lines.js"
+import { merge3, unifiedDiff, type Merged } from "../../instructions/diff-lines.js"
 import type { Resolution, ThreeWay } from "../../instructions/model.js"
 import { KeyHints } from "./row.js"
 
@@ -32,16 +32,24 @@ interface Comparison {
   readonly to: string
   readonly left: string
   readonly right: string
+  /** Take result only: the three-way merge proposal this comparison shows; `t` and `e` use it too. */
+  readonly merged?: Merged
 }
 
-/** The comparisons a review answers (docs/instructions-redesign.md §2.2). */
+/**
+ * The comparisons a review answers (docs/instructions-redesign.md §2.2). Take
+ * result is the three-way merge proposal — `merge3` applied to yours — not raw
+ * upstream: clean changes from both sides appear, and only regions both sides
+ * changed differently keep their conflict markers.
+ */
 export function comparisonsOf(threeWay: ThreeWay, review: boolean): Comparison[] {
   const yours: Comparison = { label: "Your change", from: "original upstream", to: "yours", left: threeWay.original, right: threeWay.mine }
   if (!review && threeWay.original === threeWay.upstream) return [yours]
+  const merged = merge3(threeWay.original, threeWay.mine, threeWay.upstream)
   return [
     { label: "Upstream change", from: "original upstream", to: "new upstream", left: threeWay.original, right: threeWay.upstream },
     yours,
-    { label: "Take result", from: "yours", to: "new upstream", left: threeWay.mine, right: threeWay.upstream },
+    { label: "Take result", from: "yours", to: "merged result", left: threeWay.mine, right: merged.text, merged },
   ]
 }
 
@@ -71,6 +79,16 @@ export function DiffPane(props: DiffPaneProps) {
 
   const review = () => props.review !== false
   const comparisons = createMemo(() => comparisonsOf(props.threeWay, review()))
+  // The merge proposal is computed once, with the comparisons, and reused by
+  // comparison 3, `t` and `e`. A read-only compare has no upstream change to
+  // merge, so it falls back to your text exactly as the old e did.
+  const proposal = createMemo(
+    () =>
+      comparisons().find((comparison) => comparison.merged !== undefined)?.merged ?? {
+        text: props.threeWay.mine,
+        conflicts: 0,
+      },
+  )
   const current = () => comparisons()[Math.min(tab(), comparisons().length - 1)]!
   // Each tab shows both sides in full, so every tab shares one continuous line
   // universe and no unchanged text is missing. Compact hunks (the default)
@@ -80,13 +98,36 @@ export function DiffPane(props: DiffPaneProps) {
   )
   const view = () => ((split() ?? dimensions().width >= 120) ? "split" : "unified")
 
-  // e edits a merge of the upstream change onto yours, not yours alone.
-  function startEdit() {
-    const merged = review() ? merge3(props.threeWay.original, props.threeWay.mine, props.threeWay.upstream) : { text: props.threeWay.mine, conflicts: 0 }
+  // e edits the merge proposal, not yours alone. `fromTake` only changes the
+  // notice wording: a conflicted `t` opens this same editor and waits for the
+  // human to resolve every marker, so it never persists the markers.
+  function startEdit(fromTake = false) {
+    const merged = proposal()
     setDraft(merged.text)
     setConflicts(merged.conflicts)
-    setNotice(merged.conflicts > 0 ? `${merged.conflicts} conflicting region${merged.conflicts === 1 ? "" : "s"} marked <<<<<<< yours … >>>>>>> upstream: resolve before saving` : "")
+    setNotice(
+      merged.conflicts > 0
+        ? `${merged.conflicts} conflicting region${merged.conflicts === 1 ? "" : "s"} marked <<<<<<< yours … >>>>>>> upstream: edit the merged text, remove the markers, then save${fromTake ? " (a conflicted take cannot be applied automatically)" : ""}`
+        : "",
+    )
     setEditing(true)
+  }
+
+  // t accepts the Take result. A clean merge is persisted as merged text; a
+  // clean fast-forward (the merged result equals the current upstream) drops
+  // the override and follows upstream; a conflicted proposal persists and
+  // acknowledges nothing and opens the merged editor, exactly like e.
+  function take() {
+    const merged = proposal()
+    if (merged.conflicts > 0) {
+      startEdit(true)
+      return
+    }
+    if (merged.text === props.threeWay.upstream) {
+      void props.onResolve("take")
+      return
+    }
+    void props.onResolve("merge", merged.text)
   }
 
   function cancelEdit() {
@@ -133,10 +174,10 @@ export function DiffPane(props: DiffPaneProps) {
         ...(review()
           ? [
               { bind: "k", title: "Keep mine", group: "Instructions", run: () => void props.onResolve("keep") },
-              { bind: "t", title: "Take new upstream", group: "Instructions", run: () => void props.onResolve("take") },
+              { bind: "t", title: "Take merged result", group: "Instructions", run: take },
             ]
           : []),
-        { bind: "e", title: review() ? "Edit merged text" : "Edit text", group: "Instructions", run: startEdit },
+        { bind: "e", title: review() ? "Edit merged text" : "Edit text", group: "Instructions", run: () => startEdit() },
         ...comparisons().map((_, index) => ({ bind: String(index + 1), title: `Show comparison ${index + 1}`, group: "Instructions", run: () => setTab(index) })),
         { bind: "tab", title: "Next comparison", group: "Instructions", run: () => setTab((tab() + 1) % comparisons().length) },
         { bind: "v", title: "Split or unified", group: "Instructions", run: () => setSplit(view() !== "split") },
@@ -151,7 +192,7 @@ export function DiffPane(props: DiffPaneProps) {
   function hints(): (readonly [string, string])[] {
     if (editing()) return [["ctrl+s", "save"], ["esc", "cancel"]]
     return [
-      ...(review() ? ([["k", "keep mine"], ["t", "take new"]] as const) : []),
+      ...(review() ? ([["k", "keep mine"], ["t", "take merged"]] as const) : []),
       ["e", review() ? "edit merged" : "edit"],
       ...(comparisons().length > 1 ? ([["1-3", "comparison"]] as const) : []),
       ["v", view() === "split" ? "unified" : "split"],

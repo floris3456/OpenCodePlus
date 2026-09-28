@@ -315,10 +315,27 @@ keys.
 pinned`. With `text` under review too, the three-way diff opens after the
 choice for the text. A text-only review opens the diff pane: a real diff
 (opentui `<diff>`, the theme's diff tokens) with three comparisons — upstream
-change (original → new upstream), your change (original → yours) and take
-result (yours → new upstream) — where `k` keeps, `t` takes and `e` edits a
-three-way merge of the upstream change onto yours (`diff-lines.ts` `merge3`;
-conflicting regions are fenced and saving is refused until they are resolved).
+change (original → new upstream), your change (original → yours) and Take
+result (yours → **merged result**, the three-way merge applied onto yours, not
+raw upstream) — where `k` keeps mine, `t` accepts the Take result and `e` opens
+the same merged proposal (`diff-lines.ts` `merge3`). Computing, opening or
+switching to Take result never mutates records and never acknowledges the
+review; only an explicit `t` resolves it, and it never resolves a conflict
+silently:
+
+- a **clean merge** whose text differs from the current upstream is persisted
+  as the merged text (non-overlapping custom text and upstream changes both
+  survive) with `basedOn`, `basedOnText` and `acknowledged` set to the current
+  upstream and the internal `merge` status (`Merged "<row>"`), so it is not
+  misreported as a hand edit;
+- a **clean fast-forward** whose merged result exactly equals the current
+  upstream uses the existing `take` resolution and drops the override so the
+  row follows upstream again — detected, but never accepted automatically;
+- a **conflicted proposal** persists and acknowledges nothing and opens the
+  merged editor with `<<<<<<< yours / ======= / >>>>>>> upstream` markers:
+  `ctrl+s` refuses while any marker remains, and the resolved save persists the
+  text and clears the review. `e` opens the identical proposal.
+
 Each comparison renders both sides in full (`unifiedDiff` with complete
 context), so every tab carries the same continuous line universe with no
 unchanged text missing; the compact 3-line-context patch stays the default for
@@ -721,7 +738,7 @@ export interface ThreeWay {
   readonly upstream: string // what the level above says now
 }
 export function threeWay(input: ChainInput): ThreeWay | undefined
-export type Resolution = "keep" | "take" | "edit"
+export type Resolution = "keep" | "take" | "edit" | "merge"
 ```
 
 - **keep**: set `acknowledged` to the current upstream fingerprint; text
@@ -733,6 +750,11 @@ export type Resolution = "keep" | "take" | "edit"
   then carries no text, state or pin, so live propagation resumes.
 - **edit**: set `text` to the new text and set `basedOn`, `basedOnText`,
   `acknowledged` to the current upstream; still modified, review cleared.
+- **merge**: the accepted Take result. The same record construction as edit
+  (`text`, `basedOn`, `basedOnText`, `acknowledged` = current upstream; review
+  cleared), with the distinct op status `Merged "<row>"` so a computed merge is
+  not reported as a hand edit. Internal to the TUI: the tool `resolve` surface
+  stays `keep | take | edit`.
 
 Also exported: `merge(records, address, fields, upstream)` (apply a field
 change at one address returning the full new record list), `reset(records,

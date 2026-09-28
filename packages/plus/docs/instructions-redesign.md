@@ -37,6 +37,13 @@ Implementation status:
   the lab acceptance (Stage G there): they move the selected divider left/right
   rather than a global narrow/widen, so the Inspector's width moves opposite
   the key while the Owners width moves with it.
+- Follow-up (2026-09-28, Stage H there): **Take result is a real three-way
+  merge proposal**. Comparison 3 is `yours → merged result` (`merge3` applied
+  onto yours, not raw upstream), `t` accepts a clean merge as merged text with
+  the distinct `Merged "…"` status, a clean fast-forward whose merged result
+  equals upstream drops the override, and a conflicted proposal opens the same
+  merged editor `e` opens and resolves nothing until every marker is removed.
+  Computing or viewing the proposal never mutates or acknowledges anything.
 
 Priorities, from the owner of the screen:
 
@@ -105,13 +112,21 @@ each one tab:
 
 1. **Upstream change** — original → new upstream (what changed above you)
 2. **Your change** — original → yours
-3. **Result** — yours → new upstream (what "take" would do)
+3. **Take result** — yours → **merged result**: the three-way merge (`merge3`)
+   applied onto yours, so non-overlapping custom text and upstream changes both
+   appear; only regions both sides changed differently are fenced with
+   `<<<<<<< yours / ======= / >>>>>>> upstream` markers.
 
-`k` keep yours · `t` take upstream · `e` edit a **merged** proposal: a line
-three-way merge applies the upstream change onto yours; overlapping hunks get
-`<<<<<<< yours / ======= / >>>>>>> upstream` markers. The same view opens on
-demand (`c` compare) for any row whose text you have overridden, not only when
-flagged.
+`k` keep yours · `t` take the merged result · `e` edit the same merged
+proposal. A clean merge persists the merged text as the reviewed customization
+with the distinct internal `Merged "…"` status; a clean fast-forward whose
+merged result exactly equals the current upstream drops the override and
+follows upstream, but is detected, never accepted automatically. A conflicted
+proposal persists and acknowledges nothing: `t` (like `e`) opens the merged
+editor with the markers, and saving is refused until every one is removed.
+Viewing or computing the proposal never mutates records or clears the review.
+The same view opens on demand (`c` compare) for any row whose text you have
+overridden, not only when flagged.
 
 Every comparison renders the **complete text of both sides** — one full-range
 hunk (`unifiedDiff` with `context: Number.POSITIVE_INFINITY`) instead of the
@@ -332,7 +347,7 @@ ignores them, a wide terminal re-clamps and re-applies them).
 | space toggle, ctrl+space select agent | same (sidebar for agents and teams) |
 | p pin, a add, l link, d delete, r reset, s split | same keys, same dialogs |
 | review state/pin/model choice | same select dialogs |
-| review text (three stacked texts) | real diff view with three comparisons + merged edit |
+| review text (three stacked texts) | real diff view with three comparisons + merged Take result and merged edit |
 | filter prompt | live filter bar |
 | `?` text block | help dialog |
 | detail pane | inspector card |
@@ -343,7 +358,10 @@ ignores them, a wide terminal re-clamps and re-applies them).
 ## 5. Functional fixes delivered alongside
 
 1. Real diff (opentui `<diff>`, OpenCode diff tokens) instead of three stacked texts.
-2. `e` in a review edits a real three-way merge proposal (conflicts marked).
+2. `t` / `e` in a review work on a real three-way merge proposal: `t` accepts
+   a clean merge as merged text (`Merged "…"`) or fast-forwards to upstream
+   when the merge equals it, and `e` edits the same proposal (conflicts
+   marked; saving refused until they are resolved).
 3. On-demand compare (`c`) for any row whose text you have overridden.
 4. The editor asks before discarding a changed draft; `ctrl+d` previews the change.
 5. Live filter; `n`/`N` jump to the next row to review; PgUp/PgDn/Home/End.

@@ -773,7 +773,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
 export function resolveReview(
   input: MemoInput,
   rowId: string,
-  resolution: "keep" | "take" | "edit",
+  resolution: "keep" | "take" | "edit" | "merge",
   edited?: string,
   only?: readonly ReviewPart[],
 ): OpResult {
@@ -781,10 +781,16 @@ export function resolveReview(
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const memo = found.memo
-  if (resolution === "edit") {
+  if (resolution === "edit" || resolution === "merge") {
     const refusal = editRefusal(node)
     if (refusal !== undefined) return { refusal }
-    if (edited === undefined) return { refusal: `"${node.label}" cannot be edited: edit requires text` }
+    if (edited === undefined)
+      return {
+        refusal:
+          resolution === "merge"
+            ? `"${node.label}" cannot be merged: merge requires the merged text`
+            : `"${node.label}" cannot be edited: edit requires text`,
+      }
   }
   const chain = chainFor(memo, node)
   if (!chain || !node.address) return { refusal: resolveRefusalForLabel(node.label) }
@@ -813,6 +819,14 @@ export function resolveReview(
       records: next,
       splits: chain.splits,
       status: `Took upstream for "${node.label}"`,
+      retryHint: `resolved "${node.label}" against a stale revision; retry`,
+    }
+  }
+  if (resolution === "merge") {
+    return {
+      records: next,
+      splits: chain.splits,
+      status: `Merged "${node.label}"`,
       retryHint: `resolved "${node.label}" against a stale revision; retry`,
     }
   }

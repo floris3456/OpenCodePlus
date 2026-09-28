@@ -302,6 +302,13 @@ test("resolveReview keep/take/edit match resolveResolution", () => {
   expect(withoutUpdated(edit.records)).toEqual(withoutUpdated(resolveResolution(chain, "edit", "merged text")))
   edit.records.forEach((entry) => expectValidIso(entry.updated))
   expect(edit.records.some((entry) => entry.text === "merged text")).toBe(true)
+  const merge = resolveReview(withUpstream, rowId, "merge", "merged text")
+  if ("refusal" in merge) throw new Error(`merge refused ${merge.refusal}`)
+  // The accepted take-result says "Merged", never "Edited".
+  expect(merge.status).toBe(`Merged "sample"`)
+  expect(withoutUpdated(merge.records)).toEqual(withoutUpdated(resolveResolution(chain, "merge", "merged text")))
+  merge.records.forEach((entry) => expectValidIso(entry.updated))
+  expect(merge.records.some((entry) => entry.text === "merged text")).toBe(true)
 })
 
 test("removalPlan agent delete success", () => {
@@ -516,6 +523,10 @@ test("resolveReview edit succeeds on Code Mode rows and still requires edited te
   const missing = resolveReview(input, sample.id, "edit")
   if (!("refusal" in missing)) throw new Error("expected missing-text refusal")
   expect(missing.refusal).toContain("cannot be edited")
+  const missingMerge = resolveReview(input, sample.id, "merge")
+  if (!("refusal" in missingMerge)) throw new Error("expected merge missing-text refusal")
+  expect(missingMerge.refusal).toContain("cannot be merged")
+  expect(missingMerge.refusal).toContain("merge requires the merged text")
 })
 
 test("re-submitting identical text, state, and boundaries keeps the existing record", () => {

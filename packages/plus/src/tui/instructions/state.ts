@@ -850,6 +850,18 @@ export function createInstructionsState(context: Plugin.Context) {
     return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
+  // t on a clean three-way merge: the same record construction as an edit, but
+  // with the `Merged` status because the text was computed, not hand-written.
+  async function resolveMerge(node: TreeNode, merged: string): Promise<boolean> {
+    if (blockedControlWrite(node)) return false
+    const result = resolveReview(memoInput(), node.id, "merge", merged)
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
   function splitPreview(node: TreeNode) {
     const chain = chainFor(node)
     if (!chain || !node.address) return undefined
@@ -1062,6 +1074,7 @@ export function createInstructionsState(context: Plugin.Context) {
     resolveKeep,
     resolveTake,
     resolveEdit,
+    resolveMerge,
     reviewChoice,
     modelReview,
     resolveModel,

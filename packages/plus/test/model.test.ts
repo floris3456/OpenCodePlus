@@ -228,6 +228,20 @@ test("edit replaces text and re-bases review", () => {
   expect(resolve(input({ upstream, records: next })).review).toBe(false)
 })
 
+test("merge writes the same record as edit, so a computed merge is not an edit", () => {
+  const upstream = makeItem({ text: "v2" })
+  const records = [makeRecord({ text: "mine", basedOnText: "v1", basedOn: fingerprint("v1") })]
+  const next = resolveResolution(input({ upstream, records }), "merge", "merged result")
+  expect(next[0].text).toBe("merged result")
+  expect(next[0].basedOn).toBe(upstream.fingerprint)
+  expect(next[0].basedOnText).toBe("v2")
+  expect(next[0].acknowledged).toBe(upstream.fingerprint)
+  expect(resolve(input({ upstream, records: next })).review).toBe(false)
+  // Without text there is nothing to write, exactly like edit; the op layer
+  // refuses that before reaching here.
+  expect(resolveResolution(input({ upstream, records }), "merge")).toEqual(records)
+})
+
 test("merge applies a field change and reset removes the level row", () => {
   const upstream = makeItem()
   const merged = merge([], { level: "project", agent: "alpha", item: upstream.id, section: null }, { text: "mine" }, upstream)

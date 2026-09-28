@@ -50,9 +50,9 @@ export const HELP: readonly HelpGroup[] = [
     "Review (a row marked !)",
     [
       ["enter", "state/pin/model: keep yours or take the new value; text: the diff"],
-      ["k / t", "keep yours / take the new upstream"],
+      ["k / t", "keep yours / take the merged result"],
       ["e", "edit a merge of the upstream change onto yours"],
-      ["1 2 3 · v", "upstream change / your change / take result · split or unified"],
+      ["1 2 3 · v", "upstream change / your change / take result (merged) · split or unified"],
     ],
   ],
   [

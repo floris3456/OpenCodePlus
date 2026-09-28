@@ -1043,11 +1043,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       back()
       return
     }
-    const done = resolution === "keep"
-      ? await state.resolveKeep(node)
-      : resolution === "take"
-        ? await state.resolveTake(node)
-        : edited === undefined ? false : await state.resolveEdit(node, edited)
+    const done =
+      resolution === "keep"
+        ? await state.resolveKeep(node)
+        : resolution === "take"
+          ? await state.resolveTake(node)
+          : edited === undefined
+            ? false
+            : resolution === "merge"
+              ? await state.resolveMerge(node, edited)
+              : await state.resolveEdit(node, edited)
     if (done) back()
   }
 

@@ -1,9 +1,9 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **Stages A–G done** (diff completeness, pane-resize extraction, level
+Status: **Stages A–H done** (diff completeness, pane-resize extraction, level
 navigation, bulk expansion, help, resizable panels plus the `W` keyboard
-resize mode, live lab acceptance, and the post-acceptance resize-direction
-correction). The lab found and fixed one host
+resize mode, live lab acceptance, the post-acceptance resize-direction
+correction, and the merged Take result). The lab found and fixed one host
 regression from the upstream merge: the plugin runtime allowlist did not
 expose the extracted `createPaneResize`, so no plugin registered at all until
 it was added (`fix(tui): expose pane resize to plugin runtime modules`). This
@@ -1098,3 +1098,130 @@ The Stage F lab readings for the Inspector step (`[`: Inspector 39 at column
 90, footer `←/[ narrow · →/] widen`) are the pre-correction direction and are
 kept as written historical evidence; no new live lab run was performed for
 this correction, which is pinned by the tests above.
+
+### Stage H — merged Take result (done, 2026-09-28)
+
+Commit: `feat(plus): merge instruction review results` (local, branch `r4-8`).
+
+The review's third comparison used to be `yours → new upstream`, which hid the
+fact that non-overlapping custom text survives a merge, and `t` dropped the
+whole override even when a real three-way merge was possible. Stage H makes
+Take result a real merge proposal and gives `t` the matching choices:
+
+- `diff-pane.tsx`: `comparisonsOf` computes `merge3(original, mine, upstream)`
+  once and carries it on the Take result comparison (`from: "yours"`,
+  `to: "merged result"`, `right: merged.text`, `merged`). `DiffPane` derives
+  one `proposal()` memo from those comparisons and reuses it for comparison 3,
+  `t` and `e`; a read-only `c` compare has no upstream change to merge, so it
+  falls back to your text exactly as the old `e` did. The Stage A full-context
+  patch is unchanged.
+- `t` (`take()`): a **clean merge** is accepted as merged text
+  (`onResolve("merge", merged.text)`); a **clean fast-forward** whose merged
+  result exactly equals the current upstream uses the existing `take`
+  resolution (`onResolve("take")`), dropping the override so the row follows
+  upstream; a **conflicted proposal** persists and acknowledges nothing and
+  opens the same merged editor `e` opens, with a notice that a conflicted take
+  cannot be applied automatically. Computing, opening or switching to the Take
+  result writes nothing; only the explicit key resolves, so the warning review
+  state stays visible until an explicit successful resolution.
+- Resolution vocabulary: `Resolution` (`model.ts`) gains `merge`; it writes the
+  same record an edit does (text + `basedOn`/`basedOnText`/`acknowledged` =
+  current upstream, review cleared) with the distinct `Merged "<row>"` status
+  in `resolveReview` (`ops.ts`), which also refuses a merge without text
+  (`merge requires the merged text`). `state.ts` gains `resolveMerge`; the
+  route's `resolveDiff` maps it. The tool `resolve` surface
+  (`keep | take | edit`), Protocol/HttpApi and generated clients are untouched.
+- Labels: keymap title `Take merged result`, footer hint `t take merged`, help
+  row `keep yours / take the merged result`, comparison subtitle
+  `yours → merged result`, and the conflict notice says to edit the merged
+  text, remove the markers, then save.
+
+Tests (all focused, from `packages/plus`):
+
+- New `test/instructions-diff-merge.test.tsx` (6 tests): pure `comparisonsOf`
+  for a clean merge (appended custom tail + upstream middle change both in the
+  Take result, `to === "merged result"`, `conflicts === 0`) and for a conflict
+  (markers only around the overlap; the clean tail survives); mounted `t`
+  clean merge (`onResolve("merge", merged)`), fast-forward
+  (`onResolve("take")`, nothing written before `t`, `needs review` still
+  shown), conflicted `t` (the editor opens with the identical markers, the
+  notice says it cannot be applied automatically, zero `onResolve` calls,
+  `ctrl+s` is refused while markers remain, the resolved save persists) and
+  `e` opening the identical proposal comparison 3 shows.
+- `test/route.test.tsx`: the old "t take upstream" expectation is replaced by
+  three end-to-end review tests — conflict `t` opens the merged editor and
+  cannot save until resolved; a clean `t` (with the Take result viewed and
+  switched to first, mutating nothing) persists the merged text with
+  `basedOn`, `basedOnText` and `acknowledged` set to the current upstream and
+  status `Merged "sample"`; a clean fast-forward drops the override (no
+  customization record) only after `t`.
+- `test/model.test.ts`: `resolveResolution "merge"` writes the edit record
+  (text, re-basing, acknowledgement, review cleared) and no-ops without text.
+  `test/ops.test.ts`: `resolveReview "merge"` matches it and reports
+  `Merged "sample"`; a merge without text is refused with `merge requires the
+  merged text`.
+- Intentionally updated expectations: `instructions-diff-split` (Take result
+  subtitle, the callback test now uses a clean merge and expects `merge`, the
+  hint reads `t take merged`) and `instructions-diff-complete`
+  (`expectedLinesOf` tab 3 is mine + the upstream change; the no-final-newline
+  Take result no longer shows upstream's own old last line). The keep/take,
+  complete-text, split/unified, section, model and review-state suites stay
+  green unchanged.
+- Refusal/failure control: the conflicted `t` tests prove no automatic
+  resolution — zero writes while the markers remain, `ctrl+s` refuses marker
+  text, and only a marker-free save persists.
+
+Focused matrix (from `packages/plus`): `test/diff-lines.test.ts`,
+`test/instructions-diff-complete.test.tsx`,
+`test/instructions-diff-split.test.tsx`,
+`test/instructions-diff-merge.test.tsx`, `test/instructions-panes.test.tsx`,
+`test/route.test.tsx`, `test/model.test.ts`, `test/ops.test.ts`,
+`test/review-state.test.ts`, `test/help.test.tsx` and
+`test/workspace-route.test.tsx` — **238 pass / 2 pre-existing skips / 0
+fail**; `bun run typecheck` in `packages/plus` clean; root
+`/home/bliss/OpenCodePlus/bin/bun run check` clean (oxlint 0/0, 36/36 turbo
+typecheck tasks).
+
+**Lab acceptance (wide and narrow, 2026-09-28).** One owned session
+(`r4-8-stageh`) on the isolated script home, driven with
+`docs/team-v2/scripts/tui-lab.sh`; no config or credential was copied into the
+repository or the evidence. The fixture was written only into the lab's project
+store: a project `customization` record for `base:claude` (agent build) whose
+`basedOnText` is the base prompt with one middle line replaced and whose `text`
+appends a `CUSTOM BLOCK FROM LAB` section; the shipped base prompt itself is
+the "new upstream" (16 lines).
+
+- Wide 130×45 (legacy decoding, as Stage F): with the conflict-free fixture,
+  the tab strip read `1 Upstream change +1 -1 · 2 Your change +1 -0 · 3 Take
+  result +1 -1`; tab 3's subtitle was `yours → merged result` and the split
+  view showed the upstream line (`- Use clear file paths when referring to
+  files.`) applied to yours (`- Use paths the user can recognize.`) with
+  `CUSTOM BLOCK FROM LAB` retained at the end; the footer read `k keep mine ·
+  t take merged · e edit merged`. Pressing `t` cleared the `!` from Project
+  and Base and wrote the record itself: revision 3 → 4, `text` = current
+  upstream + the custom block exactly, `basedOn`/`acknowledged` = sha256 of
+  the current upstream, `basedOnText` = the current upstream. (The status line
+  was not captured: the host's post-write reload clears it; the persisted
+  record is the live proof and the route test pins `Merged "sample"`.)
+- Conflict fixture (mine changes the same middle line to `- Use MINE LAB
+  paths.`): Project `!1` returned; pressing `t` opened the merged editor, not
+  a resolution: notice `1 conflicting region marked <<<<<<< yours …
+  >>>>>>> upstream: edit the merged text, remove the markers, then save (a
+  conflicted take cannot be applied automatically)`, markers exactly around the
+  overlap, `CUSTOM BLOCK FROM LAB` still below them, and `needs review` still
+  in the header. `ctrl+s` was refused with `Conflict markers remain: keep one
+  side of each marked region, then save`; the editor stayed open and the store
+  file's sha256 and the server revision (`5`) were unchanged before and after
+  the attempt — zero mutation, no acknowledgement.
+- Narrow 90×30: the same conflict fixture in unified view showed
+  `yours → merged result` complete with the marker block and the surrounding
+  clean text; `v` still toggles.
+
+Lab limits: pilotty has no mouse editing, so the resolved-save path in the
+editor was not driven live (the DiffPane and route tests cover the resolved
+save); the status line and the semantic colours are asserted by the tests, not
+by pilotty frames; no model call was made. Session `r4-8-stageh` was taken down
+with `tui-lab.sh down`, and the lab's own service processes (PID 1267819
+`opencode serve --service`, children 1267893/1268771, all with the lab home in
+`/proc/*/environ`) were stopped by exact PID after `/proc` evidence; no other
+session or process was touched (`ux1`, another owner's lab, was left running).
