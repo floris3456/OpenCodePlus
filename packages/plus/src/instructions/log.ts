@@ -3,6 +3,7 @@ import path from "node:path"
 import { Option, Schema } from "effect"
 import { LogEntry, type Plus } from "../rpc.js"
 import { globalLogPath, projectLogPath } from "./paths.js"
+import { ensure } from "../project.js"
 
 const decodeLogEntry = Schema.decodeUnknownOption(Schema.fromJsonString(LogEntry))
 
@@ -25,6 +26,18 @@ export async function append(logPath: string, entry: Plus.LogEntry): Promise<voi
   const line = JSON.stringify({ ...entry, summary: capSummary(entry.summary) })
   await fs.mkdir(path.dirname(logPath), { recursive: true })
   await fs.appendFile(logPath, `${line}\n`)
+}
+
+// Append one entry to the store that owns it. A project entry is a
+// project-scoped write, so it creates the project's `.opencodeplus` directory
+// on demand; a defaults or global entry never touches the project directory.
+export async function appendForLevel(directory: string, level: Plus.Level, entry: Plus.LogEntry): Promise<void> {
+  if (level !== "project") {
+    await append(globalLogPath(), entry)
+    return
+  }
+  await ensure(directory)
+  await append(projectLogPath(directory), entry)
 }
 
 // Read one log file oldest-first. A corrupt line is skipped, never fatal; a

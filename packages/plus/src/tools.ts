@@ -428,7 +428,6 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
               ...(input.offset === undefined ? {} : { offset: input.offset }),
             }),
           )
-          if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${result.error.message}` }))
           return { output: result.value }
         }),
     })
@@ -438,7 +437,6 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
 function snapshotOrFail(api: PlusApi): Effect.Effect<Plus.Snapshot, Tool.Error> {
   return Effect.gen(function* () {
     const result = yield* Effect.promise(() => api.snapshot())
-    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${result.error.message}` }))
     return result.value
   })
 }
@@ -725,10 +723,9 @@ function mutateWithRetry(
         actor,
       }),
     )
-    if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${first.error.message}` }))
+    if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `${first.error.code}: ${first.error.message}` }))
     if (first.value.ok) return { revision: first.value.revision, globalRevision: first.value.globalRevision, status: op.status }
     const fresh = yield* Effect.promise(() => api.snapshot())
-    if (!fresh.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${fresh.error.message}` }))
     const retry = recompute(fresh.value)
     if ("refusal" in retry) return yield* Effect.fail(new Tool.Error({ message: retry.refusal }))
     const retryModels = retry.models ?? modelsOfMemo(memoFromSnapshot(fresh.value))
@@ -741,7 +738,7 @@ function mutateWithRetry(
         actor,
       }),
     )
-    if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${second.error.message}` }))
+    if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `${second.error.code}: ${second.error.message}` }))
     if (second.value.ok)
       return { revision: second.value.revision, globalRevision: second.value.globalRevision, status: retry.status }
     return yield* Effect.fail(new Tool.Error({ message: "stale: write conflicted twice; re-read and retry" }))
@@ -769,10 +766,9 @@ function mutateModelsWithRetry(
         actor,
       }),
     )
-    if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${first.error.message}` }))
+    if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `${first.error.code}: ${first.error.message}` }))
     if (first.value.ok) return { revision: first.value.revision, globalRevision: first.value.globalRevision, status }
     const fresh = yield* Effect.promise(() => api.snapshot())
-    if (!fresh.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${fresh.error.message}` }))
     const retry = recompute(fresh.value)
     if ("refusal" in retry) return yield* Effect.fail(new Tool.Error({ message: retry.refusal }))
     const freshMemo = memoFromSnapshot(fresh.value)
@@ -787,7 +783,7 @@ function mutateModelsWithRetry(
         actor,
       }),
     )
-    if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `project.disabled: ${second.error.message}` }))
+    if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `${second.error.code}: ${second.error.message}` }))
     if (second.value.ok)
       return { revision: second.value.revision, globalRevision: second.value.globalRevision, status: retry.status }
     return yield* Effect.fail(new Tool.Error({ message: "stale: write conflicted twice; re-read and retry" }))

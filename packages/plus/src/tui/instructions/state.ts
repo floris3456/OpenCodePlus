@@ -150,7 +150,6 @@ export function createInstructionsState(context: Plugin.Context) {
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
   let disposed = false
-  let disabled = false
   let generation = 0
 
   // Presets and Defaults entries get the Role/persona row every agent has.
@@ -370,12 +369,12 @@ export function createInstructionsState(context: Plugin.Context) {
   }
 
   async function load() {
-    if (disposed || disabled) return
+    if (disposed) return
     const requestGen = ++generation
     setLoading(true)
     try {
       const fresh = await plus["instructions.snapshot"](undefined, { location: context.location })
-      if (disposed || disabled || requestGen !== generation) return
+      if (disposed || requestGen !== generation) return
       const firstLoad = snapshot() === undefined
       setSnapshot(fresh)
       if (firstLoad && expanded().size === 0) {
@@ -385,28 +384,28 @@ export function createInstructionsState(context: Plugin.Context) {
       setStatus("")
       ensureSelection()
     } catch (error: unknown) {
-      if (disposed || disabled || requestGen !== generation) return
+      if (disposed || requestGen !== generation) return
       setStatus(errorMessage(error))
     } finally {
-      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+      if (!disposed && requestGen === generation) setLoading(false)
     }
   }
 
   async function refresh() {
-    if (disposed || disabled) return
+    if (disposed) return
     const requestGen = ++generation
     setLoading(true)
     try {
       const fresh = await plus["instructions.refresh"](undefined, { location: context.location })
-      if (disposed || disabled || requestGen !== generation) return
+      if (disposed || requestGen !== generation) return
       setSnapshot(fresh)
       setStatus("Refreshed from host")
       ensureSelection()
     } catch (error: unknown) {
-      if (disposed || disabled || requestGen !== generation) return
+      if (disposed || requestGen !== generation) return
       setStatus(errorMessage(error))
     } finally {
-      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+      if (!disposed && requestGen === generation) setLoading(false)
     }
   }
 
@@ -548,7 +547,7 @@ export function createInstructionsState(context: Plugin.Context) {
         },
         { location: context.location },
       )
-      if (disposed || disabled) return false
+      if (disposed) return false
       // The write's own instructions.changed event usually starts a reload
       // before this answer arrives. That newer load owns the snapshot, but
       // the write still succeeded: report it, or an editor never closes.
@@ -569,11 +568,11 @@ export function createInstructionsState(context: Plugin.Context) {
       ensureSelection()
       return false
     } catch (error: unknown) {
-      if (disposed || disabled || requestGen !== generation) return false
+      if (disposed || requestGen !== generation) return false
       setStatus(errorMessage(error))
       return false
     } finally {
-      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+      if (!disposed && requestGen === generation) setLoading(false)
     }
   }
 
@@ -644,23 +643,23 @@ export function createInstructionsState(context: Plugin.Context) {
         { level: plan.level, team: plan.team, enabled: plan.enabled },
         { location: context.location },
       )
-      if (disposed || disabled || requestGen !== generation) return false
+      if (disposed || requestGen !== generation) return false
       if (ref.enabled !== plan.enabled) {
         setStatus(`Team "${plan.team}" reported ${ref.enabled ? "enabled" : "disabled"} instead of the requested state`)
         return false
       }
       await refresh()
-      if (disposed || disabled) return false
+      if (disposed) return false
       setStatus(ref.disabledTeams.length === 0
         ? plan.successStatus
         : `${plan.successStatus}; disabled ${ref.disabledTeams.map((team) => `${team.level}:${team.team}`).join(", ")}`)
       return true
     } catch (error: unknown) {
-      if (disposed || disabled || requestGen !== generation) return false
+      if (disposed || requestGen !== generation) return false
       setStatus(errorMessage(error))
       return false
     } finally {
-      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+      if (!disposed && requestGen === generation) setLoading(false)
     }
   }
 
@@ -678,17 +677,17 @@ export function createInstructionsState(context: Plugin.Context) {
     setLoading(true)
     try {
       const ref = await plus["team.create"]({ level, team }, { location: context.location })
-      if (disposed || disabled || requestGen !== generation) return false
+      if (disposed || requestGen !== generation) return false
       await refresh()
-      if (disposed || disabled) return false
+      if (disposed) return false
       setStatus(`Created team "${ref.team}"`)
       return true
     } catch (error: unknown) {
-      if (disposed || disabled || requestGen !== generation) return false
+      if (disposed || requestGen !== generation) return false
       setStatus(errorMessage(error))
       return false
     } finally {
-      if (!disposed && !disabled && requestGen === generation) setLoading(false)
+      if (!disposed && requestGen === generation) setLoading(false)
     }
   }
 
@@ -1017,25 +1016,10 @@ export function createInstructionsState(context: Plugin.Context) {
   const unsubscribeInstructions = plus.events.on("instructions.changed", () => {
     void load()
   })
-  const unsubscribeProject = plus.events.on("project.changed", (event) => {
-    if (!event.data.enabled) {
-      disabled = true
-      generation++
-      setSnapshot(undefined)
-      setSelectedId(undefined)
-      setLoading(false)
-      setStatus("Project mode is disabled for this directory")
-      return
-    }
-    disabled = false
-    void load()
-  })
-
   function dispose() {
     disposed = true
     generation++
     unsubscribeInstructions()
-    unsubscribeProject()
   }
 
   return {

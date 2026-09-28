@@ -16,6 +16,7 @@ import type {
 } from "./model.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
+import { ensure } from "../project.js"
 
 export type { CustomizationRecord, SplitRecord }
 export type { ModelRecord, RuleRecord }
@@ -378,7 +379,13 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
   // catalogue duplication is the same situation: both sides of `same` are
   // already migrated, so only this flag makes the copies reach disk.
   const forced = current.migrated || current.cataloguesMigrated
-  const projectChanged = forced || !same(currentProjectRecords(current.records), routed.project)
+  // A forced rewrite still never writes an empty project store into a
+  // directory that has none: doing so would create `.opencodeplus` for a
+  // project with no project-scoped records, which is a global-only write.
+  const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
+  const projectChanged =
+    (forced && !(projectMissing && routed.project.length === 0)) ||
+    !same(currentProjectRecords(current.records), routed.project)
   const globalChanged = forced || !same(currentGlobalRecords(current.records), routed.global)
   // An unchanged save is a no-op: neither file is touched, neither revision moves.
   if (!projectChanged && !globalChanged)
@@ -390,7 +397,12 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
     }
   const nextProject = projectChanged ? current.projectRevision + 1 : current.projectRevision
   const nextGlobal = globalChanged ? current.globalRevision + 1 : current.globalRevision
-  if (projectChanged) await writeStore(projectRecordsPath(projectDir), nextProject, routed.project)
+  if (projectChanged) {
+    // The project store write creates `.opencodeplus` on demand; `ensure`
+    // leaves an inherited ancestor config (and its protectedAgents) alone.
+    await ensure(projectDir)
+    await writeStore(projectRecordsPath(projectDir), nextProject, routed.project)
+  }
   if (globalChanged) await writeStore(globalRecordsPath(), nextGlobal, routed.global)
   if (projectChanged) await indexProjectLinks(projectDir, routed.project.some((record) => record.type === "link"))
   return {

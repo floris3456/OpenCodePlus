@@ -6,9 +6,8 @@ export interface ProjectConfig extends Schema.Schema.Type<typeof ProjectConfig> 
 export const ProjectConfig = Schema.Struct({
   version: Schema.Literal(1),
   protectedAgents: Schema.Array(Schema.String),
-  // `disable` writes an explicit marker instead of deleting the file: a config
-  // with enabled:false stops the upward walk, so a directory inside an enabled
-  // checkout can opt out instead of inheriting. Absent means enabled.
+  // The legacy `enabled` key stays decodable and is ignored: a config carrying
+  // it is just the nearest config, so it stops the upward walk like any other.
   enabled: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.ProjectConfig" })
 
@@ -31,41 +30,36 @@ async function readAt(directory: string): Promise<ProjectConfig | undefined> {
   return Option.getOrUndefined(decodeProjectConfig(text))
 }
 
-// Project mode resolves upward: the nearest `.opencodeplus/project.json` at or
-// above `directory` decides. A session opened in a subdirectory, and any
-// location inside an enabled checkout, therefore reads the same project as the
-// repository root. A config carrying `enabled: false` is an explicit opt-out:
-// it stops the walk and reports disabled, so a nested directory can leave an
-// enabled ancestor's project. A team worktree outside the parent's tree carries
-// no copy of its own and is activated through the run record's
-// `projectDirectory` instead.
-export async function read(directory: string): Promise<ProjectConfig | undefined> {
+// The nearest `.opencodeplus/project.json` at or above `directory`, or
+// undefined when there is none. Plus is always active, so `read` turns the
+// miss into the defaults below.
+async function findAbove(directory: string): Promise<ProjectConfig | undefined> {
   let current = path.resolve(directory)
   for (;;) {
     const config = await readAt(current)
-    if (config !== undefined) return config.enabled === false ? undefined : config
+    if (config !== undefined) return config
     const parent = path.dirname(current)
     if (parent === current) return undefined
     current = parent
   }
 }
 
-export async function enable(directory: string): Promise<ProjectConfig> {
-  const existing = await read(directory)
-  if (existing) return existing
-  const resolved = path.resolve(directory)
-  await writeConfig(resolved, DEFAULT_CONFIG)
-  return DEFAULT_CONFIG
+// Project customizations resolve upward: the nearest config at or above
+// `directory` decides. A session opened in a subdirectory, and any location
+// inside a checkout, therefore reads the same project as the repository root,
+// and a directory with no config anywhere above reads the defaults. A team
+// worktree outside the parent's tree carries no copy of its own and is
+// activated through the run record's `projectDirectory` instead.
+export async function read(directory: string): Promise<ProjectConfig> {
+  return (await findAbove(directory)) ?? DEFAULT_CONFIG
 }
 
-// `disable` writes the explicit marker at this directory rather than deleting
-// the file: with upward resolution, removing a nested directory's own config
-// would silently re-enable it through an ancestor. The marker keeps the
-// directory (and its descendants, until one enables again) disabled.
-export async function disable(directory: string): Promise<void> {
-  const resolved = path.resolve(directory)
-  const inherited = await read(resolved)
-  await writeConfig(resolved, { ...(inherited ?? DEFAULT_CONFIG), enabled: false })
+// Create `<dir>/.opencodeplus/project.json` with the defaults, and only when no
+// config exists at or above `directory`: an inherited project keeps its
+// protectedAgents, and a child write never shadows them with a fresh default.
+export async function ensure(directory: string): Promise<void> {
+  if ((await findAbove(directory)) !== undefined) return
+  await writeConfig(path.resolve(directory), DEFAULT_CONFIG)
 }
 
 async function writeConfig(directory: string, config: ProjectConfig): Promise<void> {
