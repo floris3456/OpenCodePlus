@@ -1,4 +1,4 @@
-import { Plugin } from "@opencode/plugin/tui"
+import { createPaneResize, Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { batch, createSignal, For, Show } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -23,7 +23,6 @@ import {
   SESSION_TABS_COMPACT_BREAKPOINT,
   SESSION_TABS_COMPACT_WIDTH,
 } from "../../../ui/layout"
-import { createPaneResize } from "../../../ui/pane-resize"
 import { PaneResizeHandle } from "../../../ui/pane-resize-handle"
 import type { Story } from "./index"
 

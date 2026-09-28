@@ -1,7 +1,8 @@
 # /instructions workspace follow-up — implementation plan
 
-Status: **Stage A (diff completeness) implemented**; Stages B–F remain
-planned. This document is the implementation-ready plan for the follow-up work
+Status: **Stages A–B implemented** (diff completeness, pane-resize
+extraction); Stages C–F remain planned. This document is the
+implementation-ready plan for the follow-up work
 approved by the human owner of the `/instructions` screen. See
 "§16 Implementation status" for what shipped; the diagnostic material in §8
 is kept as written.
@@ -751,7 +752,38 @@ Focused matrix after the change: the two files above plus
 Docs updated for the fix: `SPEC.md` "Review (§3.6)" and
 `docs/instructions-redesign.md` (implementation-status bullet and §2.2).
 
-### Stages B–F
+### Stage B — pane-resize extraction (done, 2026-09-28)
+
+Commit: `refactor(plugin): share pane resize controller` (local, branch `r4-8`).
+
+- The state machine moved unchanged to `packages/plugin/src/tui/pane-resize.ts`
+  (from `packages/tui/src/ui/pane-resize.ts`, now deleted). It imports only
+  `@opentui/core` and `solid-js`, both already optional peer dependencies of
+  `@opencode/plugin`, and stays a Solid reactive helper (no Effect/Promise
+  domain). `createPaneResize(options)` is exported by name from
+  `@opencode/plugin/tui` (`packages/plugin/src/tui/index.ts`). Option and
+  return shapes are untouched, so clamping, preferred vs transient size,
+  parent-owned drag/release, the left-button filter, commit-on-release,
+  double-click reset and the hover/resizing signals behave exactly as before.
+- Callers now import through `@opencode/plugin/tui`:
+  `packages/tui/src/app.tsx` and
+  `packages/tui/src/component/session-frame.tsx` (production),
+  `packages/tui/src/feature-plugins/system/storybook/session-tabs.tsx`
+  (grep-discovered third caller), `packages/tui/src/ui/pane-resize-handle.tsx`
+  (type-only) and the two tests. `PaneResizeHandle` stays in `packages/tui`
+  because it reads the theme context (§13).
+- Verification (from `packages/tui`):
+  `bun test test/ui/pane-resize.test.ts test/ui/pane-resize-handle.test.tsx` —
+  9 pass / 0 fail (dark + light handle renders, drag, clamp, 300 ms reset,
+  external sync); `bun typecheck` clean in `packages/plugin` and
+  `packages/tui`; focused plugin build (`tsc -p tsconfig.build.json`) clean,
+  emitting `dist/tui/pane-resize.js`/`.d.ts` and the re-export in
+  `dist/tui/index.d.ts`; `bun run check` at the repository root clean
+  (oxlint 0 warnings/0 errors, 36/36 turbo typecheck tasks) and the
+  `/home/bliss/OpenCodePlus/bin/bun run check` workspace check valid.
+- Protocol/HttpApi untouched; no generated client files changed.
+
+### Stages C–F
 
 Not started. G1 (levels), G2–G3 (panels/resize), G4 (bulk expansion), G5
 (help), Stage E integration and Stage F lab acceptance remain per §3–§7, §10,

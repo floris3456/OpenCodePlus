@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test"
 import { MouseButton, MouseEvent } from "@opentui/core"
 import { createRoot, createSignal } from "solid-js"
-import { createPaneResize } from "../../src/ui/pane-resize"
+import { createPaneResize } from "@opencode/plugin/tui"
 
 const disposals: Array<() => void> = []
 

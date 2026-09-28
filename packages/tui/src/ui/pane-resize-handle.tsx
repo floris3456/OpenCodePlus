@@ -1,5 +1,5 @@
 import { useTheme } from "../context/theme"
-import type { createPaneResize } from "./pane-resize"
+import type { createPaneResize } from "@opencode/plugin/tui"
 
 export function PaneResizeHandle(props: {
   resize: ReturnType<typeof createPaneResize>
