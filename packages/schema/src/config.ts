@@ -103,7 +103,8 @@ export class Info extends Schema.Class<Info>("Config.Info")({
     description: "Directory defaults for local worktree creation",
   }),
   warming: ConfigWarming.Warming.pipe(optional).annotate({
-    description: "Keep recently active sessions warm with transient model requests (default: false)",
+    description:
+      "Keep recently active sessions warm with transient model requests; provider and model settings override it (default: false)",
   }),
   providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(optional),
   experimental: ConfigExperimental.Info.pipe(optional),

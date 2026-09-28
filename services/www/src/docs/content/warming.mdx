@@ -52,6 +52,46 @@ interval:
 }
 ```
 
+## Scopes
+
+Warming can also be set per provider and per model in provider `settings`. The
+most specific setting wins — model, then provider, then global — and an absent
+level inherits the level above it.
+
+```jsonc title="opencode.jsonc"
+{
+  "warming": { "interval": "5 minutes" },
+  "providers": {
+    "anthropic": {
+      "settings": { "warming": true },
+      "models": {
+        "claude-sonnet-4-5": { "settings": { "warming": false } },
+      },
+    },
+  },
+}
+```
+
+With this configuration, Anthropic sessions warm every five minutes, but
+`claude-sonnet-4-5` is never warmed. A scope value works the same as the global
+setting:
+
+- `false` disables warming for that scope.
+- `true` enables it with the defaults, discarding inherited custom fields.
+- An object enables it and merges only its fields over the enabled level above. When the level above is disabled, it merges over the defaults.
+
+Because of the last rule, a provider or model object re-enables warming even
+when the global setting is `false`:
+
+```jsonc title="opencode.jsonc"
+{
+  "warming": false,
+  "providers": {
+    "anthropic": { "settings": { "warming": { "interval": "2 minutes" } } },
+  },
+}
+```
+
 ## Durations
 
 `interval` and `duration` accept duration strings. Both must resolve to finite

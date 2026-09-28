@@ -5,6 +5,7 @@ import { Money } from "../money.js"
 import { Capabilities, Compatibility, Family, ID, VariantID } from "../model.js"
 import { Provider } from "../provider.js"
 import { optional } from "../schema.js"
+import { ConfigWarming } from "./warming.js"
 
 export const Settings = Schema.StructWithRest(
   Schema.Struct({
@@ -12,6 +13,9 @@ export const Settings = Schema.StructWithRest(
     chunkTimeout: Schema.Finite.pipe(optional),
     compaction: Provider.Compaction.pipe(optional),
     transport: Provider.Transport.pipe(optional),
+    warming: ConfigWarming.Scoped.pipe(optional).annotate({
+      description: "Keep-alive requests for this provider's sessions; inherits from global warming unless overridden",
+    }),
   }),
   [Schema.Record(Schema.String, Schema.UndefinedOr(Schema.Json))],
 ).annotate({ identifier: "Config.Provider.Settings" })
@@ -20,6 +24,9 @@ export type Settings = typeof Settings.Type
 export const ModelSettings = Schema.StructWithRest(
   Schema.Struct({
     compaction: Provider.Compaction.pipe(optional),
+    warming: ConfigWarming.Scoped.pipe(optional).annotate({
+      description: "Keep-alive requests for this model; overrides provider and global warming",
+    }),
   }),
   [Schema.Record(Schema.String, Schema.UndefinedOr(Schema.Json))],
 ).annotate({ identifier: "Config.Model.Settings" })

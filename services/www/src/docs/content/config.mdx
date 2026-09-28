@@ -380,7 +380,25 @@ interval and 30-minute active window.
 }
 ```
 
-See the [warming guide](/warming) for request behavior, customization,
+Configure warming per provider and per model in provider `settings`. The most
+specific setting wins: model over provider over global, and an absent level
+inherits the level above.
+
+```jsonc
+{
+  "warming": true,
+  "providers": {
+    "anthropic": {
+      "settings": { "warming": { "interval": "2 minutes" } },
+      "models": {
+        "claude-sonnet-4-5": { "settings": { "warming": false } },
+      },
+    },
+  },
+}
+```
+
+See the [warming guide](/warming) for request behavior, scoping, customization,
 and cost considerations.
 
 ### Skills

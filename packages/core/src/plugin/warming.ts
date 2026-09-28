@@ -5,21 +5,29 @@ import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { Session } from "@opencode/schema/session"
 import { Clock, Duration, Effect, Scope } from "effect"
 import { Config } from "../config.js"
-
-const defaults = {
-  prompt: "This is a keep-alive request. Do not perform any work or use tools. Reply with exactly: OK",
-  interval: Duration.minutes(4),
-  duration: Duration.minutes(30),
-}
+import { ConfigWarming } from "../config/warming.js"
+import { Model } from "../model.js"
+import { Provider } from "../provider.js"
 
 export const Plugin = define({
   id: "opencode.warming",
   effect: Effect.fn(function* (ctx) {
     const config = yield* Config.Service
-    const loadSettings = Effect.fn("WarmingPlugin.loadSettings")(function* () {
-      const warming = Config.latest(yield* config.entries(), "warming")
-      if (!warming) return
-      const settings = warming === true ? defaults : { ...defaults, ...warming }
+    const models = yield* Model.Service
+    const providers = yield* Provider.Service
+    // A session's current model can switch between hook events, so resolve the
+    // effective warming settings for that model every time instead of caching them.
+    const loadSettings = Effect.fn("WarmingPlugin.loadSettings")(function* (model: Model.Ref) {
+      const provider = yield* providers.get(model.providerID)
+      // Catalog model settings already merge provider and model levels. The provider
+      // value is applied first so an explicit provider disable severs inherited global fields.
+      const catalog = yield* models.get(model.providerID, model.id)
+      const settings = ConfigWarming.resolve({
+        global: Config.latest(yield* config.entries(), "warming"),
+        provider: provider?.settings?.warming,
+        model: catalog?.settings?.warming,
+      })
+      if (!settings) return
       const interval = Duration.toMillis(settings.interval)
       const duration = Duration.toMillis(settings.duration)
       if (Number.isFinite(interval) && interval > 0 && Number.isFinite(duration) && duration > 0) return settings
@@ -27,33 +35,31 @@ export const Plugin = define({
     })
 
     const scope = yield* Scope.Scope
-    const sessions = new Map<Session.ID, { last: number; expires: number; settings: typeof defaults }>()
-    const loop: (sessionID: Session.ID) => Effect.Effect<void> = Effect.fn("WarmingPlugin.loop")(
-      function* (sessionID) {
-        const current = sessions.get(sessionID)
-        if (!current) return
+    const sessions = new Map<Session.ID, { last: number; expires: number; settings: ConfigWarming.Resolved }>()
+    const loop: (sessionID: Session.ID) => Effect.Effect<void> = Effect.fn("WarmingPlugin.loop")(function* (sessionID) {
+      const current = sessions.get(sessionID)
+      if (!current) return
 
-        const now = yield* Clock.currentTimeMillis
-        const next = Math.min(current.last + Duration.toMillis(current.settings.interval), current.expires)
-        if (now < next) {
-          yield* Effect.sleep(Duration.millis(next - now))
-          return yield* loop(sessionID)
-        }
-        if (now >= current.expires) {
-          sessions.delete(sessionID)
-          return
-        }
-
-        const last = current.last
-        yield* Effect.logInfo("warming session", { sessionID, last })
-        yield* ctx.session
-          .generate({ sessionID, prompt: current.settings.prompt })
-          .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
-        const latest = sessions.get(sessionID)
-        if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
+      const now = yield* Clock.currentTimeMillis
+      const next = Math.min(current.last + Duration.toMillis(current.settings.interval), current.expires)
+      if (now < next) {
+        yield* Effect.sleep(Duration.millis(next - now))
         return yield* loop(sessionID)
-      },
-    )
+      }
+      if (now >= current.expires) {
+        sessions.delete(sessionID)
+        return
+      }
+
+      const last = current.last
+      yield* Effect.logInfo("warming session", { sessionID, last })
+      yield* ctx.session
+        .generate({ sessionID, prompt: current.settings.prompt })
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
+      const latest = sessions.get(sessionID)
+      if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
+      return yield* loop(sessionID)
+    })
 
     const hook = (event: SessionHooks["context"]) =>
       Effect.gen(function* () {
@@ -61,7 +67,7 @@ export const Plugin = define({
         if (session.parentID) return
 
         const active = sessions.get(event.sessionID)
-        const settings = yield* loadSettings()
+        const settings = yield* loadSettings(event.model)
         if (!settings) {
           sessions.delete(event.sessionID)
           return

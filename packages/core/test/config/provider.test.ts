@@ -48,7 +48,10 @@ describe("ConfigProviderPlugin.Plugin", () => {
                 settings: { compaction: { type: "native" } },
                 models: {
                   native: {},
-                  local: { settings: { compaction: { type: "summary" } }, package: "@opencode/ai/providers/openai/chat" },
+                  local: {
+                    settings: { compaction: { type: "summary" } },
+                    package: "@opencode/ai/providers/openai/chat",
+                  },
                   unsupported: { package: "@opencode/ai/providers/openai/chat" },
                 },
               },
@@ -103,6 +106,37 @@ describe("ConfigProviderPlugin.Plugin", () => {
       expect((yield* providers.get(Provider.ID.make("custom")))?.settings?.transport).toBe("http")
       expect(inherited.settings).toEqual({ shared: "provider", model: true })
       expect(untouched.settings?.transport).toBeUndefined()
+    }),
+  )
+
+  it.effect("carries provider and model warming through JSON settings overlays", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      const modelID = Model.ID.make("chat")
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "@opencode/ai/providers/openai/responses",
+                settings: { warming: { prompt: "provider ping", interval: "2 minutes" } },
+                models: { chat: { settings: { warming: { duration: "1 hour" } } } },
+              },
+            },
+          }),
+        }),
+      ])
+      const record = (yield* providers.snapshot()).records.get(providerID)
+      expect(record?.provider.settings?.warming).toEqual({ prompt: "provider ping", interval: "2 minutes" })
+      // Scoped warming keeps its string durations so the provider/model settings merge stays JSON.
+      expect(required(yield* models.get(providerID, modelID)).settings?.warming).toEqual({
+        prompt: "provider ping",
+        interval: "2 minutes",
+        duration: "1 hour",
+      })
     }),
   )
 

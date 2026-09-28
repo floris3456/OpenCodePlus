@@ -16,3 +16,10 @@ export class Info extends Schema.Class<Info>("Config.Warming")({
 }) {}
 
 export const Warming = Schema.Union([Schema.Boolean, Info])
+
+/**
+ * Provider- and model-scoped warming. Provider and model settings travel through
+ * JSON settings overlays, which cannot carry decoded `Duration` instances, so
+ * scoped durations stay in their configuration string form until resolution.
+ */
+export const Scoped = Schema.toEncoded(Warming)

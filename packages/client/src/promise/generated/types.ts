@@ -468,7 +468,10 @@ export type AgentCompaction = { strategy?: "auto" | "local" | "remote"; model?: 
 
 export type ModelSettings = { compaction?: ProviderCompaction } & { [x: string]: any }
 
-export type ConfigModelSettings = { compaction?: ProviderCompaction } & { [x: string]: JsonValue | null }
+export type ConfigModelSettings = {
+  compaction?: ProviderCompaction
+  warming?: boolean | { prompt?: string; interval?: string; duration?: string }
+} & { [x: string]: JsonValue | null }
 
 export type ProviderSettings = {
   timeout?: number | false
@@ -482,6 +485,7 @@ export type ConfigProviderSettings = {
   chunkTimeout?: number
   compaction?: ProviderCompaction
   transport?: ProviderTransport
+  warming?: boolean | { prompt?: string; interval?: string; duration?: string }
 } & { [x: string]: JsonValue | null }
 
 export type PermissionRule = { action: string; resource: string; effect: PermissionEffect; message?: string }
