@@ -3,10 +3,12 @@ import { onCleanup } from "solid-js"
 import { controlItems } from "../src/instructions/agent-controls.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
-import { tree, type TeamInput } from "../src/instructions/tree.js"
+import { memoInputOf } from "../src/instructions/snapshot.js"
+import { buildTreeMemo, expandedTree, tree, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
 import { createInstructionsState, type InstructionsState } from "../src/tui/instructions/state.js"
+import { LEVELS, parentsOf, toolCountOf, type ToolCount } from "../src/tui/instructions/workspace.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import { breadcrumb, dispatch, moveTo, selectedRow, sleep } from "./instructions-nav.js"
 
@@ -269,6 +271,51 @@ test("a burst of instructions.changed events coalesces to one trailing reload", 
   await sleep(50)
   expect(fixture.fake.snapshotCalls).toBe(3)
 })
+
+// The old level-wide sweep, kept as the test oracle: materialise the whole
+// tree, then for every owner's `:tools` group count the tool rows under it.
+function sweepCounts(
+  nodes: readonly TreeNode[],
+  level: "project" | "global" | "defaults" | "preset",
+  codemode: (item: string) => boolean,
+): Map<string, ToolCount> {
+  const root = LEVELS.find((entry) => entry.id === level)?.root ?? "root:project"
+  const start = nodes.findIndex((node) => node.id === root)
+  if (start === -1) return new Map()
+  const parents = parentsOf(nodes)
+  const counts = new Map<string, ToolCount>()
+  for (let at = start; at < nodes.length; at++) {
+    const node = nodes[at]!
+    if (node.depth === 0 && at !== start) break
+    if (node.kind !== "group" || !node.id.endsWith(":tools")) continue
+    const owner = parents.get(node.id)
+    if (owner === undefined) continue
+    const key = owner.kind === "group" ? `${owner.id}#every` : owner.id
+    const below: TreeNode[] = []
+    for (let index = at + 1; index < nodes.length && nodes[index]!.depth > node.depth; index++) below.push(nodes[index]!)
+    const rows = below.filter((row) => row.kind === "item" && row.address?.section === null && row.address.item.startsWith("tool:"))
+    const on = rows.filter((row) => row.badges.state === "on")
+    counts.set(key, {
+      on: on.length,
+      codemode: on.filter((row) => codemode(row.address!.item) && row.badges.pinned !== true).length,
+      total: rows.length,
+    })
+  }
+  return counts
+}
+
+test("on-demand tool counts match the old level-wide sweep for every owner", () => {
+  const input = memoInputOf(makeLargeSnapshot())
+  const memo = buildTreeMemo(input)
+  const nodes = expandedTree(input)
+  const codes = new Set(input.items.filter((item) => item.codemode === true).map((item) => item.id))
+  const codemode = (item: string) => codes.has(item)
+  for (const level of ["project", "global", "defaults", "preset"] as const) {
+    const expected = sweepCounts(nodes, level, codemode)
+    expect(expected.size).toBeGreaterThan(0)
+    for (const [key, count] of expected) expect(toolCountOf(memo, key, codemode)).toEqual(count)
+  }
+}, 600_000)
 
 test("large generated fixture: one memo build per snapshot across open, ↓, level switch, n and filter", async () => {
   const snapshot = makeLargeSnapshot()

@@ -5,7 +5,7 @@ import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, un
 import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
-import { controlKind, type TreeNode } from "../../instructions/tree.js"
+import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -24,7 +24,7 @@ import {
 import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
-import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCounts, toolHint, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -296,28 +296,30 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     )
   })
 
-  // Tools switched on per owner. It walks every owner's Tools group, so it is
-  // computed once per snapshot and level, after the screen has drawn.
-  const [tools, setTools] = createSignal<{ readonly key: string; readonly counts: ReadonlyMap<string, ToolCount> }>()
-  createEffect(() => {
-    const snapshot = state.snapshot()
-    const current = level()
-    if (snapshot === undefined) return
-    const key = `${snapshot.revision}/${snapshot.globalRevision}/${current}`
-    if (tools()?.key === key) return
-    const codemode = new Set(snapshot.items.filter((item) => item.codemode === true).map((item) => item.id))
-    const timer = setTimeout(() => {
-      if (state.snapshot() !== snapshot || level() !== current) return
-      setTools({ key, counts: toolCounts(state.treeWith, current, (item) => codemode.has(item)) })
-    }, 0)
-    onCleanup(() => clearTimeout(timer))
-  })
+  // Tools switched on per owner, on demand: the owner's Tools group is
+  // counted the first time one of its rows renders and then cached for the
+  // snapshot's memo. No level-wide sweep runs after a load, so opening pays
+  // nothing up-front and a key press pays only for the owners it renders.
+  const toolCountCache = new WeakMap<Memo, Map<string, ToolCount>>()
+  const codemodeCache = new WeakMap<Memo, (item: string) => boolean>()
   const toolCount = (key: string | undefined): ToolCount | undefined => {
-    const snapshot = state.snapshot()
-    if (key === undefined || snapshot === undefined) return undefined
-    const current = tools()
-    if (current?.key !== `${snapshot.revision}/${snapshot.globalRevision}/${level()}`) return undefined
-    return current.counts.get(key)
+    const memo = state.memo()
+    if (key === undefined || memo === undefined) return undefined
+    const counts = toolCountCache.get(memo)
+    const cached = counts?.get(key)
+    if (cached !== undefined) return cached
+    let codemode = codemodeCache.get(memo)
+    if (codemode === undefined) {
+      const items = new Set(memo.ctx.items.filter((item) => item.codemode === true).map((item) => item.id))
+      codemode = (item: string) => items.has(item)
+      codemodeCache.set(memo, codemode)
+    }
+    const count = toolCountOf(memo, key, codemode)
+    if (count === undefined) return undefined
+    const store = counts ?? new Map<string, ToolCount>()
+    store.set(key, count)
+    toolCountCache.set(memo, store)
+    return count
   }
 
   const dialogs = createInstructionsDialogs(props.context, state, {

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
-import { tree, type TeamInput } from "../src/instructions/tree.js"
-import { reviewTargets, toolCounts, toolWords, workspaceOf, type WorkspaceInput } from "../src/tui/instructions/workspace.js"
+import { buildTreeMemo, tree, type TeamInput } from "../src/instructions/tree.js"
+import { reviewTargets, toolCountOf, toolWords, workspaceOf, type WorkspaceInput } from "../src/tui/instructions/workspace.js"
 
 const agents: AgentSource[] = [
   { id: "build", scope: "defaults", origin: "native", base: "gpt" },
@@ -149,14 +149,15 @@ test("tool counts read each owner's switched-on tools and split out Code Mode", 
     { ...item("tool:coder", "tool", "coder", "code mode tool"), agents: ["build"], codemode: true },
     { ...item("tool:writer", "tool", "writer", "pinned code mode tool"), agents: ["build"], codemode: true, pinned: true },
   ]
-  const source = rowsOf([], tools)
+  const memo = buildTreeMemo({ items: tools, records: [], agents, teams })
   const codemode = (id: string) => tools.some((entry) => entry.id === id && entry.codemode === true)
-  const counts = toolCounts(source.rows, "project", codemode)
-  expect(counts.get("agent:project:build")).toEqual({ on: 3, codemode: 1, total: 3 })
-  expect(toolWords(counts.get("agent:project:build")!)).toBe("3 tools on (2 direct, 1 through Code Mode)")
+  const build = toolCountOf(memo, "agent:project:build", codemode)
+  expect(build).toEqual({ on: 3, codemode: 1, total: 3 })
+  expect(toolWords(build!)).toBe("3 tools on (2 direct, 1 through Code Mode)")
   // An agent the tool rows do not name reads zero, not a missing entry.
-  expect(counts.get("agent:project:Implementer")).toEqual({ on: 0, codemode: 0, total: 0 })
-  expect(toolWords(counts.get("agent:project:Implementer")!)).toBe("no tools on")
+  const implementer = toolCountOf(memo, "agent:project:Implementer", codemode)
+  expect(implementer).toEqual({ on: 0, codemode: 0, total: 0 })
+  expect(toolWords(implementer!)).toBe("no tools on")
 })
 
 test("tool counts key the shared Defaults inventories by their Every agent row", () => {
@@ -189,8 +190,8 @@ test("tool counts key the shared Defaults inventories by their Every agent row",
       updated: "2026-09-27T00:00:00.000Z",
     },
   ])
-  const source = rowsOf(records, tools)
-  const counts = toolCounts(source.rows, "defaults", (id) => tools.some((entry) => entry.id === id && entry.codemode === true))
-  expect(counts.get("group:defaults:agents#every")).toEqual({ on: 2, codemode: 1, total: 2 })
-  expect(counts.get("group:defaults:teams#every")).toEqual({ on: 2, codemode: 1, total: 2 })
+  const memo = buildTreeMemo({ items: tools, records, agents, teams })
+  const codemode = (id: string) => tools.some((entry) => entry.id === id && entry.codemode === true)
+  expect(toolCountOf(memo, "group:defaults:agents#every", codemode)).toEqual({ on: 2, codemode: 1, total: 2 })
+  expect(toolCountOf(memo, "group:defaults:teams#every", codemode)).toEqual({ on: 2, codemode: 1, total: 2 })
 })

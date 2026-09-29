@@ -9,7 +9,7 @@
 // An owner is a row whose children are the agent groups (Settings … System):
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
-import { controlKind, type TreeNode } from "../../instructions/tree.js"
+import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -341,63 +341,32 @@ export interface ToolCount {
 }
 
 /**
- * How many tools each owner of a level has switched on, keyed by the sidebar
- * key (`<catalogue id>#every` for Defaults' shared inventories). The owners'
- * Tools groups and their subgroups are opened in an own expansion set, so the
- * count never depends on what the user has open.
+ * One owner's tool count, on demand: descend the memo's lazy skeleton to the
+ * owner's Tools group and count the tool rows under it. The caller caches the
+ * result per snapshot, so no level-wide sweep runs after a load.
+ *
+ * `ownerKey` is the sidebar key: an owner row id, or `<catalogue group>#every`
+ * for Defaults' shared inventories.
  */
-export function toolCounts(
-  rowsOf: (open: ReadonlySet<string>) => TreeNode[],
-  level: LevelId,
-  codemode: (item: string) => boolean,
-): Map<string, ToolCount> {
-  const root = LEVELS.find((entry) => entry.id === level)?.root ?? "root:project"
-  const open = new Set<string>([root])
-  let rows: TreeNode[] = []
-  let parents = new Map<string, TreeNode>()
-  for (let pass = 0; pass < 12; pass++) {
-    rows = rowsOf(open)
-    parents = parentsOf(rows)
-    const start = rows.findIndex((node) => node.id === root)
-    const more = subtreeOf(rows, start).filter((node) => !open.has(node.id) && opensForCount(node, parents))
-    if (more.length === 0) break
-    for (const node of more) open.add(node.id)
-  }
-  const counts = new Map<string, ToolCount>()
-  for (const node of rows) {
-    if (node.kind !== "group" || !node.id.endsWith(":tools")) continue
-    const owner = parents.get(node.id)
-    if (owner === undefined) continue
-    const key = owner.kind === "group" ? `${owner.id}#every` : owner.id
-    const tools = subtreeOf(rows, rows.indexOf(node)).filter(
-      (row) => row.kind === "item" && row.address?.section === null && row.address.item.startsWith("tool:"),
-    )
-    const on = tools.filter((row) => row.badges.state === "on")
-    const indirect = on.filter((row) => codemode(row.address!.item) && row.badges.pinned !== true)
-    counts.set(key, { on: on.length, codemode: indirect.length, total: tools.length })
-  }
-  return counts
+export function toolCountOf(memo: Memo, ownerKey: string, codemode: (item: string) => boolean): ToolCount | undefined {
+  const owner = findLazy(memo, ownerKey.endsWith("#every") ? ownerKey.slice(0, -"#every".length) : ownerKey)
+  const group = owner?.children().find((child) => child.kind === "group" && child.id.endsWith(":tools"))
+  if (group === undefined) return undefined
+  const rows = toolRows(group)
+  const on = rows.filter((row) => row.on)
+  return { on: on.length, codemode: on.filter((row) => codemode(row.item) && !row.pinned).length, total: rows.length }
 }
 
-// Everything down to each owner's Tools group and the Tools subgroups; no
-// other category, and no tool's own children (sections, permissions).
-function opensForCount(node: TreeNode, parents: ReadonlyMap<string, TreeNode>): boolean {
-  if (node.kind === "agent" || node.kind === "team") return true
-  if (node.kind !== "group") return false
-  if (node.id.endsWith(":tools")) return true
-  const parent = parents.get(node.id)
-  if (parent?.kind === "group" && underTools(parent, parents)) return true
-  // Structure above the owners: catalogues, origin groups, a team's Special group.
-  return !CATEGORY.test(node.id) && !node.id.includes(":permissions")
-}
-
-function underTools(node: TreeNode, parents: ReadonlyMap<string, TreeNode>): boolean {
-  let current: TreeNode | undefined = node
-  while (current !== undefined && current.kind === "group") {
-    if (current.id.endsWith(":tools")) return true
-    current = parents.get(current.id)
+// The tool rows below a Tools group. Tool rows are leaves here: their sections
+// and permission rows are not tools and the old sweep never opened them.
+function toolRows(lazy: Lazy): { readonly item: string; readonly on: boolean; readonly pinned: boolean }[] {
+  if (lazy.kind === "item") {
+    const address = lazy.address
+    if (address === undefined || address.section !== null || !address.item.startsWith("tool:")) return []
+    const badges = lazy.partial()
+    return [{ item: address.item, on: badges.state === "on", pinned: badges.pinned === true }]
   }
-  return false
+  return lazy.children().flatMap(toolRows)
 }
 
 /** "72 tools on (13 direct, 59 through Code Mode)", or "no tools on". */
