@@ -2,7 +2,7 @@
 // pane and the tools show (DESIGN §2): "from preset Orchestrator", "from
 // default *orchestrator*", "from Defaults (every agent)", "OpenCode", "off by
 // default". One module so the TUI and `instructions_*` say the same thing.
-import { presetKey, type From, type Level, type ReviewPart } from "./model.js"
+import { presetKey, type From, type Level, type PresetOrigin, type PresetRef, type ReviewPart } from "./model.js"
 import type { TreeNode } from "./tree.js"
 
 export interface FromLabelOptions {
@@ -10,12 +10,23 @@ export interface FromLabelOptions {
   readonly labels?: ReadonlyMap<string, string>
   /** The row's own level: a value set at that level reads "set here". */
   readonly level?: Level
+  /**
+   * The preset whose subtree the row belongs to (an agent or member preset
+   * row). Its own content never reads "from preset <itself>": the human's
+   * edits to the preset read "set here", its shipped content the baseline it
+   * ships ("OpenCode" content for a Native preset, "shipped" for a Plus one).
+   * A value from a DIFFERENT preset — a link from another preset, or a member
+   * preset's agent preset — keeps its "from preset X".
+   */
+  readonly own?: { readonly ref: PresetRef; readonly origin: PresetOrigin }
 }
 
 export function fromLabel(from: From, options: FromLabelOptions = {}): string {
   if (from.kind === "level") return from.level === options.level ? "set here" : `from ${from.level}`
   if (from.kind === "preset") {
     const ref = from.team === undefined ? { kind: "agent" as const, id: from.id } : { kind: "member" as const, team: from.team, id: from.id }
+    if (options.own !== undefined && presetKey(ref) === presetKey(options.own.ref))
+      return from.shipped ? (options.own.origin === "native" ? "OpenCode" : "shipped") : "set here"
     const fallback = from.team === undefined ? from.id : `${from.team} › ${from.id}`
     return `from preset ${options.labels?.get(presetKey(ref)) ?? fallback}`
   }

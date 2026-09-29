@@ -35,7 +35,7 @@ import type {
   TeamRef,
 } from "./model.js"
 import { fromLabel } from "./from-label.js"
-import { linkOf, type PresetEntry } from "./presets.js"
+import { linkOf, presetOfAddress, type PresetEntry } from "./presets.js"
 import {
   buildMemo,
   flagOf,
@@ -49,7 +49,7 @@ import {
   type RowTeam,
 } from "./resolve-memo.js"
 import type { MemoInput as BaseMemoInput } from "./resolve-memo.js"
-import type { Section, Split } from "./sections.js"
+import { ownBody, wrappingSection, type Section, type Split } from "./sections.js"
 import type { TeamLevel } from "./teams.js"
 import { categoryLabel, categoryOfRow, categoryOrder, hostOf } from "./permission-catalog.js"
 import { curatedRuleMessage } from "./tool-permissions.js"
@@ -181,6 +181,12 @@ export interface TreeNode {
   readonly owner?: RowOwner
   /** Entity rows toggle their real Enabled item, retaining their entity address. */
   readonly enabledRow?: string
+  /**
+   * The own-body row of a hidden top-level wrapper section (label
+   * "Introduction"): the row and its address are the wrapper's, its inspector
+   * shows only the wrapper's own body, never the whole document.
+   */
+  readonly introduction?: true
   readonly badges: TreeNodeBadges
   readonly actions?: TreeNodeActions
 }
@@ -231,6 +237,7 @@ export interface Lazy {
   readonly add?: AddKind
   readonly owner?: RowOwner
   readonly enabledRow?: string
+  readonly introduction?: true
   readonly actions: TreeNodeActions
   readonly selfReview: () => boolean
   readonly partial: () => TreeNodeBadges
@@ -574,6 +581,7 @@ function shell(lazy: Lazy, badges: TreeNodeBadges): TreeNode {
     ...(lazy.add === undefined ? {} : { add: lazy.add }),
     ...(lazy.owner === undefined ? {} : { owner: lazy.owner }),
     ...(lazy.enabledRow === undefined ? {} : { enabledRow: lazy.enabledRow }),
+    ...(lazy.introduction === undefined ? {} : { introduction: lazy.introduction }),
     badges,
     actions: lazy.actions,
   }
@@ -1352,7 +1360,7 @@ function lazyControl(
         modified: resolved.modified,
         source: resolved.source,
         from,
-        fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }),
+        fromLabel: fromLabel(from, { labels: memo.ctx.labels, level, ...ownOption(memo.ctx, level, owner, teamRef) }),
         ...(resolved.reviewOf.length === 0 ? {} : { reviewOf: resolved.reviewOf }),
         ...(reason === undefined ? {} : { disabled: reason }),
       }
@@ -1517,7 +1525,7 @@ function lazyModelItem(
         ...(isActive ? { active: true as const } : {}),
         source: candidate.source,
         from: candidate.from,
-        fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level }),
+        fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level, ...ownOption(ctx, level, owner, teamRef) }),
         ...(warming === undefined ? {} : { warming: warming.value, warmingFrom: warming.level }),
       }
     },
@@ -2054,7 +2062,9 @@ function lazyItem(
       // them combined. Other items keep their sections as direct children.
       if (tool && split.sections.length === 1) {
         const only = split.sections[0]
-        return only === undefined ? [] : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, "Description")]
+        return only === undefined
+          ? []
+          : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, { label: "Description" })]
       }
       if (tool && split.sections.length > 1)
         return [
@@ -2064,15 +2074,10 @@ function lazyItem(
             label: "Description",
             depth: depth + 1,
             actions: noActions(),
-            children: () =>
-              split.sections.map((section) =>
-                lazySection(ctx, memo, level, owner, item, section, depth + 2 + section.depth, teamRef, catalogue, ownerPath),
-              ),
+            children: () => sectionKids(ctx, memo, level, owner, item, split, depth + 2, teamRef, catalogue, ownerPath),
           }, address),
         ]
-      return split.sections.map((section) =>
-        lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth, teamRef, catalogue, ownerPath),
-      )
+      return sectionKids(ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
     })
     if (!tool) return sections
     return [...sections, ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath)]
@@ -2300,7 +2305,12 @@ function permBadges(
   catalogue?: Catalogue,
 ): TreeNodeBadges {
   const resolved = wholeOf(memo, level, owner, item, catalogue, teamRef)
-  return { state: resolved.enabled ? "on" : "off", modified: resolved.modified, source: resolved.source, ...fromBadges(memo.ctx, resolved, level) }
+  return {
+    state: resolved.enabled ? "on" : "off",
+    modified: resolved.modified,
+    source: resolved.source,
+    ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
+  }
 }
 
 // Where the row's state (and, when different, its text) came from, and what
@@ -2309,13 +2319,34 @@ function fromBadges(
   ctx: BuildContext,
   resolved: Pick<Resolved, "from" | "textFrom" | "reviewOf">,
   level: Level,
+  own: OwnPreset | undefined,
 ): Pick<TreeNodeBadges, "from" | "textFrom" | "fromLabel" | "reviewOf"> {
   return {
     from: resolved.from,
     ...(sameFrom(resolved.from, resolved.textFrom) ? {} : { textFrom: resolved.textFrom }),
-    fromLabel: fromLabel(resolved.from, { labels: ctx.labels, level }),
+    fromLabel: fromLabel(resolved.from, { labels: ctx.labels, level, ...(own === undefined ? {} : { own }) }),
     ...(resolved.reviewOf.length === 0 ? {} : { reviewOf: resolved.reviewOf }),
   }
+}
+
+type OwnPreset = { readonly ref: PresetRef; readonly origin: PresetOrigin }
+
+// The preset a row sits inside, when it is a preset subtree: its own content
+// reads "set here"/the baseline it ships, never "from preset <itself>"
+// (from-label.ts `own`). Member rows carry their team preset; every other
+// level has no own preset.
+function ownPreset(ctx: BuildContext, level: Level, owner: string | null, team?: RowTeam): OwnPreset | undefined {
+  return presetOfAddress(ctx.listing, {
+    level,
+    agent: owner,
+    team: team === undefined || "memberOf" in team ? undefined : team,
+  })
+}
+
+// The `own` option for a fromLabel call, ready to spread.
+function ownOption(ctx: BuildContext, level: Level, owner: string | null, team?: RowTeam): { readonly own?: OwnPreset } {
+  const own = ownPreset(ctx, level, owner, team)
+  return own === undefined ? {} : { own }
 }
 
 function sameFrom(left: From, right: From): boolean {
@@ -2345,7 +2376,7 @@ function itemBadges(
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     source: resolved.source,
-    ...fromBadges(memo.ctx, resolved, level),
+    ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
     ...(active ? { active: true } : {}),
     // A user template id can never be the host active answer, so it reads as
     // applicable while never reaching system[0]. `inactive` reuses the
@@ -2364,6 +2395,45 @@ function itemBadges(
   }
 }
 
+// One item's section rows at `base`, the depth a top-level section renders at.
+// A lone top-level heading that wraps the whole document is not an extra level
+// (sections.ts wrappingSection): its children render at `base` and its own body
+// becomes the first child row, "Introduction", when it has content or a record
+// keeps it addressable. Section ids, addresses and stored records never change.
+function sectionKids(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  split: Split,
+  base: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy[] {
+  const wrapper = wrappingSection(split)
+  if (wrapper === undefined)
+    return split.sections.map((section) =>
+      lazySection(ctx, memo, level, owner, item, section, base + section.depth, teamRef, catalogue, ownerPath),
+    )
+  const address = addressOf(level, owner, item.id, wrapper.id, teamRef, catalogue)
+  const body = ownBody(wholeOf(memo, level, owner, item, catalogue, teamRef).text, split, wrapper)
+  return split.sections.flatMap((section): Lazy[] => {
+    if (section.id !== wrapper.id)
+      return [lazySection(ctx, memo, level, owner, item, section, base + section.depth - 1, teamRef, catalogue, ownerPath)]
+    // No row for a body with nothing in it, unless a stored record would be
+    // stranded without one (excluding it still drops the wrapper and children).
+    if (body.length === 0 && !canReset(memo.ctx.customizations, address)) return []
+    return [
+      lazySection(ctx, memo, level, owner, item, section, base, teamRef, catalogue, ownerPath, {
+        label: "Introduction",
+        introduction: true,
+      }),
+    ]
+  })
+}
+
 function lazySection(
   ctx: BuildContext,
   memo: Memo,
@@ -2375,7 +2445,7 @@ function lazySection(
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
-  label?: string,
+  options?: { readonly label?: string; readonly introduction?: boolean },
 ): Lazy {
   const address = addressOf(level, owner, item.id, section.id, teamRef, catalogue)
   const id = rowIdOf("section", level, owner, item.id, catalogue, ownerPath, section.id)
@@ -2385,12 +2455,16 @@ function lazySection(
   return {
     id,
     kind: "section",
-    label: label ?? section.name,
+    label: options?.label ?? section.name,
     depth,
+    ...(options?.introduction === true ? { introduction: true as const } : {}),
     address,
     actions: {
       toggle: true,
-      edit: true,
+      // A wrapper's own body is presentation: an edit would store its section
+      // text, which replaces its children in the assembled text. The item's own
+      // editor still edits the whole document.
+      edit: options?.introduction !== true,
       reset: canReset(ctx.customizations, address),
       remove: false,
       split: false,
@@ -2418,7 +2492,7 @@ function sectionBadges(
     modified: resolved.modified,
     review: resolved.review,
     source: resolved.source,
-    ...fromBadges(memo.ctx, resolved, level),
+    ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
   }
 }
 

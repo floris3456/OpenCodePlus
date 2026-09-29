@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { assemble, derive, manual, slice } from "../src/instructions/sections.js"
+import { assemble, derive, manual, ownBody, slice, wrappingSection } from "../src/instructions/sections.js"
 
 const GPT = [
   "# Harness",
@@ -189,4 +189,21 @@ test("slug collisions get numeric suffixes", () => {
   const text = "# Setup\n\na\n\n# Setup\n\nb\n\n## Setup\n\nc\n"
   const split = derive(text, "T")
   expect(split.sections.map((section) => section.id)).toEqual(["setup", "setup-2", "setup-2/setup"])
+})
+
+test("wrappingSection finds the lone top-level heading that wraps the document", () => {
+  const wrapped = "# Title\nintro\n## A\na\n## B\nb\n"
+  const split = derive(wrapped, "T")
+  const wrapper = wrappingSection(split)
+  expect(wrapper?.id).toBe("title")
+  expect(ownBody(wrapped, split, wrapper!)).toBe("intro")
+  // No body beyond the heading: nothing to present as Introduction.
+  const bare = "# Title\n\n## A\na\n"
+  expect(ownBody(bare, derive(bare, "T"), wrappingSection(derive(bare, "T"))!)).toBe("")
+  // A single heading with no children is not a wrapper: it is the document.
+  expect(wrappingSection(derive("# Title\nbody\n", "T"))).toBeUndefined()
+  // Several top-level sections stay exactly as they are.
+  expect(wrappingSection(derive("# A\na\n# B\nb\n", "T"))).toBeUndefined()
+  expect(wrappingSection(derive("## A\na\n## B\nb\n", "T"))).toBeUndefined()
+  expect(wrappingSection(derive("plain prose", "T"))).toBeUndefined()
 })

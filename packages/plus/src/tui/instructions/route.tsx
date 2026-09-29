@@ -1522,14 +1522,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     </box>
   )
 
-  // Inside a preset its rows read "from preset <itself>": say nothing then.
-  const selfPreset = () => {
-    const owner = workspace().owner?.node
-    return owner?.owner?.preset === undefined ? undefined : owner.badges.fromLabel
-  }
+  // The baseline provenance (from-label.ts) says nothing beside the owner.
   const ownerSource = (node: TreeNode) => {
     const from = node.badges.fromLabel
-    if (from === undefined || from === "upstream" || from === "OpenCode" || from === "set here" || from === selfPreset()) return undefined
+    if (from === undefined || from === "upstream" || from === "OpenCode" || from === "shipped" || from === "set here") return undefined
     return from
   }
 
@@ -1608,7 +1604,6 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 <RowLine
                   context={props.context}
                   row={row}
-                  quiet={selfPreset()}
                   selected={row.key === listRow()?.key}
                   focused={focus() === "list" && !modal()}
                   onHoverChange={(hovering) => hoverRow("list", row.key, hovering)}

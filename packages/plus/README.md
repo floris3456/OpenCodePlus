@@ -128,7 +128,7 @@ A modified copy whose upstream moved turns yellow, rolls up to collapsed ancesto
 
 ## Sections
 
-Derived from markdown headings, else XML-style blocks, else the whole text. `s` cuts a manual split (arrows move, `b` boundary, `e` rename, `x` remove, `ctrl+s` save). A split belongs to the item at the level where it was made and resolves down the same chain; include/exclude belongs to the agent.
+Derived from markdown headings, else XML-style blocks, else the whole text. A lone top-level heading that wraps the whole document (the usual `# Title` of a skill or instruction) is not repeated as an extra row: its children list directly under the item and its own body, when it has one, lists first as `Introduction` (toggling it excludes the wrapper and its children, exactly as before; it keeps the wrapper's section id, so stored records and tool addresses do not change). `s` cuts a manual split (arrows move, `b` boundary, `e` rename, `x` remove, `ctrl+s` save). A split belongs to the item at the level where it was made and resolves down the same chain; include/exclude belongs to the agent.
 
 ## Keys
 

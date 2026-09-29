@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { formatMarkdown } from "../src/agents/files.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
+import { toggle } from "../src/instructions/ops.js"
 import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
@@ -771,6 +772,68 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
   expect(sections.map((node) => node.depth)).toEqual([6, 6])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
+})
+
+test("a lone top-level heading is not an extra level: children render directly and its body is Introduction", () => {
+  const input = {
+    items: [makeItem({ id: "skill:solo", kind: "skill", group: "project", title: "solo", text: "# Title\nintro\n## A\na\n## B\nb\n" })],
+    records: [],
+    agents: agents(),
+  }
+  const nodes = expandAll(input)
+  const itemRow = nodes.find((node) => node.id === "item:project:Implementer:skill:solo")
+  if (!itemRow) throw new Error("expected skill row")
+  const children = childrenOf(nodes, itemRow.id)
+  expect(children.map((node) => [node.id, node.label, node.depth])).toEqual([
+    ["section:project:Implementer:skill:solo:title", "Introduction", itemRow.depth + 1],
+    ["section:project:Implementer:skill:solo:title/a", "A", itemRow.depth + 1],
+    ["section:project:Implementer:skill:solo:title/b", "B", itemRow.depth + 1],
+  ])
+  const intro = children[0]
+  if (intro === undefined) throw new Error("expected Introduction row")
+  expect(intro.introduction).toBe(true)
+  // The row and its address stay the wrapper section's: existing records keyed
+  // `…:title` keep working, and its own body is presentation only (an edit
+  // would store the wrapper text, which replaces its children in assembly).
+  expect(intro.address).toEqual({ level: "project", agent: "Implementer", item: "skill:solo", section: "title" })
+  expect(intro.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+  expect(nodes.some((node) => node.kind === "section" && node.label === "Title")).toBe(false)
+  // Toggling Introduction writes the same record the old wrapper row wrote.
+  const toggled = toggle(input, intro.id)
+  if ("refusal" in toggled) throw new Error(toggled.refusal)
+  expect(toggled.records).toMatchObject([{ item: "skill:solo", section: "title", state: "on" }])
+})
+
+test("a wrapper with no body shows no Introduction, and several top-level sections are unchanged", () => {
+  const nodes = expandAll({
+    items: [makeItem({ id: "skill:bare", kind: "skill", group: "project", title: "bare", text: "# Title\n## A\na\n## B\nb\n" })],
+    records: [],
+    agents: agents(),
+  })
+  expect(childrenOf(nodes, "item:project:Implementer:skill:bare").map((node) => node.label)).toEqual(["A", "B"])
+  // Two H1s are two real sections: both keep their rows.
+  const multi = expandAll({
+    items: [makeItem({ id: "skill:multi", kind: "skill", group: "project", title: "multi", text: "# Alpha\na\n# Beta\nb\n" })],
+    records: [],
+    agents: agents(),
+  })
+  expect(childrenOf(multi, "item:project:Implementer:skill:multi").map((node) => node.label)).toEqual(["Alpha", "Beta"])
+  // A tool's wrapper hides under its Description group like any other item's.
+  const tool = expandAll({
+    items: [makeItem({ id: "tool:desc", title: "desc", text: "# T\np\n## A\na\n" })],
+    records: [],
+    agents: agents(),
+  })
+  const description = childrenOf(tool, "item:project:Implementer:tool:desc").find((node) => node.label === "Description")
+  if (description === undefined) throw new Error("expected Description group")
+  expect(childrenOf(tool, description.id).map((node) => node.label)).toEqual(["Introduction", "A"])
+  // A record on a body-less wrapper keeps its row reachable.
+  const saved = expandAll({
+    items: [makeItem({ id: "skill:quiet", kind: "skill", group: "project", title: "quiet", text: "# Title\n## A\na\n" })],
+    records: [{ ...makeRecord(), item: "skill:quiet", section: "title", state: "off" }],
+    agents: agents(),
+  })
+  expect(childrenOf(saved, "item:project:Implementer:skill:quiet").map((node) => node.label)).toEqual(["Introduction", "A"])
 })
 
 test("whole Role/persona and whole base rows refuse toggle but read unsupported", () => {

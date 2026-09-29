@@ -16,6 +16,7 @@ import {
   type ChainContext,
   type EntryRecord,
   type Item,
+  type Level,
   type LinkRecord,
   type PresetCatalog,
   type PresetOrigin,
@@ -23,6 +24,7 @@ import {
   type PresetRef,
   type RecordScope,
   type ShippedValue,
+  type TeamRef,
 } from "./model.js"
 
 /** One Native agent preset per native opencode agent (§3.4). */
@@ -451,6 +453,24 @@ export function teamPresetMembers(
       ...(record.fields?.mode === undefined ? {} : { mode: record.fields.mode }),
       ...(record.fields?.description === undefined ? {} : { description: record.fields.description }),
     }))
+}
+
+/**
+ * The preset an address sits inside, when it is a preset subtree: an agent
+ * preset (`preset/<id>`) or a member preset (`preset/<member>@<team>`).
+ * Undefined for every other address and for a preset the listing does not
+ * know. Feeds from-label.ts `own`, so a preset's own rows never read "from
+ * preset <itself>".
+ */
+export function presetOfAddress(
+  listing: readonly PresetEntry[],
+  address: { readonly level: Level; readonly agent: string | null; readonly team?: TeamRef },
+): { readonly ref: PresetRef; readonly origin: PresetOrigin } | undefined {
+  if (address.level !== "preset" || address.agent === null) return undefined
+  const ref: PresetRef =
+    address.team === undefined ? { kind: "agent", id: address.agent } : { kind: "member", team: address.team.team, id: address.agent }
+  const origin = listing.find((entry) => presetKey(entry.ref) === presetKey(ref))?.origin
+  return origin === undefined ? undefined : { ref, origin }
 }
 
 /** A preset's own node: what its edits and its link are stored under (§3.2). */

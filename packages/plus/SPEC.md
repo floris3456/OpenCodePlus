@@ -161,8 +161,13 @@ preset it is linked to now. Item, perm, section and model rows carry
 `badges.from` (where the on/off state came from, `model.ts` `From`),
 `badges.textFrom` (when the text came from elsewhere), `badges.fromLabel`
 (`from-label.ts`: "from preset Orchestrator", "from default *orchestrator*",
-"from Defaults (every agent)", "OpenCode", "upstream", "off by default", "set
-here", "from global") and `badges.reviewOf` (the parts to review). A model row
+"from Defaults (every agent)", "OpenCode", "upstream", "shipped", "off by
+default", "set here", "from global") and `badges.reviewOf` (the parts to
+review). Inside a preset's own subtree its content never reads "from preset
+<itself>": an edit to the preset reads "set here", its shipped content the
+baseline it ships ("OpenCode" for a Native preset, "shipped" for a Plus one),
+while a value from a different preset keeps "from preset X" (`own`,
+`presets.ts` `presetOfAddress`). A model row
 whose own active record recorded an active model above that has since changed
 is to review.
 
@@ -278,8 +283,9 @@ step at zero.
 value set at this level; `!` (`!N` for N below) and a warning gutter mark a
 review. An inheriting row shows its `badges.fromLabel` dim at the right
 (`shell … from preset Orchestrator`), never when the row sets the value itself
-(`set here`) or for the baseline (`OpenCode`, `upstream`); inside a preset its
-own `from preset <itself>` is not repeated. The review wording reads through
+(`set here`) or for the baseline (`OpenCode`, `upstream`, `shipped`). Inside a
+preset, its own content reads "set here" or the baseline it ships, never
+`from preset <itself>`. The review wording reads through
 `reviewLabel` in the inspector: `to review`, `to review (state)`, `to review
 (text, state)`; a model row's review reads `review`. Colours follow theme roles:
 provenance is `text.subdued`, review the warning feedback token, set-here the
@@ -433,7 +439,8 @@ Mode and MCP included, expands into Description and Permissions.
   `Description` group (`group:<level>:<owner>:tool:<id>:description`) that
   carries the tool's own address, so its detail shows every section combined,
   and offers no action of its own. Other item kinds keep their sections as
-  direct children. The `execute` row has no Description.
+  direct children. A lone top-level wrapper heading is not repeated as an extra
+  row in any of them (Sections engine). The `execute` row has no Description.
 - **Permissions** (`group:<level>:<owner>:tool:<id>:permissions`) holds one
   group per category (`…:permissions:<category>`, labelled by
   `permission-catalog.ts` `categoryLabel`), each holding that category's rows
@@ -552,6 +559,8 @@ export function derive(text: string, title: string): Split
 export function manual(text: string, boundaries: readonly Boundary[]): Split
 export function assemble(text: string, split: Split, excluded: ReadonlySet<string>): string
 export function slice(text: string, section: Section): string
+export function wrappingSection(split: Split): Section | undefined
+export function ownBody(text: string, split: Split, wrapper: Section): string
 ```
 
 - `derive` picks, in order: **heading** when the text contains markdown ATX
@@ -578,6 +587,16 @@ export function slice(text: string, section: Section): string
   blank runs left behind to a single blank line, and trims. It emits leaf
   ranges only so text covered by both a parent and its child is never doubled;
   a parent's own text (before its first child) belongs to the parent.
+- `wrappingSection` names the lone depth-0 section that wraps the whole
+  document when it has children — the usual `# Title` of a split instruction or
+  skill. The tree does not render that wrapper as an extra level: its children
+  render at its depth, and its own body (`ownBody`: the text after its heading
+  line and before its first child, trimmed) becomes the first child row,
+  labelled `Introduction`, when it has content or a stored record keeps it
+  addressable. The row keeps the wrapper's section id and address, so recorded
+  exclusions, splits and tool addresses are unchanged; excluding Introduction
+  still drops the wrapper and its children exactly as before. A split with
+  several (or no) top-level sections is unchanged.
 
 ## Level-aware model (`model.ts`)
 
