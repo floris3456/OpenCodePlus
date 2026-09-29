@@ -864,7 +864,7 @@ test("run matches a live run's edit scope row after the snapshot boundary", () =
 function oldFilterRows(
   snapshot: ReturnType<typeof input>,
   where: string,
-): { matched: Set<string>; rows: Set<string> } {
+): { matched: Set<string>; rows: Set<string>; ordered: string[] } {
   const full = expandedTree(snapshot)
   const visible = (node: TreeNode) => node.kind !== "section" || node.actions?.toggle === true
   let matched: TreeNode[]
@@ -887,10 +887,10 @@ function oldFilterRows(
       ancestor = parents.get(ancestor.id)
     }
   }
-  return { matched: new Set(matched.map((node) => node.id)), rows }
+  return { matched: new Set(matched.map((node) => node.id)), rows, ordered: full.filter((node) => rows.has(node.id)).map((node) => node.id) }
 }
 
-test("matchedTree matches and chains agree with the full-materialise filter", () => {
+test("matchedTree matches, chains and pre-order steps agree with the full-materialise filter", () => {
   const snapshot = input()
   for (const where of [
     "level:project bash",
@@ -905,6 +905,8 @@ test("matchedTree matches and chains agree with the full-materialise filter", ()
     const actual = matchedTree(snapshot, where)
     expect([...actual.matched].sort()).toEqual([...expected.matched].sort())
     expect([...actual.rows.map((node) => node.id)].sort()).toEqual([...expected.rows].sort())
+    // The list renders in tree order, so the sequence is part of the contract.
+    expect(actual.rows.map((node) => node.id)).toEqual(expected.ordered)
   }
 })
 
@@ -918,6 +920,7 @@ test("matchedTree keeps the label/id fallback when the grammar rejects the filte
   const actual = matchedTree(snapshot, where)
   expect([...actual.matched].sort()).toEqual([...expected.matched].sort())
   expect([...actual.rows.map((node) => node.id)].sort()).toEqual([...expected.rows].sort())
+  expect(actual.rows.map((node) => node.id)).toEqual(expected.ordered)
   expect(actual.matched.has("item:project:Implementer:tool:odd:name")).toBe(true)
 })
 
