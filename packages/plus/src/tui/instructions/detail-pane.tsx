@@ -3,7 +3,6 @@ import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { fromLabel } from "../../instructions/from-label.js"
 import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
-import { categorySummary } from "../../instructions/permission-catalog.js"
 import { presetLabels, presetOfAddress } from "../../instructions/presets.js"
 import { rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo } from "../../instructions/resolve-memo.js"
 import { ownBody, wrappingSection } from "../../instructions/sections.js"
@@ -246,18 +245,6 @@ export function enforcementLine(item: Item): string {
   if (item.permTool === "team_get_context" && item.category === "bootstrap")
     return "read by the team tools when a chat of this member calls one with no team run yet"
   return "read by the team tools themselves, for the member that calls them"
-}
-
-// A Permissions category group's one-line summary, from its id
-// (group:<level>:<owner>:tool:<id>:permissions:<category>).
-export function categoryDetail(node: TreeNode): string | undefined {
-  if (node.kind !== "group") return undefined
-  const match = node.id.match(/:tool:([^:]+):permissions(?::(.+))?$/)
-  if (match === null) return undefined
-  const tool = match[1] ?? ""
-  const category = match[2]
-  if (category === undefined) return `Every permission of ${tool}, one group per category. Rows are on/off; enter edits a rule's patterns or a limit's number.`
-  return categorySummary(tool, category)
 }
 
 export function isEditable(node: TreeNode | undefined): boolean {

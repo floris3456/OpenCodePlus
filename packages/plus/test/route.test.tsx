@@ -219,6 +219,29 @@ test("roots render with agents and subtree groups", async () => {
   }
 })
 
+test("structural rows show their description in the inspector", async () => {
+  const snapshot = createSnapshot({ agents: [projectAgent("alice", "plus")], items: [toolItem()] })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, height: 40 })
+  try {
+    // The Agents catalogue and an origin subgroup answer with their own line
+    // in the right pane, as the muted note the inspector already renders.
+    await goto(fixture, "group:project:agents", "Agents")
+    await fixture.waitForFrame((frame) =>
+      inspector(frame).includes(
+        flat(
+          "Agents defined for this project. Rows here override Global and Defaults for this project; a stand-alone agent resolves through this catalogue, a team member through Teams.",
+        ),
+      ),
+    )
+    await goto(fixture, "group:project:agents:plus", "Plus")
+    await fixture.waitForFrame((frame) =>
+      inspector(frame).includes(flat("Agents produced by OpenCodePlus teams, including the shipped teams' members. A linked preset decides how a member behaves.")),
+    )
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("selectAgent expands the Agents group chain for any scope", async () => {
   const snapshot = createSnapshot({ agents: [projectAgent("Implementer")] })
   const fixture = await renderInstructionsRoute({
