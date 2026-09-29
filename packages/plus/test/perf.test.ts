@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
-import { fingerprint, type AgentSource, type Item } from "../src/instructions/model.js"
+import { controlItems } from "../src/instructions/agent-controls.js"
+import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { tree, type TeamInput } from "../src/instructions/tree.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
 import { createInstructionsState, type InstructionsState } from "../src/tui/instructions/state.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
-import { moveTo, selectedRow, sleep } from "./instructions-nav.js"
+import { breadcrumb, dispatch, moveTo, selectedRow, sleep } from "./instructions-nav.js"
 
 function makeSyntheticInput() {
   const agents: AgentSource[] = []
@@ -105,6 +106,144 @@ test("initial state load builds exactly one resolution memo for the snapshot", a
   expect(memoBuildCounter.count).toBe(1)
 })
 
+// A generated snapshot shaped like the live workspace: ~1.1k items, ~780
+// permission rows, 20 agents, presets and links. It is never live data; the
+// size is the point, so the view paths run at the scale the live screen sees.
+function makeLargeSnapshot(revision = 1): Snapshot {
+  const stamp = "2026-09-01T00:00:00.000Z"
+  const toolText = (i: number) => `Bulk tool ${i}\n\n# Alpha\n\na\n\n# Beta\n\nb`
+  const items: Item[] = [...controlItems()]
+  for (let i = 0; i < 90; i++)
+    items.push({
+      id: `tool:bulk-${i}`,
+      kind: "tool",
+      group: i % 3 === 0 ? "native" : i % 3 === 1 ? "plus" : "project",
+      title: `bulk-${i}`,
+      text: toolText(i),
+      enabled: true,
+      fingerprint: fingerprint(toolText(i)),
+      order: i,
+      ...(i % 4 === 0 ? { codemode: true } : {}),
+    })
+  for (let i = 0; i < 787; i++) {
+    const tool = `bulk-${i % 90}`
+    const text = `Rule ${i}\npattern-${i} *`
+    items.push({
+      id: `perm:${tool}:rule-${i}`,
+      kind: "perm",
+      group: "none",
+      title: `Rule ${i}`,
+      text,
+      enabled: i % 2 === 0,
+      fingerprint: fingerprint(text),
+      order: 200 + i,
+      permTool: tool,
+      ruleId: `rule-${i}`,
+      patterns: [`pattern-${i} *`],
+      keywords: i % 10 === 0 ? [`keyword-${i}`] : [],
+      provenance: [],
+      category: "rules",
+      permKind: "input",
+      field: "command",
+      fallback: true,
+    })
+  }
+  for (let i = 0; i < 140; i++) {
+    const text = `Bulk setting ${i}`
+    items.push({ id: `setting:bulk-${i}`, kind: "setting", group: "none", title: `Bulk setting ${i}`, text, enabled: true, fingerprint: fingerprint(text) })
+  }
+  for (let i = 0; i < 65; i++) {
+    const text = `Bulk compaction ${i}`
+    items.push({ id: `compaction:bulk-${i}`, kind: "compaction", group: "none", title: `Bulk compaction ${i}`, text, enabled: true, fingerprint: fingerprint(text) })
+  }
+  for (let i = 0; i < 7; i++) {
+    const text = `Bulk base ${i}`
+    items.push({ id: `base:bulk-${i}`, kind: "base", group: "none", title: `Bulk base ${i}`, text, enabled: true, fingerprint: fingerprint(text) })
+  }
+  for (let i = 0; i < 5; i++) {
+    const text = `Bulk skill ${i}`
+    items.push({ id: `skill:bulk-${i}`, kind: "skill", group: "project", title: `Bulk skill ${i}`, text, enabled: true, fingerprint: fingerprint(text) })
+  }
+  for (let i = 0; i < 22; i++) {
+    const text = `Bulk system ${i}`
+    items.push({ id: `system:bulk-${i}`, kind: "system", group: "none", title: `Bulk system ${i}`, text, enabled: true, fingerprint: fingerprint(text) })
+  }
+  for (let i = 0; i < 12; i++) {
+    const text = `Bulk model ${i}`
+    items.push({ id: `model:bulk/model-${i}`, kind: "model", group: "none", title: `bulk/model-${i}`, text, enabled: true, fingerprint: fingerprint(text) })
+  }
+  items.push({
+    id: "mcp:bulk-server",
+    kind: "mcp",
+    group: "none",
+    title: "bulk-server",
+    text: '{"type":"local"}',
+    enabled: true,
+    fingerprint: fingerprint('{"type":"local"}'),
+  })
+
+  const agents: AgentSource[] = []
+  for (let i = 0; i < 15; i++) agents.push({ id: `bulk-default-${i}`, scope: "defaults", base: "gpt", origin: i % 3 === 0 ? "native" : "user" })
+  for (let i = 0; i < 3; i++) agents.push({ id: `bulk-project-${i}`, scope: "project", base: "gpt", origin: "user", path: `/agents/bulk-project-${i}.md` })
+  for (let i = 0; i < 2; i++) agents.push({ id: `bulk-global-${i}`, scope: "global", base: "gpt", origin: "plus" })
+
+  const teams = [
+    { level: "project" as const, team: "bulk-team", enabled: true, agents: ["bulk-project-0", "bulk-project-1"] },
+    { level: "defaults" as const, team: "starter", enabled: true, agents: ["bulk-default-0"] },
+  ]
+
+  const presets = ["bulk-preset-0", "bulk-preset-1", "bulk-preset-2"].map((id) => ({
+    type: "preset" as const,
+    level: "preset" as const,
+    kind: "agent" as const,
+    id,
+    updated: stamp,
+  }))
+  const links = ["bulk-preset-0", "bulk-preset-1", "bulk-preset-2"].map((id, i) => ({
+    type: "link" as const,
+    level: "project" as const,
+    agent: `bulk-project-${i}`,
+    preset: { kind: "agent" as const, id },
+    updated: stamp,
+  }))
+
+  const records: CustomizationRecord[] = []
+  for (let i = 0; i < 5; i++)
+    records.push({
+      type: "customization",
+      level: "project",
+      agent: "bulk-project-0",
+      item: `tool:bulk-${i}`,
+      section: null,
+      text: `Edited tool ${i}`,
+      basedOn: fingerprint(toolText(i)),
+      basedOnText: "Older tool text",
+      updated: stamp,
+    })
+  for (let i = 5; i < 20; i++)
+    records.push({
+      type: "customization",
+      level: "project",
+      agent: "bulk-project-1",
+      item: `tool:bulk-${i}`,
+      section: null,
+      state: i % 2 === 0 ? "off" : "on",
+      basedOn: fingerprint(toolText(i)),
+      updated: stamp,
+    })
+
+  return createSnapshot({
+    revision,
+    globalRevision: revision,
+    items,
+    records,
+    agents: agents.map((agent) => ({ ...agent, fileBacked: true })),
+    teams: teams.map((team) => ({ ...team, agents: [...team.agents] })),
+    links,
+    presets,
+  })
+}
+
 test("a burst of instructions.changed events coalesces to one trailing reload", async () => {
   const first = createSnapshot({ revision: 1, globalRevision: 1 })
   const second = createSnapshot({ revision: 2, globalRevision: 2 })
@@ -130,6 +269,57 @@ test("a burst of instructions.changed events coalesces to one trailing reload", 
   await sleep(50)
   expect(fixture.fake.snapshotCalls).toBe(3)
 })
+
+test("large generated fixture: one memo build per snapshot across open, ↓, level switch, n and filter", async () => {
+  const snapshot = makeLargeSnapshot()
+  resetMemoBuildCounter()
+  const openedAt = performance.now()
+  await using fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 180, height: 50 })
+  await fixture.waitForFrame((frame) => frame.includes("Instructions") && frame.includes("▌"))
+  expect(performance.now() - openedAt).toBeLessThan(3000)
+  expect(memoBuildCounter.count).toBe(1)
+
+  // Sidebar movement: keys re-render the workspace and inspector from the same
+  // memo.
+  for (let i = 0; i < 3; i++) {
+    const before = fixture.captureCharFrame()
+    const at = performance.now()
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => selectedRow(frame) !== selectedRow(before))
+    expect(performance.now() - at).toBeLessThan(1000)
+  }
+  expect(memoBuildCounter.count).toBe(1)
+
+  // Opening a row materialises its subtree, still from the same memo.
+  const beforeOpen = fixture.captureCharFrame()
+  dispatch(fixture, "right")
+  await fixture.waitForFrame((frame) => frame !== beforeOpen)
+  expect(memoBuildCounter.count).toBe(1)
+
+  // Level switch: the new level walks the same memo.
+  const beforeLevel = fixture.captureCharFrame()
+  dispatch(fixture, ">")
+  await fixture.waitForFrame((frame) => breadcrumb(frame) !== breadcrumb(beforeLevel))
+  expect(memoBuildCounter.count).toBe(1)
+
+  // n (next review) walks the level's review targets from the same memo.
+  dispatch(fixture, "n")
+  await fixture.flush()
+  await sleep(50)
+  expect(memoBuildCounter.count).toBe(1)
+
+  // Filter: the match walk and the materialised matches share the memo. The
+  // term is an id prefix so the result stays a handful of rows: every rendered
+  // list row owns native OpenTUI text handles, and a deliberately wide match
+  // set would measure the renderer's handle ceiling, not this walk.
+  dispatch(fixture, "/")
+  await fixture.waitForFrame((frame) => frame.includes("words or key:value"))
+  await sleep(20)
+  await fixture.typeText("id:agent:global:bulk-global-1")
+  await sleep(250)
+  await fixture.waitForFrame((frame) => frame.includes("esc clear filter") && selectedRow(frame).includes("bulk-global-1"))
+  expect(memoBuildCounter.count).toBe(1)
+}, 600_000)
 
 test("realistic lab dataset benchmark: Enter -> tree rows and d -> confirm dialog on Cobra/testttt", async () => {
   // Realistic dataset matching lab project: 7 teams, 20 agents, 229 items
