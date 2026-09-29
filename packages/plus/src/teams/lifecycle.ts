@@ -24,6 +24,7 @@ import {
   type RunRecord,
 } from "./run.js"
 import { Policy, parseDuration } from "./schema.js"
+import { SessionOutcomes, type SessionOutcome } from "./session-events.js"
 import { lock, readJson } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
 
@@ -150,27 +151,6 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
   return saved.id
 }
 
-export type SessionOutcome = "idle" | "failed" | "interrupted"
-
-// The host's session lifecycle is the only authority on whether a run's model
-// turn is over. A child that never called finish still ends its turn, so no
-// tool call from the child is needed for its parent to see it idle.
-// `session.execution.succeeded` is the canonical host success event
-// (`SessionEvent.Execution.Succeeded`, published by core's SessionExecution at
-// the end of every busy period); `session.idle` is a deprecated ephemeral event
-// the host no longer publishes, kept so older harnesses still settle.
-const OUTCOMES: Record<string, SessionOutcome> = {
-  "session.execution.succeeded": "idle",
-  "session.idle": "idle",
-  "session.execution.failed": "failed",
-  "session.execution.interrupted": "interrupted",
-}
-
-export const SessionRunEvents: ReadonlySet<string> = new Set([
-  ...Object.keys(OUTCOMES),
-  "session.execution.started",
-])
-
 // A stop requested while a run was executing is satisfied by the stop that
 // produced its stopped/dead state, but the record still carries the flag.
 // Resuming the session must not stop the next turn too. A run that has not
@@ -211,7 +191,7 @@ export async function onSessionEvent(
     return working
   }
 
-  const outcome = OUTCOMES[event.type]
+  const outcome = SessionOutcomes[event.type]
   if (outcome === undefined) return undefined
   return onSessionIdle(ctx, root, run, outcome)
 }

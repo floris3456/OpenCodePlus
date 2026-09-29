@@ -3,7 +3,7 @@ import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, Sho
 import { createStore } from "solid-js/store"
 import { TextAttributes } from "@opentui/core"
 import { Definition, type TeamLevel, type TeamListEntry, type TeamRunEntry } from "../rpc.js"
-import { SessionRunEvents } from "../teams/lifecycle.js"
+import { SessionRunEvents } from "../teams/session-events.js"
 
 type SessionItem = ReturnType<Plugin.Context["data"]["session"]["list"]>[number]
 
