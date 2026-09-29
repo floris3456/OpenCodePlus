@@ -5,6 +5,8 @@ import { useComposerTab } from "./index"
 export interface PluginComposerTabRegistration {
   id: string
   label: string
+  /** Body height in rows; the native body height when omitted. */
+  height?: number
   render: (input: { sessionID: string; active: () => boolean; close: () => void }) => JSX.Element
   hints?: () => readonly ComposerHint[]
 }
@@ -42,9 +44,10 @@ function SinglePluginTab(props: { tab: PluginComposerTabRegistration; sessionID:
 
   // Render the body once, for the tab's lifetime: a body that remounts on
   // every visit starts empty, draws a placeholder and jumps the composer when
-  // its data arrives. The container keeps every plugin body at the native
-  // body height and hides it, rather than unmounting it, while another tab is
-  // active. `sessionID` stays live because the plugin reads it lazily.
+  // its data arrives. The container gives every plugin body its registered
+  // height (the native body height by default) and hides it, rather than
+  // unmounting it, while another tab is active. `sessionID` stays live because
+  // the plugin reads it lazily.
   const body = props.tab.render({
     get sessionID() {
       return props.sessionID
@@ -54,7 +57,7 @@ function SinglePluginTab(props: { tab: PluginComposerTabRegistration; sessionID:
   })
 
   return (
-    <box visible={active()} height={COMPOSER_TAB_BODY_HEIGHT} overflow="hidden">
+    <box visible={active()} height={props.tab.height ?? COMPOSER_TAB_BODY_HEIGHT} overflow="hidden">
       <box flexShrink={0} flexDirection="column" minWidth={0}>
         {body}
       </box>

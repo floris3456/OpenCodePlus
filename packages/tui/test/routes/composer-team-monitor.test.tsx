@@ -299,7 +299,7 @@ test("unregistering a plugin tab removes it cleanly", async () => {
   }
 })
 
-test("the composer header row never moves while walking the plugin tabs", async () => {
+test("the composer header row never moves while walking plugin tabs at the native height", async () => {
   const gate = Promise.withResolvers<void>()
   const unregisterGrow = composerPluginTabs.register({
     id: "grow-tab",
@@ -346,6 +346,69 @@ test("the composer header row never moves while walking the plugin tabs", async 
   } finally {
     unregisterGrow()
     unregisterEmpty()
+    app.renderer.destroy()
+    await cleanup()
+  }
+})
+
+test("a plugin tab may ask for a taller body; natives and default-height tabs keep the native height", async () => {
+  const unregisterTall = composerPluginTabs.register({
+    id: "tall-tab",
+    label: "Tall",
+    height: 10,
+    render: () => (
+      <box flexDirection="column">
+        <For each={Array.from({ length: 10 }, (_, index) => index)}>
+          {(index) => <text>{`tall row ${index}`}</text>}
+        </For>
+      </box>
+    ),
+  })
+  // Team and the natives ask for no height: the host's native five rows.
+  const unregisterTeam = composerPluginTabs.register({
+    id: "team-tab",
+    label: "Team",
+    render: () => <text>team body</text>,
+  })
+
+  const { app, cleanup } = await createTestComposer({})
+  try {
+    const baselineFrame = app.captureCharFrame()
+    const baseline = headerRow(baselineFrame)
+    expect(baseline).toBeGreaterThan(-1)
+    expect(footerRow(baselineFrame) - baseline - 3).toBe(COMPOSER_TAB_BODY_HEIGHT)
+
+    // Subagents -> Shell -> Terminals keep the native height.
+    for (let press = 0; press < 2; press++) {
+      app.mockInput.pressArrow("right")
+      await app.renderOnce()
+      expect(headerRow(app.captureCharFrame())).toBe(baseline)
+    }
+
+    // Next is Tall: the composer grows by exactly the extra rows in one step.
+    app.mockInput.pressArrow("right")
+    await app.renderOnce()
+    const tallFrame = app.captureCharFrame()
+    expect(headerRow(tallFrame)).toBe(baseline - (10 - COMPOSER_TAB_BODY_HEIGHT))
+    expect(footerRow(tallFrame) - headerRow(tallFrame) - 3).toBe(10)
+    expect(tallFrame).toContain("tall row 9")
+
+    // Back to a default-height tab: the hidden taller body must not reserve
+    // space, so the header returns to the native row.
+    app.mockInput.pressArrow("right")
+    await app.renderOnce()
+    const teamFrame = app.captureCharFrame()
+    expect(teamFrame).toContain("team body")
+    expect(headerRow(teamFrame)).toBe(baseline)
+    expect(footerRow(teamFrame) - baseline - 3).toBe(COMPOSER_TAB_BODY_HEIGHT)
+
+    // And back to Tall: one clean step again.
+    app.mockInput.pressArrow("left")
+    await app.renderOnce()
+    expect(headerRow(app.captureCharFrame())).toBe(baseline - (10 - COMPOSER_TAB_BODY_HEIGHT))
+  } finally {
+    unregisterTall()
+    unregisterTeam()
     app.renderer.destroy()
     await cleanup()
   }

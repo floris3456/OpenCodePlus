@@ -490,6 +490,11 @@ export interface ComposerTabRenderInput {
 export interface ComposerTabOptions {
   readonly id: string
   readonly label: string
+  /**
+   * Body height in rows. Omitted keeps the host's native body height; a tab
+   * that needs more rows asks for them here and renders that many itself.
+   */
+  readonly height?: number
   readonly render: (input: ComposerTabRenderInput) => JSX.Element
   readonly hints?: () => readonly ComposerHint[]
 }
