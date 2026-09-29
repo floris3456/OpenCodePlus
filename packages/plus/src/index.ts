@@ -1556,6 +1556,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const existing = loaded.records.find(
         (record): record is ModelRecord =>
           record.type === "model" &&
+          record.removed !== true &&
           record.level === input.level &&
           record.agent === input.agent &&
           sameTeam(record.team, input.team) &&
@@ -1584,7 +1585,22 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(validated.variant === undefined ? {} : { variant: validated.variant }),
         updated: new Date().toISOString(),
       }
-      const saved = await saveModelRecords(directory, loaded, [...loaded.records, next])
+      // Re-adding at this level clears a tombstone for the same candidate.
+      const withoutTombstones = loaded.records.filter(
+        (record) =>
+          !(
+            record.type === "model" &&
+            record.removed === true &&
+            record.level === input.level &&
+            record.agent === input.agent &&
+            sameTeam(record.team, input.team) &&
+            catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
+            record.providerID === validated.providerID &&
+            record.modelID === validated.modelID &&
+            record.variant === validated.variant
+          ),
+      )
+      const saved = await saveModelRecords(directory, loaded, [...withoutTombstones, next])
       if (!saved.ok) {
         const reason = `Model ${validated.providerID}/${validated.modelID} changed concurrently; retry`
         return {
@@ -3742,6 +3758,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.active === undefined ? {} : { active: record.active }),
       ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
       ...(record.warming === undefined ? {} : { warming: record.warming }),
+      ...(record.removed === undefined ? {} : { removed: record.removed }),
       updated: record.updated,
     }
   if (record.type === "rule")
@@ -5325,6 +5342,7 @@ function toSnapshot(
             ...(record.active === undefined ? {} : { active: record.active }),
             ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
             ...(record.warming === undefined ? {} : { warming: record.warming }),
+            ...(record.removed === undefined ? {} : { removed: record.removed }),
             updated: record.updated,
           },
         ]

@@ -194,6 +194,7 @@ title `Preset`) groups its options by `category`: `Agent presets · OpenCode`,
 | Presets → Teams → `User` | prompt `Team preset name` → `Team preset` (incl. `Empty team`) | `preset.create {kind: "team", id, from?}` |
 | a User team preset row | prompt `Member name` → `Preset` | `preset.addMember {team, id, from?}` |
 | any Models group (agent, member, entry, preset, member preset) | `Model provider` → `Model` (→ `Variant`) | `model.add` at the group's owner, team-scoped where its rows are |
+| enter on a model row | `Model` (`provider/model`, prefilled, validated against `catalog.models`) → `Variant` (prefilled, empty = none) → `Cache warming` (prefilled with the local value, placeholder the inherited one) | `ops.ts` `editModelRow` content saved through `instructions.mutate`; an inherited/upstream row plants a local record, the effective model stays effective |
 | outside Project/Global (generic `Add` → Agent/Team) | … then `Agent scope` / `Team scope` last | as above |
 
 A created row is revealed (`state.reveal`: its ancestors expand and it is
@@ -294,8 +295,14 @@ info feedback token.
 **Inspector** (`inspector.tsx`). Facts in the same words as before: `source`
 names state and text sources (`state and text: from preset Orchestrator`,
 `state: from preset Orchestrator · text: upstream`, `set here (Project)`, or
-`default (nothing overrides it)`); model rows `active model: …` / `candidate:
-…`. Owner rows add `preset` (`Orchestrator (Plus)`, or `No preset`; nothing for
+`default (nothing overrides it)`); model rows add `model <provider>/<model>`,
+`from <level> · active` (`(inherited)` when a level below chose it, with the
+level named when the row's own source differs), `warming <value> · set at
+<level>` or `host configuration (enter edits it here)`, and `effective
+<model> · active at <level>` when the group's effective model is not one of
+its rows. The Models group also notes that with nothing active OpenCode falls
+back to its host configuration, removed rows included. Owner rows add `preset`
+(`Orchestrator (Plus)`, or `No preset`; nothing for
 a shipped preset of its own). Defaults entry rows add what they match
 (`matches agents named: <pattern>` / `matches members named: <m> in teams
 named: <t>` / `matches teams named: <t>`) and `now` (`matching now`) computed
@@ -423,11 +430,18 @@ and first shared Defaults inventory. The group id is
 `group:<level>:<agent|''>:models` (the shared Defaults group is
 `group:defaults::models`); it carries `add: "model"`. Rows are the union
 down the chain (deduplicated) plus the agent's upstream model, each with a
-`source` badge naming the level it came from. Toggle activates exclusively
-at this level (creating the local row when the candidate is inherited),
-remove deletes the row at this level only; no edit, split, or pin. `active`
-marks the resolved winner down the chain (or upstream when nothing is
-active).
+`source` badge naming the level it came from. The active badge marks the
+agent's effective model, which resolves on the agent's *runtime* chain
+(`modelRuntimeScope` → `runtimeScope`: a native built-in's Defaults row runs
+at Project), so at Project a Global choice reads `active (global)` with
+`badges.activeFrom` naming the level, and the inspector's `from` fact adds
+`(inherited)`. When the effective model is not one of this level's rows the
+group carries `badges.effective` (`<model> · active at <level>`, on its rows
+too) and no row reads active. Toggle activates exclusively at this level (creating the local
+row when the candidate is inherited); `d` deletes a live local record or
+hides an inherited/upstream row with a tombstone; the effective row refuses;
+enter (`editModelRow`) replaces the candidate and sets its warming; no split
+or pin.
 
 Tool rows (`tree.ts` `lazyItem`, `toolPermissions`): every tool row, Code
 Mode and MCP included, expands into Description and Permissions.
@@ -816,6 +830,8 @@ export function ensureActivateModel(models: readonly ModelRecord[], address: { l
 export function activateModel(records: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }): ModelRecord[]
 export function clearModelActive(models: readonly ModelRecord[], address: { level: Level; agent: string | null }): ModelRecord[]
 export function removeModelRecord(models: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }): ModelRecord[]
+export function tombstoneModelRecord(models: readonly ModelRecord[], address: { level: Level; agent: string | null }, target: { providerID: string; modelID: string; variant?: string }, updated: string): ModelRecord[]
+export function modelRuntimeScope(input: { scopes: Scopes; level: Level; owner: string | null; agentScope?: Level; team?: TeamRef }): { level: Level; scopes: Scopes }
 ```
 
 - Candidates are the union down the existing `resolutionChain` (most
@@ -827,6 +843,23 @@ export function removeModelRecord(models: readonly ModelRecord[], address: { lev
   (presets and Defaults entries included; a shipped preset's
   `presets.model(ref)` counts as active), else upstream. No active record and
   no upstream means Plus installs nothing for that agent.
+- Tombstones: a record with `removed: true` hides its candidate. The chain is
+  walked most specific first and the first node naming the key decides: a live
+  record keeps it visible, a tombstone hides it for the rest of that
+  resolution (so a Project tombstone hides a Global candidate at Project, and
+  a Project live row still shows over a Defaults tombstone). `modelCandidates`
+  and `resolveActiveModel` skip hidden keys, and a hidden upstream candidate
+  resolves to nothing at that address — the host's own configuration still
+  applies, which is what Plus installs nothing means. `addModelRecord`
+  replaces a target's tombstone (re-adding clears the hide); `hasModelRecordAt`
+  counts live records only.
+  `modelRuntimeScope` names the chain a row's agent resolves through: the
+  address itself for shared and team-scoped rows, `runtimeScope` for an
+  agent's own level (a native built-in's Defaults row runs at Project). The
+  TUI marks the runtime winner active (`badges.activeFrom` when it sits at
+  another level) and carries `badges.effective` on the group when the winner
+  is not one of the level's rows; removal decisions (`ops.ts`
+  `removeModelRow`) read the same chain.
 - Cache warming per agent and model: a model record may carry `warming`
   (`"off"`, `"on"`, or a total time `"45m"`, `"2h"`, `"1h30m"`; 1m to 24h,
   canonicalised by `parseWarming`/`formatWarming`). `resolveModelWarming`
@@ -844,11 +877,19 @@ export function removeModelRecord(models: readonly ModelRecord[], address: { lev
   `activateModel` clears `active` from only that pair's other records;
   activating the already-active record (with no stray actives) or a target
   with no record at all returns an identical list. `addModelRecord` stores
-  an inactive row and never steals the effective model; `ensureActivateModel`
-  plants the local row first, then flips it exclusively (this is the TUI
-  space path for inherited candidates). `r` (`clearModelActive`) clears only
-  this level's active flag, leaving candidates in place so the chain falls
-  through; with no active at this address it returns an identical list.
+  an inactive row, clears a tombstone for the same candidate, and never
+  steals the effective model; `ensureActivateModel` plants the local row
+  first, then flips it exclusively (this is the TUI space path for inherited
+  candidates). `r` (`clearModelActive`) clears only this level's active flag,
+  leaving candidates in place so the chain falls through; with no active at
+  this address it returns an identical list. `removeModelRow` (`ops.ts`)
+  deletes a live local record, tombstones an inherited/upstream row at this
+  level, and refuses when the row is the agent's effective model
+  (`"<label>" is the active model here: activate another model first`) — a
+  local active record the chain below still replaces may be deleted.
+  `editModelRow` replaces provider/model/variant at the row's level, plants a
+  local record for an inherited or upstream row, keeps the effective model
+  active, and validates `warming` through `parseWarming`/`formatWarming`.
 - Delivery: `applyModels` (`apply.ts`) resolves each effective agent and
   sets the host model in one `ctx.agent.transform`; upstream winners install
   nothing. Sessions adopt the agent's active model through `switchModel` on
@@ -986,6 +1027,9 @@ export interface ModelRecord {
   readonly modelID: string
   readonly variant?: string
   readonly active?: true
+  readonly basedOn?: string
+  readonly warming?: string
+  readonly removed?: true
   readonly updated: string
 }
 // One user-added tool permission rule. On/off reuses CustomizationRecord
@@ -1259,7 +1303,7 @@ rows the server enforces;
 `AssembledTool` carries `codemode`, `pinned`. `SnapshotRecord` is the union
 of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,
 `SnapshotModelRecord` (`{ type: "model", level, agent, team?: { level, team }, providerID, modelID,
-variant?, active?: true, updated }`), and `SnapshotRuleRecord`
+variant?, active?: true, basedOn?, warming?, removed?: true, updated }`), and `SnapshotRuleRecord`
 (`{ type: "rule", level, agent, team?: { level, team }, tool, id, label, patterns, keywords,
 message?, updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
 "user"`, computed server-side), `model?` (`{ providerID, modelID,
@@ -2489,7 +2533,7 @@ the shipped limits):
 | `team_get_context` | Contents (team: siblings) |
 | `team_check` | Checks it may run (team: test files, package scripts) |
 | `instructions_list`, `_show`, `_log` | Secrets in rows (input: Show secret values; off masks) · Approval |
-| `instructions_set` | Rows it may change (input `id`: its own rows, perm, model, team, Global and Defaults rows) · Changes (param: `text`, `state`, `pin`, `active`, `resolve`, `patterns`) · Approval |
+| `instructions_set` | Rows it may change (input `id`: its own rows, perm, model, team, Global and Defaults rows) · Changes (param: `text`, `state`, `pin`, `active`, `resolve`, `warming`, `patterns`) · Approval |
 | `instructions_reset`, `_split`, `_delete` | Rows it may change · Approval |
 | `instructions_create` | Kinds (value `kind`) · Levels (value `level`) · Approval |
 | `release_request` | Kinds (value `kind`: build, promote) · Targets (value `artifact.target`) · Parameters (`approvalRef: null`) · Approval |

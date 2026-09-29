@@ -29,7 +29,7 @@ export function rowTags(node: TreeNode, sidebar: boolean): string[] {
     // Primary is the usual mode; the sidebar names only the others.
     ...(sidebar && node.badges.mode !== undefined && node.badges.mode !== "primary" ? [node.badges.mode] : []),
     ...(node.badges.hidden === true ? ["hidden"] : []),
-    ...(node.badges.active === true ? ["active"] : []),
+    ...(node.badges.active === true ? [node.badges.activeFrom === undefined ? "active" : `active (${node.badges.activeFrom})`] : []),
     ...(node.badges.warming !== undefined ? [`warm ${node.badges.warming}`] : []),
     ...(node.badges.inactive === true ? ["inactive"] : []),
     ...(node.badges.pinned === true ? ["pinned"] : []),

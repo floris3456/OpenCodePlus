@@ -125,3 +125,10 @@ test("a modal dialog dims the workspace and closing restores it exactly", async 
   expect(fixture.captureCharFrame()).toBe(before)
   expect(rowSpan()?.bg.equals(theme.background.action.primary.focused)).toBe(true)
 })
+test("help names the model edit on enter and no warming key", () => {
+  const entries = HELP.flatMap((group) => group[1])
+  expect(entries.some(([key]) => key === "w")).toBe(false)
+  expect(entries.some(([, label]) => label.includes("cache warming"))).toBe(false)
+  const enter = entries.find(([key]) => key === "enter")
+  expect(enter?.[1]).toContain("edit a model")
+})

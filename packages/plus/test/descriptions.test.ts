@@ -182,7 +182,7 @@ test("owner categories name the agent, member, preset or maintenance agent they 
     "Tools this team member may call, grouped by origin; each row expands to its Description and Permissions.",
   )
   expect(detail("group:project:crew/:special:compaction:models")).toBe(
-    "Models this maintenance agent may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level.",
+    "Models this maintenance agent may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.",
   )
   expect(detail("group:preset:opencodeplus-team/:spark-implementer:settings")).toBe(
     "This member preset's settings: Enabled, Mode, Description, Hidden, Color and Steps. Space toggles Enabled; enter edits a value.",

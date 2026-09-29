@@ -19,6 +19,7 @@ import { agentOf, contextOfSnapshot, itemOf, presetStateOfSnapshot, recordOf, te
 import {
   activateModelRow,
   addSection,
+  editModelRow,
   findRow,
   isModelRowId,
   isPermRowId,
@@ -32,11 +33,11 @@ import {
   saveSplit,
   saveText,
   setEnabled,
-  setModelWarmingRow,
   setPin,
   stateReviewChoice,
   teamPlan,
   toggle,
+  type ModelEditFields,
   type ModelReviewChoice,
   type StateReviewChoice,
 } from "../../instructions/ops.js"
@@ -122,6 +123,7 @@ export function toRpcRecords(
         ...(record.active === undefined ? {} : { active: record.active }),
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         ...(record.warming === undefined ? {} : { warming: record.warming }),
+        ...(record.removed === undefined ? {} : { removed: record.removed }),
         updated: record.updated,
       }),
     ),
@@ -658,8 +660,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persistModels(result.models, result.status, result.retryHint)
   }
 
-  async function setWarming(node: TreeNode, text: string): Promise<boolean> {
-    const result = setModelWarmingRow(memoInput(), node.id, text, treeMemo())
+  // Enter on a model row: replace the candidate at this level and set or clear
+  // its warming in one save. Inherited and upstream rows plant a local record,
+  // as activation does.
+  async function editModel(node: TreeNode, fields: ModelEditFields): Promise<boolean> {
+    const result = editModelRow(memoInput(), node.id, fields, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -718,7 +723,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       }
       const confirmed = await context.ui.dialog.confirm({
         title: `Remove "${node.label}"?`,
-        message: `Remove model "${node.label}" at this level? This cannot be undone.`,
+        message: `Remove model "${node.label}" at this level? A local candidate is deleted; an inherited or upstream one is hidden here, and re-adding the model clears that.`,
       })
       if (confirmed !== true) {
         setStatus(`Delete of "${node.label}" cancelled`)
@@ -906,7 +911,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     reviewChoice,
     modelReview,
     resolveModel,
-    setWarming,
+    editModel,
     reveal,
     revealed,
     treeWith,

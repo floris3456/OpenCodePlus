@@ -2,6 +2,7 @@ import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
 import {
   acknowledgeActiveModel,
+  activateModel,
   addModelRecord,
   applies,
   catalogueField,
@@ -12,6 +13,7 @@ import {
   hasModelRecordAt,
   merge,
   modelKey,
+  modelRuntimeScope,
   formatWarming,
   ownAndAbove,
   parseModelItemId,
@@ -21,9 +23,11 @@ import {
   resolveActiveModel,
   resolveResolution,
   resolveSplit,
+  sameModelCandidate,
   sameTeam,
   scopedTo,
   setModelWarming,
+  tombstoneModelRecord,
 } from "./model.js"
 import type {
   Address,
@@ -31,6 +35,8 @@ import type {
   CustomizationRecord,
   Item,
   Level,
+  ModelCandidate,
+  ModelInput,
   ModelRecord,
   PresetRef,
   RecordScope,
@@ -952,6 +958,42 @@ function modelUpstreamOf(memo: Memo, address: Address) {
   return agents.find((entry) => entry.id === owner && entry.scope === address.level)?.model ?? agents.find((entry) => entry.id === owner)?.model
 }
 
+// The runtime chain an agent's model answer resolves through at this address:
+// a native built-in's Defaults row runs at Project, so the same rows the tree
+// marks active are the ones a removal decision reads. The row's own level stays
+// where edits write.
+function runtimeModelInput(memo: Memo, address: Address, models: readonly ModelRecord[]): ModelInput {
+  const owner = address.agent
+  const agentScope = owner === null ? undefined : memo.ctx.agents.find((entry) => entry.id === owner)?.scope
+  const team = address.memberOf ?? address.team
+  const runtime = modelRuntimeScope({
+    scopes: memo.ctx.scopes,
+    level: address.level,
+    owner,
+    ...(agentScope === undefined ? {} : { agentScope }),
+    ...(team === undefined ? {} : { team }),
+  })
+  const upstream = modelUpstreamOf(memo, address)
+  return {
+    models,
+    scopes: runtime.scopes,
+    level: runtime.level,
+    agent: owner,
+    ...(address.team === undefined ? {} : { team: address.team }),
+    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
+    ...(upstream === undefined ? {} : { upstream }),
+  }
+}
+
+function effectiveModelAt(memo: Memo, address: Address, models: readonly ModelRecord[]): ModelCandidate | undefined {
+  return resolveActiveModel(runtimeModelInput(memo, address, models))
+}
+
+function activeModelRefusal(label: string): string {
+  return `"${label}" is the active model here: activate another model first`
+}
+
 export function removalPlan(input: MemoInput, rowId: string, sharedMemo?: Memo): RemovalPlan {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
@@ -1273,22 +1315,90 @@ export function resetModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo
   return { models: next, status: `Reset "${node.label}" to default`, retryHint: `reset "${node.label}" against a stale revision; retry to apply` }
 }
 
-// d on a model row deletes the candidate at this level only. Inherited rows
-// with no local record refuse: remove at the source level instead.
+// d on a model row removes the candidate at this level only:
+// - a live local record is deleted;
+// - an inherited or upstream row is hidden at this level by a tombstone
+//   (`removed: true`), which also hides it from addresses resolving through
+//   this node. The source level is never touched, and re-adding the model here
+//   clears the tombstone.
+// The row that is the agent's effective model refuses: "activate another model
+// first" is the explicit replacement the human has to make. A local active
+// record may be deleted when the chain below still resolves another stored
+// model (activating there already happened); falling to the host configuration
+// is what the refusal prevents.
 export function removeModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address
-  if (address === undefined) return { refusal: `"${node.label}" cannot be deleted` }
+  if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be deleted` }
   const target = modelTargetOf(address)
   if (target === undefined) return { refusal: `"${node.label}" cannot be deleted` }
   const models = modelsOfInput(input)
   const addr = modelScopeOf(address)
-  if (!hasModelRecordAt(models, addr, target))
-    return { refusal: `"${node.label}" cannot be deleted here: remove it at its source level` }
-  const next = removeModelRecord(models, addr, target)
-  return { models: next, status: `Removed "${node.label}"`, retryHint: `removed "${node.label}" against a stale revision; retry to apply` }
+  const effective = effectiveModelAt(found.memo, address, models)
+  if (effective !== undefined && sameModelCandidate(effective, target)) {
+    const localActive = models.some(
+      (record) => record.removed !== true && scopedTo(record, addr) && record.active === true && sameModelCandidate(record, target),
+    )
+    if (!localActive) return { refusal: activeModelRefusal(node.label) }
+    const next = effectiveModelAt(found.memo, address, removeModelRecord(models, addr, target))
+    if (next === undefined || next.source === "upstream") return { refusal: activeModelRefusal(node.label) }
+  }
+  const hasLocal = hasModelRecordAt(models, addr, target)
+  const next = hasLocal ? removeModelRecord(models, addr, target) : tombstoneModelRecord(models, addr, target, now())
+  const status = hasLocal ? `Removed "${node.label}"` : `Hidden "${node.label}" at this level`
+  return { models: next, status, retryHint: `${hasLocal ? "removed" : "hid"} "${node.label}" against a stale revision; retry to apply` }
+}
+
+export interface ModelEditFields {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+  /** undefined = leave warming alone; "" clears it; else a parseWarming value. */
+  readonly warming?: string
+}
+
+// Enter on a model row: replace the candidate (provider/model/variant) at this
+// level and set or clear its cache warming in one save. An inherited or
+// upstream row plants a local record like activation does; editing the
+// effective model keeps it effective, and a local record's active flag moves
+// with the replaced record. Warming is validated like the warming tool/prompt
+// (off, on, a total time, or empty to inherit).
+export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditFields, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be edited` }
+  const from = modelTargetOf(address)
+  if (from === undefined) return { refusal: `"${node.label}" cannot be edited` }
+  const models = modelsOfInput(input)
+  const addr = modelScopeOf(address)
+  const to = { providerID: fields.providerID, modelID: fields.modelID, ...(fields.variant === undefined ? {} : { variant: fields.variant }) }
+  const local = models.find((record) => record.removed !== true && scopedTo(record, addr) && sameModelCandidate(record, from))
+  const effective = effectiveModelAt(found.memo, address, models)
+  const staysActive = local !== undefined ? local.active === true : effective !== undefined && sameModelCandidate(effective, from)
+  const targetChanged = !sameModelCandidate(from, to)
+  const upstream = modelUpstreamOf(found.memo, address)
+  const context = { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) }
+  const swapped = targetChanged
+    ? addModelRecord(removeModelRecord(models, addr, from), addr, to, now())
+    : addModelRecord(models, addr, to, now())
+  // Re-activate only when the active flag has to be carried over: a replaced
+  // record loses it, and an inherited/upstream edit plants it. A same-target
+  // local active record is left exactly as it is.
+  const withActive = staysActive && (targetChanged || local === undefined || local.active !== true)
+    ? activateModel(swapped, addr, to, context)
+    : swapped
+  const parsed = fields.warming === undefined || fields.warming.trim().length === 0 ? undefined : parseWarming(fields.warming)
+  if (parsed !== undefined && "error" in parsed) return { refusal: parsed.error }
+  const next = fields.warming === undefined ? withActive : setModelWarming(withActive, addr, to, parsed === undefined ? undefined : formatWarming(parsed), now())
+  if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
+  const status = fields.warming !== undefined && JSON.stringify(withActive) === JSON.stringify(models)
+    ? (parsed === undefined ? `Cache warming for "${node.label}" inherits` : `Cache warming for "${node.label}": ${formatWarming(parsed)}`)
+    : `Updated "${node.label}"`
+  return { models: next, status, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
 }
 
 export function isModelRowId(rowId: string): boolean {

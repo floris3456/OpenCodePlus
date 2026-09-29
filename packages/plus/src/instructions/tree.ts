@@ -6,8 +6,8 @@ import {
   catalogueOf,
   entrySpecificity,
   hasModelActiveAt,
-  hasModelRecordAt,
   modelCandidates,
+  modelRuntimeScope,
   resolveModelWarming,
   modelItemId,
   parseModelItemId,
@@ -142,6 +142,8 @@ export interface TreeNodeBadges {
   /** Which parts of the row's own override are to review (text, state, pin). */
   readonly reviewOf?: readonly ReviewPart[]
   readonly active?: boolean
+  /** The level whose record is active (`upstream` for the host model); differs from the row's level when the active model is inherited. */
+  readonly activeFrom?: Level | "upstream"
   readonly source?: Level | "upstream"
   /** Where the on/off state (model rows: the candidate) came from. */
   readonly from?: From
@@ -149,6 +151,8 @@ export interface TreeNodeBadges {
   readonly textFrom?: From
   /** `from` in words (from-label.ts): "from preset Orchestrator", "off by default", … */
   readonly fromLabel?: string
+  /** The Models group's effective model when it is not one of this level's listed rows: "<model> · active at <level>". */
+  readonly effective?: string
   /** User base template that can never be the host active answer. */
   readonly inactive?: boolean
   /** Registry or user pin state for Code Mode tool rows. */
@@ -596,6 +600,8 @@ interface BranchArgs {
   readonly owner?: RowOwner
   readonly actions: TreeNodeActions
   readonly children: () => readonly Lazy[]
+  /** Extra badges the structural row itself carries (the Models group's effective model). */
+  readonly partial?: () => TreeNodeBadges
 }
 
 // `address` lets a structural row show an item's detail (a tool's
@@ -612,7 +618,7 @@ function branch(memo: Memo, args: BranchArgs, address?: Address): Lazy {
     ...(args.owner === undefined ? {} : { owner: args.owner }),
     actions: args.actions,
     selfReview: () => cachedSelfReview(memo, args.id, () => false),
-    partial: () => ({}),
+    partial: args.partial ?? (() => ({})),
     reviewCount: () => cachedReviewCount(memo, args.id, () => rollup(kids())),
     children: kids,
   }
@@ -1412,9 +1418,15 @@ function withAgentControls(
 // Models group, following Settings in each agent subtree and shared Defaults
 // inventory. Rows are the union down the chain (deduplicated) plus the
 // agent's upstream model, each carrying a source badge naming the level it
-// came from. Toggle activates exclusively at this level, remove deletes the
-// row at this level only; no edit, split, or pin. Active marks the resolved
-// winner down the chain (or upstream when nothing is active).
+// came from. Toggle activates exclusively at this level, remove hides or
+// deletes the row at this level only; edit replaces it; no split or pin.
+// Active marks the agent's effective model: the runtime chain's winner (a
+// native built-in's Defaults row runs at Project), which may sit at another
+// level than the row's own — then the badge reads `active (<level>)` and the
+// inspector from fact says inherited. When that winner is not one of this
+// level's rows, nothing is marked active and both the group and its rows carry
+// `effective`, so a level never claims a model that is not the one in force
+// and the row under the cursor still names the model in force.
 function lazyModels(
   ctx: BuildContext,
   memo: Memo,
@@ -1428,38 +1440,113 @@ function lazyModels(
   ownerPath?: string,
 ): Lazy {
   const prefix = groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:models`
-  return branch(memo, {
-    kind: "group",
-    id: prefix,
-    label: "Models",
-    depth,
-    add: "model",
-    actions: noActions(),
-    children: () =>
-      cachedKids(memo, prefix, () => {
-        const upstream = upstreamForModels(ctx, level, owner, agent)
-        const scope = {
-          models: ctx.models,
-          scopes: ctx.scopes,
-          level,
-          agent: owner,
-          ...teamFields(teamRef),
-          ...(catalogue === undefined ? {} : { catalogue }),
-          ...(upstream === undefined ? {} : { upstream }),
-        }
-        const candidates = modelCandidates(scope)
-        const active = resolveActiveModel(scope)
-        return candidates
-          .toSorted((left, right) => {
-            const leftId = modelItemId(left)
-            const rightId = modelItemId(right)
-            if (leftId < rightId) return -1
-            if (leftId > rightId) return 1
-            return 0
-          })
-          .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, active, depth + 1, teamRef, catalogue, ownerPath))
-      }) as readonly Lazy[],
+  return branch(
+    memo,
+    {
+      kind: "group",
+      id: prefix,
+      label: "Models",
+      depth,
+      add: "model",
+      actions: noActions(),
+      partial: () => {
+        const effective = effectiveUnlisted(memo, prefix, ctx, level, owner, agent, teamRef, catalogue)
+        return effective === undefined ? {} : { effective }
+      },
+      children: () =>
+        cachedKids(memo, prefix, () => {
+          const state = cachedModelsState(memo, prefix, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue))
+          const effective = effectiveUnlisted(memo, prefix, ctx, level, owner, agent, teamRef, catalogue)
+          return state.candidates
+            .toSorted((left, right) => {
+              const leftId = modelItemId(left)
+              const rightId = modelItemId(right)
+              if (leftId < rightId) return -1
+              if (leftId > rightId) return 1
+              return 0
+            })
+            .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, state.active, depth + 1, teamRef, catalogue, ownerPath, effective))
+        }) as readonly Lazy[],
+    },
+  )
+}
+
+// The group's and its rows' effective note: present only when the agent's
+// effective model is not one of this level's listed candidates.
+function effectiveUnlisted(
+  memo: Memo,
+  prefix: string,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): string | undefined {
+  const state = cachedModelsState(memo, prefix, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue))
+  if (state.active === undefined) return undefined
+  if (state.candidates.some((candidate) => sameModelCandidate(candidate, state.active!))) return undefined
+  return `${modelLabel(state.active)} · active at ${levelWord(state.active.source)}`
+}
+
+interface ModelsState {
+  readonly candidates: ReturnType<typeof modelCandidates>
+  /** The agent's effective model on its runtime chain, whether or not this level lists it. */
+  readonly active: ReturnType<typeof resolveActiveModel>
+}
+
+const modelsStateCache = new WeakMap<Memo, Map<string, ModelsState>>()
+
+function cachedModelsState(memo: Memo, prefix: string, build: () => ModelsState): ModelsState {
+  let cache = modelsStateCache.get(memo)
+  if (cache === undefined) {
+    cache = new Map()
+    modelsStateCache.set(memo, cache)
+  }
+  const cached = cache.get(prefix)
+  if (cached !== undefined) return cached
+  const state = build()
+  cache.set(prefix, state)
+  return state
+}
+
+function lazyModelsState(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): ModelsState {
+  const upstream = upstreamForModels(ctx, level, owner, agent)
+  const view = {
+    models: ctx.models,
+    scopes: ctx.scopes,
+    level,
+    agent: owner,
+    ...teamFields(teamRef),
+    ...(catalogue === undefined ? {} : { catalogue }),
+    ...(upstream === undefined ? {} : { upstream }),
+  }
+  const runtime = modelRuntimeScope({
+    scopes: ctx.scopes,
+    level,
+    owner,
+    ...(agent?.scope === undefined ? {} : { agentScope: agent.scope }),
+    ...(teamFields(teamRef).team === undefined ? {} : { team: teamFields(teamRef).team! }),
   })
+  return {
+    candidates: modelCandidates(view),
+    active: resolveActiveModel({ ...view, level: runtime.level, scopes: runtime.scopes }),
+  }
+}
+
+function levelWord(level: Level | "upstream"): string {
+  if (level === "defaults") return "defaults"
+  if (level === "global") return "global"
+  if (level === "preset") return "preset"
+  if (level === "project") return "project"
+  return "upstream"
 }
 
 function upstreamForModels(
@@ -1481,11 +1568,12 @@ function lazyModelItem(
   level: Level,
   owner: string | null,
   candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
-  active: { providerID: string; modelID: string; variant?: string; review?: true } | undefined,
+  active: { providerID: string; modelID: string; variant?: string; source?: Level | "upstream"; review?: true } | undefined,
   depth: number,
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
+  effective?: string,
 ): Lazy {
   const itemId = modelItemId(candidate)
   const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
@@ -1494,7 +1582,6 @@ function lazyModelItem(
   // The row's own node: a member row's is per-agent (teamFields → memberOf).
   const own = teamFields(teamRef).team
   const scope = { level, agent: owner, ...(own !== undefined ? { team: own } : {}), ...(catalogue === undefined ? {} : { catalogue }) }
-  const hasLocal = hasModelRecordAt(ctx.models, scope, target)
   const canResetHere = hasModelActiveAt(ctx.models, scope)
   void memo
   void parseModelItemId
@@ -1509,13 +1596,17 @@ function lazyModelItem(
       toggle: true,
       edit: false,
       reset: canResetHere,
-      remove: hasLocal,
+      // Any model row is removable: a local record is deleted, an inherited or
+      // upstream row is hidden at this level with a tombstone, and the row
+      // that is currently effective refuses with its own message.
+      remove: true,
       split: false,
       pin: false,
     },
     // §3.6: the row's own active model, recorded against an active model
-    // above that has since changed.
-    selfReview: () => isActive && active?.review === true,
+    // above that has since changed. Only when the active record is at the
+    // row's own level: a review belongs to the level that chose the model.
+    selfReview: () => isActive && active?.review === true && active.source === level,
     partial: () => {
       const warming = resolveModelWarming(
         { models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) },
@@ -1523,6 +1614,8 @@ function lazyModelItem(
       )
       return {
         ...(isActive ? { active: true as const } : {}),
+        ...(isActive && active?.source !== undefined && active.source !== "upstream" && active.source !== level ? { activeFrom: active.source } : {}),
+        ...(!isActive && effective !== undefined ? { effective } : {}),
         source: candidate.source,
         from: candidate.from,
         fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level, ...ownOption(ctx, level, owner, teamRef) }),

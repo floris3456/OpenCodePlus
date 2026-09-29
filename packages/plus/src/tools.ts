@@ -13,11 +13,13 @@ import {
   createdMemberRow,
   createdPresetRow,
   createdTeamRow,
+  editModelRow,
   editRefusalForLabel,
   findRow,
   isModelRowId,
   isPermRowId,
   removalPlan,
+  removeModelRow,
   reset,
   resetModelRow,
   resolveRefusalForLabel,
@@ -33,6 +35,7 @@ import {
   toggle,
   unknownRowRefusal,
   type CreatedRow,
+  type ModelEditFields,
   type OpFailure,
   type RemovalPlan,
 } from "./instructions/ops.js"
@@ -87,7 +90,7 @@ const SetDescription =
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
-  "On a model row warming sets cache warming for that agent on that model at that level (TUI w): off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty inherits."
+  "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -114,7 +117,7 @@ const CreateDescription =
 
 const DeleteDescription =
   "Delete a user-owned row (agent, team, member, file, Defaults entry, user preset); refuses without `confirm`.\n" +
-  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A preset anything links to is refused (preset.inUse lists who); links only other projects hold are overridden with force:true (they then show as a missing preset)."
+  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A model row deletes its local candidate or hides an inherited/upstream one at this level; the row that is the effective model refuses (activate another model first). A preset anything links to is refused (preset.inUse lists who); links only other projects hold are overridden with force:true (they then show as a missing preset)."
 
 const LogDescription =
   "Change history (who/what/when).\n" +
@@ -536,6 +539,7 @@ function toSnapshotRecords(
         ...(record.active === undefined ? {} : { active: record.active }),
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         ...(record.warming === undefined ? {} : { warming: record.warming }),
+        ...(record.removed === undefined ? {} : { removed: record.removed }),
         updated: record.updated,
       }),
     ),
@@ -796,6 +800,24 @@ function mutateModelsWithRetry(
   })
 }
 
+// A model row's text replaces the candidate: "provider/model" or
+// "provider/model#variant" (the form the compaction model and the README use).
+// variant and warming may also come as their own fields.
+function parseModelText(text: string): { providerID: string; modelID: string; variant?: string } | undefined {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return undefined
+  const hash = trimmed.indexOf("#")
+  const ref = hash === -1 ? trimmed : trimmed.slice(0, hash)
+  const variant = hash === -1 ? undefined : trimmed.slice(hash + 1).trim()
+  const slash = ref.indexOf("/")
+  if (slash === -1) return undefined
+  const providerID = ref.slice(0, slash).trim()
+  const modelID = ref.slice(slash + 1).trim()
+  if (providerID.length === 0 || modelID.length === 0) return undefined
+  if (hash !== -1 && (variant === undefined || variant.length === 0)) return undefined
+  return { providerID, modelID, ...(variant === undefined ? {} : { variant }) }
+}
+
 function setModel(
   api: PlusApi,
   snapshot: Plus.Snapshot,
@@ -808,7 +830,7 @@ function setModel(
     const node = findRow(memo, id)
     const label = node?.label ?? id
     // Cache warming for this agent on this model at this level; "" inherits.
-    if (input.warming !== undefined) {
+    if (input.warming !== undefined && input.text === undefined) {
       const warming = input.warming
       const op = setModelWarmingRow(memo, id, warming)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
@@ -819,6 +841,23 @@ function setModel(
       })
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
     }
+    // A model row's text replaces the candidate (and may set warming in the
+    // same save), the tool-side equivalent of the TUI's enter edit dialog.
+    if (input.text !== undefined) {
+      const parsed = parseModelText(input.text)
+      if (parsed === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes provider/model or provider/model#variant (got "${input.text}")` }))
+      const fields: ModelEditFields = { ...parsed, ...(input.warming === undefined ? {} : { warming: input.warming }) }
+      const op = editModelRow(memo, id, fields)
+      if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+      const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
+        const retry = editModelRow(memoFromSnapshot(fresh), id, fields)
+        if ("refusal" in retry) return retry
+        return { models: retry.models, status: retry.status }
+      })
+      return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+    }
+    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     // A limit row's text is its number: `set({ id, text: "8" })` changes the
     // cap; every other perm row keeps its text in its rule.
     if (input.text !== undefined) {
@@ -916,22 +955,17 @@ function deleteModelRow(
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const address = findRow(memo, id)?.address
-    if (address === undefined) return yield* Effect.fail(unknownError(id))
-    const parsed = parseModelItemId(address.item)
-    if (parsed === undefined) return yield* Effect.fail(unknownError(id))
-    const result = yield* Effect.promise(() =>
-      api.removeModel({
-        level: address.level,
-        agent: address.agent,
-        providerID: parsed.providerID,
-        modelID: parsed.modelID,
-        ...(parsed.variant === undefined ? {} : { variant: parsed.variant }),
-        actor,
-      }),
-    )
-    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
-    return { output: { ...result.value, status: `Removed "${id}"` } }
+    // Same content as the TUI's `d`: a live local record is deleted, an
+    // inherited or upstream row is hidden at this level with a tombstone, and
+    // the currently effective model refuses with its own message.
+    const op = removeModelRow(memo, id)
+    if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
+      const retry = removeModelRow(memoFromSnapshot(fresh), id)
+      if ("refusal" in retry) return retry
+      return { models: retry.models, status: retry.status }
+    })
+    return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
 

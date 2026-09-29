@@ -83,14 +83,21 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   const model = modelDetail(node, snapshot)
   if (model !== undefined) {
     facts.push(["model", `${model.providerID}/${model.modelID}${model.variant === undefined ? "" : `#${model.variant}`}`])
-    facts.push(["from", `${displayLevel(model.source)}${model.active ? " · active" : ""}`])
+    const inherited =
+      model.active && model.activeFrom !== undefined && model.activeFrom !== "upstream" && model.activeFrom !== node.address?.level
+        ? model.activeFrom === model.source
+          ? " (inherited)"
+          : ` (inherited from ${displayLevel(model.activeFrom)})`
+        : ""
+    facts.push(["from", `${displayLevel(model.source)}${model.active ? " · active" : ""}${inherited}`])
     facts.push([
       "warming",
       node.badges.warming === undefined
-        ? "host configuration (w sets it here)"
+        ? "host configuration (enter edits it here)"
         : `${node.badges.warming} · set at ${displayLevel(node.badges.warmingFrom ?? "project")}`,
     ])
   }
+  if (node.badges.effective !== undefined) facts.push(["effective", node.badges.effective])
   const perm = permDetail(node, snapshot)
   if (perm !== undefined) {
     facts.push(["rule", `${perm.tool} · ${perm.rule}${perm.custom ? " · custom" : ""}`])
@@ -129,7 +136,15 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
 export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   const notes = controlDetail(node, snapshot, memo).filter((line) => !line.startsWith("Value: "))
   const detail = structureDetail(node)
-  return [...notes, ...(detail === undefined ? [] : [detail])]
+  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node)]
+}
+
+// The Models group's note: what happens when nothing is active, including the
+// hidden-upstream case (`d` on the upstream row stores a tombstone, which
+// removes the row but not the host's own fallback).
+function modelsNotes(node: TreeNode): string[] {
+  if (node.kind !== "group" || !node.id.endsWith(":models")) return []
+  return ["With no active model here, OpenCode falls back to its host configuration, removed rows included."]
 }
 
 export function Inspector(props: InspectorProps) {

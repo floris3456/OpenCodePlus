@@ -592,13 +592,28 @@ test("stable() omits unset model keys and round-trips set ones", async () => {
   const bare = model()
   expect("variant" in stable(bare)).toBe(false)
   expect("active" in stable(bare)).toBe(false)
+  expect("removed" in stable(bare)).toBe(false)
   const full = model({ variant: "high", active: true })
   expect(stable(full)).toEqual(full)
   await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [bare, rule({})] })
   const projectText = await Bun.file(projectRecordsPath(project)).text()
   expect(projectText).not.toContain(`"variant"`)
   expect(projectText).not.toContain(`"active"`)
+  expect(projectText).not.toContain(`"removed"`)
   expect((await load(project)).records).toContainEqual(bare)
+})
+
+test("a model tombstone round-trips through save then load", async () => {
+  const { project } = await isolated()
+  const tombstone = model({ removed: true })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [tombstone] })
+  const text = await Bun.file(projectRecordsPath(project)).text()
+  expect(text).toContain(`"removed":true`)
+  const loaded = await load(project)
+  expect(loaded.records).toContainEqual(tombstone)
+  // An unchanged save stays a no-op, and clearing the tombstone writes.
+  expect(await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: [tombstone] })).toMatchObject({ changed: { project: false, global: false } })
+  expect(await save(project, { expectedProjectRevision: 1, expectedGlobalRevision: 0, records: [model({ removed: true, modelID: "other" })] })).toMatchObject({ changed: { project: true, global: false } })
 })
 
 test("model and rule records sort canonically and survive a load round-trip in order", async () => {
@@ -619,6 +634,9 @@ test("snapshot record schemas accept model and rule records over the RPC boundar
   expect(
     decode({ type: "model", level: "project", agent: "alpha", providerID: "openai", modelID: "gpt-5", variant: "high", active: true, updated: UPDATED }),
   ).toMatchObject({ variant: "high", active: true })
+  expect(
+    decode({ type: "model", level: "project", agent: "alpha", providerID: "openai", modelID: "gpt-5", removed: true, updated: UPDATED }),
+  ).toMatchObject({ removed: true })
   expect(
     decode({ type: "rule", level: "project", agent: "alpha", tool: "shell", id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], updated: UPDATED }),
   ).toMatchObject({ tool: "shell", id: "git-push" })
