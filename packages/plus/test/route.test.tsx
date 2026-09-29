@@ -4021,12 +4021,14 @@ test("the Defaults view of build names the effective model instead of marking up
     if (group === undefined) throw new Error("missing Defaults Models group")
     expect(factsOf(group, snapshot, []).find((fact) => fact[0] === "effective")?.[1]).toBe("acme/chosen · active at global")
     expect(notesOf(group, snapshot).join(" ")).toContain("falls back to its host configuration")
-    // The upstream row of the same group is listed but never active.
+    // The upstream row of the same group is listed but never active; the row
+    // itself names the model in force, so the answer is one keystroke away.
     await goto(fixture, "item:defaults:build:model:acme/base", "acme/base")
     const row = selectedRow(fixture.captureCharFrame())
     expect(row).toContain("acme/base")
     expect(row).not.toContain("active")
     await fixture.waitForFrame((frame) => inspector(frame).includes(flat("from upstream")))
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("effective acme/chosen · active at global")))
   } finally {
     fixture.destroy()
   }

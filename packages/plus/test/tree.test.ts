@@ -1463,7 +1463,7 @@ test("the Defaults view of a native agent never claims the host model is active 
   const nodes = expandAll({ items: [], records, agents: buildAgents() })
   const upstream = modelRow(nodes, "defaults", "model:acme/base")
   expect(upstream?.badges.active).toBeUndefined()
-  expect(upstream?.badges.effective).toBeUndefined()
+  expect(upstream?.badges.effective).toBe("acme/chosen · active at project")
   const group = nodes.find((node) => node.id === "group:defaults:build:models")
   expect(group?.badges.effective).toBe("acme/chosen · active at project")
   // The Project view is the same answer with the row listed.

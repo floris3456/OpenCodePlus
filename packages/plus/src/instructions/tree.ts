@@ -1416,8 +1416,9 @@ function withAgentControls(
 // native built-in's Defaults row runs at Project), which may sit at another
 // level than the row's own — then the badge reads `active (<level>)` and the
 // inspector from fact says inherited. When that winner is not one of this
-// level's rows, nothing is marked active and the group carries `effective`
-// instead, so a level never claims a model that is not the one in force.
+// level's rows, nothing is marked active and both the group and its rows carry
+// `effective`, so a level never claims a model that is not the one in force
+// and the row under the cursor still names the model in force.
 function lazyModels(
   ctx: BuildContext,
   memo: Memo,
@@ -1441,13 +1442,13 @@ function lazyModels(
       add: "model",
       actions: noActions(),
       partial: () => {
-        const state = cachedModelsState(memo, prefix, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue))
-        const listed = state.active === undefined || state.candidates.some((candidate) => sameModelCandidate(candidate, state.active!))
-        return listed || state.active === undefined ? {} : { effective: `${modelLabel(state.active)} · active at ${levelWord(state.active.source)}` }
+        const effective = effectiveUnlisted(memo, prefix, ctx, level, owner, agent, teamRef, catalogue)
+        return effective === undefined ? {} : { effective }
       },
       children: () =>
         cachedKids(memo, prefix, () => {
           const state = cachedModelsState(memo, prefix, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue))
+          const effective = effectiveUnlisted(memo, prefix, ctx, level, owner, agent, teamRef, catalogue)
           return state.candidates
             .toSorted((left, right) => {
               const leftId = modelItemId(left)
@@ -1456,10 +1457,28 @@ function lazyModels(
               if (leftId > rightId) return 1
               return 0
             })
-            .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, state.active, depth + 1, teamRef, catalogue, ownerPath))
+            .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, state.active, depth + 1, teamRef, catalogue, ownerPath, effective))
         }) as readonly Lazy[],
     },
   )
+}
+
+// The group's and its rows' effective note: present only when the agent's
+// effective model is not one of this level's listed candidates.
+function effectiveUnlisted(
+  memo: Memo,
+  prefix: string,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): string | undefined {
+  const state = cachedModelsState(memo, prefix, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue))
+  if (state.active === undefined) return undefined
+  if (state.candidates.some((candidate) => sameModelCandidate(candidate, state.active!))) return undefined
+  return `${modelLabel(state.active)} · active at ${levelWord(state.active.source)}`
 }
 
 interface ModelsState {
@@ -1546,6 +1565,7 @@ function lazyModelItem(
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
+  effective?: string,
 ): Lazy {
   const itemId = modelItemId(candidate)
   const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
@@ -1587,6 +1607,7 @@ function lazyModelItem(
       return {
         ...(isActive ? { active: true as const } : {}),
         ...(isActive && active?.source !== undefined && active.source !== "upstream" && active.source !== level ? { activeFrom: active.source } : {}),
+        ...(!isActive && effective !== undefined ? { effective } : {}),
         source: candidate.source,
         from: candidate.from,
         fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level }),

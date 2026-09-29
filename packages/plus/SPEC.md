@@ -416,8 +416,8 @@ agent's effective model, which resolves on the agent's *runtime* chain
 at Project), so at Project a Global choice reads `active (global)` with
 `badges.activeFrom` naming the level, and the inspector's `from` fact adds
 `(inherited)`. When the effective model is not one of this level's rows the
-group carries `badges.effective` (`<model> · active at <level>`) and no row
-reads active. Toggle activates exclusively at this level (creating the local
+group carries `badges.effective` (`<model> · active at <level>`, on its rows
+too) and no row reads active. Toggle activates exclusively at this level (creating the local
 row when the candidate is inherited); `d` deletes a live local record or
 hides an inherited/upstream row with a tombstone; the effective row refuses;
 enter (`editModelRow`) replaces the candidate and sets its warming; no split
