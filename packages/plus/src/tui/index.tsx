@@ -50,10 +50,10 @@ export default Plugin.define({
             },
             {
               id: "plus.monitor.open",
-              title: "Monitor: tools and tokens",
+              title: "Tools: calls and tokens",
               group: "Session",
               palette: true,
-              slash: { name: "monitor" },
+              slash: { name: "tools" },
               run: () => monitor.open(),
             },
             {

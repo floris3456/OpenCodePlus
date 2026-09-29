@@ -1,10 +1,10 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import { MonitorView } from "./view.js"
+import { MonitorView, TOOLS_BODY_ROWS } from "./view.js"
 
-// The monitor in the TUI: a Monitor tab in the session composer (next to
-// Subagents, Shell and Team) for the chat at hand, and a full-screen
-// /monitor route for history, grouping and comparisons.
+// The monitor in the TUI: a Tools tab in the session composer (next to
+// Subagents, Shell and Team) for the chat at hand, and a full-screen view
+// (the /tools command) for history, grouping and comparisons.
 export function createMonitor(context: Plugin.Context) {
   const [previous, setPrevious] = createSignal<ReturnType<Plugin.Context["ui"]["router"]["current"]>>({
     ...context.ui.router.current(),
@@ -39,7 +39,8 @@ export function createMonitor(context: Plugin.Context) {
   const disposeTab =
     context.ui.composer?.tab({
       id: "monitor",
-      label: "Monitor",
+      label: "Tools",
+      height: TOOLS_BODY_ROWS,
       hints: () => [
         { label: "group", shortcut: "g" },
         { label: "scope", shortcut: "s" },

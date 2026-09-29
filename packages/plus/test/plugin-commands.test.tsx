@@ -112,3 +112,22 @@ test("<leader>p opens Instructions and no plus.project command exists", async ()
     await cleanup?.()
   }
 })
+
+test("the tools command is exposed as the lowercase slash command /tools", async () => {
+  const harness = createHarness()
+  const cleanup = await plusPlugin.setup(harness.context)
+  harness.mountSlot()
+  try {
+    const commands = harness.commands()
+    const open = commands.find((command) => command.id === "plus.monitor.open")
+    expect(open).toBeDefined()
+    // Slash names are lowercase and matched exactly, so it is typed and shown as /tools.
+    expect(open?.slash?.name).toBe("tools")
+    expect(open?.title).toBe("Tools: calls and tokens")
+    expect(open?.palette).toBe(true)
+    // The command id stays stable so existing configs keep binding it.
+    expect(commands.filter((command) => command.id === "plus.monitor.open")).toHaveLength(1)
+  } finally {
+    await cleanup?.()
+  }
+})

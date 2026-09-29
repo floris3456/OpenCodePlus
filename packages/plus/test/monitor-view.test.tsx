@@ -11,12 +11,12 @@ import {
   type MonitorSettings,
 } from "../src/tui/monitor/format.js"
 import {
-  COMPOSER_BODY_ROWS,
   groupMountLog,
   MonitorView,
   refreshInterval,
   resetGroupMountLog,
   stopGroupMountLog,
+  TOOLS_BODY_ROWS,
 } from "../src/tui/monitor/view.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 import { dispatch, sleep } from "./instructions-nav.js"
@@ -52,6 +52,25 @@ async function seeded(): Promise<Ledger> {
   child.fail("k1", "c4", "old string not found")
   child.end("k1", "stop", usage(500, 40))
   ;[...chat.events, ...child.events].forEach((event) => collector.observe(event))
+  return db
+}
+
+// A chat that used more distinct tools than the taller composer body shows, so
+// the group table has to scroll to keep the selected row visible.
+async function manyTools(): Promise<Ledger> {
+  const db = await ledger()
+  const clock = { now: NOW - 60_000 }
+  const collector = collect(db, clock)
+  const chat = script("ses_chat", clock)
+  chat.created({ agent: "build", title: "Many tools" })
+  chat.step("m1")
+  const names = ["read", "shell", "grep", "edit", "glob", "list", "webfetch", "task", "write"]
+  names.forEach((name, index) => chat.call("m1", `c${index}`, name, { path: `/work/project/${name}` }))
+  chat.at(1_000)
+  // Growing result sizes keep the token order deterministic.
+  names.forEach((_, index) => chat.ok("m1", `c${index}`, "z".repeat(1_000 * (index + 1))))
+  chat.end("m1", "stop", usage(1_000, 200, 9_000))
+  chat.events.forEach((event) => collector.observe(event))
   return db
 }
 
@@ -120,7 +139,7 @@ function markerRow(frame: string): number {
   return frame.split("\n").findIndex((line) => line.trim() === "body-end")
 }
 
-const GROUP_LABELS = ["read", "shell", "grep", "edit"]
+const GROUP_LABELS = ["read", "shell", "grep", "edit", "glob", "list", "webfetch", "task", "write"]
 
 /** The group rows drawn above the marker, in frame order. */
 function groupRows(frame: string): string[] {
@@ -258,33 +277,53 @@ test("in the composer, up on the first row leaves the tab and the view fits a na
   }
 })
 
-test("the composer monitor takes the fixed body height in the table and Loading states", async () => {
+test("the composer Tools tab takes the taller body in the table and Loading states", async () => {
   const db = await seeded()
 
-  // The pending query shows Loading… in the same five rows the table takes.
-  const loading = await render(db, { full: false, width: 72, height: 20, marker: true, hold: true })
+  // The pending query shows Loading… in the same taller body the table takes.
+  const loading = await render(db, { full: false, width: 72, height: 30, marker: true, hold: true })
   try {
     const frame = await loading.fixture.waitForFrame((text) => text.includes("Loading…"))
-    expect(markerRow(frame)).toBe(COMPOSER_BODY_ROWS)
+    expect(markerRow(frame)).toBe(TOOLS_BODY_ROWS)
   } finally {
     loading.fixture.destroy()
   }
 
-  const { fixture } = await render(db, { full: false, width: 72, height: 20, marker: true })
+  const { fixture } = await render(db, { full: false, width: 72, height: 30, marker: true })
   try {
     const frame = await fixture.waitForFrame((text) =>
       text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())),
     )
-    expect(markerRow(frame)).toBe(COMPOSER_BODY_ROWS)
-    expect(groupRows(frame)).toEqual(["read", "shell"])
+    expect(markerRow(frame)).toBe(TOOLS_BODY_ROWS)
+    // The taller body fits every seeded group without scrolling.
+    expect(groupRows(frame)).toEqual(["read", "shell", "grep", "edit"])
     // The composer keeps only the filters, the totals and the table.
     expect(frame).not.toContain("tools: ")
     expect(frame).not.toContain("latest calls")
+    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(72))
+  } finally {
+    fixture.destroy()
+  }
+})
 
-    // Two rows fit; moving past them scrolls the selection into view.
-    for (let step = 0; step < 3; step++) dispatch(fixture, "down")
-    const moved = await fixture.waitForFrame((text) => groupRows(text).includes("edit"))
-    expect(groupRows(moved)).toEqual(["grep", "edit"])
+test("the composer Tools tab scrolls the selection through groups past the fold", async () => {
+  const db = await manyTools()
+  const rows = TOOLS_BODY_ROWS - 3
+  const ordered = queryMonitor(
+    db,
+    { scope: "session", sessionID: "ses_chat", group: "tool", sort: "tokens", top: 20, feed: 0 },
+    { directory: "/work/project", now: NOW },
+  ).groups.map((group) => group.key)
+  expect(ordered.length).toBeGreaterThan(rows)
+
+  const { fixture } = await render(db, { full: false, width: 72, height: 30, marker: true })
+  try {
+    const first = await fixture.waitForFrame((text) => groupRows(text).length > 0)
+    expect(groupRows(first)).toEqual(ordered.slice(0, rows))
+    // Move the selection to the last group; the scrollbox follows it.
+    for (let step = 0; step < ordered.length - 1; step++) dispatch(fixture, "down")
+    const moved = await fixture.waitForFrame((text) => groupRows(text).at(-1) === ordered.at(-1))
+    expect(groupRows(moved)).toEqual(ordered.slice(ordered.length - rows))
     moved.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(72))
   } finally {
     fixture.destroy()

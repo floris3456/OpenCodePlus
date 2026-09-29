@@ -487,11 +487,11 @@ Core can keep a chat's provider prompt cache warm with keep-alive requests after
 
 Without either, the host `warming` configuration applies unchanged. Keep-alive requests are real provider requests and cost tokens.
 
-## Monitor
+## Tools
 
 What tools each agent uses and what they cost in tokens, live and kept for later comparison.
 
-- **Where**: a `Monitor` tab in the session composer, next to Subagents, Shell, Terminals and Team (open the composer, `←`/`→` to the tab), scoped to the chat and every session it delegated to; and a full-screen `/monitor` (palette: "Monitor: tools and tokens", or `M` in the tab) for history, grouping and comparisons.
+- **Where**: a `Tools` tab in the session composer, next to Subagents, Shell, Terminals and Team (open the composer, `←`/`→` to the tab; it is taller than the native tabs, so selecting it grows the composer), scoped to the chat and every session it delegated to; and a full-screen `/tools` (palette: "Tools: calls and tokens", or `M` in the tab) for history, grouping and comparisons.
 - **What it shows**: totals (steps, calls, failures, running, input/cache/output tokens, cost when the provider reports it), the top groups and the latest calls with what each touched (a shell command's program and subcommand, a file path, a pattern, a host; never contents or full commands).
 - **Tokens per call** are attributed, because providers bill per step (one LLM call), never per tool:
   - `call` — the step's visible output tokens, split across its text and each call's input by size.

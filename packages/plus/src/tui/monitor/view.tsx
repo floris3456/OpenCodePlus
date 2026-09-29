@@ -29,18 +29,26 @@ import {
 
 // The monitor view: totals, the top groups and the latest calls for the
 // chosen scope, window and filters, refreshed every second while visible.
-// The composer tab shows it compact; the /monitor route shows it full screen.
+// The Tools tab shows it in a taller composer body; the /tools command's
+// full-screen route shows it across the terminal.
 
 /**
- * The composer tab body is five rows: the filters, the totals, the group
- * table's column header and the two group rows visible under them. The view
- * lays out exactly this in composer mode whatever the report state, so a tab
- * switch never moves the composer.
+ * The Tools tab's composer body is taller than the native tabs' five rows so
+ * the group table has room to breathe. The host reserves exactly this many
+ * rows for the tab (registered as its body height), and the view lays out the
+ * same number whatever the report state, so selecting the tab resizes in one
+ * step and stays put.
  */
-export const COMPOSER_BODY_ROWS = 5
+export const TOOLS_BODY_ROWS = 10
 
 /** The group rows that fit under the filters, the totals and the column header. */
-const COMPOSER_GROUP_ROWS = COMPOSER_BODY_ROWS - 3
+const COMPOSER_GROUP_ROWS = TOOLS_BODY_ROWS - 3
+
+/**
+ * A few more group rows are fetched than the body shows, so scrolling can
+ * reveal rows past the fold the way it did at the native height.
+ */
+const COMPOSER_GROUP_FETCH = COMPOSER_GROUP_ROWS + 4
 
 /**
  * Test observability for the group rows (not read in production): one entry
@@ -117,7 +125,8 @@ export function MonitorView(props: MonitorViewProps) {
     feed: readonly Plus.MonitorCall[]
   }>({ groups: [], feed: [] })
   let scroll: ScrollBoxRenderable | undefined
-  const top = () => (props.full ? Math.max(5, Math.floor((dimensions().height - 12) * 0.55)) : 6)
+  const top = () =>
+    props.full ? Math.max(5, Math.floor((dimensions().height - 12) * 0.55)) : COMPOSER_GROUP_FETCH
   const feed = () => (props.full ? Math.max(3, dimensions().height - 12 - top()) : 0)
 
   const location = () => {
@@ -289,7 +298,7 @@ export function MonitorView(props: MonitorViewProps) {
       {
         bind: "up,k",
         title: "Previous row",
-        group: "Monitor",
+        group: "Tools",
         run: () => {
           if (selected() === 0 && !props.full) return props.onClose()
           setSelected((index) => Math.max(0, index - 1))
@@ -298,55 +307,55 @@ export function MonitorView(props: MonitorViewProps) {
       {
         bind: "down,j",
         title: "Next row",
-        group: "Monitor",
+        group: "Tools",
         run: () => setSelected((index) => Math.min(Math.max(0, groups().length - 1), index + 1)),
       },
-      { bind: "return", title: "Drill into the row", group: "Monitor", run: drill },
-      { bind: "backspace", title: "Back out of a drill-down", group: "Monitor", run: back },
-      ...(props.full ? [{ bind: "escape", title: "Back", group: "Monitor", run: back }] : []),
+      { bind: "return", title: "Drill into the row", group: "Tools", run: drill },
+      { bind: "backspace", title: "Back out of a drill-down", group: "Tools", run: back },
+      ...(props.full ? [{ bind: "escape", title: "Back", group: "Tools", run: back }] : []),
       {
         bind: "g",
         title: "Group by",
-        group: "Monitor",
+        group: "Tools",
         run: () => change({ ...settings(), group: cycle(GROUPS, settings().group) }),
       },
       {
         bind: "s",
         title: "Scope",
-        group: "Monitor",
+        group: "Tools",
         run: () => change({ ...settings(), scope: cycle(SCOPES, settings().scope) }),
       },
       {
         bind: "t",
         title: "Time window",
-        group: "Monitor",
+        group: "Tools",
         run: () => change({ ...settings(), window: cycle(WINDOWS, settings().window) }),
       },
       {
         bind: "o",
         title: "Order by",
-        group: "Monitor",
+        group: "Tools",
         run: () => change({ ...settings(), sort: cycle(SORTS, settings().sort) }),
       },
       {
         bind: "c",
         title: "Compare",
-        group: "Monitor",
+        group: "Tools",
         run: () => change({ ...settings(), compare: cycle(COMPARES, settings().compare) }),
       },
       {
         bind: "x",
         title: "Failed calls only",
-        group: "Monitor",
+        group: "Tools",
         run: () => change({ ...settings(), errors: !settings().errors }),
       },
-      { bind: "a", title: "Filter by agent", group: "Monitor", run: () => void pick("agent") },
-      { bind: "f", title: "Filter by tool", group: "Monitor", run: () => void pick("tool") },
-      { bind: "shift+f", title: "Filter by model", group: "Monitor", run: () => void pick("model") },
-      { bind: "m", title: "Mark this moment", group: "Monitor", run: () => void mark() },
+      { bind: "a", title: "Filter by agent", group: "Tools", run: () => void pick("agent") },
+      { bind: "f", title: "Filter by tool", group: "Tools", run: () => void pick("tool") },
+      { bind: "shift+f", title: "Filter by model", group: "Tools", run: () => void pick("model") },
+      { bind: "m", title: "Mark this moment", group: "Tools", run: () => void mark() },
       ...(props.onOpenFull === undefined
         ? []
-        : [{ bind: "shift+m", title: "Open the full monitor", group: "Monitor", run: () => props.onOpenFull?.() }]),
+        : [{ bind: "shift+m", title: "Open the full tools view", group: "Tools", run: () => props.onOpenFull?.() }]),
     ],
   }))
 
@@ -445,7 +454,7 @@ export function MonitorView(props: MonitorViewProps) {
     <box
       flexDirection="column"
       flexGrow={props.full ? 1 : 0}
-      height={props.full ? undefined : COMPOSER_BODY_ROWS}
+      height={props.full ? undefined : TOOLS_BODY_ROWS}
       paddingLeft={1}
       paddingRight={1}
       minWidth={0}
@@ -453,7 +462,7 @@ export function MonitorView(props: MonitorViewProps) {
       <Show when={props.full}>
         <box flexDirection="row" flexShrink={0}>
           <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
-            Monitor
+            Tools
           </text>
           <text fg={theme().text.muted}>tools and tokens, live</text>
         </box>
@@ -462,7 +471,7 @@ export function MonitorView(props: MonitorViewProps) {
         {filters()}
       </text>
       <Show when={failure()}>
-        {(message) => <text fg={theme().text.feedback.error.base}>{`monitor unavailable: ${message()}`}</text>}
+        {(message) => <text fg={theme().text.feedback.error.base}>{`tools unavailable: ${message()}`}</text>}
       </Show>
       <Show when={report()} fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading…" : ""}</text>}>
         {(current) => (

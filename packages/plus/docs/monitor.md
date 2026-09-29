@@ -1,7 +1,7 @@
 # Monitor — design and evidence
 
 What tools each agent uses and what they cost, live, with a durable log for
-later comparison. User-facing behaviour is in the README (`## Monitor`); this
+later comparison. User-facing behaviour is in the README (`## Tools`); this
 file records why it is built this way and what was measured.
 
 ## Data source
