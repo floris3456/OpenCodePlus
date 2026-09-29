@@ -6,6 +6,7 @@ import { InstructionsRoute } from "./instructions/route.js"
 import { createActiveTeam } from "./active-team.js"
 import { createSnapshotCache } from "./snapshot-cache.js"
 import { createWarming } from "./warming.js"
+import { createMonitor } from "./monitor/index.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -19,6 +20,7 @@ export default Plugin.define({
     const agents = createAgentActions(context, snapshots)
     const activeTeam = createActiveTeam(context)
     const warming = createWarming(context)
+    const monitor = createMonitor(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
@@ -45,6 +47,14 @@ export default Plugin.define({
                 context.ui.dialog.clear()
                 context.ui.router.navigate({ type: "plugin", name: "instructions" })
               },
+            },
+            {
+              id: "plus.monitor.open",
+              title: "Monitor: tools and tokens",
+              group: "Session",
+              palette: true,
+              slash: { name: "monitor" },
+              run: () => monitor.open(),
             },
             {
               id: "plus.warming.toggle",
@@ -105,6 +115,7 @@ export default Plugin.define({
       disposeSlot()
       disposeFooter()
       warming.dispose()
+      monitor.dispose()
       agents.dispose()
       activeTeam.dispose()
       snapshots.dispose()

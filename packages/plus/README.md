@@ -481,11 +481,27 @@ Only what is provably impossible, with what was tried:
 
 Core can keep a chat's provider prompt cache warm with keep-alive requests after each reply (the `warming` configuration). Plus decides it per chat:
 
-- **Per agent and model, per level**: in Instructions → an agent → Models, press `w` on a model row and enter `off`, `on`, or a total time such as `45m`, `2h` or `1h30m` (1m to 24h); blank inherits. The value is stored at the level you are on, so a project can keep one agent warm for 3h on a model while another agent on the same model gets 20m, and another project keeps the global value. The row shows `warm 2h`.
+- **Per agent and model, per level**: in Instructions → an agent → Models, press enter on a model row and set its warming to `off`, `on`, or a total time such as `45m`, `2h` or `1h30m` (1m to 24h); blank inherits. The value is stored at the level you are on, so a project can keep one agent warm for 3h on a model while another agent on the same model gets 20m, and another project keeps the global value. The row shows `warm 2h`.
 - **Per chat**: `ctrl+x k` switches warming on or off for the current chat, overriding the model row; the switch survives restarts.
 - **Countdown**: under the prompt, `cache warm · 23:41 left` counts down to when warming stops (the total time after the latest reply).
 
 Without either, the host `warming` configuration applies unchanged. Keep-alive requests are real provider requests and cost tokens.
+
+## Monitor
+
+What tools each agent uses and what they cost in tokens, live and kept for later comparison.
+
+- **Where**: a `Monitor` tab in the session composer, next to Subagents, Shell, Terminals and Team (open the composer, `←`/`→` to the tab), scoped to the chat and every session it delegated to; and a full-screen `/monitor` (palette: "Monitor: tools and tokens", or `M` in the tab) for history, grouping and comparisons.
+- **What it shows**: totals (steps, calls, failures, running, input/cache/output tokens, cost when the provider reports it), the top groups and the latest calls with what each touched (a shell command's program and subcommand, a file path, a pattern, a host; never contents or full commands).
+- **Tokens per call** are attributed, because providers bill per step (one LLM call), never per tool:
+  - `call` — the step's visible output tokens, split across its text and each call's input by size.
+  - `result` — what the result added to the next prompt: the next step's prompt growth minus this step's own output, split across its results by size. When no clean next step exists (a user message, compaction or instruction update in between, or the last step) it is estimated at 2.5 characters per token and marked `~`; on this workspace's real sessions 96 % of results are measured.
+  - `carried` — the result re-read by every later step until the next compaction. This is where most tokens go: a large `read` result is paid for again on every step after it.
+  - `+n` counts Code Mode calls made inside an `execute` call (their tokens belong to the execute call); `*` marks a call still running.
+- **Keys**: `g` group by tool / agent / model / target / session / config (the project and global instruction revisions in force), `s` scope (this chat + delegated / this project / everywhere), `t` window (all, 15m, 1h, 24h, 7d, 30d), `o` order, `a` / `f` / `F` filter by agent / tool / model, `x` failed calls only, `c` compare (off / previous window / before and after the latest mark), `m` mark this moment, `↑↓` + `⏎` drill into a row (a tool into its targets, an agent or model into its tools, a session into its own tree), `⌫` back. Settings persist; drill-downs do not.
+- **Tools**: `monitor.query` (scope defaults to the calling chat; `window: "24h"`, filters, `group`, `compare: { window }` for the previous period) and `monitor.mark`, in Code Mode.
+- **Storage**: `monitor.db` (SQLite) next to the teams data in the XDG data directory, shared by every directory's Plus instance. It keeps facts only — steps with token usage, calls with sizes, attributed tokens and targets, session parent links (subagents from the host, team runs from the run records), compaction epochs, marks — plus an hourly rollup kept by triggers so wide windows stay fast. Rows older than 90 days are dropped at startup. It records from the moment this release runs; earlier sessions are not imported.
+- **Limits**: title-generation usage is not a step and is not counted; a result's tokens are measured against the next prompt of the same session, so parallel results of one step share that growth by size.
 
 ## Development notes
 

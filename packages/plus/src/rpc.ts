@@ -911,6 +911,124 @@ export const WarmingChanged = Schema.Struct({
   sessionID: Schema.String,
 }).annotate({ identifier: "Plus.WarmingChanged" })
 
+// The tool and token monitor (monitor/): what a query asks and what it answers.
+export type MonitorScope = typeof MonitorScope.Type
+export const MonitorScope = Schema.Literals(["session", "project", "all"]).annotate({ identifier: "Plus.MonitorScope" })
+
+export type MonitorGroupBy = typeof MonitorGroupBy.Type
+export const MonitorGroupBy = Schema.Literals(["tool", "agent", "model", "session", "config", "target"]).annotate({
+  identifier: "Plus.MonitorGroupBy",
+})
+
+export interface MonitorWindow extends Schema.Schema.Type<typeof MonitorWindow> {}
+export const MonitorWindow = Schema.Struct({
+  since: Schema.optionalKey(Schema.Number),
+  until: Schema.optionalKey(Schema.Number),
+}).annotate({ identifier: "Plus.MonitorWindow" })
+
+export interface MonitorQueryInput extends Schema.Schema.Type<typeof MonitorQueryInput> {}
+export const MonitorQueryInput = Schema.Struct({
+  scope: MonitorScope,
+  /** Session scope: this session and every session it delegated to. */
+  sessionID: Schema.optionalKey(Schema.String),
+  since: Schema.optionalKey(Schema.Number),
+  until: Schema.optionalKey(Schema.Number),
+  agents: Schema.optionalKey(Schema.Array(Schema.String)),
+  tools: Schema.optionalKey(Schema.Array(Schema.String)),
+  models: Schema.optionalKey(Schema.Array(Schema.String)),
+  errors: Schema.optionalKey(Schema.Boolean),
+  group: Schema.optionalKey(MonitorGroupBy),
+  sort: Schema.optionalKey(Schema.Literals(["tokens", "calls", "carried", "errors", "time"])),
+  top: Schema.optionalKey(Schema.Number),
+  feed: Schema.optionalKey(Schema.Number),
+  /** A second window read with the same scope and filters, for side-by-side comparison. */
+  compare: Schema.optionalKey(MonitorWindow),
+}).annotate({ identifier: "Plus.MonitorQueryInput" })
+
+export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
+export const MonitorTotals = Schema.Struct({
+  steps: Schema.Number,
+  calls: Schema.Number,
+  errors: Schema.Number,
+  running: Schema.Number,
+  input: Schema.Number,
+  output: Schema.Number,
+  reasoning: Schema.Number,
+  cacheRead: Schema.Number,
+  cacheWrite: Schema.Number,
+  cost: Schema.Number,
+  callTokens: Schema.Number,
+  resultTokens: Schema.Number,
+  carried: Schema.Number,
+}).annotate({ identifier: "Plus.MonitorTotals" })
+
+export interface MonitorGroup extends Schema.Schema.Type<typeof MonitorGroup> {}
+export const MonitorGroup = Schema.Struct({
+  key: Schema.String,
+  label: Schema.String,
+  calls: Schema.Number,
+  /** Calls made inside Code Mode `execute`: counted, their tokens belong to the execute call. */
+  inner: Schema.Number,
+  errors: Schema.Number,
+  running: Schema.Number,
+  callTokens: Schema.Number,
+  resultTokens: Schema.Number,
+  carried: Schema.Number,
+  /** Calls whose result tokens are an estimate rather than a measurement. */
+  estimated: Schema.Number,
+  avgMs: Schema.Number,
+}).annotate({ identifier: "Plus.MonitorGroup" })
+
+export interface MonitorCall extends Schema.Schema.Type<typeof MonitorCall> {}
+export const MonitorCall = Schema.Struct({
+  sessionID: Schema.String,
+  callID: Schema.String,
+  agent: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  tool: Schema.String,
+  target: Schema.optionalKey(Schema.String),
+  status: Schema.String,
+  error: Schema.optionalKey(Schema.String),
+  started: Schema.Number,
+  ended: Schema.optionalKey(Schema.Number),
+  callTokens: Schema.Number,
+  resultTokens: Schema.Number,
+  measured: Schema.Boolean,
+  carried: Schema.Number,
+}).annotate({ identifier: "Plus.MonitorCall" })
+
+export interface MonitorMark extends Schema.Schema.Type<typeof MonitorMark> {}
+export const MonitorMark = Schema.Struct({
+  id: Schema.Number,
+  at: Schema.Number,
+  label: Schema.String,
+}).annotate({ identifier: "Plus.MonitorMark" })
+
+export interface MonitorMarkInput extends Schema.Schema.Type<typeof MonitorMarkInput> {}
+export const MonitorMarkInput = Schema.Struct({
+  label: Schema.String,
+}).annotate({ identifier: "Plus.MonitorMarkInput" })
+
+export interface MonitorReport extends Schema.Schema.Type<typeof MonitorReport> {}
+export const MonitorReport = Schema.Struct({
+  now: Schema.Number,
+  totals: MonitorTotals,
+  groups: Schema.Array(MonitorGroup),
+  feed: Schema.Array(MonitorCall),
+  compare: Schema.optionalKey(
+    Schema.Struct({
+      totals: MonitorTotals,
+      groups: Schema.Array(MonitorGroup),
+    }),
+  ),
+  facets: Schema.Struct({
+    agents: Schema.Array(Schema.String),
+    tools: Schema.Array(Schema.String),
+    models: Schema.Array(Schema.String),
+  }),
+  marks: Schema.Array(MonitorMark),
+}).annotate({ identifier: "Plus.MonitorReport" })
+
 export interface AgentExists extends Schema.Schema.Type<typeof AgentExists> {}
 export const AgentExists = Schema.Struct({
   path: Schema.String,
@@ -1359,6 +1477,10 @@ const PortableWarmingSessionInput = Schema.toStandardSchemaV1(
 const PortableWarmingSetInput = Schema.toStandardSchemaV1(WarmingSetInput.annotate({ identifier: "Plus.WarmingSetInput" }))
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
+const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
+const PortableMonitorReport = Schema.toStandardSchemaV1(MonitorReport.annotate({ identifier: "Plus.MonitorReport" }))
+const PortableMonitorMarkInput = Schema.toStandardSchemaV1(MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }))
+const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -1679,6 +1801,16 @@ export const Definition = Rpc.define({
     "warming.set": {
       input: PortableWarmingSetInput,
       output: PortableWarmingStatus,
+      errors: {},
+    },
+    "monitor.query": {
+      input: PortableMonitorQueryInput,
+      output: PortableMonitorReport,
+      errors: {},
+    },
+    "monitor.mark": {
+      input: PortableMonitorMarkInput,
+      output: PortableMonitorMark,
       errors: {},
     },
     "rule.add": {

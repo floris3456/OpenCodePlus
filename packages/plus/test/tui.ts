@@ -231,6 +231,8 @@ export interface RenderFixtureOptions {
   readonly cache?: SnapshotCache
   /** Holds every `instructions.snapshot` answer until releaseSnapshots(). */
   readonly holdSnapshots?: boolean
+  /** Extra RPC methods (monitor.query, …) answered by the test. */
+  readonly rpc?: Readonly<Record<string, (input: never) => Promise<unknown>>>
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -420,6 +422,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fail("model.add")
           return { level: input.level, agent: input.agent, providerID: input.providerID, modelID: input.modelID }
         },
+        ...options.rpc,
         events: {
           on: (name: string, handler: RpcListener) => {
             instructionsListeners.add(handler)
@@ -432,6 +435,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     },
     data: {
       location: {
+        // No location is open in the fixture: callers fall back to none.
+        default: () => undefined,
         agent: {
           list: agents,
           sync: async () => {},

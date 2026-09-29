@@ -54,6 +54,8 @@ test("every method and event is declared", () => {
     "link.set",
     "warming.status",
     "warming.set",
+    "monitor.query",
+    "monitor.mark",
   ]
 
   for (const name of expectedMethods) {

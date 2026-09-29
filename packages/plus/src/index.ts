@@ -62,6 +62,8 @@ import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
 import { warmingStore } from "./warming.js"
+import { monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
+import { registerMonitorTools } from "./monitor/tools.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
 
 export interface TeamOwnership {
@@ -139,12 +141,24 @@ export default Plugin.define({
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
       yield* watchHostEvents(ctx, state)
+      // The monitor records every step and tool call this Location sees; a
+      // ledger failure is logged and never takes the plugin down with it.
+      yield* watchMonitor(ctx, () => configIdentity(state))
       yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // One tick, one place: dead-run reconciliation (and later GC) runs here
       // and nowhere else, cancelled with the plugin scope.
       yield* startSweep(ctx, teamsDataDir())
     }),
 })
+
+// Which instructions were in force, stored on every monitor step so windows can
+// be compared across edits: the project and global store revisions, which move
+// only when someone changes a row (the publish fingerprint also moves with
+// derived run state, which would split one configuration into many).
+function configIdentity(state: PlusState): string | undefined {
+  if (state.projectRevision === undefined && state.globalRevision === undefined) return undefined
+  return `p${state.projectRevision ?? 0}·g${state.globalRevision ?? 0}`
+}
 
 export type SnapshotResult = { ok: true; value: Plus.Snapshot }
 
@@ -2981,6 +2995,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.catalogModels())
         return result.value
       }),
+    "monitor.query": (input) => Effect.sync(() => monitorQuery(ctx, input)),
+    "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
     "warming.status": (input) => Effect.promise(() => warmingStore.status(input.sessionID)),
     "warming.set": (input) =>
       Effect.gen(function* () {
@@ -4247,8 +4263,9 @@ async function installTooling(ctx: Context, state: PlusState): Promise<Registrat
   // The release namespace records intents and reads them back; it grants no
   // authority, so it installs with the rest of the tooling rather than behind one.
   const release = await registerReleaseTools(ctx)
+  const monitor = await registerMonitorTools(ctx)
   const search = await registerSearchMcp(ctx)
-  return search !== undefined ? [...teaching, tools, release, search] : [...teaching, tools, release]
+  return search !== undefined ? [...teaching, tools, release, monitor, search] : [...teaching, tools, release, monitor]
 }
 
 function disposeTooling(state: PlusState): Effect.Effect<void> {
