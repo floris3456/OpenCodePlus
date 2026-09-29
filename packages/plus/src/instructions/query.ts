@@ -115,7 +115,7 @@ export function matchedTree(input: MemoInput, where: string, memo?: Memo): Match
     const matched = new Set<string>()
     for (const candidate of found) {
       const node = nodeOf(state, candidate)
-      if (node === undefined || !visibleRow(node)) continue
+      if (node === undefined || !visibleRow(node.kind, node.actions?.toggle)) continue
       matched.add(candidate.id)
       for (const ancestor of candidate.ancestors ?? []) keep.add(ancestor)
       keep.add(candidate)
@@ -131,9 +131,10 @@ export function matchedTree(input: MemoInput, where: string, memo?: Memo): Match
   }
 }
 
-// Today's visible-row rule: section rows only when they can be toggled.
-function visibleRow(node: TreeNode): boolean {
-  return node.kind !== "section" || node.actions?.toggle === true
+// Today's visible-row rule: section rows only when they can be toggled. Both a
+// materialised row and a lazy row carry the two fields it reads.
+function visibleRow(kind: TreeNodeKind, toggle: boolean | undefined): boolean {
+  return kind !== "section" || toggle === true
 }
 
 // The grammar-rejected fallback: a label/id substring across every root,
@@ -146,7 +147,7 @@ function fallbackTree(state: QueryState, needle: string): MatchedTree {
   const stack: Lazy[] = []
   const walk = (lazy: Lazy) => {
     order.push(lazy)
-    if ((lazy.kind !== "section" || lazy.actions.toggle === true) &&
+    if (visibleRow(lazy.kind, lazy.actions.toggle) &&
       (lazy.label.toLowerCase().includes(needle) || lazy.id.toLowerCase().includes(needle))) {
       matched.push(lazy)
       ancestors.set(lazy.id, [...stack])
