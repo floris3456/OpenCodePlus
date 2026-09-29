@@ -312,10 +312,22 @@ function isSharedDefaults(record: StoredRecord): record is InventoryRecord {
   return record.level === "defaults" && record.agent === null && record.team === undefined
 }
 
-export async function save(projectDir: string, input: SaveInput): Promise<SaveResult> {
+export interface SaveOptions {
+  /**
+   * Set only by the read-triggered catalogue migration (`ensureCatalogues`):
+   * a read must never create a project store that does not exist yet. While
+   * one is missing its project rows stay in the global file (so nothing is
+   * lost); a later real write moves them into the store it creates.
+   */
+  readonly readTriggeredMigration?: boolean
+}
+
+export async function save(projectDir: string, input: SaveInput, options?: SaveOptions): Promise<SaveResult> {
   // Fixed order (global then project) so two projects saving concurrently
   // cannot interleave: each save holds both gates across read+write.
-  return withLock(globalGateKey(), () => withLock(projectGateKey(projectDir), () => write(projectDir, input)))
+  return withLock(globalGateKey(), () =>
+    withLock(projectGateKey(projectDir), () => write(projectDir, input, options)),
+  )
 }
 
 /**
@@ -362,12 +374,12 @@ export async function ensureCatalogues(
     expectedProjectRevision: current.projectRevision,
     expectedGlobalRevision: current.globalRevision,
     records: current.records,
-  })
+  }, { readTriggeredMigration: true })
   if (!saved.ok) return { migrated: false, loaded: saved.current, revision: saved.current.globalRevision }
   return { migrated: true, loaded: await load(projectDir), revision: saved.globalRevision }
 }
 
-async function write(projectDir: string, input: SaveInput): Promise<SaveResult> {
+async function write(projectDir: string, input: SaveInput, options?: SaveOptions): Promise<SaveResult> {
   const current = await load(projectDir)
   const projectStale = input.expectedProjectRevision !== current.projectRevision
   const globalStale = input.expectedGlobalRevision !== current.globalRevision
@@ -379,14 +391,24 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
   // catalogue duplication is the same situation: both sides of `same` are
   // already migrated, so only this flag makes the copies reach disk.
   const forced = current.migrated || current.cataloguesMigrated
-  // A forced rewrite still never writes an empty project store into a
-  // directory that has none: doing so would create `.opencodeplus` for a
-  // project with no project-scoped records, which is a global-only write.
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
+  // A read-triggered migration never writes a missing project store, and a
+  // forced rewrite still never writes an empty one into a directory that has
+  // none: either way `.opencodeplus` is left for a real project write.
   const projectChanged =
-    (forced && !(projectMissing && routed.project.length === 0)) ||
-    !same(currentProjectRecords(current.records), routed.project)
-  const globalChanged = forced || !same(currentGlobalRecords(current.records), routed.global)
+    options?.readTriggeredMigration === true && projectMissing
+      ? false
+      : (forced && !(projectMissing && routed.project.length === 0)) ||
+        !same(currentProjectRecords(current.records), routed.project)
+  // While no project store exists, project-level rows have no other file:
+  // they ride the global write, and a global-only save can never drop them.
+  // Once this write creates the project store, they move there instead.
+  const globalRecords = projectMissing && !projectChanged ? canonical(input.records) : routed.global
+  // The physical global file is `current.records` only when the project file
+  // is absent; otherwise it is the non-project rows. Comparing against the
+  // physical side drops held project rows from the global file when they move.
+  const globalCurrent = projectMissing ? canonical(current.records) : currentGlobalRecords(current.records)
+  const globalChanged = forced || !same(globalCurrent, globalRecords)
   // An unchanged save is a no-op: neither file is touched, neither revision moves.
   if (!projectChanged && !globalChanged)
     return {
@@ -403,7 +425,7 @@ async function write(projectDir: string, input: SaveInput): Promise<SaveResult> 
     await ensure(projectDir)
     await writeStore(projectRecordsPath(projectDir), nextProject, routed.project)
   }
-  if (globalChanged) await writeStore(globalRecordsPath(), nextGlobal, routed.global)
+  if (globalChanged) await writeStore(globalRecordsPath(), nextGlobal, globalRecords)
   if (projectChanged) await indexProjectLinks(projectDir, routed.project.some((record) => record.type === "link"))
   return {
     ok: true,
