@@ -12,8 +12,10 @@ import {
   hasModelRecordAt,
   merge,
   modelKey,
+  formatWarming,
   ownAndAbove,
   parseModelItemId,
+  parseWarming,
   removeModelRecord,
   resolve,
   resolveActiveModel,
@@ -21,6 +23,7 @@ import {
   resolveSplit,
   sameTeam,
   scopedTo,
+  setModelWarming,
 } from "./model.js"
 import type {
   Address,
@@ -1227,6 +1230,28 @@ export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: M
   if (JSON.stringify(next) === JSON.stringify(models))
     return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
   return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
+}
+
+// w on a model row sets cache warming for this agent and model at this level:
+// "off", "on" or a total time such as "45m"; blank clears it so the level
+// below (or the host configuration) decides. Inherited rows plant the local
+// candidate, like activation.
+export function setModelWarmingRow(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot set cache warming` }
+  const target = modelTargetOf(address)
+  if (target === undefined) return { refusal: `"${node.label}" cannot set cache warming` }
+  const parsed = text.trim().length === 0 ? undefined : parseWarming(text)
+  if (parsed !== undefined && "error" in parsed) return { refusal: parsed.error }
+  const models = modelsOfInput(input)
+  const value = parsed === undefined ? undefined : formatWarming(parsed)
+  const next = setModelWarming(models, modelScopeOf(address), target, value, now())
+  if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no cache warming to clear` }
+  const status = value === undefined ? `Cache warming for "${node.label}" inherits` : `Cache warming for "${node.label}": ${value}`
+  return { models: next, status, retryHint: `set cache warming on "${node.label}" against a stale revision; retry to apply` }
 }
 
 // r on a model row clears only that level's active flag, leaving candidates

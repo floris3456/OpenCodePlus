@@ -148,6 +148,7 @@ const V2Model = Schema.Struct({
   variant: Schema.optional(Schema.String),
   active: Schema.optional(Schema.Literal(true)),
   basedOn: Schema.optional(Schema.String),
+  warming: Schema.optional(Schema.String),
   updated: Schema.String,
 })
 
@@ -577,6 +578,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           ...(record.variant === undefined ? {} : { variant: record.variant }),
           ...(record.active === undefined ? {} : { active: record.active }),
           ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
+          ...(record.warming === undefined ? {} : { warming: record.warming }),
           updated: record.updated,
         },
       ]
@@ -730,6 +732,7 @@ function sortKey(record: StoredRecord): string[] {
       catalogueKey,
       record.level,
       record.active === true ? "active" : "",
+      record.warming ?? "",
       record.updated,
     ]
   if (record.type === "rule")
@@ -802,6 +805,7 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.variant === undefined ? {} : { variant: record.variant }),
       ...(record.active === undefined ? {} : { active: record.active }),
       ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
+      ...(record.warming === undefined ? {} : { warming: record.warming }),
       updated: record.updated,
     }
   if (record.type === "rule")

@@ -770,6 +770,7 @@ function cleared(record: ModelRecord): ModelRecord {
     providerID: record.providerID,
     modelID: record.modelID,
     ...(record.variant === undefined ? {} : { variant: record.variant }),
+    ...(record.warming === undefined ? {} : { warming: record.warming }),
     updated: record.updated,
   }
 }
@@ -825,6 +826,8 @@ export interface ModelRecord {
   readonly active?: true
   /** Active records only: the key of the active model above when this one was activated ("" = none); absent = never reviewed. */
   readonly basedOn?: string
+  /** Cache warming for this agent on this model: "off", "on", or a total time such as "45m" or "2h"; absent inherits. */
+  readonly warming?: string
   readonly updated: string
 }
 
@@ -1770,4 +1773,103 @@ function withoutUndefined(record: CustomizationRecord): CustomizationRecord {
 
 function now(): string {
   return new Date().toISOString()
+}
+
+// Cache warming per agent and model. A model row's `warming` is "off", "on"
+// (the configured or default total time) or a total time: whole numbers of
+// hours, minutes and seconds such as "45m", "2h" or "1h30m". The total time is
+// how long warming keeps going after the chat's latest real request.
+export const WARMING_MAX_MS = 24 * 60 * 60 * 1000
+
+export type WarmingValue = { readonly on: false } | { readonly on: true; readonly duration?: number }
+
+export function parseWarming(text: string): WarmingValue | { readonly error: string } {
+  const value = text.trim().toLowerCase().replaceAll(" ", "")
+  if (value === "off") return { on: false }
+  if (value === "on") return { on: true }
+  const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value)
+  if (match === null || value.length === 0)
+    return { error: `"${text.trim()}" is not a warming time: use off, on, or a total time such as 45m, 2h or 1h30m` }
+  const duration = (Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)) * 1000
+  if (duration < 60_000) return { error: `Warming time must be at least 1m, got "${text.trim()}"` }
+  if (duration > WARMING_MAX_MS) return { error: `Warming time must be at most 24h, got "${text.trim()}"` }
+  return { on: true, duration }
+}
+
+/** The canonical stored form: "off", "on", or hours/minutes/seconds such as "1h30m". */
+export function formatWarming(value: WarmingValue): string {
+  if (!value.on) return "off"
+  if (value.duration === undefined) return "on"
+  return formatDuration(value.duration)
+}
+
+export function formatDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000)
+  const parts = [
+    [Math.floor(seconds / 3600), "h"],
+    [Math.floor((seconds % 3600) / 60), "m"],
+    [seconds % 60, "s"],
+  ] as const
+  const text = parts.filter(([count]) => count > 0).map(([count, unit]) => `${count}${unit}`).join("")
+  return text.length === 0 ? "0s" : text
+}
+
+// Set (or with undefined clear) warming on the candidate at this address,
+// planting an inactive candidate row when the model is only inherited here.
+// Clearing on a row with no record returns an identical list.
+export function setModelWarming(
+  models: readonly ModelRecord[],
+  address: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+  warming: string | undefined,
+  updated: string,
+): ModelRecord[] {
+  const wanted = (record: ModelRecord) =>
+    scopedTo(record, address) &&
+    record.providerID === target.providerID &&
+    record.modelID === target.modelID &&
+    record.variant === target.variant
+  if (warming === undefined && !models.some(wanted)) return [...models]
+  return addModelRecord(models, address, target, updated).map((record) => {
+    if (!wanted(record)) return record
+    if (warming !== undefined) return { ...record, warming, updated }
+    return {
+      type: "model" as const,
+      level: record.level,
+      agent: record.agent,
+      ...(record.team !== undefined ? { team: record.team } : {}),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      providerID: record.providerID,
+      modelID: record.modelID,
+      ...(record.variant === undefined ? {} : { variant: record.variant }),
+      ...(record.active === undefined ? {} : { active: record.active }),
+      ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
+      updated,
+    }
+  })
+}
+
+/**
+ * The warming value for `target` down the agent's resolution chain: the first
+ * record for that model (same variant, else the variant-less row) that sets
+ * warming. Undefined when nothing on the chain sets it.
+ */
+export function resolveModelWarming(
+  input: ModelInput,
+  target: ModelRefLike,
+): { readonly value: string; readonly level: Level } | undefined {
+  const matches = (record: ModelRecord, variant: string | undefined) =>
+    record.warming !== undefined &&
+    record.providerID === target.providerID &&
+    record.modelID === target.modelID &&
+    record.variant === variant
+  for (const node of modelChain(input)) {
+    if (node.shipped !== undefined) continue
+    const scoped = input.models.filter((record) => scopedTo(record, node))
+    const found =
+      scoped.find((record) => matches(record, target.variant)) ??
+      (target.variant === undefined ? undefined : scoped.find((record) => matches(record, undefined)))
+    if (found?.warming !== undefined) return { value: found.warming, level: node.level }
+  }
+  return undefined
 }

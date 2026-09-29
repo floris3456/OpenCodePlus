@@ -8,6 +8,7 @@ import {
   hasModelActiveAt,
   hasModelRecordAt,
   modelCandidates,
+  resolveModelWarming,
   modelItemId,
   parseModelItemId,
   presetKey,
@@ -156,6 +157,9 @@ export interface TreeNodeBadges {
   readonly unsupported?: boolean
   /** Whole Role/persona or whole base row: apply keeps the original text live, so the row cannot be toggled off. */
   readonly unexcludable?: boolean
+  /** Model rows: cache warming for this agent and model ("off", "on", "45m" …) and the level that set it. */
+  readonly warming?: string
+  readonly warmingFrom?: Level
 }
 
 export interface TreeNodeActions {
@@ -1504,12 +1508,19 @@ function lazyModelItem(
     // §3.6: the row's own active model, recorded against an active model
     // above that has since changed.
     selfReview: () => isActive && active?.review === true,
-    partial: () => ({
-      ...(isActive ? { active: true as const } : {}),
-      source: candidate.source,
-      from: candidate.from,
-      fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level }),
-    }),
+    partial: () => {
+      const warming = resolveModelWarming(
+        { models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) },
+        target,
+      )
+      return {
+        ...(isActive ? { active: true as const } : {}),
+        source: candidate.source,
+        from: candidate.from,
+        fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level }),
+        ...(warming === undefined ? {} : { warming: warming.value, warmingFrom: warming.level }),
+      }
+    },
     reviewCount: () => 0,
     children: () => [],
   }

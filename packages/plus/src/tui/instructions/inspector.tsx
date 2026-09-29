@@ -81,6 +81,12 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   if (model !== undefined) {
     facts.push(["model", `${model.providerID}/${model.modelID}${model.variant === undefined ? "" : `#${model.variant}`}`])
     facts.push(["from", `${displayLevel(model.source)}${model.active ? " · active" : ""}`])
+    facts.push([
+      "cache warming",
+      node.badges.warming === undefined
+        ? "host configuration (w sets it here)"
+        : `${node.badges.warming} · set at ${displayLevel(node.badges.warmingFrom ?? "project")}`,
+    ])
   }
   const perm = permDetail(node, snapshot)
   if (perm !== undefined) {

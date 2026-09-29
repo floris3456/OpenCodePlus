@@ -32,6 +32,7 @@ import {
   saveSplit,
   saveText,
   setEnabled,
+  setModelWarmingRow,
   setPin,
   stateReviewChoice,
   teamPlan,
@@ -120,6 +121,7 @@ export function toRpcRecords(
         ...(record.variant === undefined ? {} : { variant: record.variant }),
         ...(record.active === undefined ? {} : { active: record.active }),
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
+        ...(record.warming === undefined ? {} : { warming: record.warming }),
         updated: record.updated,
       }),
     ),
@@ -656,6 +658,15 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persistModels(result.models, result.status, result.retryHint)
   }
 
+  async function setWarming(node: TreeNode, text: string): Promise<boolean> {
+    const result = setModelWarmingRow(memoInput(), node.id, text, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
+  }
+
   async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
     if (blockedControlWrite(node)) return false
     const result = resolveReview(memoInput(), node.id, "edit", edited, undefined, treeMemo())
@@ -895,6 +906,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     reviewChoice,
     modelReview,
     resolveModel,
+    setWarming,
     reveal,
     revealed,
     treeWith,

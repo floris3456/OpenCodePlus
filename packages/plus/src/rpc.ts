@@ -199,6 +199,7 @@ export const SnapshotModelRecord = Schema.Struct({
   variant: Schema.optionalKey(Schema.String),
   active: Schema.optionalKey(Schema.Literal(true)),
   basedOn: Schema.optionalKey(Schema.String),
+  warming: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotModelRecord" })
 

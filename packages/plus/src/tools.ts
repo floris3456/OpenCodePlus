@@ -26,6 +26,7 @@ import {
   saveText,
   setEnabled,
   setAgentMode,
+  setModelWarmingRow,
   setPin,
   teamPlan,
   teamRowEntity,
@@ -85,7 +86,8 @@ const SetDescription =
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
-  "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale."
+  "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
+  "On a model row warming sets cache warming for that agent on that model at that level (TUI w): off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty inherits."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -186,6 +188,7 @@ const SetInput = Schema.Struct({
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
   message: Schema.optionalKey(Schema.String),
   preset: Schema.optionalKey(Schema.NullOr(PresetInput)),
+  warming: Schema.optionalKey(Schema.String),
 })
 
 const ResetInput = Schema.Struct({
@@ -316,6 +319,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
+          if (input.warming !== undefined)
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
           const op = computeSet(memo, input)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
@@ -530,6 +535,7 @@ function toSnapshotRecords(
         ...(record.variant === undefined ? {} : { variant: record.variant }),
         ...(record.active === undefined ? {} : { active: record.active }),
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
+        ...(record.warming === undefined ? {} : { warming: record.warming }),
         updated: record.updated,
       }),
     ),
@@ -796,11 +802,23 @@ function setModel(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit" },
+  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; warming?: string },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
+    // Cache warming for this agent on this model at this level; "" inherits.
+    if (input.warming !== undefined) {
+      const warming = input.warming
+      const op = setModelWarmingRow(memo, id, warming)
+      if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+      const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
+        const retry = setModelWarmingRow(memoFromSnapshot(fresh), id, warming)
+        if ("refusal" in retry) return retry
+        return { models: retry.models, status: retry.status }
+      })
+      return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+    }
     // A limit row's text is its number: `set({ id, text: "8" })` changes the
     // cap; every other perm row keeps its text in its rule.
     if (input.text !== undefined) {
