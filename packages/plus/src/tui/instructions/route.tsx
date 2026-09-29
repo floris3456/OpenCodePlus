@@ -107,6 +107,28 @@ export function resetToolCountLog(): void {
   toolCountLog.sliced.length = 0
 }
 
+/**
+ * Test observability for the list window (not read in production): one entry
+ * per RowLine the list's <For> instantiates, with the viewport state it was
+ * instantiated for. Recording starts with resetListMountLog(); production
+ * never enables it.
+ */
+export const listMountLog: { enabled: boolean; rows: { key: string; top: number; height: number }[] } = {
+  enabled: false,
+  rows: [],
+}
+export function resetListMountLog(): void {
+  listMountLog.enabled = true
+  listMountLog.rows.length = 0
+}
+
+// The list pane renders only the rows around the scrollbox viewport, with a
+// margin so a key or a wheel step lands on already-mounted rows. OpenTUI's
+// viewport culling skips drawing but still instantiates every child, so
+// without the window a large level creates one native text handle per row and
+// can exhaust the renderer's SyntaxStyle handles.
+export const LIST_WINDOW_MARGIN = 12
+
 
 // The footer keeps the first hints that fit, in priority order, and always
 // its last two (? help, esc): everything else is in the help dialog.
@@ -279,6 +301,31 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   let navScroll: ScrollBoxRenderable | undefined
   let listScroll: ScrollBoxRenderable | undefined
   let inspectorScroll: ScrollBoxRenderable | undefined
+
+  // The list's scrollbox position: sampled per frame (wheel scrolling moves it
+  // outside our key handlers) and directly whenever follow() moves it.
+  const [listView, setListView] = createSignal({ top: 0, height: 1 })
+  // A cursor followed while the list was being replaced (a filter or category
+  // switch in the same tick): follow() used the old content size and viewport,
+  // so the row can land just outside the settled viewport. Re-check each frame
+  // until the cursor is visible, then leave scrolling to the user.
+  let listFollowPending = false
+  function syncListView() {
+    const scroll = listScroll
+    if (scroll === undefined) return
+    const height = Math.max(1, scroll.viewport.height)
+    if (listFollowPending) {
+      const index = listRows().findIndex((row) => row.key === listRow()?.key)
+      if (index < 0) listFollowPending = false
+      else if (index < scroll.scrollTop) scroll.scrollTop = index
+      else if (index >= scroll.scrollTop + height) scroll.scrollTop = index - height + 1
+      else listFollowPending = false
+    }
+    const top = scroll.scrollTop
+    setListView((current) => (current.top === top && current.height === height ? current : { top, height }))
+  }
+  props.context.renderer.on("frame", syncListView)
+  onCleanup(() => props.context.renderer.off("frame", syncListView))
 
   createEffect(() => {
     const view: View = {
@@ -465,6 +512,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return rows.find((row) => row.key === key) ?? (filtered ? rows.find((row) => state.matched().has(row.key)) : undefined) ?? rows[0]
   })
 
+  // The rows the list pane instantiates: the viewport and a margin above and
+  // below, with spacer boxes carrying the rest of the scroll height. The window
+  // reuses Row objects, so a step keeps most RowLines and moves the rest.
+  const listWindow = createMemo(() => {
+    const rows = listRows()
+    const size = Math.max(1, listView().height)
+    const start = Math.max(0, Math.min(listView().top - LIST_WINDOW_MARGIN, rows.length - (size + LIST_WINDOW_MARGIN * 2)))
+    const end = Math.min(rows.length, start + size + LIST_WINDOW_MARGIN * 2)
+    return { rows: rows.slice(start, end), start, end, total: rows.length }
+  })
+
   const currentRow = (): Row | undefined => (focus() === "nav" ? navRow() : listRow())
   const current = (): TreeNode | undefined => currentRow()?.node ?? (focus() === "list" ? workspace().category : undefined)
 
@@ -566,8 +624,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function follow(scroll: ScrollBoxRenderable | undefined, index: number) {
     if (scroll === undefined || index < 0) return
     const height = Math.max(1, scroll.viewport.height)
-    if (index < scroll.scrollTop) scroll.scrollTop = index
-    else if (index >= scroll.scrollTop + height) scroll.scrollTop = index - height + 1
+    const target =
+      index < scroll.scrollTop ? index : index >= scroll.scrollTop + height ? index - height + 1 : undefined
+    if (target !== undefined) scroll.scrollTop = target
+    if (scroll !== listScroll) return
+    // The cursor must be inside the rendered window this frame, not the next;
+    // the frame sync re-checks once the replaced list has settled.
+    listFollowPending = true
+    syncListView()
   }
 
   createEffect(() => follow(navScroll, workspace().nav.findIndex((row) => row.key === navRow()?.key)))
@@ -1508,23 +1572,32 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         }
       >
         <scrollbox flexGrow={1} minHeight={0} ref={(next: ScrollBoxRenderable) => (listScroll = next)} verticalScrollbarOptions={{ visible: false }}>
-          <For each={listRows()}>
-            {(row) => (
-              <RowLine
-                context={props.context}
-                row={row}
-                quiet={selfPreset()}
-                selected={row.key === listRow()?.key}
-                focused={focus() === "list" && !modal()}
-                onHoverChange={(hovering) => hoverRow("list", row.key, hovering)}
-                onSelect={() => {
-                  selectList(row)
-                  setFocus("list")
-                }}
-                onActivate={enter}
-              />
-            )}
+          <Show when={listWindow().start > 0}>
+            <box height={listWindow().start} flexShrink={0} />
+          </Show>
+          <For each={listWindow().rows}>
+            {(row) => {
+              if (listMountLog.enabled) listMountLog.rows.push({ key: row.key, top: listView().top, height: listView().height })
+              return (
+                <RowLine
+                  context={props.context}
+                  row={row}
+                  quiet={selfPreset()}
+                  selected={row.key === listRow()?.key}
+                  focused={focus() === "list" && !modal()}
+                  onHoverChange={(hovering) => hoverRow("list", row.key, hovering)}
+                  onSelect={() => {
+                    selectList(row)
+                    setFocus("list")
+                  }}
+                  onActivate={enter}
+                />
+              )
+            }}
           </For>
+          <Show when={listWindow().end < listWindow().total}>
+            <box height={listWindow().total - listWindow().end} flexShrink={0} />
+          </Show>
         </scrollbox>
       </Show>
     </box>
