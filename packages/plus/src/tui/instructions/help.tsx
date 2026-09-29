@@ -35,6 +35,7 @@ export const HELP: readonly HelpGroup[] = [
       ["c", "compare your text with upstream (a real diff)"],
       ["r", "reset this level's override"],
       ["p", "pin a Code Mode tool"],
+      ["w", "cache warming on a model row: off, on, or a total time (45m, 2h); blank inherits"],
       ["s", "split text into sections"],
     ],
   ],

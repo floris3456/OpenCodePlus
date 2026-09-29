@@ -50,7 +50,7 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 | --- | --- | --- |
 | `instructions_list` | `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | Query result (`packages/plus/src/tools.ts:133`, `packages/plus/src/tools.ts:248`) |
 | `instructions_show` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
-| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
+| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
 | `instructions_create` | `kind` plus kind fields (`packages/plus/src/tools.ts:181`) | `{ …created, id, item }` per kind (§4) |
@@ -89,6 +89,9 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 
 - `set` with `text` saves an override; `state` toggles explicitly; `pin`
   pins or unpins a Code Mode tool; `active: true` activates a model row;
+  `warming` on a model row sets cache warming for that agent on that model at
+  that level (`off`, `on`, or a total time 1m–24h such as `45m`, `2h`,
+  `1h30m`; empty inherits; TUI `w`), and on any other row it is refused;
   `resolve` resolves a review row; on a perm row `label`, `patterns`,
   `keywords` and `message` update the rule, and a message-only edit derives
   label and patterns from the rule it edits
@@ -681,11 +684,13 @@ accepts an optional `actor` on every write
 | `model.add` | `PortableModelAddInput` → `PortableModelRef` | `model.exists`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1335` |
 | `model.remove` | `PortableModelRemoveInput` → `PortableModelRef` | `model.missing`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1345` |
 | `catalog.models` | `Empty` → `PortableCatalogModelsOutput` | — | `packages/plus/src/rpc.ts:1355` |
+| `warming.status` | `PortableWarmingSessionInput` → `PortableWarmingStatus` | — | `packages/plus/src/rpc.ts` |
+| `warming.set` | `PortableWarmingSetInput` → `PortableWarmingStatus` | — | `packages/plus/src/rpc.ts` |
 | `rule.add` | `PortableRuleAddInput` → `PortableRuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1362` |
 | `rule.remove` | `PortableRuleRemoveInput` → `PortableRuleRef` | `rule.missing`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1372` |
 | `rule.update` | `PortableRuleUpdateInput` → `PortableRuleRef` | `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1382` |
 
-Events: `instructions.changed` and `teams.changed`
+Events: `instructions.changed`, `teams.changed` and `warming.changed`
 (`packages/plus/src/rpc.ts`).
 
 `team.list` returns teams, not runs (`packages/plus/src/rpc.ts:1315`); the

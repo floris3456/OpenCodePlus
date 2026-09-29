@@ -140,7 +140,7 @@ Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl
 
 Teams: project teams in `<project>/.opencodeplus/teams/<team>/<id>.md`, global teams in `<configDir>/opencodeplus/teams/<team>/<id>.md`, Defaults overlay in `<configDir>/opencodeplus/teams-defaults/<team>/<id>.md` (same-id overlay files replace built-in members, new ids append; still `level: "defaults"`).
 
-RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/list`, `team.runs.list/stop` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier with optional `template` and optional `fields` overriding template defaults, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `instructions.changed`, `teams.changed`. The binding contract is `SPEC.md`.
+RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/list`, `team.runs.list/stop`, `warming.status/set` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier with optional `template` and optional `fields` overriding template defaults, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `instructions.changed`, `teams.changed`, `warming.changed`. The binding contract is `SPEC.md`.
 
 ## Team tab
 
@@ -474,6 +474,17 @@ Only what is provably impossible, with what was tried:
   - `plus.instructions.open` ("Instructions", `<leader>p`, slash `/instructions`): opens the Instructions screen; pressed while it is already open it is a no-op.
   - `plus.agent.create` / `plus.agent.rename` / `plus.agent.delete`: agent file actions.
   - `plus.team.select`: opens the agent picker filtered to teams.
+- `ctrl+x k` (`<leader>k`, `plus.warming.toggle`, group `Session`) switches cache warming on or off for the current chat; `plus.warming.follow` (palette only) returns the chat to its model settings.
+
+## Cache warming
+
+Core can keep a chat's provider prompt cache warm with keep-alive requests after each reply (the `warming` configuration). Plus decides it per chat:
+
+- **Per agent and model, per level**: in Instructions → an agent → Models, press `w` on a model row and enter `off`, `on`, or a total time such as `45m`, `2h` or `1h30m` (1m to 24h); blank inherits. The value is stored at the level you are on, so a project can keep one agent warm for 3h on a model while another agent on the same model gets 20m, and another project keeps the global value. The row shows `warm 2h`.
+- **Per chat**: `ctrl+x k` switches warming on or off for the current chat, overriding the model row; the switch survives restarts.
+- **Countdown**: under the prompt, `cache warm · 23:41 left` counts down to when warming stops (the total time after the latest reply).
+
+Without either, the host `warming` configuration applies unchanged. Keep-alive requests are real provider requests and cost tokens.
 
 ## Development notes
 

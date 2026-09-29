@@ -794,6 +794,14 @@ export function removeModelRecord(models: readonly ModelRecord[], address: { lev
   (presets and Defaults entries included; a shipped preset's
   `presets.model(ref)` counts as active), else upstream. No active record and
   no upstream means Plus installs nothing for that agent.
+- Cache warming per agent and model: a model record may carry `warming`
+  (`"off"`, `"on"`, or a total time `"45m"`, `"2h"`, `"1h30m"`; 1m to 24h,
+  canonicalised by `parseWarming`/`formatWarming`). `resolveModelWarming`
+  returns the first record down the agent's resolution chain for that model
+  (same variant first, then the variant-less row) that sets it, with its
+  level. `setModelWarming` sets or clears it at one address, planting an
+  inactive candidate when the model is only inherited there. See "Cache
+  warming" below.
 - Active-model review: `activateModel`/`ensureActivateModel` with a
   `ModelContext { scopes, upstream? }` store `basedOn` = the key of the active
   model above (`aboveActiveModelKey`, "" when none); `resolveActiveModel`
@@ -1043,6 +1051,8 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.exists`, `model.invalid`, `agent.protected` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.missing`, `model.invalid`, `agent.protected` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | — |
+| `warming.status` | `{ sessionID }` | `WarmingStatus` (`{ sessionID, chat: on\|off\|default, active, source?, level?, since?, expires?, interval?, lastWarm?, now }`) | — |
+| `warming.set` | `{ sessionID, chat: on\|off\|default }` | `WarmingStatus` | — |
 | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
 | `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `rule.missing`, `rule.invalid`, `agent.protected` |
 | `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.invalid`, `agent.protected` |
@@ -1167,7 +1177,33 @@ refusal is unreachable over RPC; the `PlusApi` results for those three
 methods carry the `agent.protected` variant for the tool callers that do pass
 an actor.
 
-Events: `instructions.changed`, `teams.changed`.
+Events: `instructions.changed`, `teams.changed`, `warming.changed` (`{ sessionID }`).
+
+### Cache warming (`warming.ts`, `tui/warming.tsx`)
+
+Core keeps a chat's provider prompt cache warm with keep-alive requests after
+its latest real request (core `warming` configuration, default interval 4
+minutes, total time 30 minutes). Plus decides it per chat through core's
+session `warming` hook, which runs when a real request starts the window
+(`activity`) and before each keep-alive request (`warm`):
+
+1. the per-chat switch (`warming.set`, TUI `<leader>k`): `off` stops warming,
+   `on` warms with the configured settings (core defaults when the
+   configuration leaves warming off);
+2. else the agent's model row (`ModelRecord.warming`, resolved down the
+   agent's chain for the chat's current model): `off` stops it, `on` or a total
+   time turns it on, a total time replacing the configured duration;
+3. else the host configuration core proposed, unchanged.
+
+A total time on the model row also applies when the chat switch is `on`.
+Changes reach a running window before its next keep-alive request; a window
+is only started by a real request. The switch persists per session in
+`$XDG_DATA_HOME/opencodeplus/warming/chats.json` (newest 500). `warming.status`
+reports the chat's window (`since`, `expires` = `since` + total time) from the
+last decision; the TUI shows `cache warm · 23:41 left` under the prompt,
+`cache warming off` while switched off, and `cache warming on · starts after
+the next reply` while switched on with no window running. `warming.changed`
+fires when a decision or the switch changes what the footer shows.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
@@ -2074,7 +2110,8 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   tool's full listing inline in the catalog even when the inline budget is
   tight. `set` with `active: true` activates a model row exclusively at that
   level (a bare `set` on a model row activates too; model rows refuse text,
-  state, pin, and resolve); on a perm row `state` applies, or `label` +
+  state, pin, and resolve; `warming` sets the row's cache warming, see "Cache
+  warming", and is refused on other rows); on a perm row `state` applies, or `label` +
   `patterns` (`keywords` optional) to update the rule through `rule.update`,
   or `message` alone to set the refusal text (a message-only edit derives
   label and patterns from the rule it edits), or `text` on a limit or bound
