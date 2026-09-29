@@ -145,6 +145,29 @@ test("a global-only write creates nothing in the project directory", async () =>
   expect(await Bun.file(path.join(project, ".opencodeplus", "project.json")).exists()).toBe(true)
 })
 
+test("a legacy enabled:false config is still the nearest config", async () => {
+  const { root } = await tempRoot()
+  const ancestor = path.join(root, "repo")
+  const nested = path.join(ancestor, "nested")
+  await fs.mkdir(nested, { recursive: true })
+  await fs.mkdir(path.join(ancestor, ".opencodeplus"), { recursive: true })
+  await fs.writeFile(
+    path.join(ancestor, ".opencodeplus", "project.json"),
+    `${JSON.stringify({ version: 1, protectedAgents: ["x"], enabled: false }, null, 2)}\n`,
+  )
+  const api = createPlusApi(fullContext({ directory: nested }), createState())
+  const before = await api.snapshot()
+  // The marker is ignored: the config still applies and still stops the walk.
+  expect(before.value.protectedAgents).toEqual(["x"])
+  const written = await api.mutate({
+    expectedRevision: before.value.revision,
+    expectedGlobalRevision: before.value.globalRevision,
+    records: [customization("y")],
+  })
+  expect(written.ok).toBe(true)
+  expect(await Bun.file(path.join(nested, ".opencodeplus", "project.json")).exists()).toBe(false)
+})
+
 test("under an ancestor config a child write makes no child project file and keeps protectedAgents", async () => {
   const { root } = await tempRoot()
   const ancestor = path.join(root, "repo")
