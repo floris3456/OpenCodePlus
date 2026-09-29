@@ -6,7 +6,6 @@ import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.j
 import type { Snapshot } from "../../rpc.js"
 import {
   addressLine,
-  categoryDetail,
   controlDetail,
   excludedAttributes,
   linkLine,
@@ -22,6 +21,7 @@ import {
   wholeItemText,
   displayLevel,
 } from "./detail-pane.js"
+import { structureDetail } from "./descriptions.js"
 import { toolWords, type Row, type ToolCount } from "./workspace.js"
 
 export interface InspectorProps {
@@ -125,8 +125,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
 
 export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   const notes = controlDetail(node, snapshot, memo).filter((line) => !line.startsWith("Value: "))
-  const category = categoryDetail(node)
-  return [...notes, ...(category === undefined ? [] : [category])]
+  const detail = structureDetail(node)
+  return [...notes, ...(detail === undefined ? [] : [detail])]
 }
 
 export function Inspector(props: InspectorProps) {
