@@ -248,8 +248,6 @@ export interface ShippedValue {
  */
 export interface PresetCatalog {
   readonly presets: readonly PresetInfo[]
-  /** Links that ship with Native/Plus presets (a Plus team member → its Plus agent preset). A stored link of the same preset wins. */
-  readonly links: readonly LinkRecord[]
   /**
    * The shipped value of `item` (`section` null = whole item) in a
    * Native/Plus preset; undefined = the preset does not set it. `upstream` is
@@ -1696,7 +1694,7 @@ function expand(scopes: Scopes, catalogue: Catalogue, ref: PresetRef | undefined
   }
   const from = { kind: "preset" as const, id: ref.id, ...(team === undefined ? {} : { team }) }
   const origin = presetOrigin(scopes, ref)
-  const link = linkAt(scopes, scope) ?? scopes.presets?.links.find((record) => scopedTo(record, scope))?.preset
+  const link = linkAt(scopes, scope)
   return [
     { ...scope, from: { ...from, shipped: false } },
     ...(origin === "native" || origin === "plus" ? [{ ...scope, shipped: ref, from: { ...from, shipped: true } }] : []),

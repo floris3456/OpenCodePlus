@@ -16,6 +16,7 @@ import type {
 } from "./model.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
+import { basicMemberForRetiredAgent, basicTeamId, retiredMemberPresets } from "./presets.js"
 import { ensure } from "../project.js"
 
 export type { CustomizationRecord, SplitRecord }
@@ -42,6 +43,8 @@ export interface Loaded {
   readonly migrated: boolean
   /** True when this load duplicated pre-split shared rows into the Teams catalogue. */
   readonly cataloguesMigrated: boolean
+  /** True when this load moved links and customizations of the retired Plus presets onto the Basic team preset. */
+  readonly presetsMigrated: boolean
 }
 
 export interface SaveInput {
@@ -258,24 +261,28 @@ export async function load(projectDir: string): Promise<Loaded> {
   const globalParsed = parseFile(global)
   if (!projectParsed.migrated && !globalParsed.migrated) {
     const catalogues = migrateCatalogues([...projectParsed.records, ...globalParsed.records])
+    const presets = migrateRemovedPresets(catalogues.records)
     return {
       projectRevision: projectParsed.revision,
       globalRevision: globalParsed.revision,
-      records: catalogues.records,
+      records: presets.records,
       migrated: false,
       cataloguesMigrated: catalogues.migrated,
+      presetsMigrated: presets.migrated,
     }
   }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
   // those route into the global store, not the project file.
   const catalogues = migrateCatalogues(projectParsed.records.concat(globalParsed.records))
-  const routed = route(catalogues.records)
+  const presets = migrateRemovedPresets(catalogues.records)
+  const routed = route(presets.records)
   return {
     projectRevision: projectParsed.revision,
     globalRevision: globalParsed.revision,
     records: routed.project.concat(routed.global),
     migrated: true,
     cataloguesMigrated: catalogues.migrated,
+    presetsMigrated: presets.migrated,
   }
 }
 
@@ -300,6 +307,63 @@ export function migrateCatalogues(records: readonly StoredRecord[]): {
   return { records: [...records, ...shared.map((record) => ({ ...record, catalogue: "teams" as Catalogue }))], migrated: true }
 }
 
+// The Basic team preset replaced the six Plus agent presets and the three
+// shipped team presets (opencodeplus-team, starter, review). A store written
+// before that keeps working without user action:
+//
+// - every link that named a retired Plus agent preset moves to the Basic
+//   member preset of the same name;
+// - every link that named a member preset of a retired team preset moves to
+//   the Basic member the old member carried (`retiredMemberPresets`); a link
+//   naming anything else (a retired team preset itself, an unknown member id)
+//   is left exactly as it is and reads as a missing preset;
+// - a preset-level customization (level `preset`, no team) owned by a retired
+//   Plus agent preset moves onto its Basic member preset, the address shape a
+//   member preset uses (`team: { level: "preset", team: "basic" }`), so user
+//   edits keep applying.
+//
+// Idempotent by construction: nothing that already names a Basic member ref
+// or carries the Basic team address is touched, so a second load finds
+// nothing to migrate.
+export function migrateRemovedPresets(records: readonly StoredRecord[]): {
+  records: StoredRecord[]
+  migrated: boolean
+} {
+  let migrated = false
+  const out = records.map((record): StoredRecord => {
+    if (record.type === "link") {
+      const preset = basicPresetOf(record.preset)
+      if (preset === undefined) return record
+      migrated = true
+      return { ...record, preset }
+    }
+    if (
+      record.type === "customization" &&
+      record.level === "preset" &&
+      record.team === undefined &&
+      record.agent !== null &&
+      basicMemberForRetiredAgent(record.agent) !== undefined
+    ) {
+      migrated = true
+      return { ...record, team: { level: "preset" as const, team: basicTeamId } }
+    }
+    return record
+  })
+  return { records: out, migrated }
+}
+
+// The Basic member preset a retired preset ref maps to; undefined when the ref
+// names anything else (including a ref that already names a Basic member).
+function basicPresetOf(preset: PresetRef): PresetRef | undefined {
+  if (preset.kind === "agent") {
+    const member = basicMemberForRetiredAgent(preset.id)
+    return member === undefined ? undefined : { kind: "member", team: basicTeamId, id: member }
+  }
+  if (preset.kind !== "member") return undefined
+  const member = retiredMemberPresets[preset.team]?.[preset.id]
+  return member === undefined ? undefined : { kind: "member", team: basicTeamId, id: member }
+}
+
 // The record kinds the catalogue split applies to. Teams, links, Defaults
 // entries and presets are not inventory rows and never take part in it.
 type InventoryRecord = CustomizationRecord | SplitRecord | ModelRecord | RuleRecord
@@ -315,10 +379,10 @@ function isSharedDefaults(record: StoredRecord): record is InventoryRecord {
 
 export interface SaveOptions {
   /**
-   * Set only by the read-triggered catalogue migration (`ensureCatalogues`):
-   * a read must never create a project store that does not exist yet. While
-   * one is missing its project rows stay in the global file (so nothing is
-   * lost); a later real write moves them into the store it creates.
+   * Set only by the read-triggered load migrations (`ensureCatalogues`): a
+   * read must never create a project store that does not exist yet. While one
+   * is missing its project rows stay in the global file (so nothing is lost);
+   * a later real write moves them into the store it creates.
    */
   readonly readTriggeredMigration?: boolean
 }
@@ -362,22 +426,30 @@ export async function updateGated<T>(
   )
 }
 
-// Persist the catalogue duplication once, on the first load that sees a
-// pre-split store, so the copies land in one revision the log can name. A
-// store that needs nothing is read and left alone; a concurrent writer that
-// wins the revision race simply migrates on its own next load.
+// Persist the load-time migrations once, on the first load that sees a
+// pre-split store or links to the retired Plus presets, so what they moved
+// lands in one revision the log can name (one line per migration). A store
+// that needs nothing is read and left alone; a concurrent writer that wins
+// the revision race simply migrates on its own next load.
 export async function ensureCatalogues(
   projectDir: string,
-): Promise<{ migrated: boolean; loaded: Loaded; revision: number }> {
+): Promise<{ migrated: boolean; presetsMigrated: boolean; loaded: Loaded; revision: number }> {
   const current = await load(projectDir)
-  if (!current.cataloguesMigrated) return { migrated: false, loaded: current, revision: current.globalRevision }
+  if (!current.cataloguesMigrated && !current.presetsMigrated)
+    return { migrated: false, presetsMigrated: false, loaded: current, revision: current.globalRevision }
   const saved = await save(projectDir, {
     expectedProjectRevision: current.projectRevision,
     expectedGlobalRevision: current.globalRevision,
     records: current.records,
   }, { readTriggeredMigration: true })
-  if (!saved.ok) return { migrated: false, loaded: saved.current, revision: saved.current.globalRevision }
-  return { migrated: true, loaded: await load(projectDir), revision: saved.globalRevision }
+  if (!saved.ok)
+    return { migrated: false, presetsMigrated: false, loaded: saved.current, revision: saved.current.globalRevision }
+  return {
+    migrated: current.cataloguesMigrated,
+    presetsMigrated: current.presetsMigrated,
+    loaded: await load(projectDir),
+    revision: saved.globalRevision,
+  }
 }
 
 async function write(projectDir: string, input: SaveInput, options?: SaveOptions): Promise<SaveResult> {
@@ -389,9 +461,10 @@ async function write(projectDir: string, input: SaveInput, options?: SaveOptions
   const routed = route(input.records)
   // A migrating load reroutes v1 rows across stores, so the first save must
   // write v2 to both stores even when the rerouted records already match. The
-  // catalogue duplication is the same situation: both sides of `same` are
-  // already migrated, so only this flag makes the copies reach disk.
-  const forced = current.migrated || current.cataloguesMigrated
+  // catalogue duplication and the retired-preset move are the same situation:
+  // both sides of `same` are already migrated (the load applied them in
+  // memory), so only these flags make the moved records reach disk.
+  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
   // A read-triggered migration never writes a missing project store, and a
   // forced rewrite still never writes an empty one into a directory that has

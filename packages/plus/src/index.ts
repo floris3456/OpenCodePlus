@@ -3680,11 +3680,12 @@ async function mcpConfigTarget(projectDirectory: string): Promise<string> {
   return path.join(projectDirectory, ".opencode", "opencode.json")
 }
 
-// The one place the catalogue split reaches disk. `load` already duplicates
-// every shared Defaults row into the Teams catalogue in memory, so resolution
-// is correct from the first read; this persists that duplication as one
-// revision and logs it once. Idempotent: a migrated store finds nothing to do
-// and logs nothing.
+// The one place the load-time migrations reach disk. `load` already applies
+// them in memory — every shared Defaults row is duplicated into the Teams
+// catalogue, and every link or customization of a retired Plus preset moves to
+// the Basic team preset — so resolution is correct from the first read; this
+// persists what moved as one revision and logs each migration once.
+// Idempotent: a migrated store finds nothing to do and logs nothing.
 async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeof load>>> {
   const migration = await ensureCatalogues(directory)
   if (migration.migrated)
@@ -3694,6 +3695,15 @@ async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeo
       op: "migrate.catalogues",
       target: "root:defaults",
       summary: "migrate.catalogues: shared Defaults rows copied into the Teams catalogue",
+      revision: migration.revision,
+    })
+  if (migration.presetsMigrated)
+    await append(globalLogPath(), {
+      ts: new Date().toISOString(),
+      actor: { type: "tui" as const },
+      op: "migrate.presets",
+      target: "root:preset",
+      summary: "migrate.presets: retired Plus preset links and customizations moved to the Basic team",
       revision: migration.revision,
     })
   return migration.loaded

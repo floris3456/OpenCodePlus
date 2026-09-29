@@ -378,6 +378,20 @@ bytes and its exact meaning.
   `op: "migrate.catalogues"` log line (target `root:defaults`) naming that
   revision. Idempotent: the copies carry `catalogue: "teams"`, so later loads
   find nothing to do and log nothing.
+- **Retired-preset migration.** `store.migrateRemovedPresets` runs on every
+  `load` after the catalogue migration: every link that names one of the six
+  retired Plus agent presets (planner, orchestrator, implementer, reviewer,
+  scout, build-seat) or a member of a retired team preset
+  (`opencodeplus-team`, `starter`, `review`) moves to the Basic member preset
+  the old member carried, and a preset-level customization (level `preset`, no
+  team) owned by a retired agent preset moves onto its Basic member preset.
+  Anything else (a team-preset link, an unknown member id) is left alone and
+  reads as a missing preset. `load` reports `presetsMigrated`;
+  `ensureCatalogues` persists it, and `index.ts` appends one
+  `op: "migrate.presets"` log line (target `root:preset`). Idempotent: nothing
+  already naming a Basic member or carrying the Basic team address is touched.
+  Teams created from a retired team preset are ordinary on-disk teams and keep
+  loading; their member links are rewritten like any other link.
 - **Deferred.** MCP server enablement is host-global (one `ctx.mcp` config), so
   `apply.ts` reads it from the Agents catalogue; the Teams catalogue's `MCP`
   rows exist for parity and their enablement is not applied separately.
@@ -694,7 +708,7 @@ export interface ChainContext {
   readonly native?: ReadonlySet<string>
   readonly links?: readonly LinkRecord[]
   readonly entries?: readonly EntryRecord[]
-  readonly presets?: PresetCatalog // presets (ref, origin), shipped links, shipped(ref, item, section), model(ref)
+  readonly presets?: PresetCatalog // presets (ref, origin), shipped(ref, item, section), model(ref)
   readonly memberTeams?: ReadonlyMap<string, readonly string[]>
 }
 export type Scopes = ChainContext // scopesOf(agents) fills global, defaults and native (origin native|special)
@@ -890,24 +904,28 @@ the same catalogue from the snapshot's `items` and preset records.
   title, summary, compaction). `shipped(ref, item, null, upstream)` answers
   every item with the resolving item's upstream `{ text, state, pin? }` and
   `system:role` with the OpenCode agent's own role item text.
-- **Plus agent presets** (`plusAgentPresets`: planner, orchestrator,
-  implementer, reviewer, scout, build-seat; mode `primary`). Each ships every
-  item's upstream value, overlaid by `plusAgentOverrides[id]` (the former
-  role rules, DESIGN §6; see Teams without kinds), and `system:role` = `shared` +
-  the role block (`builtin-teams.ts` `teamRoles`; build-seat has its own).
-- **Plus team presets** (`plusTeamPresets`, from `builtin-teams.ts`:
-  opencodeplus-team, starter, review). A member preset ships its own role body
-  as `system:role` and `plusMemberOverrides[team][member]`; everything else
-  follows its shipped link (`shippedLinks`: `preset/<member>@<team>` →
-  its Plus agent preset).
+- **Plus agent presets** ship empty: the Plus agent group exists but lists
+  nothing. The six former Plus agent presets are the Basic team's member
+  presets now.
+- **Plus team preset** (`plusTeamPresets`, from `builtin-teams.ts`: one team,
+  `basic`). Its member presets are self-contained: each ships every item's
+  upstream value overlaid by its own overrides — the former agent preset's rows
+  merged with its in-team "Delegate to" rows
+  (`plusMemberOverrides[team][member]`) — plus `system:role` = its role body,
+  `setting:mode` and `setting:description` (`memberShipped`). Nothing links a
+  member preset to a hidden agent preset, so "from preset …" names the member
+  preset (`from preset Basic › planner`). The build seat keeps the dynamic
+  rule: every `perm:team_delegate:to.<teammate>` row (never
+  `to.other-teams`) ships on for a build seat however its teammates are named.
 - **User presets** are `PresetRecord`s (a member preset is `kind:"agent"`
   with `team`); they ship nothing, their content is ordinary `preset`-level
   records and their links.
 - No preset ships an active model yet (`model()` is always undefined).
 
 `presetListing(presets)` lists every preset as data `{ ref, origin, kind,
-label, description?, mode?, members? }` (OpenCode, Plus, User agent presets,
-then Plus and User team presets each followed by their member presets).
+label, description?, mode?, members? }` (OpenCode and User agent presets — the
+Plus agent group is empty — then Plus and User team presets each followed by
+their member presets).
 `presetCatalog({ items, presets })` builds the `PresetCatalog`;
 `chainContext({ agents, items, links, entries, presets, teams })` builds the
 full `ChainContext` (`scopesOf(agents)` plus links, entries, the catalogue and
@@ -1093,7 +1111,7 @@ with it. `preset.create` checks the id against every preset of that kind
 list (each member preset linked to the source member, the team linked to the
 source team). `preset.addMember` takes User team presets only
 (`preset.readonly`). `preset.delete` refuses OpenCode/Plus presets and, while
-any stored or shipped link points to the preset (or, for a team preset, to one
+any stored link points to the preset (or, for a team preset, to one
 of its members from outside it), answers `preset.inUse { users, elsewhere? }`
 with the owners' row ids; it removes the preset's records, its members' and
 their links. User presets live in the global store but a project's links live
@@ -1581,9 +1599,10 @@ any agent of an enabled team. `teams/policy.ts` holds only the team tool lists.
 
 Every former hidden rule is a **shared catalogue row** (`permission-catalog.ts`,
 no `agents`, so every agent has it). An agent that nothing sets resolves it to
-its fallback (§3.3: off, unless the agent is from OpenCode). The **Plus presets**
-(`presets.ts` `plusAgentOverrides`, `plusMemberOverrides`) set them so an agent
-linked to a Plus preset behaves like the old role of that name, row for row.
+its fallback (§3.3: off, unless the agent is from OpenCode). The **Basic member
+presets** (`presets.ts`: the former agent overrides merged into
+`plusMemberOverrides`) set them so an agent linked to a Basic member behaves
+like the old role of that name, row for row.
 The team tools read the rows through the permission table
 (`PlusState.permissions`, rebuilt on every publish) for the right member — the
 caller, or the member a brief or correction names. **Without a table (bare unit
@@ -1599,8 +1618,8 @@ refused, a requirement demands nothing, a bound is absent.
 | delegated planner may not delegate | `perm:team_delegate:access.delegated`, Access → Delegate from a delegated run | the caller |
 | implementer target needs `scope.paths` | `perm:team_get_context:accepts.scope-paths`, Briefs it accepts → Scope paths for a commit (`E_PATHS`) | the target |
 | planner target only plan files | `perm:team_get_context:accepts.plan-files`, … → Plan files only (allow-list, patterns `docs/plans/*`, `docs/handoffs/*`, matched as given or under any directory; `E_PATHS`) | the target |
-| orchestrator target needs a reason; spark's reason | `perm:team_get_context:accepts.reason`, … → A reason (`E_REASON`; replaces the caller-side "Reason when delegating to an orchestrator") | the target |
-| spark: exactly one check, ≤5 paths | `accepts.check` → A check; `limits.paths` Brief limits → Paths per brief (5); `limits.checks` → Checks per brief (1) (`E_BRIEF`) | the target |
+| orchestrator target needs a reason | `perm:team_get_context:accepts.reason`, … → A reason (`E_REASON`; replaces the caller-side "Reason when delegating to an orchestrator") | the target |
+| a target may need one check, ≤5 paths | `accepts.check` → A check; `limits.paths` Brief limits → Paths per brief (5); `limits.checks` → Checks per brief (1) (`E_BRIEF`); any preset or user edit can set them | the target |
 | reviewer cannot be followed up | `perm:team_get_context:accepts.followup`, … → Corrections by followup (off: `E_NO_FOLLOWUP`) | the child |
 | Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, supersede, status, wait, diff, list; shipped off | the caller |
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
@@ -1613,7 +1632,7 @@ refused, a requirement demands nothing, a bound is absent.
 | Tavily narrowing | `tool:search_tavily_search`, `tool:search_tavily_extract` | tool plans |
 | grep secret files | grep → Files rows (as read's) and Include filters `env`, `keys` | tool hook |
 
-What the Plus agent presets set (every other row is the catalogue's shipped value):
+What the Basic member presets set (every other row is the catalogue's shipped value):
 
 - **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
   `team_integrate`, `team_checkpoint`, `team_set_checks`, `team_check` off;
@@ -1636,15 +1655,14 @@ What the Plus agent presets set (every other row is the catalogue's shipped valu
 - **scout** — as reviewer, taking corrections.
 - **build-seat** — Runs on for status, wait, list; `tool:shell`,
   `tool:question`, `tool:subagent`, Start a team run and Delegate from a
-  delegated run on; every "Delegate to" row of its team on (not Members of
-  other teams).
+  delegated run on; every "Delegate to" row on, whoever the teammate is (not
+  Members of other teams).
 
-The shipped team presets' member presets add each member's "Delegate to" rows
-by its teammates' presets (planner → orchestrators; orchestrator →
-orchestrators, implementers, reviewers, scouts) and spark-implementer's A
-reason, A check, Paths per brief and Checks per brief on. They name teammates
-by the team preset's member ids: a teammate renamed after the team was created
-gets a new, off "Delegate to" row.
+The Basic member presets add each member's "Delegate to" rows by its
+teammates' roles (planner → orchestrator; orchestrator → implementer, reviewer,
+scout; build seat → every teammate). They name teammates by the member ids the
+Basic roster carries: a teammate renamed after the team was created gets a new,
+off "Delegate to" row, while the build seat's rows stay on dynamically.
 
 #### Per-member rows (`instructions/team-policy-rows.ts`)
 

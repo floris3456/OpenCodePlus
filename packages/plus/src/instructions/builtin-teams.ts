@@ -1,23 +1,22 @@
-// The Plus team presets' source data (DESIGN §3.5), not files on disk.
+// The Plus team preset's source data (DESIGN §3.5), not files on disk.
 //
 // `packages/plus/package.json` declares `"files": ["dist"]` and the build is
 // plain `tsc`, so a markdown directory under `src/` would not be published
-// and would break at runtime. The teams live here as exported source
-// constants, following the `teaching.ts` pattern. They are no longer Defaults
-// teams: `presets.ts` turns them into Plus team presets (each member linked to
-// its Plus agent preset), and `team.create` copies one into a project or
-// global team. `teamRoles` feeds the Plus agent presets' role text.
+// and would break at runtime. The team lives here as an exported source
+// constant, following the `teaching.ts` pattern. It is not a Defaults team:
+// `presets.ts` turns it into the Plus team preset `basic` (each member
+// self-contained), and `team.create` copies it into a project or global team.
+// `teamRoles` carries the role blocks the Basic members' bodies compose.
+//
+// The six members are the former Plus agent presets: `shared` first, then the
+// role's own block, verbatim from docs/team-v2/04-handoff-contract.md §5.
+// Members carry the agent fields that describe them (description, mode) and
+// NO permissions: what a member may do is its instructions rows, which its
+// member preset sets (`presets.ts`) and `instructions/apply.ts` installs.
 //
 // Placeholder product content: minimal, obvious, and easy to replace. Tests
 // must not couple to this roster; behaviour tests supply fixture registries
 // and only `builtin-teams.test.ts` asserts over the real one.
-//
-// `opencodeplus-team` carries the ten team roles verbatim from
-// docs/team-v2/04-handoff-contract.md §5: shared.md first, then the role's
-// own block. Members carry the agent fields that describe them (description,
-// mode) and NO permissions: what a member may do is its instructions rows,
-// which its Plus agent and member presets set (`presets.ts`) and
-// `instructions/apply.ts` installs.
 import type { TeamFields } from "./teams-apply.js"
 
 export interface BuiltinTeamMember {
@@ -28,6 +27,8 @@ export interface BuiltinTeamMember {
 
 export interface BuiltinTeam {
   readonly name: string
+  /** The team preset's display label; absent = the name. */
+  readonly label?: string
   readonly members: readonly BuiltinTeamMember[]
 }
 
@@ -138,8 +139,16 @@ const scout = `Find things, report compactly: exact file:line with a one-line no
 Read broadly, return little. No design opinions, no edits, no delegation.
 Finish with status done and the findings in summary.`
 
-/** `shared` plus one block per role: a Plus agent preset's role text is `shared` + its block. */
-export const teamRoles = { shared, planner, orchestrator, implementer, reviewer, scout } as const
+const buildSeat = `You are the build seat: the team's seat in the user's chat. Take the request,
+decide who does it and coordinate: planning to a planner, owned execution to an
+orchestrator, a small bounded piece straight to an implementer, a lookup to a
+scout, a review to a reviewer. You may delegate to every member. Follow your
+runs with team_status, team_wait and team_diff, answer their needs with
+team_followup, and report back to the user what was done and what is left.
+Do the work yourself only when delegating would cost more than it saves.`
+
+/** `shared` plus one block per member: a Basic member's role text is `shared` + its block. */
+export const teamRoles = { shared, planner, orchestrator, implementer, reviewer, scout, buildSeat } as const
 
 function member(id: string, description: string, role: string): BuiltinTeamMember {
   return {
@@ -149,46 +158,22 @@ function member(id: string, description: string, role: string): BuiltinTeamMembe
   }
 }
 
+/**
+ * The one shipped team: `basic`, the six former Plus agent presets as its
+ * members. `presets.ts` makes each member preset self-contained from this data
+ * (role text, description, mode, and its rows).
+ */
 export const builtinTeams: readonly BuiltinTeam[] = [
   {
-    name: "starter",
+    name: "basic",
+    label: "Basic",
     members: [
-      {
-        id: "planner",
-        body: "You are a planner. Break the task into small steps and list them before acting.",
-      },
-      {
-        id: "helper",
-        body: "You are a helper. Answer concisely and cite the files you read.",
-      },
-    ],
-  },
-  {
-    name: "review",
-    members: [
-      {
-        id: "reviewer",
-        body: "You are a reviewer. Check the change for correctness and list issues first.",
-      },
-      {
-        id: "editor",
-        body: "You are an editor. Tighten the wording without changing the meaning.",
-      },
-    ],
-  },
-  {
-    name: "opencodeplus-team",
-    members: [
-      member("fable-planner", "Fable planner: turns goals into exact task plans with paths and checks", planner),
-      member("astra-planner", "Astra planner: turns goals into exact task plans with paths and checks", planner),
-      member("sol-orchestrator", "Sol orchestrator: owns work, delegates by task, verifies and integrates", orchestrator),
-      member("opus-orchestrator", "Opus orchestrator: owns work, delegates by task, verifies and integrates", orchestrator),
-      member("muse-implementer", "Muse implementer: executes the brief inside scope and finishes", implementer),
-      member("gemini-implementer", "Gemini implementer: executes bounded work inside scope and finishes", implementer),
-      member("spark-implementer", "Spark implementer: rapid edit and check loops for a small piece", implementer),
-      member("opus-implementer", "Genuinely hard or mistake-costly tasks", implementer),
-      member("astra-reviewer", "Astra reviewer: reviews diffs against the brief with findings", reviewer),
-      member("scout", "Scout: finds things and reports exact file locations compactly", scout),
+      member("planner", "Turns goals into exact task plans with paths and checks", planner),
+      member("orchestrator", "Owns work, delegates by task, verifies and integrates", orchestrator),
+      member("implementer", "Executes the brief inside scope and finishes", implementer),
+      member("reviewer", "Reviews diffs against the brief with findings", reviewer),
+      member("scout", "Finds things and reports exact file locations compactly", scout),
+      member("build-seat", "Coordinates the team from the chat and may delegate to every member", buildSeat),
     ],
   },
 ]

@@ -42,7 +42,7 @@ Origin is computed server-side (`special` for `title|summary|compaction`, `nativ
 
 Team and member rows carry `add: "agent"`. On-disk members (project/global, or a Defaults overlay file) are removable through `team.removeAgent`; shipped Defaults members are not. Team creation asks for a name, then a team preset or an empty team. Project/Global uses the selected scope; Defaults prompts for scope.
 
-Hidden is a visibility setting, not an origin: `general` and `explore` stay ordinary OpenCode agents. The displayed OpenCode origin keeps stored `native` row ids, API discriminators, and `group:native` filters compatible. Presets → Agents retains OpenCode, Plus, and User presets; Presets → Teams has only Plus and User, because OpenCode ships no teams.
+Hidden is a visibility setting, not an origin: `general` and `explore` stay ordinary OpenCode agents. The displayed OpenCode origin keeps stored `native` row ids, API discriminators, and `group:native` filters compatible. Presets → Agents retains OpenCode and User presets (the Plus agent group stays emitted but ships empty); Presets → Teams has only Plus and User, because OpenCode ships no teams, and Plus ships exactly one team preset, `basic` (planner, orchestrator, implementer, reviewer, scout, build-seat), whose self-contained member presets are the six former Plus agent presets. A member preset names only itself: "from preset Basic › planner", never a hidden agent preset.
 
 ```
 <Agent>
@@ -136,7 +136,7 @@ Up/down move, left collapse/parent, right expand, Enter edit text (or diff on ye
 
 ## Storage
 
-Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl` (`level === "project"` only), global scope and Defaults in `<configDir>/opencodeplus/instructions/records.jsonl` (global and defaults levels). Each store tracks its own revision from its file header. Saves supply separate expected project and global revisions and serialize under a process-wide global gate plus the per-project gate in a fixed order, so concurrent projects cannot clobber the shared global file. Stale saves identify the conflicting store (`project` or `global`), and a save only writes and bumps the store whose routed records actually changed (a project-only save leaves the global revision untouched and vice versa). Format is v2 JSONL: a `{"version":2,"revision":n}` header line, then one canonical record per line. Customization, split, model, and rule records support an optional `team: { level, team }` field scoping the override to that team so it applies only while the team is enabled, and an optional `catalogue: "agents" | "teams"` on shared (`agent: null`) rows — absent means `agents`, so pre-split records are byte-identical. On the first load of a store where no record carries a catalogue, every shared Defaults record is copied into the Teams catalogue, persisted as one revision and recorded by one `migrate.catalogues` log line; the copies make the check false, so the migration never repeats. A v1 `records.jsonl` header (no `version`) is migrated on load and the first save writes v2 to both stores, so v1 is never written and the two formats never sit side by side.
+Two stores: project scope in `<project>/.opencodeplus/instructions/records.jsonl` (`level === "project"` only), global scope and Defaults in `<configDir>/opencodeplus/instructions/records.jsonl` (global and defaults levels). Each store tracks its own revision from its file header. Saves supply separate expected project and global revisions and serialize under a process-wide global gate plus the per-project gate in a fixed order, so concurrent projects cannot clobber the shared global file. Stale saves identify the conflicting store (`project` or `global`), and a save only writes and bumps the store whose routed records actually changed (a project-only save leaves the global revision untouched and vice versa). Format is v2 JSONL: a `{"version":2,"revision":n}` header line, then one canonical record per line. Customization, split, model, and rule records support an optional `team: { level, team }` field scoping the override to that team so it applies only while the team is enabled, and an optional `catalogue: "agents" | "teams"` on shared (`agent: null`) rows — absent means `agents`, so pre-split records are byte-identical. On the first load of a store where no record carries a catalogue, every shared Defaults record is copied into the Teams catalogue, persisted as one revision and recorded by one `migrate.catalogues` log line; the copies make the check false, so the migration never repeats. On load, every link naming a retired Plus agent preset (planner, orchestrator, implementer, reviewer, scout, build-seat) or a member of a retired team preset (`opencodeplus-team`, `starter`, `review`) moves to the Basic member preset the old member carried, and a preset-level customization of a retired agent preset moves onto its Basic member preset; that is persisted in the same revision and recorded by one `migrate.presets` log line. Teams already created from a retired team preset are ordinary on-disk teams and keep loading. A v1 `records.jsonl` header (no `version`) is migrated on load and the first save writes v2 to both stores, so v1 is never written and the two formats never sit side by side.
 
 Teams: project teams in `<project>/.opencodeplus/teams/<team>/<id>.md`, global teams in `<configDir>/opencodeplus/teams/<team>/<id>.md`, Defaults overlay in `<configDir>/opencodeplus/teams-defaults/<team>/<id>.md` (same-id overlay files replace built-in members, new ids append; still `level: "defaults"`).
 
@@ -198,11 +198,11 @@ nothing is read from its name: it is a set of instructions rows, so you can see
 it, edit it and override it like anything else in the tree. A team member is
 any agent of an enabled team. Every team rule is a row every agent has (the
 tool's Permissions); an agent nothing sets reads it **off**, and a **preset**
-sets it. Create a member from a Plus preset (planner, orchestrator,
+sets it. Create a member from a Basic member preset (planner, orchestrator,
 implementer, reviewer, scout, build seat) and it behaves like that role; name
 it anything.
 
-What the Plus presets set (on = permitted):
+What the Basic member presets set (on = permitted):
 
 | | planner | orchestrator | implementer | reviewer | scout | build seat |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -236,8 +236,9 @@ turn its `Runs` rows on.
 "Briefs it accepts" and "Brief limits" (under `team_get_context`) are read for
 the member a brief **names**, not for the one delegating: A reason, A check,
 Scope paths for a commit, Plan files only, Corrections by followup, Paths per
-brief and Checks per brief. The shipped team's `spark-implementer` needs a
-reason and exactly one check and takes at most 5 paths.
+brief and Checks per brief. A member preset or a user edit sets them; the
+shipped Basic roles keep their old answers (a planner's target accepts plan
+files only, an orchestrator's target needs a reason, and so on).
 
 Every agent also has `team_delegate` bounds that ship on — 4 children working
 at once, depth 3, briefs of up to 6000 characters, 12 live team runs; in a
@@ -263,9 +264,9 @@ implied. Replayed admissions label the original `receipt` and expose a fresh
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
 Permissions → Delegate to`. It holds one row per other member of the same
 team, named by its id and shipped off, plus `Members of other teams` (off). A
-member created from a shipped team preset has the rows for its teammates on
-(planners → orchestrators; orchestrators → orchestrators, implementers,
-reviewers, scouts); a build seat has every teammate on. Space turns a row on
+member created from the shipped Basic preset has its teammate rows on by role
+(planner → orchestrator; orchestrator → implementer, reviewer, scout); a build
+seat has every teammate's row on. Space turns a row on
 or off. The member's `team_delegate` then offers exactly the teammates that
 are on as its `role`, and a refused delegation (`E_ROLE`) names who is open.
 Like any row, the change can be made at Project, Global or Defaults level.

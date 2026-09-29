@@ -5,7 +5,7 @@
 // Pure data and functions, no filesystem: the server, the TUI and the tools
 // all import this module and compute the same catalogue — the client from the
 // snapshot's items and records, so shipped content never crosses the wire.
-import { builtinTeams, teamRoles } from "./builtin-teams.js"
+import { builtinTeams } from "./builtin-teams.js"
 import { controlItems, isControl } from "./agent-controls.js"
 import {
   fingerprint,
@@ -28,7 +28,10 @@ import {
 /** One Native agent preset per native opencode agent (§3.4). */
 export const nativePresetIds = ["build", "plan", "general", "explore", "title", "summary", "compaction"] as const
 
-export type PlusAgentPresetId = "planner" | "orchestrator" | "implementer" | "reviewer" | "scout" | "build-seat"
+/** The one shipped team preset and the members it carries. */
+export const basicTeamId = "basic"
+export type BasicMemberId = "planner" | "orchestrator" | "implementer" | "reviewer" | "scout" | "build-seat"
+export const basicMemberIds: readonly BasicMemberId[] = ["planner", "orchestrator", "implementer", "reviewer", "scout", "build-seat"]
 
 /** A shipped answer for one item that differs from the item's own shipped value. */
 export interface PresetOverride {
@@ -40,29 +43,54 @@ export interface PresetOverride {
 /** Item id → override. */
 export type PresetOverrides = Readonly<Record<string, PresetOverride>>
 
-export interface PlusAgentPreset {
-  readonly id: PlusAgentPresetId
-  readonly label: string
-  readonly description: string
-  readonly mode: "primary"
-  /** The preset's `system:role`: `shared` plus the role block. */
-  readonly role: string
-}
-
+/** One member of the shipped Basic team preset. */
 export interface PlusMemberPreset {
-  readonly id: string
-  /** The Plus agent preset the member preset is linked to (a shipped link). */
-  readonly preset?: PlusAgentPresetId
-  /** The member's own role body (its `system:role`). */
+  readonly id: BasicMemberId
+  /** The member's own role body (its `system:role`): `shared` plus its role block. */
   readonly role: string
   readonly description: string
   readonly mode: string
+  /**
+   * Everything the member preset sets besides role, mode and description: the
+   * rows the former Plus agent preset of the same name set, merged with the
+   * member's in-team "Delegate to" rows. A member preset is self-contained and
+   * links to nothing.
+   */
+  readonly overrides: PresetOverrides
 }
 
 export interface PlusTeamPreset {
   readonly id: string
   readonly label: string
   readonly members: readonly PlusMemberPreset[]
+}
+
+/**
+ * The retired Plus presets, for the load-time migration (`store.ts`
+ * `migrateRemovedPresets`): the six Plus agent preset ids, which are also the
+ * Basic member ids, and the member ids of the retired team presets
+ * (`opencodeplus-team`, `starter`, `review`) that map onto a Basic member.
+ */
+export const retiredMemberPresets: Readonly<Record<string, Readonly<Record<string, BasicMemberId>>>> = {
+  "opencodeplus-team": {
+    "fable-planner": "planner",
+    "astra-planner": "planner",
+    "sol-orchestrator": "orchestrator",
+    "opus-orchestrator": "orchestrator",
+    "muse-implementer": "implementer",
+    "gemini-implementer": "implementer",
+    "spark-implementer": "implementer",
+    "opus-implementer": "implementer",
+    "astra-reviewer": "reviewer",
+    scout: "scout",
+  },
+  starter: { planner: "planner", helper: "implementer" },
+  review: { reviewer: "reviewer", editor: "implementer" },
+}
+
+/** The Basic member a retired Plus agent preset id names; undefined when it is no retired preset. */
+export function basicMemberForRetiredAgent(id: string): BasicMemberId | undefined {
+  return (basicMemberIds as readonly string[]).includes(id) ? (id as BasicMemberId) : undefined
 }
 
 /** A preset as the create flows and the tree list it (data only, no UI). */
@@ -92,29 +120,12 @@ export interface ContextInput extends PresetState {
   readonly teams?: readonly { readonly team: string; readonly agents: readonly string[] }[]
 }
 
-const buildSeatRole = `You are the build seat: the team's seat in the user's chat. Take the request,
-decide who does it and coordinate: planning to a planner, owned execution to an
-orchestrator, a small bounded piece straight to an implementer, a lookup to a
-scout, a review to a reviewer. You may delegate to every member. Follow your
-runs with team_status, team_wait and team_diff, answer their needs with
-team_followup, and report back to the user what was done and what is left.
-Do the work yourself only when delegating would cost more than it saves.`
-
-export const plusAgentPresets: readonly PlusAgentPreset[] = [
-  plusAgent("planner", "Planner", "Turns goals into exact task plans with paths and checks", teamRoles.planner),
-  plusAgent("orchestrator", "Orchestrator", "Owns work, delegates by task, verifies and integrates", teamRoles.orchestrator),
-  plusAgent("implementer", "Implementer", "Executes the brief inside scope and finishes", teamRoles.implementer),
-  plusAgent("reviewer", "Reviewer", "Reviews diffs against the brief with findings", teamRoles.reviewer),
-  plusAgent("scout", "Scout", "Finds things and reports exact file locations compactly", teamRoles.scout),
-  plusAgent("build-seat", "Build seat", "Coordinates the team from the chat and may delegate to every member", buildSeatRole),
-]
-
-// ── what the Plus agent presets set (DESIGN §6) ─────────────────────────────
+// ── what the Basic member presets set (DESIGN §6) ───────────────────────────
 //
 // Every former hidden team rule is an ordinary row now; these tables are the
-// rows each preset answers differently from the row's own shipped value, so
-// an agent linked to a preset behaves like the old role of that name did,
-// and nothing is read from the agent's id.
+// rows each member preset answers differently from the row's own shipped value,
+// so an agent linked to a member preset behaves like the old role of that name
+// did, and nothing is read from the agent's id.
 
 const on: PresetOverride = { state: "on" }
 const off: PresetOverride = { state: "off" }
@@ -185,10 +196,11 @@ const worker: PresetOverrides = {
 }
 
 /**
- * Per Plus agent preset: the shipped answers that differ from each item's
- * own shipped value (§3.5).
+ * Per Basic member: the shipped answers that differ from each item's own
+ * shipped value (§3.5) — what the former Plus agent preset of the same name
+ * set.
  */
-export const plusAgentOverrides: Readonly<Record<PlusAgentPresetId, PresetOverrides>> = {
+const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   planner: {
     ...secrets,
     ...rows(off, ["tool:shell", "tool:subagent", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
@@ -243,69 +255,43 @@ export const plusAgentOverrides: Readonly<Record<PlusAgentPresetId, PresetOverri
 
 // The build seat "may delegate to every member": every "Delegate to" row of
 // its team ships on, whoever the teammate is. Members of other teams stay off.
-function buildSeatDelegates(item: string): ShippedValue | undefined {
+// The Basic member preset names its teammates explicitly; this stays as the
+// fallback for a build seat in any other team, exactly as the retired agent
+// preset behaved.
+function buildSeatDelegates(team: string, member: string, item: string): ShippedValue | undefined {
+  if (team !== basicTeamId || member !== "build-seat") return undefined
   if (!item.startsWith("perm:team_delegate:to.") || item === "perm:team_delegate:to.other-teams") return undefined
   return { state: "on" }
 }
 
-// Who a Plus agent preset delegates to, by the teammate's own preset:
-// planners hand plans to orchestrators; orchestrators split work among
-// orchestrators, implementers, reviewers and scouts and never back to a
-// planner. The shipped team presets turn this into their members' "Delegate
-// to" rows below.
-const delegation: Readonly<Partial<Record<PlusAgentPresetId, readonly PlusAgentPresetId[]>>> = {
+// Who a Basic member delegates to, by the teammate's own member id: planners
+// hand plans to orchestrators; orchestrators split work among orchestrators,
+// implementers, reviewers and scouts and never back to a planner; the build
+// seat delegates to every member. The Basic member presets turn this into
+// their members' "Delegate to" rows below.
+const delegation: Readonly<Partial<Record<BasicMemberId, readonly BasicMemberId[]>>> = {
   planner: ["orchestrator"],
   orchestrator: ["orchestrator", "implementer", "reviewer", "scout"],
   "build-seat": ["planner", "orchestrator", "implementer", "reviewer", "scout"],
 }
 
-// Which Plus agent preset each shipped team member is created from.
-const memberAgentPresets: Readonly<Record<string, Readonly<Record<string, PlusAgentPresetId>>>> = {
-  "opencodeplus-team": {
-    "fable-planner": "planner",
-    "astra-planner": "planner",
-    "sol-orchestrator": "orchestrator",
-    "opus-orchestrator": "orchestrator",
-    "muse-implementer": "implementer",
-    "gemini-implementer": "implementer",
-    "spark-implementer": "implementer",
-    "opus-implementer": "implementer",
-    "astra-reviewer": "reviewer",
-    scout: "scout",
-  },
-  starter: { planner: "planner", helper: "implementer" },
-  review: { reviewer: "reviewer", editor: "implementer" },
-}
-
-// Member-specific answers besides "Delegate to": the rapid-loop implementer
-// takes a small, justified piece with exactly one check.
-const memberExtras: Readonly<Record<string, Readonly<Record<string, PresetOverrides>>>> = {
-  "opencodeplus-team": {
-    "spark-implementer": rows(on, [
-      "perm:team_get_context:accepts.reason",
-      "perm:team_get_context:accepts.check",
-      "perm:team_get_context:limits.paths",
-      "perm:team_get_context:limits.checks",
-    ]),
-  },
-}
-
 /**
- * Per Plus team preset, per member: shipped answers of the member preset
- * besides its role body — its "Delegate to" rows for its teammates (by the
- * teammates' presets) and spark's brief rows. Anything a member preset does
- * not set falls through to its agent preset.
+ * Per team preset, per member: shipped answers of the member preset besides
+ * its role body — its former agent preset's rows merged with its "Delegate to"
+ * rows for its teammates (by the teammates' member ids). A member preset is
+ * self-contained: what it does not set falls through to the item's own value,
+ * never to a hidden agent preset.
  */
 export const plusMemberOverrides: Readonly<Record<string, Readonly<Record<string, PresetOverrides>>>> = Object.fromEntries(
-  Object.entries(memberAgentPresets).map(([team, members]) => [
-    team,
+  builtinTeams.map((team) => [
+    team.name,
     Object.fromEntries(
-      Object.entries(members).map(([member, preset]) => {
-        const targets = delegation[preset] ?? []
-        const delegates = Object.entries(members)
-          .filter(([peer, peerPreset]) => peer !== member && targets.includes(peerPreset))
-          .map(([peer]) => `perm:team_delegate:to.${peer}`)
-        return [member, { ...rows(on, delegates), ...memberExtras[team]?.[member] }]
+      team.members.map((member): [string, PresetOverrides] => {
+        const targets = delegation[member.id as BasicMemberId] ?? []
+        const delegates = team.members
+          .filter((peer) => peer.id !== member.id && (targets as readonly string[]).includes(peer.id))
+          .map((peer) => `perm:team_delegate:to.${peer.id}`)
+        return [member.id, { ...(memberBaseOverrides[member.id as BasicMemberId] ?? {}), ...rows(on, delegates) }]
       }),
     ),
   ]),
@@ -313,42 +299,21 @@ export const plusMemberOverrides: Readonly<Record<string, Readonly<Record<string
 
 export const plusTeamPresets: readonly PlusTeamPreset[] = builtinTeams.map((team) => ({
   id: team.name,
-  label: team.name,
-  members: team.members.map((member): PlusMemberPreset => {
-    const preset = memberAgentPresets[team.name]?.[member.id]
-    const agent = plusAgentPresets.find((entry) => entry.id === preset)
-    return {
-      id: member.id,
-      ...(preset === undefined ? {} : { preset }),
-      role: member.body,
-      description: member.fields?.description ?? agent?.description ?? "",
-      mode: member.fields?.mode ?? "primary",
-    }
-  }),
+  label: team.label ?? team.name,
+  members: team.members.map((member): PlusMemberPreset => ({
+    id: member.id as BasicMemberId,
+    role: member.body,
+    description: member.fields?.description ?? "",
+    mode: member.fields?.mode ?? "primary",
+    overrides: plusMemberOverrides[team.name]?.[member.id] ?? {},
+  })),
 }))
-
-/** Links that ship with the Plus team presets: each member preset → its Plus agent preset. */
-export const shippedLinks: readonly LinkRecord[] = plusTeamPresets.flatMap((team) =>
-  team.members.flatMap((member): LinkRecord[] =>
-    member.preset === undefined
-      ? []
-      : [
-          {
-            type: "link",
-            level: "preset",
-            agent: member.id,
-            team: { level: "preset", team: team.id },
-            preset: { kind: "agent", id: member.preset },
-            updated: "",
-          },
-        ],
-  ),
-)
 
 /**
  * Every preset, grouped the way the create picker lists them: Native agent
- * presets, Plus agent presets, User agent presets, then team presets (Plus,
- * then User), each followed by its member presets. A user preset whose ref a
+ * presets, User agent presets, then team presets (Plus, then User), each
+ * followed by its member presets. The Plus agent group ships empty: its six
+ * presets are the Basic team's member presets now. A user preset whose ref a
  * shipped preset already takes is dropped (create refuses it).
  */
 export function presetListing(
@@ -367,16 +332,6 @@ export function presetListing(
       ...(fields?.mode === undefined ? {} : { mode: fields.mode }),
     }
   })
-  const plus = plusAgentPresets.map(
-    (preset): PresetEntry => ({
-      ref: { kind: "agent", id: preset.id },
-      origin: "plus",
-      kind: "agent",
-      label: preset.label,
-      description: preset.description,
-      mode: preset.mode,
-    }),
-  )
   const user = presets
     .filter((record) => record.kind === "agent" && record.team === undefined)
     .map((record): PresetEntry => userEntry(record, { kind: "agent", id: record.id }, record.id))
@@ -411,7 +366,7 @@ export function presetListing(
       ]
     })
   const seen = new Set<string>()
-  return [...native, ...plus, ...user, ...plusTeams, ...userTeams].filter((entry) => {
+  return [...native, ...user, ...plusTeams, ...userTeams].filter((entry) => {
     const key = presetKey(entry.ref)
     if (seen.has(key)) return false
     seen.add(key)
@@ -420,15 +375,15 @@ export function presetListing(
 }
 
 /**
- * The preset catalogue the chain reads (§3.2): every preset with its origin,
- * the shipped links, and the shipped content of Native and Plus presets.
- * Shipped content is computed on read and never stored:
+ * The preset catalogue the chain reads (§3.2): every preset with its origin
+ * and the shipped content of Native and Plus presets. Shipped content is
+ * computed on read and never stored:
  * - a Native preset answers every item with its upstream value (state, text,
  *   pin) and `system:role` with its native agent's prompt;
- * - a Plus agent preset answers every item with its shipped value, its
- *   overrides over that, and `system:role` with its role text;
- * - a Plus member preset answers `system:role` with its own body and its
- *   overrides; everything else falls through its shipped link.
+ * - a Basic member preset answers every item with its upstream value overlaid
+ *   by its overrides, `system:role` with its own body, and `setting:mode` /
+ *   `setting:description` with its fields. It is self-contained: it ships no
+ *   links and depends on no agent preset.
  * No preset ships an active model yet.
  */
 export function presetCatalog(input: { readonly items: readonly Item[]; readonly presets?: readonly PresetRecord[] }): PresetCatalog {
@@ -440,23 +395,14 @@ export function presetCatalog(input: { readonly items: readonly Item[]; readonly
   )
   return {
     presets: presetListing(input.presets).map((entry) => ({ ref: entry.ref, origin: entry.origin })),
-    links: shippedLinks,
     shipped: (ref, item, section, upstream) => {
       if (section !== null || ref.kind === "team") return undefined
-      if (ref.kind === "member") return memberShipped(ref.team, ref.id, item)
+      if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream)
       if (isControl(item) && (nativePresetIds as readonly string[]).includes(ref.id))
         return valueOf(input.items.find((entry) => entry.id === item && entry.agents?.includes(ref.id)))
       if ((nativePresetIds as readonly string[]).includes(ref.id))
         return valueOf(item === "system:role" ? roles.get(ref.id) : upstream)
-      const plus = plusAgentPresets.find((preset) => preset.id === ref.id)
-      if (plus === undefined) return undefined
-      if (item === "setting:mode") return { text: plus.mode }
-      if (item === "setting:description") return { text: plus.description }
-      if (isControl(item)) return undefined
-      const shipped = item === "system:role" ? { text: plus.role, state: "on" as const } : valueOf(upstream)
-      const override = plusAgentOverrides[plus.id][item] ?? (plus.id === "build-seat" ? buildSeatDelegates(item) : undefined)
-      if (override === undefined) return shipped
-      return { ...shipped, ...override }
+      return undefined
     },
     model: () => undefined,
   }
@@ -525,32 +471,26 @@ export function ownerRowId(owner: Pick<RecordScope, "level" | "agent" | "team">)
   return `agent:${owner.level}:${owner.agent}`
 }
 
-/** The preset `owner` is linked to: its stored link, else the link it ships with. */
+/** The preset `owner` is linked to: its stored link, if it has one. */
 export function linkOf(links: readonly LinkRecord[], owner: RecordScope): PresetRef | undefined {
-  return (
-    links.find((record) => scopedTo(record, owner))?.preset ??
-    shippedLinks.find((record) => scopedTo(record, owner))?.preset
-  )
+  return links.find((record) => scopedTo(record, owner))?.preset
 }
 
 /**
- * Everything linked to a preset (stored and shipped links), as owner row ids.
- * A team preset is in use when anything links to it or to one of its member
- * presets; its own members' links do not count.
+ * Everything linked to a preset, as owner row ids. A team preset is in use
+ * when anything links to it or to one of its member presets.
  */
 export function presetUsers(links: readonly LinkRecord[], ref: PresetRef): string[] {
-  const inside = (record: LinkRecord) =>
-    ref.kind === "team" && record.level === "preset" && record.team?.level === "preset" && record.team.team === ref.id
   const targets = (target: PresetRef) =>
     presetKey(target) === presetKey(ref) || (ref.kind === "team" && target.kind === "member" && target.team === ref.id)
-  return [...new Set([...links, ...shippedLinks].filter((record) => targets(record.preset) && !inside(record)).map(ownerRowId))]
+  return [...new Set(links.filter((record) => targets(record.preset)).map(ownerRowId))]
 }
 
 /**
  * The presets a link from `owner` to `target` would pass through before
  * reaching `owner` again (presetKey form), following each preset's stored
- * then shipped link; undefined when the chain never comes back (§3.2: cycles
- * are refused on write).
+ * link; undefined when the chain never comes back (§3.2: cycles are refused
+ * on write).
  */
 export function linkCycle(links: readonly LinkRecord[], owner: PresetRef, target: PresetRef): string[] | undefined {
   const walk = (current: PresetRef | undefined, path: readonly string[]): string[] | undefined => {
@@ -563,7 +503,7 @@ export function linkCycle(links: readonly LinkRecord[], owner: PresetRef, target
   return walk(target, [])
 }
 
-/** presetKey → the label the listing shows (`Orchestrator`, `review › editor`). */
+/** presetKey → the label the listing shows (`Build`, `Basic › planner`). */
 export function presetLabels(listing: readonly PresetEntry[]): ReadonlyMap<string, string> {
   return new Map(listing.map((entry) => [presetKey(entry.ref), entry.label]))
 }
@@ -620,17 +560,26 @@ export function validateEntryName(raw: string): { ok: true; name: string } | { o
   return { ok: true, name }
 }
 
-function plusAgent(id: PlusAgentPresetId, label: string, description: string, role: string): PlusAgentPreset {
-  return { id, label, description, mode: "primary", role: `${teamRoles.shared}\n\n${role}` }
-}
-
-function memberShipped(team: string, id: string, item: string): ShippedValue | undefined {
+// A Basic member preset ships every item: the item's own value overlaid by the
+// member's overrides, exactly as the retired agent preset did, so an agent
+// linked to a member preset keeps every row it had. Controls and sections are
+// not shipped (they resolve from records and configuration).
+function memberShipped(
+  team: string,
+  id: string,
+  item: string,
+  upstream: Pick<Item, "text" | "enabled" | "pinned"> | undefined,
+): ShippedValue | undefined {
   const member = plusTeamPresets.find((entry) => entry.id === team)?.members.find((entry) => entry.id === id)
   if (member === undefined) return undefined
   if (item === "system:role") return { text: member.role, state: "on" }
   if (item === "setting:mode") return { text: member.mode }
   if (item === "setting:description") return { text: member.description }
-  return plusMemberOverrides[team]?.[id]?.[item]
+  if (isControl(item)) return undefined
+  const override = member.overrides[item] ?? buildSeatDelegates(team, id, item)
+  const shipped = valueOf(upstream)
+  if (override === undefined) return shipped
+  return { ...shipped, ...override }
 }
 
 function valueOf(item: Pick<Item, "text" | "enabled" | "pinned"> | undefined): ShippedValue | undefined {
