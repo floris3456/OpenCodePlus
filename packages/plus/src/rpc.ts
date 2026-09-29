@@ -737,8 +737,10 @@ export const PresetAddMemberInput = Schema.Struct({
   actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.PresetAddMemberInput" })
 
-// Deleting a preset that anything links to is refused (`preset.inUse` lists
-// the row ids of its users); Native and Plus presets are read-only.
+// Deleting a preset that any existing row links to is refused
+// (`preset.inUse` lists the row ids of its users); links whose owner is gone
+// are orphans and are removed with the preset. Native and Plus presets are
+// read-only.
 export interface PresetDeleteInput extends Schema.Schema.Type<typeof PresetDeleteInput> {}
 export const PresetDeleteInput = Schema.Struct({
   ref: PresetRef,

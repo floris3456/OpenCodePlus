@@ -496,14 +496,29 @@ export function linkOf(links: readonly LinkRecord[], owner: RecordScope): Preset
   return links.find((record) => scopedTo(record, owner))?.preset
 }
 
+/** True when a link to `target` points at `ref` (a team preset's members included). */
+export function targetsPreset(target: PresetRef, ref: PresetRef): boolean {
+  return presetKey(target) === presetKey(ref) || (ref.kind === "team" && target.kind === "member" && target.team === ref.id)
+}
+
 /**
  * Everything linked to a preset, as owner row ids. A team preset is in use
- * when anything links to it or to one of its member presets.
+ * when anything links to it or to one of its member presets. `exists` filters
+ * out owners that are gone: their links are orphans a delete may ignore (and
+ * clean up) rather than be refused by.
  */
-export function presetUsers(links: readonly LinkRecord[], ref: PresetRef): string[] {
-  const targets = (target: PresetRef) =>
-    presetKey(target) === presetKey(ref) || (ref.kind === "team" && target.kind === "member" && target.team === ref.id)
-  return [...new Set(links.filter((record) => targets(record.preset)).map(ownerRowId))]
+export function presetUsers(
+  links: readonly LinkRecord[],
+  ref: PresetRef,
+  exists?: (owner: LinkRecord) => boolean,
+): string[] {
+  return [
+    ...new Set(
+      links
+        .filter((record) => targetsPreset(record.preset, ref) && (exists === undefined || exists(record)))
+        .map(ownerRowId),
+    ),
+  ]
 }
 
 /**

@@ -1174,10 +1174,17 @@ with it. `preset.create` checks the id against every preset of that kind
 list (each member preset linked to the source member, the team linked to the
 source team). `preset.addMember` takes User team presets only
 (`preset.readonly`). `preset.delete` refuses OpenCode/Plus presets and, while
-any stored link points to the preset (or, for a team preset, to one
-of its members from outside it), answers `preset.inUse { users, elsewhere? }`
-with the owners' row ids; it removes the preset's records, its members' and
-their links. User presets live in the global store but a project's links live
+any stored link whose owner still exists points to the preset (or, for a team
+preset, to one of its members from outside it), answers
+`preset.inUse { users, elsewhere? }` with the owners' row ids. A link in this
+project or the global store whose owner is gone — its agent, member, team,
+Defaults entry or preset no longer exists, e.g. a team directory that vanished
+outside Plus — is an orphan: it never refuses, and the delete removes it
+together with the preset's records, its members' and their links in the same
+revision (the `preset.delete` log line names the count). A link another
+project holds is still listed (and refuses unless `confirm`) whatever its
+owner's state there; this store cannot judge it. User presets live in the
+global store but a project's links live
 in that project's store, and projects are not enumerable, so every save that
 writes a project store keeps a global index of the projects whose store holds
 a link (`linked-projects.json` next to the global records; `store.ts`
@@ -1554,14 +1561,19 @@ RPC surface (`rpc.ts`, `index.ts`):
   Unlinks `<teamdir>/<id>.md`; a Defaults registry member fails with
   `team.invalid` (delete refused). Removing the last member leaves an empty team directory. After unlink
   calls `refreshAfterFileChange(..., true)` so an enabled team's uninstalled
-  member unregisters from the host immediately.
+  member unregisters from the host immediately. The removed member's
+  team-scoped rows go with its file — its link and the customizations,
+  splits, models and rules addressed to it (the `agent.delete` cascade at the
+  member scope) — so a member of the same id added later starts clean.
 - `team.delete` (`DeleteTeamInput` → `DeleteTeamResult`): deletes a team at
   project or global scope (`level: "defaults"` is refused with `team.invalid`:
   built-in teams cannot be deleted). Bound to `d delete` on team rows.
   An enabled team is first disabled (reusing `team.setEnabled false` logic so
   member agents unregister from the host and registrations dispose), then the
-  team directory is removed recursively (`fs.rm`), and any `TeamRecord` for that
-  level and team is removed from the store. `team.invalid` on invalid name or
+  team directory is removed recursively (`fs.rm`), and every record the team
+  owns is removed from the store: its `TeamRecord`, the team's and its
+  members' links, and the team-scoped rows addressed to nodes inside it
+  (customizations, splits, models, rules). `team.invalid` on invalid name or
   when directory escapes the teams root, or `team.unknown` when the team
   directory is not found.
   Returns `{ level, team, removedMembers }`. Logs `team.delete` with the caller's actor.

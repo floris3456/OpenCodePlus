@@ -50,6 +50,7 @@ import {
   presetOwner,
   presetStateOf,
   presetUsers,
+  targetsPreset,
   teamPresetMembers,
   validateEntryName,
   type PresetEntry,
@@ -1358,6 +1359,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (await Bun.file(target).exists()) {
         await fs.unlink(target)
       }
+      // The member's own rows go with its file (agent.delete's cascade for
+      // the team-scoped node): its link would otherwise keep a member the
+      // team no longer has alive for preset.inUse, and its edits would meet
+      // a member of the same id added later.
+      const stored = await load(directory)
+      await removeTeamMemberRecords(directory, { ...stored, protectedAgents: config.protectedAgents }, input.level, validatedTeam.team, validated.id)
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await Effect.runPromise(emitTeamsChanged(state))
@@ -1465,7 +1472,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       }
       const freshStored = await load(directory)
       const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
-      await removeTeamRecord(directory, freshLoaded, input.level, validated.team)
+      await removeTeamRecords(directory, freshLoaded, input.level, validated.team)
       await Effect.runPromise(ctx.agent.reload())
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await Effect.runPromise(emitTeamsChanged(state))
@@ -2054,27 +2061,38 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (found === undefined) return { ok: false as const, error: unknownPreset(input.ref) }
       if (found.origin !== "user") return { ok: false as const, error: presetReadonly(input.ref) }
       // Links here (this project and the global store) always refuse: relink
-      // them first. Links other projects hold refuse unless `confirm`; after a
+      // them first — but only while their owner exists. A link whose agent,
+      // member, team, Defaults entry or preset is gone is an orphan (an older
+      // build removed the owner without its links, or the directory vanished
+      // outside Plus): it never refuses and goes with the preset in the same
+      // revision. Links other projects hold refuse unless `confirm`; after a
       // confirmed delete they read as a missing preset there. The check and
       // the commit share one write gate, so a link any in-process save adds
       // meanwhile is either seen here or written after the preset is gone.
       const decided = await updateGated(directory, async (loaded, gate) => {
-        const users = presetUsers(presetStateOf(loaded.records).links, input.ref)
+        const links = presetStateOf(loaded.records).links
+        const listing = await serverListing(ctx, loaded.records)
+        const discovered = await discoverAll(ctx, { ...loaded, protectedAgents: [] }, state, builtins, directory)
+        const teams = await discoverAllTeams(directory, builtins)
+        const users = presetUsers(links, input.ref, (owner) => linkOwnerExists(loaded.records, listing, discovered, teams, owner))
         const elsewhere = await presetUsersElsewhere(directory, input.ref, gate.forget)
-        if (users.length > 0 || (elsewhere.length > 0 && input.confirm !== true)) return { result: { users, elsewhere } }
+        if (users.length > 0 || (elsewhere.length > 0 && input.confirm !== true))
+          return { result: { users, elsewhere, orphans: 0 } }
         // The preset goes with its members (a team preset), their own edits
-        // and their links.
+        // and their links; every link to the preset left in this store belongs
+        // to a gone owner and goes too.
         const members =
           input.ref.kind === "team"
             ? presetStateOf(loaded.records).presets.filter((record) => record.kind === "agent" && record.team === input.ref.id).map((record) => record.id)
             : []
         const owners = [presetOwner(input.ref), ...members.map((id) => presetOwner({ kind: "member", team: input.ref.id, id }))]
         const removed = (record: StoredRecord) => {
+          if (record.type === "link" && targetsPreset(record.preset, input.ref)) return true
           if (record.type === "preset") return owners.some((owner) => presetRecordOwns(record, owner))
           if (record.type === "team" || record.type === "entry") return false
           return owners.some((owner) => scopedTo(record, owner))
         }
-        return { result: { users, elsewhere }, records: loaded.records.filter((record) => !removed(record)) }
+        return { result: { users, elsewhere, orphans: links.filter((record) => targetsPreset(record.preset, input.ref)).length }, records: loaded.records.filter((record) => !removed(record)) }
       })
       const users = decided.result.users
       const elsewhere = decided.result.elsewhere
@@ -2101,7 +2119,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: "global",
         op: "preset.delete",
         target: id,
-        summary: `preset.delete ${presetKey(input.ref)}${elsewhere.length === 0 ? "" : ` (confirmed over links in ${elsewhere.map((project) => project.directory).join(", ")})`}`,
+        summary: `preset.delete ${presetKey(input.ref)}${decided.result.orphans === 0 ? "" : ` (removed ${decided.result.orphans} orphaned link${decided.result.orphans === 1 ? "" : "s"})`}${elsewhere.length === 0 ? "" : ` (confirmed over links in ${elsewhere.map((project) => project.directory).join(", ")})`}`,
       })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { id, ref: input.ref } }
@@ -2380,6 +2398,42 @@ async function linkOwnerProblem(
   const discovered = await discoverAll(ctx, { ...(await load(directory)), protectedAgents: [] }, state, builtins, directory)
   if (!discovered.agents.some((agent) => agent.scope === level && agent.id === owner.agent)) return invalid(`No ${level} agent ${owner.agent}`)
   return undefined
+}
+
+// Whether a stored link's owner still exists: an agent (or member) at its
+// level, a team, a Defaults entry or a User preset. A link whose owner is
+// gone is an orphan — an owner removed without its links, or a store edited
+// outside Plus — and must not refuse a preset deletion (`presets.ts`
+// `presetUsers` takes this as its `exists` filter); the deletion removes
+// those links with the preset in the same revision. `teams` is every
+// discovered team, enabled or not, exactly as `linkOwnerProblem` checks:
+// a disabled team's members still exist.
+function linkOwnerExists(
+  records: readonly StoredRecord[],
+  listing: readonly PresetEntry[],
+  discovered: Discovered,
+  teams: readonly DiscoveredTeam[],
+  owner: Pick<RecordScope, "level" | "agent" | "team">,
+): boolean {
+  if (owner.level === "preset") {
+    const ref = presetOfOwner(owner)
+    return ref !== undefined && listed(listing, ref) !== undefined
+  }
+  if (owner.level === "defaults") {
+    if (owner.agent === null) return false
+    return presetStateOf(records).entries.some((entry) =>
+      owner.team === undefined
+        ? entry.catalogue === "agents" && entry.name === owner.agent
+        : entry.catalogue === "teams" && entry.name === owner.agent && (entry.team ?? "*") === owner.team.team,
+    )
+  }
+  if (owner.team !== undefined) {
+    const team = teams.find((candidate) => candidate.level === owner.level && candidate.team === owner.team?.team)
+    if (team === undefined) return false
+    return owner.agent === null || team.agents.some((member) => member.id === owner.agent)
+  }
+  if (owner.agent === null) return false
+  return discovered.agents.some((agent) => agent.scope === owner.level && agent.id === owner.agent)
 }
 
 // The preset a `preset`-level owner is.
@@ -3126,20 +3180,18 @@ function contextFor(
   })
 }
 
-async function removeTeamRecord(
+// Deletes every record `isTarget` names and saves, retrying once against a
+// concurrent change like the other record writers. `changed` reports the
+// target level's store (project vs global).
+async function removeRecordsAt(
   directory: string,
   loaded: LoadedStores,
-  level: TeamRecord["level"],
-  team: string,
+  level: Level,
+  isTarget: (record: StoredRecord) => boolean,
 ): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
   const attempt = (records: readonly StoredRecord[]) => {
-    const existing = records.find(
-      (record): record is TeamRecord => record.type === "team" && record.level === level && record.team === team,
-    )
-    if (existing === undefined) return undefined
-    return records.filter(
-      (record) => !(record.type === "team" && record.level === level && record.team === team),
-    ) as readonly StoredRecord[]
+    if (!records.some(isTarget)) return undefined
+    return records.filter((record) => !isTarget(record)) as readonly StoredRecord[]
   }
   const revisionOf = (projectRevision: number, globalRevision: number) =>
     level === "project" ? projectRevision : globalRevision
@@ -3166,42 +3218,67 @@ async function removeTeamRecord(
   return { ok: false }
 }
 
+// The record kinds addressed at one scope: links and the row records
+// (customizations, splits, models, rules). Team records, entries and presets
+// are owners, not rows of an owner.
+function isScopedRow(record: StoredRecord): record is LinkRecord | CustomizationRecord | SplitRecord | ModelRecord | RuleRecord {
+  return record.type === "link" || record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule"
+}
+
+// The rows a deleted team leaves behind: its own TeamRecord, the team's and
+// its members' links, and every row addressed to a node inside the team.
+// Member files leave with the team directory; keeping these rows would orphan
+// them, and a team of the same name created later would inherit them.
+async function removeTeamRecords(
+  directory: string,
+  loaded: LoadedStores,
+  level: TeamRecord["level"],
+  team: string,
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
+  return removeRecordsAt(directory, loaded, level, (record) => {
+    if (record.type === "team") return record.level === level && record.team === team
+    return (
+      isScopedRow(record) &&
+      record.level === level &&
+      record.team !== undefined &&
+      record.team.level === level &&
+      record.team.team === team
+    )
+  })
+}
+
+// The rows a removed team member leaves behind: everything addressed to it,
+// its team-scoped link included (agent.delete's cascade, scoped to the
+// member). A member of the same id added later starts clean.
+async function removeTeamMemberRecords(
+  directory: string,
+  loaded: LoadedStores,
+  level: TeamRecord["level"],
+  team: string,
+  agent: string,
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
+  return removeRecordsAt(directory, loaded, level, (record) =>
+    isScopedRow(record) &&
+    record.level === level &&
+    record.agent === agent &&
+    record.team !== undefined &&
+    record.team.level === level &&
+    record.team.team === team,
+  )
+}
+
 async function removeAgentRecords(
   directory: string,
   loaded: LoadedStores,
   agent: string,
   level: Level,
-): Promise<{ ok: true; changed: boolean } | { ok: false }> {
+): Promise<{ ok: true; changed: boolean; revision: number } | { ok: false }> {
   // The agent's own link goes with it: an agent created later under the same
   // id starts from the preset it is created from, not this one's.
-  const isTarget = (record: StoredRecord) =>
-    ((record.type === "customization" || record.type === "split") && record.agent === agent && record.level === level) ||
-    (record.type === "link" && record.agent === agent && record.level === level && record.team === undefined)
-  const attempt = (records: readonly StoredRecord[]) => {
-    const existing = records.find(isTarget)
-    if (existing === undefined) return undefined
-    return records.filter((record) => !isTarget(record)) as readonly StoredRecord[]
-  }
-  const changedOf = (changed: { readonly project: boolean; readonly global: boolean }) =>
-    level === "project" ? changed.project : changed.global
-  const first = attempt(loaded.records)
-  if (first === undefined) return { ok: true, changed: false }
-  const saved = await save(directory, {
-    expectedProjectRevision: loaded.projectRevision,
-    expectedGlobalRevision: loaded.globalRevision,
-    records: first,
+  return removeRecordsAt(directory, loaded, level, (record) => {
+    if (record.type === "customization" || record.type === "split") return record.agent === agent && record.level === level
+    return record.type === "link" && record.agent === agent && record.level === level && record.team === undefined
   })
-  if (saved.ok) return { ok: true, changed: changedOf(saved.changed) }
-  const fresh = await load(directory)
-  const second = attempt(fresh.records)
-  if (second === undefined) return { ok: true, changed: false }
-  const retried = await save(directory, {
-    expectedProjectRevision: fresh.projectRevision,
-    expectedGlobalRevision: fresh.globalRevision,
-    records: second,
-  })
-  if (retried.ok) return { ok: true, changed: changedOf(retried.changed) }
-  return { ok: false }
 }
 
 function isTeamRecord(record: StoredRecord): record is TeamRecord {

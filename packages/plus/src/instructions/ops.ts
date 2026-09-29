@@ -135,7 +135,8 @@ export type RemovalPlan =
       readonly successStatus: string
     }
   | {
-      // A user preset; the server refuses it while anything links to it.
+      // A user preset; the server refuses it while any existing row links to
+      // it and removes orphan links of gone owners with it.
       readonly kind: "preset.delete"
       readonly ref: PresetRef
       readonly confirmTitle: string

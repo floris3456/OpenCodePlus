@@ -2982,6 +2982,64 @@ test("instructions_delete removes Defaults entries and User presets and surfaces
   expect((await snapshotOf(api)).presets).toEqual([])
 })
 
+// The store the bug left behind: a user team preset whose global team
+// directory is gone, with its team and member links still in the global
+// store. Those links' owners no longer exist, so they must not refuse the
+// delete; the delete removes them in the same revision and says so in the
+// log. A live owner (an existing agent linked at the project level) still
+// refuses with preset.inUse — the refusal control.
+test("instructions_delete removes orphan links with the preset and still refuses live users", async () => {
+  const { api, tools, project } = await freshFixture()
+  const create = need(tools, "instructions_create")
+  const del = need(tools, "instructions_delete")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "teamPreset", id: "field-audit-26" })
+  await runOk(create, { kind: "presetMember", team: "field-audit-26", id: "fa26-lead" })
+  const stored = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [
+      ...stored.records,
+      {
+        type: "link",
+        level: "global",
+        agent: null,
+        team: { level: "global", team: "field-audit-26" },
+        preset: { kind: "team", id: "field-audit-26" },
+        updated: "2026-09-26T13:36:59.651Z",
+      },
+      {
+        type: "link",
+        level: "global",
+        agent: "fa26-lead",
+        team: { level: "global", team: "field-audit-26" },
+        preset: { kind: "member", team: "field-audit-26", id: "fa26-lead" },
+        updated: "2026-09-26T13:36:59.651Z",
+      },
+    ],
+  })
+  expect(saved.ok).toBe(true)
+
+  // Refusal control: an existing agent linked at the project level refuses.
+  await runOk(create, { kind: "agent", id: "watcher" })
+  await runOk(set, { id: "agent:project:watcher", preset: "field-audit-26/fa26-lead" })
+  const inUse = await runFail(del, { id: "team:preset:field-audit-26", confirm: true, force: true })
+  expect(inUse.message).toContain("preset.inUse")
+  expect(inUse.message).toContain("agent:project:watcher")
+  expect(inUse.message).not.toContain("team:global:field-audit-26")
+
+  // The live link goes; only the orphans are left, and they no longer block.
+  await runOk(set, { id: "agent:project:watcher", preset: null })
+  const deleted = await runOk(del, { id: "team:preset:field-audit-26", confirm: true, force: true })
+  expect(deleted).toMatchObject({ id: "team:preset:field-audit-26", ref: { kind: "team", id: "field-audit-26" } })
+  const after = await snapshotOf(api)
+  expect(after.presets).toEqual([])
+  expect(after.links).toEqual([])
+  const log = (await runOk(need(tools, "instructions_log"), {})) as { entries: { op: string; summary: string }[] }
+  expect(log.entries.find((entry) => entry.op === "preset.delete")?.summary).toContain("removed 2 orphaned links")
+})
+
 // C: the instructions tool's delete walks the same content as the TUI's `d`:
 // a local record is deleted, an inherited or upstream row is hidden at this
 // level with a tombstone, and the effective model refuses.

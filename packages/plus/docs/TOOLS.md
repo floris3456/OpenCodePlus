@@ -272,8 +272,10 @@ empty body; a link record makes everything else follow the preset live
 (DESIGN §5). `set({ id, preset })` relinks the row's owner — an agent, a
 member, a team (team preset), a Defaults entry or a User preset — and
 `preset: null` unlinks (`link.set`). `delete` removes Defaults entries and
-User presets; a preset anything links to is refused with `preset.inUse`, whose
-message lists the linked row ids. Links held only by other projects (listed as
+User presets; a preset any live owner links to is refused with `preset.inUse`,
+whose message lists the linked row ids. Links whose owner is gone are orphans:
+they are removed together with the preset instead of blocking it. Links held
+only by other projects (listed as
 `<directory> › <row id>`) are deleted over with `force: true`; those owners
 then show the badge `missing preset` (and `linkMissing: true` in `show`) and
 their rows fall through until relinked. OpenCode and Plus presets are read-only

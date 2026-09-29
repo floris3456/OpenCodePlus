@@ -1073,6 +1073,125 @@ test("team.delete on a global team removes the directory under global teams root
   expect(await fs.stat(globalTeamDir).then(() => true, () => false)).toBe(false)
 })
 
+// The links and team-scoped rows a team owns would otherwise outlive it:
+// preset.inUse would count a team that no longer exists, and a team of the
+// same name later would inherit them. Member files leave with the directory.
+test("team.delete removes the team's and its members' links and team-scoped rows, leaving other teams alone", async () => {
+  const { project } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "basic" }, throwingContext({})))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "crew", id: "newbie" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["link.set"](
+      { level: "project", agent: "newbie", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "scout" } },
+      throwingContext({}),
+    ),
+  )
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "other" }, throwingContext({})))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "other", id: "beta" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["link.set"](
+      { level: "project", agent: "beta", team: { level: "project", team: "other" }, preset: { kind: "member", team: "basic", id: "scout" } },
+      throwingContext({}),
+    ),
+  )
+  const stored = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [
+      ...stored.records,
+      {
+        type: "customization",
+        level: "project",
+        agent: "newbie",
+        team: { level: "project", team: "crew" },
+        item: "system:role",
+        section: null,
+        text: "Engineer role.",
+        basedOn: "fp",
+        updated: UPDATED,
+      },
+      {
+        type: "model",
+        level: "project",
+        agent: "newbie",
+        team: { level: "project", team: "crew" },
+        providerID: "acme",
+        modelID: "nova-2",
+        active: true,
+        updated: UPDATED,
+      },
+    ] satisfies StoredRecord[],
+  })
+  expect(saved.ok).toBe(true)
+
+  await Effect.runPromise(handlers["team.delete"]({ level: "project", team: "crew" }, throwingContext({})))
+
+  const after = await load(project)
+  const crewScoped = (record: StoredRecord): boolean => {
+    if (!(record.type === "link" || record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule")) return false
+    return record.team?.team === "crew"
+  }
+  expect(after.records.some(crewScoped)).toBe(false)
+  expect(after.records.some((record) => record.type === "team" && record.team === "crew")).toBe(false)
+  // The other team keeps its member link.
+  expect(after.records).toContainEqual(
+    expect.objectContaining({ type: "link", agent: "beta", team: { level: "project", team: "other" } }),
+  )
+})
+
+test("team.removeAgent removes the removed member's own link and rows", async () => {
+  const { project } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "crew", id: "beta" }, throwingContext({})))
+  await Effect.runPromise(
+    handlers["link.set"](
+      { level: "project", agent: "alpha", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "scout" } },
+      throwingContext({}),
+    ),
+  )
+  await Effect.runPromise(
+    handlers["link.set"](
+      { level: "project", agent: "beta", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "reviewer" } },
+      throwingContext({}),
+    ),
+  )
+  const stored = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [
+      ...stored.records,
+      {
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        team: { level: "project", team: "crew" },
+        item: "system:role",
+        section: null,
+        text: "Engineer role.",
+        basedOn: "fp",
+        updated: UPDATED,
+      },
+    ] satisfies StoredRecord[],
+  })
+  expect(saved.ok).toBe(true)
+
+  await Effect.runPromise(handlers["team.removeAgent"]({ level: "project", team: "crew", id: "alpha" }, throwingContext({})))
+
+  const after = await load(project)
+  expect(after.records.some((record) => record.type === "link" && record.agent === "alpha" && record.team?.team === "crew")).toBe(false)
+  expect(after.records.some((record) => record.type === "customization" && record.agent === "alpha" && record.team?.team === "crew")).toBe(false)
+  // The remaining member and the team keep their records.
+  expect(after.records.some((record) => record.type === "link" && record.agent === "beta" && record.team?.team === "crew")).toBe(true)
+  expect(await Bun.file(path.join(projectTeamsPath(project), "crew", "beta.md")).exists()).toBe(true)
+  const listed = await Effect.runPromise(handlers["team.list"](undefined, throwingContext({})))
+  expect(listed.teams.find((team) => team.team === "crew")?.members.map((member) => member.id)).toEqual(["beta"])
+})
+
 test("team.delete raises every declared error through a real call", async () => {
   const { project } = await tempRoot()
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })

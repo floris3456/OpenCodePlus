@@ -117,7 +117,7 @@ const CreateDescription =
 
 const DeleteDescription =
   "Delete a user-owned row (agent, team, member, file, Defaults entry, user preset); refuses without `confirm`.\n" +
-  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A model row deletes its local candidate or hides an inherited/upstream one at this level; the row that is the effective model refuses (activate another model first). A preset anything links to is refused (preset.inUse lists who); links only other projects hold are overridden with force:true (they then show as a missing preset)."
+  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A model row deletes its local candidate or hides an inherited/upstream one at this level; the row that is the effective model refuses (activate another model first). A preset any live row links to is refused (preset.inUse lists who); links whose owner is gone are removed with the preset. Links only other projects hold are overridden with force:true (they then show as a missing preset)."
 
 const LogDescription =
   "Change history (who/what/when).\n" +

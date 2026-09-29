@@ -43,7 +43,7 @@ An agent behaves exactly as its rows say; nothing is read from its name. What a 
 - Presets live under the Presets root: \`agent:preset:<id>\` (OpenCode: build, plan, general, explore, title, summary, compaction; User: yours — the Plus agent group ships empty) and team presets \`team:preset:<team>\` (Plus or User only) with member presets \`team:preset:<team>:<member>\`. Plus ships one team preset, \`basic\`, whose self-contained member presets are planner, orchestrator, implementer, reviewer, scout and build-seat; a member preset names only itself. OpenCode and Plus presets ship with the release: their rows are editable (your edits win), the presets themselves cannot be deleted. Their rows are not an agent's, so \`protectedAgents\` does not guard them.
 - Name a preset as \`"<id>"\` (an agent preset) or \`"<team>/<member>"\` (a member preset, e.g. \`"basic/planner"\`), or as \`{ kind: "agent", id }\` / \`{ kind: "member", team, id }\`; a team takes a team preset id.
 - Defaults entries are rows named by an exact name or a pattern: \`*\` and \`%\` match any text, case-insensitively, on the whole name (\`*orchestrator*\` matches \`Opus-Orchestrator-max\`). Agents entries are \`agent:defaults:<name>\` (Defaults → Agents → User); Teams entries are \`team:defaults:<team pattern>:<name>\` and match a member of a matching team. An exact name beats a pattern, then more literal characters win.
-- \`set({ id, preset })\` on an agent, member, team, entry or user preset row links it (live); \`preset: null\` unlinks. A preset that would come back to itself is refused (\`link.cycle\`). A preset anything links to cannot be deleted (\`preset.inUse\` names who).
+- \`set({ id, preset })\` on an agent, member, team, entry or user preset row links it (live); \`preset: null\` unlinks. A preset that would come back to itself is refused (\`link.cycle\`). A preset any existing row links to cannot be deleted (\`preset.inUse\` names who); links whose owner is gone are cleaned up with it.
 - A \`team_*\` tool row that is off refuses the call (core deny on \`team.<tool>\`), not only hides it.
 
 ## Catalogues
@@ -130,7 +130,7 @@ Returned \`id\`s follow the row grammar above: \`item:<level>:<owner>:<itemId>\`
 | \`preset.invalid\` | no preset answers to that name, or it is the wrong kind (an agent takes an agent or member preset, a team a team preset) |
 | \`preset.exists\` | a preset of that kind already has that id |
 | \`preset.readonly\` | OpenCode and Plus presets are not changed or deleted; create a User preset from one |
-| \`preset.inUse\` | something is linked to the preset; relink or delete the listed rows first |
+| \`preset.inUse\` | an existing row is linked to the preset; relink or delete the listed rows first |
 | \`entry.invalid\` / \`entry.exists\` / \`entry.missing\` | bad entry name (\`:\` is not allowed), a duplicate (same catalogue, team pattern and name, or an OpenCode agent's own Defaults row), or no such entry |
 | \`link.invalid\` / \`link.cycle\` | the row takes no link, or the link would bring a preset back to itself |
 

@@ -8,7 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { apply } from "../src/instructions/apply.js"
 import { fingerprint, presetKey, type Item, type LinkRecord } from "../src/instructions/model.js"
-import { projectTeamsPath } from "../src/instructions/paths.js"
+import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { chainContext, plusTeamPresets } from "../src/instructions/presets.js"
 import { badgeLabels } from "../src/instructions/from-label.js"
 import { toggle } from "../src/instructions/ops.js"
@@ -309,6 +309,38 @@ test("preset.delete sees links other projects hold; confirm deletes over them an
   expect(alice === undefined ? [] : badgeLabels(alice)).toContain("missing preset")
   const execute = nodes.find((node) => node.id === "item:project:alice:tool:execute")
   expect(execute?.badges).toMatchObject({ state: "off", fromLabel: "off by default" })
+})
+
+// The bug's exact sequence: a global team created from a user team preset
+// links the team and its members to the preset, then the team directory
+// vanishes outside Plus. The links are orphans: the first load after it
+// vanished must not crash, and the preset deletes (taking the links with it)
+// instead of refusing forever on rows that can no longer be relinked or
+// deleted. While the team exists the same delete refuses, naming its rows.
+test("preset.delete after a team directory vanishes outside Plus: load is safe and the orphan links go", async () => {
+  const { project, handlers } = await setup()
+  const ref = { kind: "team" as const, id: "field-audit-26" }
+  await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "field-audit-26" }, throwingContext()))
+  await Effect.runPromise(handlers["preset.addMember"]({ team: "field-audit-26", id: "fa26-lead" }, throwingContext()))
+  await Effect.runPromise(
+    handlers["team.create"]({ level: "global", team: "field-audit-26", preset: "field-audit-26" }, throwingContext()),
+  )
+  // Live team and member links: the delete refuses and names exactly them.
+  const live = await declared((context) => handlers["preset.delete"]({ ref, confirm: true }, context))
+  expect(live.type).toBe("preset.inUse")
+  expect((live.data as { users: string[] }).users.toSorted()).toEqual([
+    "team:global:field-audit-26",
+    "team:global:field-audit-26:fa26-lead",
+  ])
+
+  await fs.rm(path.join(globalTeamsPath(), "field-audit-26"), { recursive: true, force: true })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
+  expect(snapshot.teams?.some((team) => team.team === "field-audit-26")).toBe(false)
+
+  await Effect.runPromise(handlers["preset.delete"]({ ref, confirm: true }, throwingContext()))
+  const after = await stored(project)
+  expect(after.filter((record) => record.type === "preset")).toEqual([])
+  expect(linksOf(after)).toEqual([])
 })
 
 // The reference check and the deletion commit under one write gate: a link
