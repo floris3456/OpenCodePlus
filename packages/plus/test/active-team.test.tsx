@@ -8,7 +8,7 @@ import { createStore } from "solid-js/store"
 import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
-import { createActiveTeam, TeamMonitorTab } from "../src/tui/active-team.js"
+import { createActiveTeam, resetRunMountLog, runMountLog, stopRunMountLog, TeamMonitorTab } from "../src/tui/active-team.js"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { RGBA } from "@opentui/core"
@@ -831,4 +831,87 @@ test("TeamMonitorTab refreshes runs only on session lifecycle events, once per 2
   const callsAtDispose = listCalls
   await new Promise((r) => setTimeout(r, 350))
   expect(listCalls).toBe(callsAtDispose)
+})
+
+test("a poll that returns equal runs keeps the row components; a changed state still shows", async () => {
+  let listener: ((event: { details: { type: string } }) => void) | undefined
+  let listCalls = 0
+  let runState = "working"
+
+  const white = RGBA.fromHex("#ffffff")
+  const gray = RGBA.fromHex("#888888")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { base: white, muted: gray, action: { primary: { base: white, selected: white, focused: white } } },
+    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: (handler: (event: { details: { type: string } }) => void) => {
+        listener = handler
+        return () => {}
+      },
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async () => {
+          listCalls++
+          return {
+            runs: [
+              {
+                id: "w-run-1",
+                role: "r",
+                state: runState,
+                task: null,
+                head: "abcdef",
+                worktree: "present",
+                lastUsed: "2026-09-10T12:00:00.000Z",
+                sessionID: "ses_run",
+                parent: "main-01",
+              },
+            ],
+          }
+        },
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: { layer: () => {} },
+    ui: { toast: { show: () => {} }, router: { navigate: () => {} } },
+  }
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => <TeamMonitorTab sessionID="ses_root" active={() => false} close={() => {}} context={context} />,
+    output.renderer,
+  )
+  try {
+    await output.renderOnce()
+    await new Promise((r) => setTimeout(r, 20))
+    const loaded = listCalls
+    expect(loaded).toBeGreaterThanOrEqual(1)
+
+    // A lifecycle event refreshes; the same run comes back and keeps its row.
+    resetRunMountLog()
+    listener!({ details: { type: "session.execution.started" } })
+    await new Promise((r) => setTimeout(r, 350))
+    await output.renderOnce()
+    expect(listCalls).toBe(loaded + 1)
+    expect(runMountLog.ids).toEqual([])
+
+    // A changed state reaches the same row component instead of a new one.
+    runState = "idle"
+    listener!({ details: { type: "session.execution.succeeded" } })
+    await new Promise((r) => setTimeout(r, 350))
+    await output.renderOnce()
+    expect(listCalls).toBe(loaded + 2)
+    expect(runMountLog.ids).toEqual([])
+    expect(output.captureCharFrame()).toContain("idle")
+  } finally {
+    stopRunMountLog()
+    output.renderer.destroy()
+  }
 })

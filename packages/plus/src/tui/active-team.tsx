@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, Show } from "solid-js"
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import { TextAttributes } from "@opentui/core"
 import { Definition, type TeamLevel, type TeamListEntry, type TeamRunEntry } from "../rpc.js"
 import { SessionRunEvents } from "../teams/session-events.js"
@@ -261,9 +261,24 @@ export interface TeamMonitorTabProps {
   setShowInactive?: (val: boolean | ((prev: boolean) => boolean)) => void
 }
 
+/**
+ * Test observability for the run rows (not read in production): one entry per
+ * row `<For>` mounts. Recording starts with resetRunMountLog().
+ */
+export const runMountLog: { enabled: boolean; ids: string[] } = { enabled: false, ids: [] }
+export function resetRunMountLog(): void {
+  runMountLog.enabled = true
+  runMountLog.ids.length = 0
+}
+export function stopRunMountLog(): void {
+  runMountLog.enabled = false
+}
+
 export function TeamMonitorTab(props: TeamMonitorTabProps) {
   const plus = props.context.client.rpc(Definition)
-  const [store, setStore] = createStore({ selected: 0 })
+  const [store, setStore] = createStore({ selected: 0, runs: [] as readonly TeamRunEntry[] })
+  // Runs are keyed by id: a poll that returns the same runs updates them in
+  // place instead of rebuilding every row component.
   const [internalShowInactive, setInternalShowInactive] = createSignal(false)
   const showInactive = () => (props.showInactive ? props.showInactive() : internalShowInactive())
   const setShowInactive = (val: boolean | ((prev: boolean) => boolean)) => {
@@ -271,7 +286,6 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     else setInternalShowInactive(val)
   }
 
-  const [runs, setRuns] = createSignal<readonly TeamRunEntry[]>([])
   let disposed = false
 
   function targetLocation() {
@@ -288,11 +302,11 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     void plus["team.runs.list"]({ all: showInactive() }, { location }).then(
       (output) => {
         if (disposed) return
-        setRuns(output.runs)
+        setStore("runs", reconcile(output.runs, { key: "id" }))
       },
       () => {
         if (disposed) return
-        setRuns([])
+        setStore("runs", reconcile([], { key: "id" }))
       },
     )
   }
@@ -344,7 +358,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   const INACTIVE_STATES = new Set(["stopped", "dead", "superseded", "reaped"])
 
   const visibleRuns = createMemo(() => {
-    const list = runs()
+    const list = store.runs
     const allowed = showInactive() ? INACTIVE_STATES : ACTIVE_STATES
     return list.filter((r) => allowed.has(r.state))
   })
@@ -477,6 +491,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5}>
         <For each={visibleRuns()}>
           {(run, index) => {
+            if (runMountLog.enabled) runMountLog.ids.push(run.id)
             const isSelected = createMemo(() => index() === store.selected)
             const isCurrent = createMemo(() => run.sessionID === props.sessionID)
             return (

@@ -10,7 +10,14 @@ import {
   queryOf,
   type MonitorSettings,
 } from "../src/tui/monitor/format.js"
-import { MonitorView, refreshInterval } from "../src/tui/monitor/view.js"
+import {
+  COMPOSER_BODY_ROWS,
+  groupMountLog,
+  MonitorView,
+  refreshInterval,
+  resetGroupMountLog,
+  stopGroupMountLog,
+} from "../src/tui/monitor/view.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 import { dispatch, sleep } from "./instructions-nav.js"
 import { renderPlusFixture, type DialogScript, type TestFixture } from "./tui.js"
@@ -50,7 +57,17 @@ async function seeded(): Promise<Ledger> {
 
 async function render(
   db: Ledger,
-  options: { full?: boolean; width?: number; height?: number; dialogs?: DialogScript; settings?: MonitorSettings } = {},
+  options: {
+    full?: boolean
+    width?: number
+    height?: number
+    dialogs?: DialogScript
+    settings?: MonitorSettings
+    /** Render a marker line under the view to measure how many rows it took. */
+    marker?: boolean
+    /** Keep every monitor.query pending to observe the Loading state. */
+    hold?: boolean
+  } = {},
 ): Promise<{ fixture: TestFixture; queries: Plus.MonitorQueryInput[]; closed: () => number }> {
   const queries: Plus.MonitorQueryInput[] = []
   let closes = 0
@@ -65,6 +82,7 @@ async function render(
     rpc: {
       "monitor.query": async (input: Plus.MonitorQueryInput) => {
         queries.push(input)
+        if (options.hold === true) return await new Promise<never>(() => {})
         return queryMonitor(db, input, { directory: "/work/project", now: NOW })
       },
       "monitor.mark": async (input: Plus.MonitorMarkInput) => ({
@@ -73,19 +91,46 @@ async function render(
         label: input.label,
       }),
     },
-    render: (context) => (
-      <MonitorView
-        context={context}
-        sessionID={() => "ses_chat"}
-        active={() => true}
-        full={options.full ?? true}
-        onClose={() => {
-          closes += 1
-        }}
-      />
-    ),
+    render: (context) => {
+      const view = (
+        <MonitorView
+          context={context}
+          sessionID={() => "ses_chat"}
+          active={() => true}
+          full={options.full ?? true}
+          onClose={() => {
+            closes += 1
+          }}
+        />
+      )
+      if (options.marker !== true) return view
+      return (
+        <box flexDirection="column">
+          {view}
+          <text>body-end</text>
+        </box>
+      )
+    },
   })
   return { fixture, queries, closed: () => closes }
+}
+
+/** The row under the view: the view's own height when it is the first child. */
+function markerRow(frame: string): number {
+  return frame.split("\n").findIndex((line) => line.trim() === "body-end")
+}
+
+const GROUP_LABELS = ["read", "shell", "grep", "edit"]
+
+/** The group rows drawn above the marker, in frame order. */
+function groupRows(frame: string): string[] {
+  const lines = frame.split("\n")
+  const end = markerRow(frame)
+  return lines
+    .slice(0, end === -1 ? lines.length : end)
+    .map((line) => line.trim())
+    .filter((line) => GROUP_LABELS.some((label) => line.startsWith(`${label} `)))
+    .map((line) => line.split(/\s+/)[0]!)
 }
 
 test("the monitor shows this chat's and its delegates' totals, tools and latest calls", async () => {
@@ -199,7 +244,9 @@ test("in the composer, up on the first row leaves the tab and the view fits a na
   const db = await seeded()
   const { fixture, closed } = await render(db, { full: false, width: 72, height: 20 })
   try {
-    const frame = await fixture.waitForFrame((text) => text.includes("latest calls"))
+    const frame = await fixture.waitForFrame((text) =>
+      text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())),
+    )
     frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(72))
     dispatch(fixture, "down")
     dispatch(fixture, "up")
@@ -207,6 +254,57 @@ test("in the composer, up on the first row leaves the tab and the view fits a na
     dispatch(fixture, "up")
     expect(closed()).toBe(1)
   } finally {
+    fixture.destroy()
+  }
+})
+
+test("the composer monitor takes the fixed body height in the table and Loading states", async () => {
+  const db = await seeded()
+
+  // The pending query shows Loading… in the same five rows the table takes.
+  const loading = await render(db, { full: false, width: 72, height: 20, marker: true, hold: true })
+  try {
+    const frame = await loading.fixture.waitForFrame((text) => text.includes("Loading…"))
+    expect(markerRow(frame)).toBe(COMPOSER_BODY_ROWS)
+  } finally {
+    loading.fixture.destroy()
+  }
+
+  const { fixture } = await render(db, { full: false, width: 72, height: 20, marker: true })
+  try {
+    const frame = await fixture.waitForFrame((text) =>
+      text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())),
+    )
+    expect(markerRow(frame)).toBe(COMPOSER_BODY_ROWS)
+    expect(groupRows(frame)).toEqual(["read", "shell"])
+    // The composer keeps only the filters, the totals and the table.
+    expect(frame).not.toContain("tools: ")
+    expect(frame).not.toContain("latest calls")
+
+    // Two rows fit; moving past them scrolls the selection into view.
+    for (let step = 0; step < 3; step++) dispatch(fixture, "down")
+    const moved = await fixture.waitForFrame((text) => groupRows(text).includes("edit"))
+    expect(groupRows(moved)).toEqual(["grep", "edit"])
+    moved.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(72))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a poll that returns the same groups keeps their row components", async () => {
+  const db = await seeded()
+  const { fixture, queries } = await render(db)
+  try {
+    await fixture.waitForFrame((text) => text.includes("latest calls"))
+    const before = queries.length
+    resetGroupMountLog()
+    await sleep(1_200)
+    await fixture.flush()
+    // The view polled again with the same ledger: the rows stayed mounted.
+    expect(queries.length).toBeGreaterThan(before)
+    expect(groupMountLog.keys).toEqual([])
+  } finally {
+    stopGroupMountLog()
     fixture.destroy()
   }
 })

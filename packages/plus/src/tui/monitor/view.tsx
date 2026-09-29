@@ -1,7 +1,8 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { TextAttributes, type RGBA } from "@opentui/core"
+import { TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createStore, reconcile } from "solid-js/store"
 import { Definition, type Plus } from "../../rpc.js"
 import {
   COMPARES,
@@ -29,6 +30,31 @@ import {
 // The monitor view: totals, the top groups and the latest calls for the
 // chosen scope, window and filters, refreshed every second while visible.
 // The composer tab shows it compact; the /monitor route shows it full screen.
+
+/**
+ * The composer tab body is five rows: the filters, the totals, the group
+ * table's column header and the two group rows visible under them. The view
+ * lays out exactly this in composer mode whatever the report state, so a tab
+ * switch never moves the composer.
+ */
+export const COMPOSER_BODY_ROWS = 5
+
+/** The group rows that fit under the filters, the totals and the column header. */
+const COMPOSER_GROUP_ROWS = COMPOSER_BODY_ROWS - 3
+
+/**
+ * Test observability for the group rows (not read in production): one entry
+ * per group row `<For>` mounts, with the key it was mounted for. Recording
+ * starts with resetGroupMountLog().
+ */
+export const groupMountLog: { enabled: boolean; keys: string[] } = { enabled: false, keys: [] }
+export function resetGroupMountLog(): void {
+  groupMountLog.enabled = true
+  groupMountLog.keys.length = 0
+}
+export function stopGroupMountLog(): void {
+  groupMountLog.enabled = false
+}
 
 // Every second while something runs or ran in the last minute; every five
 // seconds when the ledger is quiet, so an open monitor costs next to nothing.
@@ -83,8 +109,16 @@ export function MonitorView(props: MonitorViewProps) {
   const [report, setReport] = createSignal<Plus.MonitorReport | undefined>()
   const [failure, setFailure] = createSignal<string | undefined>()
   const [selected, setSelected] = createSignal(0)
+  // Rows live in a store reconciled by identity, so a poll that returns the
+  // same groups or calls updates the values in place instead of rebuilding
+  // every row component.
+  const [rows, setRows] = createStore<{
+    groups: readonly Plus.MonitorGroup[]
+    feed: readonly Plus.MonitorCall[]
+  }>({ groups: [], feed: [] })
+  let scroll: ScrollBoxRenderable | undefined
   const top = () => (props.full ? Math.max(5, Math.floor((dimensions().height - 12) * 0.55)) : 6)
-  const feed = () => (props.full ? Math.max(3, dimensions().height - 12 - top()) : 4)
+  const feed = () => (props.full ? Math.max(3, dimensions().height - 12 - top()) : 0)
 
   const location = () => {
     const current = props.context.location
@@ -173,6 +207,21 @@ export function MonitorView(props: MonitorViewProps) {
         avgMs: 0,
       }))
     return [...current.groups, ...gone]
+  })
+
+  createEffect(() => setRows("groups", reconcile(groups(), { key: "key" })))
+  // Calls are keyed by their provider call id (unique within the session that
+  // produced them), so a poll updates the feed rows in place.
+  createEffect(() => setRows("feed", reconcile(report()?.feed ?? [], { key: "callID" })))
+
+  // The composer keeps the table inside the fixed body; scroll the group rows
+  // so the selected one stays visible as Up and Down move it. The reactive
+  // reads come first so the scrollbox mounting later re-runs the effect.
+  createEffect(() => {
+    const index = Math.min(selected(), Math.max(0, rows.groups.length - 1))
+    if (props.full || scroll === undefined) return
+    if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
+    if (index < scroll.scrollTop) scroll.scrollTo(index)
   })
 
   const pick = async (dimension: "agent" | "tool" | "model") => {
@@ -366,8 +415,41 @@ export function MonitorView(props: MonitorViewProps) {
       ...(drills().length > 0 ? [`drilled ${drills().length} (⌫ back)`] : []),
     ].join(" · ")
 
+  const GroupRows = () => (
+    <For each={rows.groups}>
+      {(group, index) => {
+        if (groupMountLog.enabled) groupMountLog.keys.push(group.key)
+        return (
+          <Cells
+            cells={groupCells(group)}
+            background={
+              index() === selected() && props.active()
+                ? theme().background.action.primary.focused
+                : theme().background.action.primary.base
+            }
+            fg={
+              index() === selected() && props.active()
+                ? theme().text.action.primary.focused
+                : group.errors > 0 && group.errors === group.calls
+                  ? theme().text.feedback.error.base
+                  : theme().text.base
+            }
+            onSelect={() => setSelected(index())}
+          />
+        )
+      }}
+    </For>
+  )
+
   return (
-    <box flexDirection="column" flexGrow={props.full ? 1 : 0} paddingLeft={1} paddingRight={1} minWidth={0}>
+    <box
+      flexDirection="column"
+      flexGrow={props.full ? 1 : 0}
+      height={props.full ? undefined : COMPOSER_BODY_ROWS}
+      paddingLeft={1}
+      paddingRight={1}
+      minWidth={0}
+    >
       <Show when={props.full}>
         <box flexDirection="row" flexShrink={0}>
           <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
@@ -388,9 +470,11 @@ export function MonitorView(props: MonitorViewProps) {
             <text fg={theme().text.base} wrapMode="none" truncate>
               {totalsLine(current().totals)}
             </text>
-            <text fg={theme().text.base} wrapMode="none" truncate>
-              {`${toolLine(current().totals)}${current().compare === undefined ? "" : `   (before: ${current().compare?.totals.calls} calls, result ${formatTokens(current().compare?.totals.resultTokens ?? 0)})`}`}
-            </text>
+            <Show when={props.full}>
+              <text fg={theme().text.base} wrapMode="none" truncate>
+                {`${toolLine(current().totals)}${current().compare === undefined ? "" : `   (before: ${current().compare?.totals.calls} calls, result ${formatTokens(current().compare?.totals.resultTokens ?? 0)})`}`}
+              </text>
+            </Show>
             <Show
               when={groups().length > 0}
               fallback={
@@ -400,32 +484,26 @@ export function MonitorView(props: MonitorViewProps) {
               }
             >
               <Cells cells={groupCells(undefined)} fg={theme().text.muted} bold />
-              <For each={groups()}>
-                {(group, index) => (
-                  <Cells
-                    cells={groupCells(group)}
-                    background={
-                      index() === selected() && props.active()
-                        ? theme().background.action.primary.focused
-                        : theme().background.action.primary.base
-                    }
-                    fg={
-                      index() === selected() && props.active()
-                        ? theme().text.action.primary.focused
-                        : group.errors > 0 && group.errors === group.calls
-                          ? theme().text.feedback.error.base
-                          : theme().text.base
-                    }
-                    onSelect={() => setSelected(index())}
-                  />
-                )}
-              </For>
+              <Show
+                when={props.full}
+                fallback={
+                  <scrollbox
+                    height={COMPOSER_GROUP_ROWS}
+                    scrollbarOptions={{ visible: false }}
+                    ref={(next: ScrollBoxRenderable) => (scroll = next)}
+                  >
+                    <GroupRows />
+                  </scrollbox>
+                }
+              >
+                <GroupRows />
+              </Show>
             </Show>
-            <Show when={current().feed.length > 0}>
+            <Show when={props.full && rows.feed.length > 0}>
               <text fg={theme().text.muted} wrapMode="none" attributes={TextAttributes.BOLD}>
                 {"latest calls"}
               </text>
-              <For each={current().feed}>
+              <For each={rows.feed}>
                 {(entry) => (
                   <Cells
                     cells={feedCells(entry)}
