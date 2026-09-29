@@ -1,20 +1,25 @@
 import { expect, test } from "bun:test"
 import {
   activateModel,
+  addModelRecord,
   applies,
   canReset,
   countReview,
   fingerprint,
   merge,
+  modelCandidates,
   modelItemId,
   parseModelItemId,
   parsePermItemId,
   permItemId,
   reset,
   resolve,
+  resolveActiveModel,
+  resolveModelWarming,
   resolveResolution,
   resolveSplit,
   threeWay,
+  tombstoneModelRecord,
   upstreamForEdit,
   type Address,
   type ChainInput,
@@ -647,4 +652,61 @@ test("activateModel distinguishes variants and preserves timestamps", () => {
   expect(next.find((record) => record.variant === undefined)?.active).toBe(true)
   expect(next.find((record) => record.variant === "high")?.active).toBeUndefined()
   expect(next.map((record) => record.updated)).toEqual(["2026-02-01T00:00:00.000Z", "2026-03-01T00:00:00.000Z"])
+})
+
+// Tombstones: `d` on an inherited or upstream candidate stores a `removed`
+// record at the row's level. Resolution hides the candidate for addresses
+// whose chain reads that node; a more specific live record still shows over a
+// less specific tombstone, and re-adding clears the tombstone.
+test("a tombstone hides its candidate from the chain that reads its node, not from other levels", () => {
+  const models: ModelRecord[] = [
+    modelRecord({ modelID: "base" }),
+    modelRecord({ level: "global", modelID: "chosen", active: true }),
+  ]
+  const visible = resolveActiveModel({ models, scopes, level: "project", agent: "alpha", upstream: { providerID: "openai", modelID: "host" } })
+  expect(visible?.modelID).toBe("chosen")
+  const hiddenModels = tombstoneModelRecord(models, { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "chosen" }, UPDATED)
+  // Project reads the tombstone: the Global active record no longer wins and
+  // the chain falls through to the host model.
+  const projectView = resolveActiveModel({ models: hiddenModels, scopes, level: "project", agent: "alpha", upstream: { providerID: "openai", modelID: "host" } })
+  expect(projectView?.source).toBe("upstream")
+  expect(modelCandidates({ models: hiddenModels, scopes, level: "project", agent: "alpha", upstream: { providerID: "openai", modelID: "host" } }).map((entry) => entry.modelID)).toEqual(["base", "host"])
+  // Global does not resolve through the Project tombstone.
+  const globalView = resolveActiveModel({ models: hiddenModels, scopes, level: "global", agent: "alpha", upstream: { providerID: "openai", modelID: "host" } })
+  expect(globalView?.modelID).toBe("chosen")
+  expect(modelCandidates({ models: hiddenModels, scopes, level: "global", agent: "alpha", upstream: { providerID: "openai", modelID: "host" } }).map((entry) => entry.modelID)).toEqual(["chosen", "host"])
+})
+
+test("a more specific live record wins over a less specific tombstone", () => {
+  const models: ModelRecord[] = [
+    modelRecord({ level: "defaults", modelID: "mine" }),
+    modelRecord({ modelID: "mine" }),
+  ]
+  const tombstoned = tombstoneModelRecord(models, { level: "defaults", agent: "alpha" }, { providerID: "openai", modelID: "mine" }, UPDATED)
+  // Project names the candidate itself: the live record wins over the
+  // Defaults tombstone.
+  expect(modelCandidates({ models: tombstoned, scopes, level: "project", agent: "alpha" }).map((entry) => entry.modelID)).toContain("mine")
+  // Defaults still hides it there.
+  expect(modelCandidates({ models: tombstoned, scopes, level: "defaults", agent: "alpha" }).map((entry) => entry.modelID)).not.toContain("mine")
+})
+
+test("re-adding a tombstoned candidate clears its tombstone and never steals active", () => {
+  const models: ModelRecord[] = [
+    modelRecord({ level: "global", modelID: "chosen", active: true }),
+    tombstoneModelRecord([], { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "chosen" }, UPDATED)[0]!,
+  ]
+  const hidden = resolveActiveModel({ models, scopes, level: "project", agent: "alpha" })
+  expect(hidden).toBeUndefined()
+  const readded = addModelRecord(models, { level: "project", agent: "alpha" }, { providerID: "openai", modelID: "chosen" }, UPDATED)
+  expect(readded.some((record) => record.removed === true)).toBe(false)
+  const visible = resolveActiveModel({ models: readded, scopes, level: "project", agent: "alpha" })
+  expect(visible?.source).toBe("global")
+})
+
+test("warming is hidden with its tombstoned candidate", () => {
+  const models: ModelRecord[] = [modelRecord({ modelID: "chosen", warming: "45m" })]
+  const target = { providerID: "openai", modelID: "chosen" }
+  expect(resolveModelWarming({ models, scopes, level: "project", agent: "alpha" }, target)?.value).toBe("45m")
+  const hidden = tombstoneModelRecord(models, { level: "project", agent: "alpha" }, target, UPDATED)
+  expect(resolveModelWarming({ models: hidden, scopes, level: "project", agent: "alpha" }, target)).toBeUndefined()
 })

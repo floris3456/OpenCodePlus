@@ -9,10 +9,13 @@ import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { load, save } from "../src/instructions/store.js"
+import { memoInputOf } from "../src/instructions/snapshot.js"
+import { expandedTree } from "../src/instructions/tree.js"
 import type { PresetRef, Snapshot } from "../src/rpc.js"
 import { Definition } from "../src/rpc.js"
 import { createInstructionsDialogs } from "../src/tui/instructions/dialogs.js"
 import { HELP, HelpDialog } from "../src/tui/instructions/help.js"
+import { factsOf, notesOf } from "../src/tui/instructions/inspector.js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import type { TestFixture } from "./tui.js"
@@ -3903,6 +3906,127 @@ test("inspector: a team's Special agent shows its team-scoped active model and s
     await fixture.waitForFrame((frame) => inspector(frame).includes(flat("from Project · active")))
     await goto(fixture, "item:project:crew/:special:summary:tool:shell", "shell")
     await fixture.waitForFrame((frame) => inspector(frame).includes(flat("hidden 1 lines hidden by rules: Use git push to publish.")))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+// D: enter on a model row opens the edit dialog (model, variant, warming).
+// Inherited rows are listed, so editing one plants a local record; the
+// dialog validates the model against the host catalog and shows the
+// inherited warming.
+test("enter on a model row edits model, variant and warming; w is no longer bound", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("alice")],
+    records: [
+      { type: "model" as const, level: "project" as const, agent: "alice", providerID: "acme", modelID: "nova-1", updated: PRESET_UPDATED },
+    ],
+  })
+  const models = [
+    { providerID: "acme", modelID: "nova-1", name: "Nova 1" },
+    { providerID: "acme", modelID: "nova-2", name: "Nova 2" },
+  ]
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 160,
+    models,
+    dialogs: { prompts: ["acme/nova-2", "high", "45m"] },
+  })
+  try {
+    await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
+    // The model-row warming key is gone; enter is the editor.
+    expect(fixture.commands().some((command) => command.bind === "w")).toBe(false)
+    expect(footer(fixture.captureCharFrame())).toContain("enter edit model")
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.mutateInputs.length === 1)
+    // The prompts prefill the current model and variant; warming starts empty
+    // (the dialogs fixture answers each in order).
+    expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? ""])).toEqual([
+      ["Model", "acme/nova-1"],
+      ["Variant", ""],
+      ["Cache warming · acme/nova-1", ""],
+    ])
+    const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice")
+    expect(own).toEqual([
+      expect.objectContaining({ providerID: "acme", modelID: "nova-2", variant: "high", warming: "45m" }),
+    ])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("enter on a model row refuses a model outside the host catalog", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("alice")],
+    records: [
+      { type: "model" as const, level: "project" as const, agent: "alice", providerID: "acme", modelID: "nova-1", updated: PRESET_UPDATED },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 160,
+    models: [{ providerID: "acme", modelID: "nova-1", name: "Nova 1" }],
+    dialogs: { prompts: ["acme/ghost", "", ""] },
+  })
+  try {
+    await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.toasts.some((toast) => toast.message.includes("is not a model in the host catalog")))
+    expect(fixture.fake.mutateInputs).toEqual([])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+// A: the Project view marks the effective model that a more specific level did
+// not choose, names the level that chose it, and never marks the upstream row.
+test("the Project view marks an inherited Global active model as active (global)", async () => {
+  const snapshot = createSnapshot({
+    agents: [{ id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const, model: { providerID: "acme", modelID: "upstream-model" } }],
+    records: [
+      { type: "model" as const, level: "global" as const, agent: "build", providerID: "acme", modelID: "nova-1", active: true as const, updated: PRESET_UPDATED },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160 })
+  try {
+    await goto(fixture, "item:project:build:model:acme/nova-1", "acme/nova-1")
+    expect(selectedRow(fixture.captureCharFrame())).toMatch(/acme\/nova-1.*active \(global\)/)
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("from Global · active (inherited)")))
+    // The upstream row is listed for build but not active.
+    await goto(fixture, "item:project:build:model:acme/upstream-model", "acme/upstream-model")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("from upstream")))
+    expect(selectedRow(fixture.captureCharFrame())).not.toContain("active")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+// B: the Defaults view of a native agent must not claim the host model is
+// active while a more specific level chose one; the group names the effective
+// model instead.
+test("the Defaults view of build names the effective model instead of marking upstream active", async () => {
+  const snapshot = createSnapshot({
+    agents: [{ id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const, model: { providerID: "acme", modelID: "base" } }],
+    records: [
+      { type: "model" as const, level: "global" as const, agent: "build", providerID: "acme", modelID: "chosen", active: true as const, updated: PRESET_UPDATED },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160 })
+  try {
+    // The Models group of the Defaults view: the effective model is named
+    // because it is not one of this level's rows, and the fallback note is
+    // there (factsOf/notesOf are what the inspector renders).
+    const nodes = expandedTree(memoInputOf(snapshot))
+    const group = nodes.find((node) => node.id === "group:defaults:build:models")
+    if (group === undefined) throw new Error("missing Defaults Models group")
+    expect(factsOf(group, snapshot, []).find((fact) => fact[0] === "effective")?.[1]).toBe("acme/chosen · active at global")
+    expect(notesOf(group, snapshot).join(" ")).toContain("falls back to its host configuration")
+    // The upstream row of the same group is listed but never active.
+    await goto(fixture, "item:defaults:build:model:acme/base", "acme/base")
+    const row = selectedRow(fixture.captureCharFrame())
+    expect(row).toContain("acme/base")
+    expect(row).not.toContain("active")
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("from upstream")))
   } finally {
     fixture.destroy()
   }

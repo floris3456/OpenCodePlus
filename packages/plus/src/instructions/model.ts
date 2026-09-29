@@ -400,18 +400,21 @@ export function sameModelCandidate(
 // resolutionChain order (most specific first), presets and Defaults entries
 // included: the first record for a candidate names its source. A shipped
 // preset contributes its shipped active model. Upstream appends last when not
-// already present.
+// already present. Tombstoned candidates are hidden from the whole chain when
+// the most specific node naming them is a tombstone.
 export function modelCandidates(input: ModelInput): ModelCandidate[] {
+  const hidden = hiddenKeys(input)
   const seen = new Map<string, ModelCandidate>()
   for (const node of modelChain(input)) {
     for (const model of modelsAt(input, node)) {
       const key = modelKey(model)
-      if (seen.has(key)) continue
+      if (hidden.has(key) || seen.has(key)) continue
       seen.set(key, candidateOf(model, node.level, node.from))
     }
   }
   const upstream = upstreamCandidate(input)
-  if (upstream !== undefined && !seen.has(modelKey(upstream))) seen.set(modelKey(upstream), upstream)
+  if (upstream !== undefined && !hidden.has(modelKey(upstream)) && !seen.has(modelKey(upstream)))
+    seen.set(modelKey(upstream), upstream)
   return [...seen.values()]
 }
 
@@ -419,16 +422,22 @@ export function modelCandidates(input: ModelInput): ModelCandidate[] {
 // active), else upstream. No active and no upstream means Plus installs
 // nothing for this agent. The address's own active record is "to review" when
 // it recorded the active model above it (`basedOn`) and that has changed.
+// Tombstoned candidates are ignored the same way the candidate list hides
+// them; a tombstoned upstream falls back to the host's own configuration,
+// which is nothing for Plus to install.
 export function resolveActiveModel(input: ModelInput): ModelCandidate | undefined {
+  const hidden = hiddenKeys(input)
   const chain = modelChain(input)
   for (const node of chain) {
     const winner = activeAt(input, node)
-    if (winner === undefined) continue
+    if (winner === undefined || hidden.has(modelKey(winner))) continue
     const own = node.shipped === undefined && scopedTo(node, ownModelScope(input))
     const review = own && winner.basedOn !== undefined && winner.basedOn !== aboveActiveModelKey(input)
     return { ...candidateOf(winner, node.level, node.from), ...(review ? { review: true as const } : {}) }
   }
-  return upstreamCandidate(input)
+  const upstream = upstreamCandidate(input)
+  if (upstream !== undefined && hidden.has(modelKey(upstream))) return undefined
+  return upstream
 }
 
 /**
@@ -466,13 +475,37 @@ function ownModelScope(input: ModelInput): RecordScope {
 }
 
 function modelsAt(input: ModelInput, node: ChainNode): readonly ModelRefLike[] {
-  if (node.shipped === undefined) return input.models.filter((record) => scopedTo(record, node))
+  if (node.shipped === undefined)
+    return input.models.filter((record) => record.removed !== true && scopedTo(record, node))
   const shipped = input.scopes.presets?.model(node.shipped)
   return shipped === undefined ? [] : [shipped]
 }
 
+/**
+ * Candidate keys a tombstone hides from this resolution. The chain is walked
+ * most specific first and the first node naming a key decides: a node with a
+ * live record keeps it visible, a node whose only record for it is a tombstone
+ * hides it for the rest of the chain. So a Project tombstone hides a Global
+ * candidate at Project, while a Project live row still shows over a Defaults
+ * tombstone.
+ */
+function hiddenKeys(input: ModelInput): ReadonlySet<string> {
+  const decided = new Map<string, boolean>()
+  for (const node of modelChain(input)) {
+    if (node.shipped !== undefined) continue
+    for (const record of input.models) {
+      if (!scopedTo(record, node)) continue
+      const key = modelKey(record)
+      if (decided.has(key)) continue
+      decided.set(key, record.removed === true)
+    }
+  }
+  return new Set([...decided].filter(([, removed]) => removed).map(([key]) => key))
+}
+
 function activeAt(input: ModelInput, node: ChainNode): (ModelRefLike & { readonly basedOn?: string }) | undefined {
-  if (node.shipped === undefined) return input.models.find((record) => scopedTo(record, node) && record.active === true)
+  if (node.shipped === undefined)
+    return input.models.find((record) => record.removed !== true && scopedTo(record, node) && record.active === true)
   return input.scopes.presets?.model(node.shipped)
 }
 
@@ -522,6 +555,7 @@ export function scopedTo(record: RecordScope, address: RecordScope & { readonly 
   )
 }
 
+/** True when a live (non-tombstone) record for the target exists at the address. */
 export function hasModelRecordAt(
   models: readonly ModelRecord[],
   address: RecordScope,
@@ -529,6 +563,7 @@ export function hasModelRecordAt(
 ): boolean {
   return models.some(
     (record) =>
+      record.removed !== true &&
       scopedTo(record, address) &&
       record.providerID === target.providerID &&
       record.modelID === target.modelID &&
@@ -537,29 +572,35 @@ export function hasModelRecordAt(
 }
 
 export function hasModelActiveAt(models: readonly ModelRecord[], address: RecordScope): boolean {
-  return models.some((record) => scopedTo(record, address) && record.active === true)
+  return models.some((record) => record.removed !== true && scopedTo(record, address) && record.active === true)
 }
 
 // Adding a candidate stores an inactive row; activation is a separate
 // exclusive flip so adding never steals the effective model. A duplicate at
 // the same address returns an identical list (an unchanged save stays a
-// no-op). Records keep caller-supplied timestamps: this is pure content.
+// no-op); a tombstone for the same candidate is replaced, so re-adding the
+// model at this level clears the hide. Records keep caller-supplied
+// timestamps: this is pure content.
 export function addModelRecord(
   models: readonly ModelRecord[],
   address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
   updated: string,
 ): ModelRecord[] {
-  const exists = models.some(
-    (record) =>
-      scopedTo(record, address) &&
-      record.providerID === target.providerID &&
-      record.modelID === target.modelID &&
-      record.variant === target.variant,
-  )
+  const exists = hasModelRecordAt(models, address, target)
   if (exists) return [...models]
+  const rest = models.filter(
+    (record) =>
+      !(
+        record.removed === true &&
+        scopedTo(record, address) &&
+        record.providerID === target.providerID &&
+        record.modelID === target.modelID &&
+        record.variant === target.variant
+      ),
+  )
   return [
-    ...models,
+    ...rest,
     {
       type: "model",
       level: address.level,
@@ -630,6 +671,34 @@ export function removeModelRecord(
   )
 }
 
+// Hiding a candidate at one level: any local record for it (live or an older
+// tombstone) is replaced by one tombstone, so the candidate disappears from
+// this level's list and from addresses resolving through this node. The source
+// level's record is never touched. Re-adding the candidate at this level
+// (addModelRecord) clears the tombstone.
+export function tombstoneModelRecord(
+  models: readonly ModelRecord[],
+  address: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+  updated: string,
+): ModelRecord[] {
+  return [
+    ...removeModelRecord(models, address, target),
+    {
+      type: "model",
+      level: address.level,
+      agent: address.agent,
+      ...(address.team !== undefined ? { team: address.team } : {}),
+      ...catalogueField(address),
+      providerID: target.providerID,
+      modelID: target.modelID,
+      ...(target.variant === undefined ? {} : { variant: target.variant }),
+      removed: true as const,
+      updated,
+    },
+  ]
+}
+
 /**
  * { global: ids with scope "global" plus the native built-ins (they have a
  * Global row too, so their Project row reads it), defaults: ids with scope
@@ -669,6 +738,31 @@ export function runtimeScope(agent: { readonly id: string; readonly level: Level
     level: "project",
     scopes: { ...scopes, global: new Set(scopes.global).add(agent.id), defaults: new Set(scopes.defaults).add(agent.id) },
   }
+}
+
+/**
+ * The scope an agent's model answer resolves through from a row's address:
+ * `runtimeScope` for the agent's own level (a native built-in's Defaults row
+ * runs at Project), the address itself for a shared inventory row and for a
+ * team-scoped row (a team member resolves at its team's tier, which is the
+ * row's level). The row's own level stays where edits write.
+ */
+export function modelRuntimeScope(input: {
+  readonly scopes: Scopes
+  readonly level: Level
+  readonly owner: string | null
+  /** The agent's discovered scope (AgentSource.scope); the row's level when absent. */
+  readonly agentScope?: Level
+  readonly team?: TeamRef
+}): { level: Level; scopes: Scopes } {
+  if (input.owner === null || input.team !== undefined) return { level: input.level, scopes: input.scopes }
+  return runtimeScope(
+    {
+      id: input.owner,
+      level: input.agentScope ?? input.level,
+    },
+    input.scopes,
+  )
 }
 
 // Item ids for the two phase-1 record kinds. Row ids address the whole row as
@@ -733,7 +827,7 @@ export function activateModel(
   const scoped = (record: ModelRecord) => scopedTo(record, address)
   const wanted = (record: ModelRecord) =>
     record.providerID === target.providerID && record.modelID === target.modelID && record.variant === target.variant
-  const targetRecord = records.find((record) => scoped(record) && wanted(record))
+  const targetRecord = records.find((record) => record.removed !== true && scoped(record) && wanted(record))
   if (targetRecord === undefined) return [...records]
   const basedOn =
     context === undefined
@@ -748,11 +842,11 @@ export function activateModel(
           ...(address.memberOf !== undefined ? { memberOf: address.memberOf } : {}),
           ...(context.upstream !== undefined ? { upstream: context.upstream } : {}),
         })
-  const stray = records.some((record) => scoped(record) && !wanted(record) && record.active === true)
+  const stray = records.some((record) => record.removed !== true && scoped(record) && !wanted(record) && record.active === true)
   const recorded = basedOn === undefined || targetRecord.basedOn === basedOn
   if (targetRecord.active === true && !stray && recorded) return [...records]
   return records.map((record) => {
-    if (!scoped(record)) return record
+    if (record.removed === true || !scoped(record)) return record
     if (wanted(record)) return { ...cleared(record), active: true as const, ...(basedOn === undefined ? {} : { basedOn }) }
     if (record.active === true) return cleared(record)
     return record
@@ -771,6 +865,7 @@ function cleared(record: ModelRecord): ModelRecord {
     modelID: record.modelID,
     ...(record.variant === undefined ? {} : { variant: record.variant }),
     ...(record.warming === undefined ? {} : { warming: record.warming }),
+    ...(record.removed === undefined ? {} : { removed: record.removed }),
     updated: record.updated,
   }
 }
@@ -828,6 +923,13 @@ export interface ModelRecord {
   readonly basedOn?: string
   /** Cache warming for this agent on this model: "off", "on", or a total time such as "45m" or "2h"; absent inherits. */
   readonly warming?: string
+  /**
+   * Tombstone: `d` on an inherited or upstream candidate hides it at this
+   * level without touching the source level. A tombstone is never active and
+   * never listed; resolution skips it (and the candidate itself when the
+   * tombstone's node is the most specific one naming it in the chain).
+   */
+  readonly removed?: true
   readonly updated: string
 }
 
@@ -1825,6 +1927,7 @@ export function setModelWarming(
   updated: string,
 ): ModelRecord[] {
   const wanted = (record: ModelRecord) =>
+    record.removed !== true &&
     scopedTo(record, address) &&
     record.providerID === target.providerID &&
     record.modelID === target.modelID &&
@@ -1858,7 +1961,10 @@ export function resolveModelWarming(
   input: ModelInput,
   target: ModelRefLike,
 ): { readonly value: string; readonly level: Level } | undefined {
+  const hidden = hiddenKeys(input)
+  if (hidden.has(modelKey(target))) return undefined
   const matches = (record: ModelRecord, variant: string | undefined) =>
+    record.removed !== true &&
     record.warming !== undefined &&
     record.providerID === target.providerID &&
     record.modelID === target.modelID &&

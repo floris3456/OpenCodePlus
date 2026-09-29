@@ -1,14 +1,17 @@
 import { expect, test } from "bun:test"
-import { fingerprint, resolveResolution } from "../src/instructions/model.js"
-import type { CustomizationRecord } from "../src/instructions/model.js"
+import { addModelRecord, fingerprint, resolveResolution } from "../src/instructions/model.js"
+import type { CustomizationRecord, ModelRecord } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput } from "../src/instructions/tree.js"
 import {
   activateModelRow,
   addSection,
+  editModelRow,
   refusalFor,
   removalPlan,
+  removeModelRow,
   reset,
+  resetModelRow,
   resolveReview,
   saveSplit,
   saveText,
@@ -877,4 +880,160 @@ test("saveText records the text above the row (the preset's) as its baseline, so
   const row = expandedTree(after).find((node) => node.id === rowId)
   expect(row?.badges.review).toBe(false)
   expect(row?.badges.modified).toBe(true)
+})
+
+// ---- model delete (tombstones) and enter-edit ----
+
+const MODEL_UPDATED = "2026-01-01T00:00:00.000Z"
+
+function buildInput(records: ModelRecord[]): MemoInput {
+  return baseInput({
+    agents: [
+      {
+        id: "build",
+        scope: "defaults",
+        origin: "native",
+        model: { providerID: "acme", modelID: "base" },
+      },
+    ],
+    records,
+  })
+}
+
+function modelRecord(overrides: Partial<ModelRecord>): ModelRecord {
+  return {
+    type: "model",
+    level: "project",
+    agent: "build",
+    providerID: "acme",
+    modelID: "nova",
+    updated: MODEL_UPDATED,
+    ...overrides,
+  }
+}
+
+function rowIdOf(level: "project" | "global" | "defaults", model: string): string {
+  return `item:${level}:build:model:${model}`
+}
+
+test("d on an upstream row hides it at this level only; the source views keep it", () => {
+  const input = buildInput([modelRecord({ modelID: "mine", active: true, basedOn: "acme/base" })])
+  const result = removeModelRow(input, rowIdOf("project", "acme/base"))
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.status).toBe('Hidden "acme/base" at this level')
+  const tombstone = result.models.find((record) => record.removed === true)
+  expect(tombstone).toMatchObject({ level: "project", agent: "build", providerID: "acme", modelID: "base" })
+  const nodes = expandedTree({ items: [], records: result.models, agents: [{ id: "build", scope: "defaults", origin: "native", model: { providerID: "acme", modelID: "base" } }] })
+  expect(nodes.some((node) => node.id === rowIdOf("project", "acme/base"))).toBe(false)
+  // Global and Defaults do not resolve through the Project node: the upstream
+  // candidate is still listed there.
+  expect(nodes.some((node) => node.id === rowIdOf("global", "acme/base"))).toBe(true)
+  expect(nodes.some((node) => node.id === rowIdOf("defaults", "acme/base"))).toBe(true)
+  expect(nodes.find((node) => node.id === rowIdOf("project", "acme/mine"))?.badges.active).toBe(true)
+})
+
+test("d on an inherited global candidate hides it at Project only", () => {
+  const input = buildInput([
+    modelRecord({ modelID: "mine", active: true }),
+    modelRecord({ modelID: "theirs", level: "global" }),
+  ])
+  const result = removeModelRow(input, rowIdOf("project", "acme/theirs"))
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  const agents = [{ id: "build", scope: "defaults" as const, origin: "native" as const, model: { providerID: "acme", modelID: "base" } }]
+  const nodes = expandedTree({ items: [], records: result.models, agents })
+  expect(nodes.some((node) => node.id === rowIdOf("project", "acme/theirs"))).toBe(false)
+  // The Global view does not resolve through the Project tombstone.
+  expect(nodes.some((node) => node.id === rowIdOf("global", "acme/theirs"))).toBe(true)
+  expect(nodes.find((node) => node.id === rowIdOf("project", "acme/mine"))?.badges.active).toBe(true)
+})
+
+test("re-adding a hidden model at the same level clears the tombstone", () => {
+  const input = buildInput([modelRecord({ modelID: "mine", active: true })])
+  const hidden = removeModelRow(input, rowIdOf("project", "acme/base"))
+  if ("refusal" in hidden) throw new Error(`expected success, got ${hidden.refusal}`)
+  const readded = addModelRecord(hidden.models, { level: "project", agent: "build" }, { providerID: "acme", modelID: "base" }, MODEL_UPDATED)
+  expect(readded.some((record) => record.removed === true)).toBe(false)
+  const nodes = expandedTree({ items: [], records: readded, agents: [{ id: "build", scope: "defaults", origin: "native", model: { providerID: "acme", modelID: "base" } }] })
+  const row = nodes.find((node) => node.id === rowIdOf("project", "acme/base"))
+  expect(row).toBeDefined()
+  expect(row?.badges.active).toBeUndefined()
+  // Hidden in a stale snapshot, live again once the save lands.
+  const back = expandedTree({ items: [], records: hidden.models, agents: [{ id: "build", scope: "defaults", origin: "native", model: { providerID: "acme", modelID: "base" } }] })
+  expect(back.some((node) => node.id === rowIdOf("project", "acme/base"))).toBe(false)
+})
+
+test("d refuses on the effective model: inherited, upstream and a lone local active", () => {
+  const inherited = buildInput([
+    modelRecord({ modelID: "theirs", level: "global", active: true }),
+    modelRecord({ modelID: "base", level: "project" }), // upstream tombstone candidate context
+  ])
+  const inheritedRow = rowIdOf("project", "acme/theirs")
+  const refused = removeModelRow(inherited, inheritedRow)
+  if (!("refusal" in refused)) throw new Error("expected refusal for the inherited effective model")
+  expect(refused.refusal).toBe(`"acme/theirs" is the active model here: activate another model first`)
+
+  const upstreamOnly = buildInput([])
+  const upstreamRefused = removeModelRow(upstreamOnly, rowIdOf("project", "acme/base"))
+  if (!("refusal" in upstreamRefused)) throw new Error("expected refusal for the effective upstream model")
+  expect(upstreamRefused.refusal).toBe(`"acme/base" is the active model here: activate another model first`)
+
+  const lone = buildInput([modelRecord({ modelID: "mine", active: true })])
+  const loneRefused = removeModelRow(lone, rowIdOf("project", "acme/mine"))
+  if (!("refusal" in loneRefused)) throw new Error("expected refusal for the lone local active model")
+  expect(loneRefused.refusal).toBe(`"acme/mine" is the active model here: activate another model first`)
+})
+
+test("d deletes a local active model when a lower level still resolves another stored model", () => {
+  const input = buildInput([
+    modelRecord({ modelID: "mine", active: true }),
+    modelRecord({ modelID: "theirs", level: "global", active: true }),
+  ])
+  const result = removeModelRow(input, rowIdOf("project", "acme/mine"))
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.status).toBe('Removed "acme/mine"')
+  expect(result.models.some((record) => record.level === "project" && record.modelID === "mine")).toBe(false)
+  const nodes = expandedTree({ items: [], records: result.models, agents: [{ id: "build", scope: "defaults", origin: "native", model: { providerID: "acme", modelID: "base" } }] })
+  const theirs = nodes.find((node) => node.id === rowIdOf("project", "acme/theirs"))
+  expect(theirs?.badges.active).toBe(true)
+  expect(theirs?.badges.activeFrom).toBe("global")
+})
+
+test("editModelRow replaces the candidate and keeps the effective model active", () => {
+  const input = buildInput([modelRecord({ modelID: "mine", active: true, basedOn: "acme/base" })])
+  const result = editModelRow(input, rowIdOf("project", "acme/mine"), { providerID: "acme", modelID: "mine", variant: "high", warming: "45m" })
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.status).toBe('Updated "acme/mine"')
+  const replaced = result.models.find((record) => record.level === "project")
+  expect(replaced).toMatchObject({ providerID: "acme", modelID: "mine", variant: "high", active: true, warming: "45m" })
+  expect(result.models.some((record) => record.variant === undefined && record.modelID === "mine")).toBe(false)
+  const nodes = expandedTree({ items: [], records: result.models, agents: [{ id: "build", scope: "defaults", origin: "native", model: { providerID: "acme", modelID: "base" } }] })
+  const row = nodes.find((node) => node.id === rowIdOf("project", "acme/mine@high"))
+  expect(row?.badges.active).toBe(true)
+  expect(row?.badges.warming).toBe("45m")
+})
+
+test("editModelRow plants a local record for an inherited row, active for the effective upstream", () => {
+  const input = buildInput([
+    modelRecord({ modelID: "other", level: "global" }),
+  ])
+  const inactive = editModelRow(input, rowIdOf("project", "acme/other"), { providerID: "acme", modelID: "other", variant: "low", warming: "off" })
+  if ("refusal" in inactive) throw new Error(`expected success, got ${inactive.refusal}`)
+  expect(inactive.models.find((record) => record.level === "project" && record.modelID === "other")).toMatchObject({ variant: "low", warming: "off" })
+  expect(inactive.models.find((record) => record.level === "project" && record.modelID === "other")?.active).toBeUndefined()
+
+  // Nothing is active, so the host model is the effective one: editing its
+  // Project row plants a local active record for the new candidate.
+  const upstream = editModelRow(input, rowIdOf("project", "acme/base"), { providerID: "acme", modelID: "base", variant: "high" })
+  if ("refusal" in upstream) throw new Error(`expected success, got ${upstream.refusal}`)
+  expect(upstream.models.find((record) => record.level === "project" && record.modelID === "base")).toMatchObject({ variant: "high", active: true })
+})
+
+test("editModelRow validates warming and refuses an empty edit", () => {
+  const input = buildInput([modelRecord({ modelID: "mine", active: true })])
+  const bad = editModelRow(input, rowIdOf("project", "acme/mine"), { providerID: "acme", modelID: "mine", warming: "forever" })
+  if (!("refusal" in bad)) throw new Error("expected warming refusal")
+  expect(bad.refusal).toContain("not a warming time")
+  const noop = editModelRow(input, rowIdOf("project", "acme/mine"), { providerID: "acme", modelID: "mine" })
+  if (!("refusal" in noop)) throw new Error("expected no-change refusal")
+  expect(noop.refusal).toBe('"acme/mine" has no changes to save')
 })

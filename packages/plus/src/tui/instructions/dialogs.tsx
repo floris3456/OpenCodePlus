@@ -1,9 +1,10 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
-import { parsePermItemId } from "../../instructions/model.js"
+import { parseModelItemId, parsePermItemId } from "../../instructions/model.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
+import { displayLevel } from "./detail-pane.js"
 import type { InstructionsState } from "./state.js"
 
 export interface InstructionsDialogsOptions {
@@ -100,7 +101,81 @@ export function createInstructionsDialogs(
     return addMcp()
   }
 
-  // a on an item row appends a section to that item: prompt for the name and
+  // enter on a model row: the model (prefilled, validated against the host
+// catalog), the variant/effort (prefilled, empty = none), and cache warming
+// (off, on, a total time, or blank to inherit — the inherited value shows as
+// the placeholder). Saving replaces or plants the record at the row's level:
+// an inherited or upstream row becomes a local record, editing the effective
+// model keeps it effective, and a local record's active flag moves with the
+// replaced candidate.
+async function editModel(node: TreeNode): Promise<void> {
+  if (disposed) return
+  const address = node.address
+  if (address === undefined || !address.item.startsWith("model:")) {
+    context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
+    return
+  }
+  const parsed = parseModelItemId(address.item)
+  if (parsed === undefined) {
+    context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
+    return
+  }
+  let catalog: { providerID: string; modelID: string; variant?: string; name: string }[]
+  try {
+    const output = await plus["catalog.models"](undefined, { location: context.location })
+    if (disposed) return
+    catalog = [...output.models]
+  } catch (error: unknown) {
+    if (disposed) return
+    context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    return
+  }
+  if (catalog.length === 0) {
+    context.ui.toast.show({ variant: "error", message: "No models in the host catalog" })
+    return
+  }
+  const rawModel = await context.ui.dialog.prompt({
+    title: "Model",
+    description: "provider/model from the host catalog",
+    value: `${parsed.providerID}/${parsed.modelID}`,
+  })
+  if (disposed) return
+  if (rawModel === undefined) return
+  const slash = rawModel.indexOf("/")
+  const providerID = slash === -1 ? "" : rawModel.slice(0, slash).trim()
+  const modelID = slash === -1 ? "" : rawModel.slice(slash + 1).trim()
+  if (providerID.length === 0 || modelID.length === 0 || !catalog.some((entry) => entry.providerID === providerID && entry.modelID === modelID)) {
+    context.ui.toast.show({ variant: "error", message: `"${rawModel.trim()}" is not a model in the host catalog` })
+    return
+  }
+  const rawVariant = await context.ui.dialog.prompt({
+    title: "Variant",
+    description: "Empty keeps no variant",
+    value: parsed.variant ?? "",
+  })
+  if (disposed) return
+  if (rawVariant === undefined) return
+  const variant = rawVariant.trim()
+  const localWarming = node.badges.warmingFrom === address.level ? node.badges.warming : undefined
+  const inherited = localWarming === undefined && node.badges.warming !== undefined
+  const warmingHelp = "off, on, or the total time to keep the cache warm after the last reply (45m, 2h, 1h30m; 1m to 24h). Blank inherits."
+  const rawWarming = await context.ui.dialog.prompt({
+    title: `Cache warming · ${node.label}`,
+    description: inherited ? `${warmingHelp} Inherits ${node.badges.warming} from ${displayLevel(node.badges.warmingFrom ?? "project")}.` : warmingHelp,
+    value: localWarming ?? "",
+    placeholder: node.badges.warming ?? "",
+  })
+  if (disposed) return
+  if (rawWarming === undefined) return
+  await state.editModel(node, {
+    providerID,
+    modelID,
+    ...(variant.length === 0 ? {} : { variant }),
+    warming: rawWarming,
+  })
+}
+
+// a on an item row appends a section to that item: prompt for the name and
   // body, reuse the manual splitter boundary path in state.addSection, then
   // persist both halves of the boundary contract (the SplitRecord boundary
   // and the CustomizationRecord text) in one mutate.
@@ -961,7 +1036,7 @@ export function createInstructionsDialogs(
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addRule, editRule, relink, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, addRule, editRule, relink, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

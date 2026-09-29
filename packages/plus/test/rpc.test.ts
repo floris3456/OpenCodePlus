@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Rpc } from "@opencode/schema/rpc"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Schema } from "effect"
 import { Effect, Exit } from "effect"
 import fsSync from "node:fs"
@@ -2906,4 +2908,60 @@ test("instructions.mutate refuses a tool actor changing a protected agent's row 
   const afterTui = tui.snapshot.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
   if (afterTui === undefined || afterTui.type !== "customization") throw new Error("expected written customization")
   expect(afterTui.text).toBe("second")
+})
+
+// The reported build/fable case at the session boundary: Plus resolves opus
+// from the project/global records for the native Defaults agent, so a new
+// build session adopts opus instead of the host default fable.
+test("a new build session adopts the project/global active model, not the host default", async () => {
+  const { project } = await tempRoot()
+  const fable = Model.Ref.make({
+    providerID: Provider.ID.make("cliproxyapi"),
+    id: Model.ID.make("claude-fable-5-1"),
+    variant: Model.VariantID.make("xhigh"),
+  })
+  const agents = agentHarness([agentInfo("build", "build role", fable)])
+  const models = [modelInfo("cliproxyapi", "claude-opus-5-5"), modelInfo("cliproxyapi", "claude-fable-5-1")]
+  const switches: Array<{ sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }> = []
+  const ctx = context({
+    location: fullContext({ directory: project }).location,
+    agent: agents.domain,
+    model: modelHarness(models),
+    prompt: promptHarness(defaultHostTemplates, { "claude-opus-5-5": "general", "claude-fable-5-1": "general" }),
+    session: {
+      get: () => Effect.succeed({ agent: "build", model: { providerID: "cliproxyapi", id: "claude-fable-5-1" } } as never),
+      switchModel: (input: { sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }) =>
+        Effect.sync(() => {
+          switches.push({ sessionID: input.sessionID, model: input.model })
+        }),
+    },
+  })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const opus = (level: "project" | "global") => ({
+    type: "model" as const,
+    level,
+    agent: "build",
+    providerID: "cliproxyapi",
+    modelID: "claude-opus-5-5",
+    variant: "high",
+    active: true as const,
+    basedOn: "cliproxyapi/claude-fable-5-1@xhigh",
+    updated: UPDATED,
+  })
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: [opus("project"), opus("global")] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(state.activeModels.get("build")).toMatchObject({ providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high" })
+  await Effect.runPromise(
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_build", agent: "build" } }),
+  )
+  expect(switches).toHaveLength(1)
+  expect(String(switches[0]?.model.providerID)).toBe("cliproxyapi")
+  expect(String(switches[0]?.model.id)).toBe("claude-opus-5-5")
 })

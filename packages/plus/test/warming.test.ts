@@ -136,7 +136,7 @@ test("setting warming plants an inactive candidate where the model is inherited,
   expect(setModelWarming(inherited, { level: "project", agent: "beta" }, claude, undefined, UPDATED)).toEqual(inherited)
 })
 
-test("w on a Models row writes that agent's row at that level and refuses bad input", () => {
+test("warming on a Models row writes that agent's row at that level and refuses bad input", () => {
   const input: MemoInput = {
     items: [],
     records: [record({ level: "project", agent: "alpha" }), record({ level: "project", agent: "beta" })],

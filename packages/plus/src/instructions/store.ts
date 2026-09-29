@@ -136,7 +136,8 @@ const V2Team = Schema.Struct({
 
 // Per-agent model selection. `active` is `true` or omitted, never `false`:
 // records cross the RPC boundary as JSON, where a present-but-undefined key
-// fails validation.
+// fails validation. `removed: true` is a tombstone hiding an inherited or
+// upstream candidate at that level.
 const V2Model = Schema.Struct({
   type: Schema.Literal("model"),
   level: LevelSchema,
@@ -149,6 +150,7 @@ const V2Model = Schema.Struct({
   active: Schema.optional(Schema.Literal(true)),
   basedOn: Schema.optional(Schema.String),
   warming: Schema.optional(Schema.String),
+  removed: Schema.optional(Schema.Literal(true)),
   updated: Schema.String,
 })
 
@@ -579,6 +581,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           ...(record.active === undefined ? {} : { active: record.active }),
           ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
           ...(record.warming === undefined ? {} : { warming: record.warming }),
+          ...(record.removed === undefined ? {} : { removed: record.removed }),
           updated: record.updated,
         },
       ]
@@ -806,6 +809,7 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.active === undefined ? {} : { active: record.active }),
       ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
       ...(record.warming === undefined ? {} : { warming: record.warming }),
+      ...(record.removed === undefined ? {} : { removed: record.removed }),
       updated: record.updated,
     }
   if (record.type === "rule")

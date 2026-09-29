@@ -44,7 +44,7 @@ export function badgeLabels(node: TreeNode): string[] {
   // no state and still render no badge.
   if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
   if (node.badges.modified === true) labels.push("modified")
-  if (node.badges.active === true) labels.push("active")
+  if (node.badges.active === true) labels.push(node.badges.activeFrom === undefined ? "active" : `active (${node.badges.activeFrom})`)
   if (node.badges.inactive === true) labels.push("inactive")
   if (node.badges.pinned === true) labels.push("pinned")
   if (node.badges.unsupported === true) labels.push("unsupported")

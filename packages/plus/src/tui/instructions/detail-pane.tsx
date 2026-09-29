@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { fromLabel } from "../../instructions/from-label.js"
-import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
+import { applies, catalogueForAddress, matchesName, modelCandidates, modelRuntimeScope, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
 import { categorySummary } from "../../instructions/permission-catalog.js"
 import { presetLabels } from "../../instructions/presets.js"
@@ -75,7 +75,7 @@ function upstreamModelOf(derived: Derived, agent: string | null): { providerID: 
 export function modelDetail(
   node: TreeNode,
   snapshot: Snapshot,
-): { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; active: boolean } | undefined {
+): { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; active: boolean; activeFrom?: Level | "upstream" } | undefined {
   const address = node.address
   if (address === undefined || !isModelAddress(address)) return undefined
   const parsed = parseModelItemId(address.item)
@@ -98,13 +98,24 @@ export function modelDetail(
   }
   const candidate = modelCandidates(input).find((entry) => sameModelCandidate(entry, parsed))
   if (candidate === undefined) return undefined
-  const active = resolveActiveModel(input)
+  // The effective model resolves on the agent's runtime chain (a native
+  // built-in's Defaults row runs at Project), like the tree's active badge.
+  const runtime = modelRuntimeScope({
+    scopes,
+    level: address.level,
+    owner: address.agent,
+    ...(address.agent === null ? {} : { agentScope: derived.agents.find((entry) => entry.id === address.agent)?.scope }),
+    ...((address.memberOf ?? address.team) === undefined ? {} : { team: (address.memberOf ?? address.team)! }),
+  })
+  const active = resolveActiveModel({ ...input, level: runtime.level, scopes: runtime.scopes })
+  const isActive = active !== undefined && sameModelCandidate(active, candidate)
   return {
     providerID: candidate.providerID,
     modelID: candidate.modelID,
     ...(candidate.variant === undefined ? {} : { variant: candidate.variant }),
     source: candidate.source,
-    active: active !== undefined && sameModelCandidate(active, candidate),
+    active: isActive,
+    ...(isActive && active?.source !== undefined ? { activeFrom: active.source } : {}),
   }
 }
 

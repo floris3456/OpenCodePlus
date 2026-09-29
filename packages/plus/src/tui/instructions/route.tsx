@@ -1005,22 +1005,6 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node) void state.togglePin(node)
   }
 
-  // w on a model row: cache warming for this agent on this model at this
-  // level. Blank inherits from the level below or the host configuration.
-  async function editWarming(): Promise<void> {
-    const node = current()
-    if (!isModelRow(node) || node === undefined) return
-    const inherited = node.badges.warmingFrom !== undefined && node.badges.warmingFrom !== node.address?.level
-    const raw = await props.context.ui.dialog.prompt({
-      title: `Cache warming · ${node.label}`,
-      description:
-        "off, on, or the total time to keep the cache warm after the last reply (45m, 2h, 1h30m; 1m to 24h). Blank inherits.",
-      value: inherited ? "" : (node.badges.warming ?? ""),
-    })
-    if (raw === undefined) return
-    await state.setWarming(node, raw)
-  }
-
   // The permission row a node addresses; undefined for every other node.
   function permItem(node: TreeNode) {
     const item = node.address?.item
@@ -1114,6 +1098,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         return
       }
       openMode("diff", node)
+      return
+    }
+    // Enter on a model row edits the candidate and its warming; an inherited
+    // row plants a local record, like activation.
+    if (isModelRow(node)) {
+      void dialogs.editModel(node)
       return
     }
     if (control === "toggle") {
@@ -1319,6 +1309,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       else if (control === "cycle") hints.push(["enter", "cycle"])
       else if (isReview(node)) hints.push(["enter", "review"])
       else if (control === "toggle") hints.push(["enter", "toggle"])
+      else if (isModelRow(node)) hints.push(["enter", "edit model"])
       else if (perm !== undefined && isValueRow(perm)) hints.push(["enter", "edit number"])
       else if (perm !== undefined && (perm.patterns ?? []).length > 0) hints.push(["enter", "edit rule"])
       else if (isEditable(node)) hints.push(["enter", "edit"])
@@ -1411,7 +1402,6 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(inList() && isEditable(node) ? [{ bind: "e", title: "Edit text", group: "Instructions", run: edit }] : []),
         ...(inList() && comparable(node) ? [{ bind: "c", title: "Compare with upstream", group: "Instructions", run: compare }] : []),
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: pin }] : []),
-        ...(isModelRow(node) ? [{ bind: "w", title: "Cache warming", group: "Instructions", run: () => void editWarming() }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: () => void dialogs.relink(current()) }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },

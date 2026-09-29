@@ -30,12 +30,11 @@ export const HELP: readonly HelpGroup[] = [
     [
       ["space", "turn a row, agent or team on/off"],
       ["ctrl+space", "make an enabled primary agent the current agent"],
-      ["enter", "edit text · edit a rule's patterns or a limit · cycle Mode/Strategy · review"],
+      ["enter", "edit text · edit a rule's patterns or a limit · edit a model · cycle Mode/Strategy · review"],
       ["e", "edit text full width (ctrl+d previews the change)"],
       ["c", "compare your text with upstream (a real diff)"],
       ["r", "reset this level's override"],
       ["p", "pin a Code Mode tool"],
-      ["w", "cache warming on a model row: off, on, or a total time (45m, 2h); blank inherits"],
       ["s", "split text into sections"],
     ],
   ],

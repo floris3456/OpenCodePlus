@@ -122,6 +122,7 @@ function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
     ...(record.active === undefined ? {} : { active: record.active }),
     ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
     ...(record.warming === undefined ? {} : { warming: record.warming }),
+    ...(record.removed === undefined ? {} : { removed: record.removed }),
     updated: record.updated,
   }
 }

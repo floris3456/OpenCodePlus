@@ -33,7 +33,7 @@ import { registerInstructionTools } from "../src/tools.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { memoInputOf, presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
-import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo, modelRef, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -1300,9 +1300,31 @@ test("create model, activate through set, list with item:model and active, then 
   expect(recordView.record?.active).toBe(true)
   const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true" })) as { rows: readonly { id: string }[] }
   expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
-  const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { providerID: string }
-  expect(deleted).toMatchObject({ providerID: "acme" })
+  // The effective model refuses deletion: activate a replacement first. r
+  // clears only this level's active flag, so the candidate then deletes.
+  const refused = await runFail(need(tools, "instructions_delete"), { id: row.id, confirm: true })
+  expect(refused.message).toBe(`"acme/nova-2" is the active model here: activate another model first`)
+  await runOk(need(tools, "instructions_reset"), { id: row.id })
+  const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { status: string }
+  expect(deleted.status).toBe('Removed "acme/nova-2"')
   void modelHarness
+})
+
+test("set text on a model row replaces the candidate and keeps the active flag", async () => {
+  const { tools, project } = await freshFixture({
+    models: [modelInfo("acme", "nova-2"), modelInfo("acme", "nova-3")],
+    classifications: { "nova-2": "general", "nova-3": "general" },
+  })
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const created = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })) as { id: string }
+  await runOk(set, { id: created.id, active: true })
+  const replaced = (await runOk(set, { id: created.id, text: "acme/nova-3#high" })) as { status: string }
+  expect(replaced.status).toBe('Updated "acme/nova-2"')
+  const stored = (await load(project)).records.filter((record) => record.type === "model" && record.agent === "alpha")
+  expect(stored).toHaveLength(1)
+  expect(stored[0]).toMatchObject({ providerID: "acme", modelID: "nova-3", variant: "high", active: true })
+  expect((await runFail(set, { id: "item:defaults:alpha:model:acme/nova-3@high", text: "not-a-model" })).message).toContain("takes provider/model")
 })
 
 test("set warming on a model row stores it through the real store; bad values and non-model rows refuse", async () => {
@@ -2356,7 +2378,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
       id: "item:project:owner:model:acme/nova-2",
       item: "model:acme/nova-2",
       kind: "item",
-      status: 'Removed "item:project:owner:model:acme/nova-2"',
+      status: 'Removed "acme/nova-2"',
       show: { expect: { view: "resolved" } },
       gone: true,
     },
@@ -2942,4 +2964,54 @@ test("instructions_delete removes Defaults entries and User presets and surfaces
   await runOk(need(tools, "instructions_set"), { id: "agent:project:user1", preset: null })
   expect(await runOk(del, { id: "agent:preset:mine", confirm: true })).toMatchObject({ ref: { kind: "agent", id: "mine" } })
   expect((await snapshotOf(api)).presets).toEqual([])
+})
+
+// C: the instructions tool's delete walks the same content as the TUI's `d`:
+// a local record is deleted, an inherited or upstream row is hidden at this
+// level with a tombstone, and the effective model refuses.
+test("delete hides an inherited model row at this level, re-adding clears it, and the effective model refuses", async () => {
+  const { api, tools, project } = await freshFixture({
+    agents: [agentInfo("build", "upstream role", modelRef("acme", "base"))],
+    models: [modelInfo("acme", "base"), modelInfo("acme", "opus")],
+    classifications: { "": "general", "base": "general", "opus": "general" },
+  })
+  const create = need(tools, "instructions_create")
+  const del = need(tools, "instructions_delete")
+  const set = need(tools, "instructions_set")
+  const rowOf = async (id: string) => expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id === id)
+
+  const created = (await runOk(create, { kind: "model", providerID: "acme", modelID: "opus", level: "global", agent: "build" })) as { id: string }
+  expect(created.id).toBe("item:global:build:model:acme/opus")
+  const projectRow = "item:project:build:model:acme/opus"
+  expect(await rowOf(projectRow)).toBeDefined()
+
+  const hidden = (await runOk(del, { id: projectRow, confirm: true })) as { status: string }
+  expect(hidden.status).toBe('Hidden "acme/opus" at this level')
+  expect(await rowOf(projectRow)).toBeUndefined()
+  expect(await rowOf(created.id)).toBeDefined()
+  const stored = (await load(project)).records.find(
+    (record) => record.type === "model" && record.level === "project" && record.modelID === "opus",
+  )
+  expect(stored).toMatchObject({ removed: true, agent: "build" })
+
+  // Re-adding at Project clears the tombstone.
+  await runOk(create, { kind: "model", providerID: "acme", modelID: "opus", level: "project", agent: "build" })
+  expect(await rowOf(projectRow)).toBeDefined()
+  expect(
+    (await load(project)).records.some((record) => record.type === "model" && record.level === "project" && record.modelID === "opus" && record.removed === true),
+  ).toBe(false)
+
+  // The host model is build's upstream: with nothing active it is the
+// effective model, so the upstream row refuses.
+  const upstream = "item:project:build:model:acme/base"
+  const refused = await runFail(del, { id: upstream, confirm: true })
+  expect(refused.message).toBe('"acme/base" is the active model here: activate another model first')
+  // Activating another model makes the upstream row deletable: it is hidden at
+  // Project while the Global view (which does not resolve through Project)
+  // still lists the host fallback.
+  await runOk(set, { id: projectRow, active: true })
+  const hiddenUpstream = (await runOk(del, { id: upstream, confirm: true })) as { status: string }
+  expect(hiddenUpstream.status).toBe('Hidden "acme/base" at this level')
+  expect(await rowOf("item:project:build:model:acme/base")).toBeUndefined()
+  expect(await rowOf("item:global:build:model:acme/base")).toBeDefined()
 })

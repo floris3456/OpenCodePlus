@@ -9,6 +9,7 @@ import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instruct
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, skillScopeOfNode, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
+import { activateModelRow, resetModelRow } from "../src/instructions/ops.js"
 import { createHandlers, createState } from "../src/index.js"
 import { saveRun } from "../src/teams/run.js"
 import { fullContext } from "./harness.js"
@@ -1357,6 +1358,116 @@ test("model union shows chain candidates with source badges and one active winne
     "item:global:alpha:model:acme/nova-3",
     "item:global:alpha:model:acme/nova-4",
   ])
+})
+
+// A native built-in (build) is shown under every root; its runtime chain is
+// the Project one (project → global → defaults → upstream), so an active model
+// chosen at one level is the same model the host installs. The badge names the
+// level that chose it when that is not the level being viewed.
+function buildAgents() {
+  return [
+    {
+      id: "build",
+      scope: "defaults" as const,
+      origin: "native" as const,
+      model: { providerID: "acme", modelID: "base" },
+    },
+  ]
+}
+
+function modelRow(nodes: readonly TreeNode[], level: "project" | "global" | "defaults", model: string): TreeNode | undefined {
+  return nodes.find((node) => node.id === `item:${level}:build:${model}`)
+}
+
+test("a Global activation shows as inherited active at Project, upstream not active", () => {
+  const input = {
+    items: [],
+    records: [
+      { type: "model" as const, level: "global" as const, agent: "build", providerID: "acme", modelID: "chosen", updated: UPDATED },
+    ],
+    agents: buildAgents(),
+  }
+  const activated = activateModelRow(input, "item:global:build:model:acme/chosen")
+  if ("refusal" in activated) throw new Error(`expected success, got ${activated.refusal}`)
+  const nodes = expandAll({ ...input, records: activated.models })
+  const chosen = modelRow(nodes, "project", "model:acme/chosen")
+  expect(chosen?.badges.active).toBe(true)
+  expect(chosen?.badges.activeFrom).toBe("global")
+  expect(chosen?.badges.source).toBe("global")
+  const upstream = modelRow(nodes, "project", "model:acme/base")
+  expect(upstream?.badges.active).toBeUndefined()
+  expect(upstream?.badges.source).toBe("upstream")
+  // No Project record was written by the Global activation.
+  expect(activated.models.some((record) => record.level === "project")).toBe(false)
+})
+
+test("a Project activation wins over a later Global activation without writing a Project record", () => {
+  const project = {
+    type: "model" as const,
+    level: "project" as const,
+    agent: "build",
+    providerID: "acme",
+    modelID: "mine",
+    active: true as const,
+    updated: UPDATED,
+  }
+  const input = {
+    items: [],
+    records: [
+      project,
+      { type: "model" as const, level: "global" as const, agent: "build", providerID: "acme", modelID: "theirs", updated: UPDATED },
+    ],
+    agents: buildAgents(),
+  }
+  const activated = activateModelRow(input, "item:global:build:model:acme/theirs")
+  if ("refusal" in activated) throw new Error(`expected success, got ${activated.refusal}`)
+  // The Global activation changed only the Global record.
+  expect(activated.models.find((record) => record.level === "project")).toBe(project)
+  const nodes = expandAll({ ...input, records: activated.models })
+  const mine = modelRow(nodes, "project", "model:acme/mine")
+  expect(mine?.badges.active).toBe(true)
+  // Locally chosen: no inherited suffix.
+  expect(mine?.badges.activeFrom).toBeUndefined()
+  const theirs = modelRow(nodes, "project", "model:acme/theirs")
+  expect(theirs?.badges.active).toBeUndefined()
+  expect(theirs?.badges.source).toBe("global")
+})
+
+test("after a Project reset the Project view falls through to the Global active model", () => {
+  const input = {
+    items: [],
+    records: [
+      { type: "model" as const, level: "project" as const, agent: "build", providerID: "acme", modelID: "mine", active: true as const, updated: UPDATED },
+      { type: "model" as const, level: "global" as const, agent: "build", providerID: "acme", modelID: "theirs", active: true as const, updated: UPDATED },
+    ],
+    agents: buildAgents(),
+  }
+  const before = expandAll(input)
+  expect(modelRow(before, "project", "model:acme/mine")?.badges.active).toBe(true)
+  // r on the Project row clears only that level's active flag.
+  const cleared = resetModelRow(input, "item:project:build:model:acme/mine")
+  if ("refusal" in cleared) throw new Error(`expected success, got ${cleared.refusal}`)
+  const after = expandAll({ ...input, records: cleared.models })
+  const theirs = modelRow(after, "project", "model:acme/theirs")
+  expect(theirs?.badges.active).toBe(true)
+  expect(theirs?.badges.activeFrom).toBe("global")
+  const mine = modelRow(after, "project", "model:acme/mine")
+  expect(mine?.badges.active).toBeUndefined()
+  expect(mine?.actions?.remove).toBe(true)
+})
+
+test("the Defaults view of a native agent never claims the host model is active while a more specific level chose one", () => {
+  const records = [
+    { type: "model" as const, level: "project" as const, agent: "build", providerID: "acme", modelID: "chosen", active: true as const, updated: UPDATED },
+  ]
+  const nodes = expandAll({ items: [], records, agents: buildAgents() })
+  const upstream = modelRow(nodes, "defaults", "model:acme/base")
+  expect(upstream?.badges.active).toBeUndefined()
+  expect(upstream?.badges.effective).toBeUndefined()
+  const group = nodes.find((node) => node.id === "group:defaults:build:models")
+  expect(group?.badges.effective).toBe("acme/chosen · active at project")
+  // The Project view is the same answer with the row listed.
+  expect(modelRow(nodes, "project", "model:acme/chosen")?.badges.active).toBe(true)
 })
 
 test("a native tool row lists its Description and a Permissions group whose categories hold editable rule rows", () => {

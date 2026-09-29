@@ -2174,3 +2174,99 @@ test("a pin matching the registry default installs no catalog plan", async () =>
   expect(applied.registrations).toEqual([])
   expect(applied.tools).toEqual([])
 })
+
+// B: the reported build/fable case. The host global default is fable; Plus
+// resolves opus for build from its project/global active records. The host
+// transform must install opus for build while a sibling native agent with no
+// Plus records keeps the host model.
+test("build's host model is the opus the runtime chain resolves, not the host default", async () => {
+  const fable = Model.Ref.make({
+    providerID: Provider.ID.make("cliproxyapi"),
+    id: Model.ID.make("claude-fable-5-1"),
+    variant: Model.VariantID.make("xhigh"),
+  })
+  const agents = agentHarness([
+    agentInfo("build", "upstream build", fable),
+    agentInfo("plan", "upstream plan", fable),
+  ])
+  const ctx = context({
+    agent: agents.domain,
+    model: modelHarness([modelInfo("cliproxyapi", "claude-opus-5-5"), modelInfo("cliproxyapi", "claude-fable-5-1")]),
+  })
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  const opus = (level: "project" | "global"): ModelRecord => ({
+    type: "model",
+    level,
+    agent: "build",
+    providerID: "cliproxyapi",
+    modelID: "claude-opus-5-5",
+    variant: "high",
+    active: true,
+    basedOn: "cliproxyapi/claude-fable-5-1@xhigh",
+    updated: UPDATED,
+  })
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((agent) => ({ id: agent.id, level: agent.scope })),
+      records: [],
+      scopes: chainContext({ agents: discovered.agents, items: discovered.items }),
+      models: [opus("project"), opus("global")],
+    }),
+  )
+  expect(applied.registrations).toHaveLength(1)
+  expect(agents.state.get("build")?.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-opus-5-5", variant: "high" })
+  // plan has no Plus records: Plus installs nothing and the host model stays.
+  expect(agents.state.get("plan")?.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-fable-5-1", variant: "xhigh" })
+})
+
+test("a tombstone hides its candidate from the host apply as well", async () => {
+  const fable = Model.Ref.make({
+    providerID: Provider.ID.make("cliproxyapi"),
+    id: Model.ID.make("claude-fable-5-1"),
+    variant: Model.VariantID.make("xhigh"),
+  })
+  const agents = agentHarness([agentInfo("build", "upstream build", fable)])
+  const ctx = context({
+    agent: agents.domain,
+    model: modelHarness([modelInfo("cliproxyapi", "claude-opus-5-5"), modelInfo("cliproxyapi", "claude-fable-5-1")]),
+  })
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  const models: ModelRecord[] = [
+    {
+      type: "model",
+      level: "global",
+      agent: "build",
+      providerID: "cliproxyapi",
+      modelID: "claude-opus-5-5",
+      variant: "high",
+      active: true,
+      updated: UPDATED,
+    },
+    // d at Project hides the inherited candidate: the Global active record is
+    // no longer what the Project chain resolves.
+    {
+      type: "model",
+      level: "project",
+      agent: "build",
+      providerID: "cliproxyapi",
+      modelID: "claude-opus-5-5",
+      variant: "high",
+      removed: true,
+      updated: UPDATED,
+    },
+  ]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: discovered.agents.map((agent) => ({ id: agent.id, level: agent.scope })),
+      records: [],
+      scopes: chainContext({ agents: discovered.agents, items: discovered.items }),
+      models,
+    }),
+  )
+  expect(applied.registrations).toEqual([])
+  expect(agents.state.get("build")?.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-fable-5-1", variant: "xhigh" })
+})
