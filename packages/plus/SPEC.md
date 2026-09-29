@@ -161,8 +161,13 @@ preset it is linked to now. Item, perm, section and model rows carry
 `badges.from` (where the on/off state came from, `model.ts` `From`),
 `badges.textFrom` (when the text came from elsewhere), `badges.fromLabel`
 (`from-label.ts`: "from preset Orchestrator", "from default *orchestrator*",
-"from Defaults (every agent)", "OpenCode", "upstream", "off by default", "set
-here", "from global") and `badges.reviewOf` (the parts to review). A model row
+"from Defaults (every agent)", "OpenCode", "upstream", "shipped", "off by
+default", "set here", "from global") and `badges.reviewOf` (the parts to
+review). Inside a preset's own subtree its content never reads "from preset
+<itself>": an edit to the preset reads "set here", its shipped content the
+baseline it ships ("OpenCode" for a Native preset, "shipped" for a Plus one),
+while a value from a different preset keeps "from preset X" (`own`,
+`presets.ts` `presetOfAddress`). A model row
 whose own active record recorded an active model above that has since changed
 is to review.
 
@@ -278,8 +283,9 @@ step at zero.
 value set at this level; `!` (`!N` for N below) and a warning gutter mark a
 review. An inheriting row shows its `badges.fromLabel` dim at the right
 (`shell … from preset Orchestrator`), never when the row sets the value itself
-(`set here`) or for the baseline (`OpenCode`, `upstream`); inside a preset its
-own `from preset <itself>` is not repeated. The review wording reads through
+(`set here`) or for the baseline (`OpenCode`, `upstream`, `shipped`). Inside a
+preset, its own content reads "set here" or the baseline it ships, never
+`from preset <itself>`. The review wording reads through
 `reviewLabel` in the inspector: `to review`, `to review (state)`, `to review
 (text, state)`; a model row's review reads `review`. Colours follow theme roles:
 provenance is `text.subdued`, review the warning feedback token, set-here the

@@ -4,7 +4,7 @@ import { fromLabel } from "../../instructions/from-label.js"
 import { applies, catalogueForAddress, matchesName, modelCandidates, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
 import { categorySummary } from "../../instructions/permission-catalog.js"
-import { presetLabels } from "../../instructions/presets.js"
+import { presetLabels, presetOfAddress } from "../../instructions/presets.js"
 import { rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo } from "../../instructions/resolve-memo.js"
 import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from "../../instructions/snapshot.js"
@@ -291,8 +291,10 @@ export function provenanceLine(node: TreeNode, snapshot: Snapshot, memo?: Memo):
   const address = node.address
   if (address === undefined) return node.enabledRow === undefined ? undefined : `enabled: ${node.badges.fromLabel ?? "inherited"}`
   const labels = derivedOf(snapshot).labels
+  // Inside a preset its own content is not "from preset <itself>" (from-label.ts own).
+  const own = presetOfAddress(listingOfSnapshot(snapshot), address)
   const say = (from: From) => {
-    const label = fromLabel(from, { labels, level: address.level })
+    const label = fromLabel(from, { labels, level: address.level, ...(own === undefined ? {} : { own }) })
     return label === "set here" ? `set here (${displayLevel(address.level)})` : label
   }
   const control = controlKind(address.item)

@@ -35,7 +35,7 @@ import type {
   TeamRef,
 } from "./model.js"
 import { fromLabel } from "./from-label.js"
-import { linkOf, type PresetEntry } from "./presets.js"
+import { linkOf, presetOfAddress, type PresetEntry } from "./presets.js"
 import {
   buildMemo,
   flagOf,
@@ -1352,7 +1352,7 @@ function lazyControl(
         modified: resolved.modified,
         source: resolved.source,
         from,
-        fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }),
+        fromLabel: fromLabel(from, { labels: memo.ctx.labels, level, ...ownOption(memo.ctx, level, owner, teamRef) }),
         ...(resolved.reviewOf.length === 0 ? {} : { reviewOf: resolved.reviewOf }),
         ...(reason === undefined ? {} : { disabled: reason }),
       }
@@ -1517,7 +1517,7 @@ function lazyModelItem(
         ...(isActive ? { active: true as const } : {}),
         source: candidate.source,
         from: candidate.from,
-        fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level }),
+        fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level, ...ownOption(ctx, level, owner, teamRef) }),
         ...(warming === undefined ? {} : { warming: warming.value, warmingFrom: warming.level }),
       }
     },
@@ -2300,7 +2300,12 @@ function permBadges(
   catalogue?: Catalogue,
 ): TreeNodeBadges {
   const resolved = wholeOf(memo, level, owner, item, catalogue, teamRef)
-  return { state: resolved.enabled ? "on" : "off", modified: resolved.modified, source: resolved.source, ...fromBadges(memo.ctx, resolved, level) }
+  return {
+    state: resolved.enabled ? "on" : "off",
+    modified: resolved.modified,
+    source: resolved.source,
+    ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
+  }
 }
 
 // Where the row's state (and, when different, its text) came from, and what
@@ -2309,13 +2314,34 @@ function fromBadges(
   ctx: BuildContext,
   resolved: Pick<Resolved, "from" | "textFrom" | "reviewOf">,
   level: Level,
+  own: OwnPreset | undefined,
 ): Pick<TreeNodeBadges, "from" | "textFrom" | "fromLabel" | "reviewOf"> {
   return {
     from: resolved.from,
     ...(sameFrom(resolved.from, resolved.textFrom) ? {} : { textFrom: resolved.textFrom }),
-    fromLabel: fromLabel(resolved.from, { labels: ctx.labels, level }),
+    fromLabel: fromLabel(resolved.from, { labels: ctx.labels, level, ...(own === undefined ? {} : { own }) }),
     ...(resolved.reviewOf.length === 0 ? {} : { reviewOf: resolved.reviewOf }),
   }
+}
+
+type OwnPreset = { readonly ref: PresetRef; readonly origin: PresetOrigin }
+
+// The preset a row sits inside, when it is a preset subtree: its own content
+// reads "set here"/the baseline it ships, never "from preset <itself>"
+// (from-label.ts `own`). Member rows carry their team preset; every other
+// level has no own preset.
+function ownPreset(ctx: BuildContext, level: Level, owner: string | null, team?: RowTeam): OwnPreset | undefined {
+  return presetOfAddress(ctx.listing, {
+    level,
+    agent: owner,
+    team: team === undefined || "memberOf" in team ? undefined : team,
+  })
+}
+
+// The `own` option for a fromLabel call, ready to spread.
+function ownOption(ctx: BuildContext, level: Level, owner: string | null, team?: RowTeam): { readonly own?: OwnPreset } {
+  const own = ownPreset(ctx, level, owner, team)
+  return own === undefined ? {} : { own }
 }
 
 function sameFrom(left: From, right: From): boolean {
@@ -2345,7 +2371,7 @@ function itemBadges(
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     source: resolved.source,
-    ...fromBadges(memo.ctx, resolved, level),
+    ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
     ...(active ? { active: true } : {}),
     // A user template id can never be the host active answer, so it reads as
     // applicable while never reaching system[0]. `inactive` reuses the
@@ -2418,7 +2444,7 @@ function sectionBadges(
     modified: resolved.modified,
     review: resolved.review,
     source: resolved.source,
-    ...fromBadges(memo.ctx, resolved, level),
+    ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
   }
 }
 

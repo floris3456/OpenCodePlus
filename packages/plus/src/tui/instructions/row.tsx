@@ -16,11 +16,11 @@ import type { Row } from "./workspace.js"
 /** The focused pane's cursor: unique on screen (› is the breadcrumb and path separator). */
 export const CURSOR = "▌"
 
-/** The provenance worth printing: the baseline (OpenCode, upstream) and "set here" are not. */
+/** The provenance worth printing: the baseline (OpenCode, upstream, shipped) and "set here" are not. */
 export function rowMeta(node: TreeNode): string | undefined {
   if (node.badges.value !== undefined && node.badges.state === undefined) return node.badges.value
   const from = node.badges.fromLabel
-  if (from === undefined || from === "set here" || from === "OpenCode" || from === "upstream") return undefined
+  if (from === undefined || from === "set here" || from === "OpenCode" || from === "upstream" || from === "shipped") return undefined
   return from
 }
 
@@ -65,8 +65,6 @@ export interface RowLineProps {
   readonly selected: boolean
   readonly focused: boolean
   readonly sidebar?: boolean
-  /** Provenance not worth printing here: inside a preset, "from preset <itself>". */
-  readonly quiet?: string
   /** An owner's tools switched on; none is a warning (the agent cannot act). */
   readonly tools?: number
   readonly onSelect?: () => void
@@ -100,10 +98,7 @@ export function RowLine(props: RowLineProps) {
   const marker = () => (props.row.expandable ? (props.row.expanded ? "▾" : "▸") : " ")
   const valueRow = () => node().badges.value !== undefined && node().badges.state === undefined
   // The sidebar names owners: where their values come from is the inspector's.
-  const meta = () => {
-    const value = props.sidebar === true ? undefined : rowMeta(node())
-    return value === props.quiet ? undefined : value
-  }
+  const meta = () => (props.sidebar === true ? undefined : rowMeta(node()))
   const tags = () => rowTags(node(), props.sidebar === true)
   const detail = () => [meta(), ...tags()].filter((part) => part !== undefined).join(" · ")
   const marks = () => marksOf(node())

@@ -39,6 +39,7 @@ import type {
   SplitRecord,
   TeamRef,
 } from "./model.js"
+import { presetOfAddress } from "./presets.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, findLazy, materialize, skeletonOf } from "./tree.js"
@@ -877,6 +878,7 @@ export function stateReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
       ...(parts.includes("state") && state !== undefined ? [state] : []),
       ...(parts.includes("pin") ? [pin === true ? "pinned" : "not pinned"] : []),
     ].join(", ")
+  const own = presetOfAddress(found.memo.ctx.listing, chain.address)
   return {
     parts,
     mine: describe(pair.own.state, pair.own.pin),
@@ -884,6 +886,7 @@ export function stateReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
     from: fromLabel(parts.includes("state") ? pair.above.from : pair.above.pinFrom, {
       labels: found.memo.ctx.labels,
       level: chain.address.level,
+      ...(own === undefined ? {} : { own }),
     }),
   }
 }
@@ -913,10 +916,11 @@ export function modelReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
     ...(upstream === undefined ? {} : { upstream }),
   })
   if (above === undefined) return { mine: found.node.label }
+  const own = presetOfAddress(found.memo.ctx.listing, address)
   return {
     mine: found.node.label,
     above: modelKey(above),
-    from: fromLabel(above.from, { labels: found.memo.ctx.labels, level: address.level }),
+    from: fromLabel(above.from, { labels: found.memo.ctx.labels, level: address.level, ...(own === undefined ? {} : { own }) }),
   }
 }
 

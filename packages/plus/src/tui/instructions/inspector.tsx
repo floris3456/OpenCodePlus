@@ -41,8 +41,11 @@ export interface InspectorProps {
   readonly memo?: () => Memo | undefined
 }
 
-// A value nobody overrides: the tree's baseline words (from-label.ts).
-const BASELINE = /^(?:(?:state and text|value|enabled): (?:OpenCode|upstream)|state: (?:OpenCode|upstream) · text: (?:OpenCode|upstream))$/
+// A value nobody overrides: the tree's baseline words (from-label.ts). A
+// preset's shipped content is its baseline too (a Native preset ships OpenCode's
+// own content, a Plus preset its own).
+const BASELINE =
+  /^(?:(?:state and text|value|enabled): (?:OpenCode|upstream|shipped)|state: (?:OpenCode|upstream|shipped) · text: (?:OpenCode|upstream|shipped))$/
 
 type Fact = readonly [key: string, value: string, tone?: "warning" | "info" | "value" | "subdued"]
 
