@@ -4,11 +4,12 @@ import { controlItems } from "../src/instructions/agent-controls.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
-import { buildTreeMemo, expandedTree, tree, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
+import { buildTreeMemo, expandedTree, tree, treeOf, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
+import { resetToolCountLog, toolCountLog } from "../src/tui/instructions/route.js"
 import { createInstructionsState, type InstructionsState } from "../src/tui/instructions/state.js"
-import { LEVELS, parentsOf, toolCountOf, type ToolCount } from "../src/tui/instructions/workspace.js"
+import { LEVELS, parentsOf, toolCountOf, workspaceOf, type ToolCount } from "../src/tui/instructions/workspace.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import { breadcrumb, dispatch, moveTo, selectedRow, sleep } from "./instructions-nav.js"
 
@@ -304,21 +305,71 @@ function sweepCounts(
   return counts
 }
 
-test("on-demand tool counts match the old level-wide sweep for every owner", () => {
-  const input = memoInputOf(makeLargeSnapshot())
-  const memo = buildTreeMemo(input)
-  const nodes = expandedTree(input)
+let large: {
+  readonly snapshot: Snapshot
+  readonly input: ReturnType<typeof memoInputOf>
+  readonly memo: ReturnType<typeof buildTreeMemo>
+  readonly nodes: TreeNode[]
+  readonly codemode: (item: string) => boolean
+} | undefined
+
+// One generated fixture, one materialised tree and one memo per test file: the
+// full-expansion oracle is expensive and every test here reads the same one.
+function largeFixture() {
+  if (large !== undefined) return large
+  const snapshot = makeLargeSnapshot()
+  const input = memoInputOf(snapshot)
   const codes = new Set(input.items.filter((item) => item.codemode === true).map((item) => item.id))
-  const codemode = (item: string) => codes.has(item)
+  large = {
+    snapshot,
+    input,
+    memo: buildTreeMemo(input),
+    nodes: expandedTree(input),
+    codemode: (item: string) => codes.has(item),
+  }
+  return large
+}
+
+test("on-demand tool counts match the old level-wide sweep for every owner", () => {
+  const fixture = largeFixture()
   for (const level of ["project", "global", "defaults", "preset"] as const) {
-    const expected = sweepCounts(nodes, level, codemode)
+    const expected = sweepCounts(fixture.nodes, level, fixture.codemode)
     expect(expected.size).toBeGreaterThan(0)
-    for (const [key, count] of expected) expect(toolCountOf(memo, key, codemode)).toEqual(count)
+    for (const [key, count] of expected) expect(toolCountOf(fixture.memo, key, fixture.codemode)).toEqual(count)
   }
 }, 600_000)
 
+test("sidebar tool counts are filled after the open render in bounded slices", async () => {
+  const fixture = largeFixture()
+  const expected = sweepCounts(fixture.nodes, "project", fixture.codemode)
+  resetToolCountLog()
+  await using renderFixture = await renderInstructionsRoute({ snapshots: [fixture.snapshot], width: 180, height: 50 })
+  await renderFixture.waitForFrame((frame) => frame.includes("Instructions") && frame.includes("▌"))
+
+  // The render path counted at most the owner the screen is showing; nothing
+  // paid for the other sidebar owners.
+  expect(toolCountLog.sync.length).toBeLessThanOrEqual(1)
+  const selected = workspaceOf({
+    rows: (open) => treeOf(fixture.memo, open),
+    level: "project",
+    navCollapsed: new Set(),
+    listOpen: new Set(),
+    listCollapsed: new Set(),
+  }).owner?.key
+  if (selected === undefined) throw new Error("no selected owner in the fixture")
+  expect(toolCountLog.sync.map((entry) => entry.key)).toEqual([selected])
+
+  // Slices fill every sidebar owner of the shown level, bounded per task.
+  const computed = () => new Map([...toolCountLog.sync, ...toolCountLog.sliced].map((entry) => [entry.key, entry.on]))
+  for (let pass = 0; pass < 40 && computed().size < expected.size; pass++) await sleep(50)
+  expect(computed().size).toBe(expected.size)
+  for (const [key, count] of expected) expect(computed().get(key)).toBe(count.on)
+  // No owner outside the shown level was counted.
+  expect([...computed().keys()].every((key) => expected.has(key))).toBe(true)
+}, 600_000)
+
 test("large generated fixture: one memo build per snapshot across open, ↓, level switch, n and filter", async () => {
-  const snapshot = makeLargeSnapshot()
+  const snapshot = largeFixture().snapshot
   resetMemoBuildCounter()
   const openedAt = performance.now()
   await using fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 180, height: 50 })

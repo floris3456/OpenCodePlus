@@ -89,6 +89,23 @@ export function extractAgentId(data: unknown): string | undefined {
 
 export const INITIAL_AGENT_RETRY_MS = 5000
 
+/**
+ * Test observability for the on-demand tool counts (not read in production):
+ * the owners whose count was computed on the render path and those filled by
+ * a background slice, with the value. Recording starts with
+ * resetToolCountLog(); production never enables it.
+ */
+export const toolCountLog: {
+  enabled: boolean
+  sync: { key: string; on: number }[]
+  sliced: { key: string; on: number }[]
+} = { enabled: false, sync: [], sliced: [] }
+export function resetToolCountLog(): void {
+  toolCountLog.enabled = true
+  toolCountLog.sync.length = 0
+  toolCountLog.sliced.length = 0
+}
+
 
 // The footer keeps the first hints that fit, in priority order, and always
 // its last two (? help, esc): everything else is in the help dialog.
@@ -296,29 +313,97 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     )
   })
 
-  // Tools switched on per owner, on demand: the owner's Tools group is
-  // counted the first time one of its rows renders and then cached for the
-  // snapshot's memo. No level-wide sweep runs after a load, so opening pays
-  // nothing up-front and a key press pays only for the owners it renders.
+  // Tools switched on per owner. The acted-on owner — the one whose header,
+  // category tabs or inspector is showing — is counted on first use, one
+  // owner and a few milliseconds. Every other sidebar owner is queued and
+  // filled in afterwards in small slices (at most a few owners or ~8 ms per
+  // task) into the same per-memo cache, so opening and level switches never
+  // wait for the whole level. A newer memo or level drops the old queue, and
+  // an owner without a count yet renders without one.
   const toolCountCache = new WeakMap<Memo, Map<string, ToolCount>>()
   const codemodeCache = new WeakMap<Memo, (item: string) => boolean>()
-  const toolCount = (key: string | undefined): ToolCount | undefined => {
+  const [countVersion, setCountVersion] = createSignal(0)
+  let sliceQueue: { readonly memo: Memo; readonly level: LevelId; readonly keys: string[]; timer?: ReturnType<typeof setTimeout> } | undefined
+  const SLICE_OWNERS = 4
+  const SLICE_MS = 8
+
+  function countsOf(memo: Memo): Map<string, ToolCount> {
+    const cached = toolCountCache.get(memo)
+    if (cached !== undefined) return cached
+    const counts = new Map<string, ToolCount>()
+    toolCountCache.set(memo, counts)
+    return counts
+  }
+
+  function codemodeOf(memo: Memo): (item: string) => boolean {
+    const cached = codemodeCache.get(memo)
+    if (cached !== undefined) return cached
+    const items = new Set(memo.ctx.items.filter((item) => item.codemode === true).map((item) => item.id))
+    const codemode = (item: string) => items.has(item)
+    codemodeCache.set(memo, codemode)
+    return codemode
+  }
+
+  function dropSlices() {
+    if (sliceQueue?.timer !== undefined) clearTimeout(sliceQueue.timer)
+    sliceQueue = undefined
+  }
+
+  function runSlice() {
+    const pending = sliceQueue
+    if (pending === undefined) return
+    if (state.memo() !== pending.memo || level() !== pending.level) {
+      dropSlices()
+      return
+    }
+    pending.timer = undefined
+    const counts = countsOf(pending.memo)
+    const codemode = codemodeOf(pending.memo)
+    const started = performance.now()
+    const filled: { readonly key: string; readonly on: number }[] = []
+    while (pending.keys.length > 0 && filled.length < SLICE_OWNERS && performance.now() - started < SLICE_MS) {
+      const key = pending.keys.shift()!
+      if (counts.has(key)) continue
+      const count = toolCountOf(pending.memo, key, codemode)
+      if (count === undefined) continue
+      counts.set(key, count)
+      filled.push({ key, on: count.on })
+    }
+    if (filled.length > 0) {
+      if (toolCountLog.enabled) toolCountLog.sliced.push(...filled)
+      setCountVersion((value) => value + 1)
+    }
+    if (pending.keys.length > 0) pending.timer = setTimeout(runSlice, 0)
+  }
+
+  function scheduleCount(key: string) {
+    const memo = state.memo()
+    if (memo === undefined) return
+    const current = level()
+    if (sliceQueue === undefined || sliceQueue.memo !== memo || sliceQueue.level !== current) {
+      dropSlices()
+      sliceQueue = { memo, level: current, keys: [] }
+    }
+    if (countsOf(memo).has(key) || sliceQueue.keys.includes(key)) return
+    sliceQueue.keys.push(key)
+    if (sliceQueue.timer === undefined) sliceQueue.timer = setTimeout(runSlice, 0)
+  }
+
+  const toolCount = (key: string | undefined, sync = true): ToolCount | undefined => {
     const memo = state.memo()
     if (key === undefined || memo === undefined) return undefined
-    const counts = toolCountCache.get(memo)
-    const cached = counts?.get(key)
+    const counts = countsOf(memo)
+    const cached = counts.get(key)
     if (cached !== undefined) return cached
-    let codemode = codemodeCache.get(memo)
-    if (codemode === undefined) {
-      const items = new Set(memo.ctx.items.filter((item) => item.codemode === true).map((item) => item.id))
-      codemode = (item: string) => items.has(item)
-      codemodeCache.set(memo, codemode)
+    if (!sync) {
+      scheduleCount(key)
+      countVersion()
+      return undefined
     }
-    const count = toolCountOf(memo, key, codemode)
+    const count = toolCountOf(memo, key, codemodeOf(memo))
     if (count === undefined) return undefined
-    const store = counts ?? new Map<string, ToolCount>()
-    store.set(key, count)
-    toolCountCache.set(memo, store)
+    counts.set(key, count)
+    if (toolCountLog.enabled) toolCountLog.sync.push({ key, on: count.on })
     return count
   }
 
@@ -328,6 +413,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   onCleanup(() => {
     clearRetryTimer()
+    dropSlices()
     if (filterTimer !== undefined) clearTimeout(filterTimer)
     state.dispose()
     dialogs.dispose()
@@ -1325,7 +1411,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 context={props.context}
                 row={row}
                 sidebar
-                {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key)?.on } : {})}
+                {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key, row.key === workspace().owner?.key)?.on } : {})}
                 selected={row.key === navRow()?.key}
                 focused={focus() === "nav" && !modal()}
                 onHoverChange={(hovering) => hoverRow("nav", row.key, hovering)}
