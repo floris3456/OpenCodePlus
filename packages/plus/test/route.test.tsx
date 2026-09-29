@@ -1438,6 +1438,39 @@ test("right on an item row reveals its sections for select and toggle", async ()
   }
 })
 
+test("a lone H1 wrapper is not repeated: Introduction shows only its own body", async () => {
+  const text = "# Title\nintro\n## A\na\n## B\nb\n"
+  const fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ items: [mcpItem({ text })] })],
+    width: 120,
+    height: 40,
+  })
+  try {
+    await gotoMcpItem(fixture)
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("● A"))
+    const frame = fixture.captureCharFrame()
+    // The wrapper's title is not an extra row; its body is Introduction.
+    expect(listPane(frame)).toContain("● Introduction")
+    expect(listPane(frame)).not.toContain("Title")
+    await moveTo(fixture, "Introduction")
+    await fixture.waitForFrame((next) => inspector(next).includes("intro") && !inspector(next).includes("## A"))
+    const selected = fixture.captureCharFrame()
+    // Only the preamble, never the whole document its section range covers.
+    expect(inspector(selected)).toContain("intro")
+    expect(inspector(selected)).not.toContain("## A")
+    expect(inspector(selected)).not.toContain("## B")
+    // Presentation only: no editor for the wrapper's body; space toggles the
+    // wrapper's own record, exactly as the old wrapper row did.
+    expect(binds(fixture)).not.toContain("e")
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((next) => next.includes('Disabled "Introduction"'))
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ item: "mcp:sample", section: "title", state: "off" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("filtered hidden match can be selected and toggled", async () => {
   // The first match is the native `build` agent's row: Defaults "for every
   // agent" itself falls back to off (DESIGN §3.3), a native agent's row keeps

@@ -6,6 +6,7 @@ import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord
 import { categorySummary } from "../../instructions/permission-catalog.js"
 import { presetLabels, presetOfAddress } from "../../instructions/presets.js"
 import { rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo } from "../../instructions/resolve-memo.js"
+import { ownBody, wrappingSection } from "../../instructions/sections.js"
 import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from "../../instructions/snapshot.js"
 import { controlKind, controlValue, withControlItems, type TreeNode } from "../../instructions/tree.js"
@@ -120,7 +121,26 @@ export function resolveNode(node: TreeNode, snapshot: Snapshot, memo?: Memo): Re
 export function resolvedText(node: TreeNode, snapshot: Snapshot, memo?: Memo): string {
   const resolved = resolveNode(node, snapshot, memo)
   if (!resolved) return "No item details"
-  return resolved.text
+  return node.introduction === true ? introductionText(node, snapshot, memo, resolved) : resolved.text
+}
+
+// The Introduction row keeps the hidden wrapper section's address, so its raw
+// resolved text is the whole document. Show only the wrapper's own body; a
+// stored text override for the wrapper is that section's text and wins.
+function introductionText(node: TreeNode, snapshot: Snapshot, memo: Memo | undefined, resolved: Resolved): string {
+  const address = node.address
+  if (address === undefined || address.section === null || resolved.modified) return resolved.text
+  const derived = derivedOf(snapshot)
+  const upstream = upstreamFor(derived.items, address)
+  if (upstream === undefined) return resolved.text
+  const whole = resolveAt(derived, { ...address, section: null }, upstream, memo)
+  const split =
+    memo === undefined
+      ? resolveSplit({ text: whole.text, title: upstream.title, splits: derived.splits, scopes: derived.scopes, address })
+      : splitOf(memo, address.level, address.agent, upstream, address.catalogue, rowTeamOf(address))
+  const wrapper = wrappingSection(split)
+  if (wrapper === undefined || wrapper.id !== address.section) return resolved.text
+  return ownBody(whole.text, split, wrapper)
 }
 
 export function scrubInfo(

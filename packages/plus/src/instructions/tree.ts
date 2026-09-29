@@ -49,7 +49,7 @@ import {
   type RowTeam,
 } from "./resolve-memo.js"
 import type { MemoInput as BaseMemoInput } from "./resolve-memo.js"
-import type { Section, Split } from "./sections.js"
+import { ownBody, wrappingSection, type Section, type Split } from "./sections.js"
 import type { TeamLevel } from "./teams.js"
 import { categoryLabel, categoryOfRow, categoryOrder, hostOf } from "./permission-catalog.js"
 import { curatedRuleMessage } from "./tool-permissions.js"
@@ -181,6 +181,12 @@ export interface TreeNode {
   readonly owner?: RowOwner
   /** Entity rows toggle their real Enabled item, retaining their entity address. */
   readonly enabledRow?: string
+  /**
+   * The own-body row of a hidden top-level wrapper section (label
+   * "Introduction"): the row and its address are the wrapper's, its inspector
+   * shows only the wrapper's own body, never the whole document.
+   */
+  readonly introduction?: true
   readonly badges: TreeNodeBadges
   readonly actions?: TreeNodeActions
 }
@@ -231,6 +237,7 @@ export interface Lazy {
   readonly add?: AddKind
   readonly owner?: RowOwner
   readonly enabledRow?: string
+  readonly introduction?: true
   readonly actions: TreeNodeActions
   readonly selfReview: () => boolean
   readonly partial: () => TreeNodeBadges
@@ -574,6 +581,7 @@ function shell(lazy: Lazy, badges: TreeNodeBadges): TreeNode {
     ...(lazy.add === undefined ? {} : { add: lazy.add }),
     ...(lazy.owner === undefined ? {} : { owner: lazy.owner }),
     ...(lazy.enabledRow === undefined ? {} : { enabledRow: lazy.enabledRow }),
+    ...(lazy.introduction === undefined ? {} : { introduction: lazy.introduction }),
     badges,
     actions: lazy.actions,
   }
@@ -2054,7 +2062,9 @@ function lazyItem(
       // them combined. Other items keep their sections as direct children.
       if (tool && split.sections.length === 1) {
         const only = split.sections[0]
-        return only === undefined ? [] : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, "Description")]
+        return only === undefined
+          ? []
+          : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, { label: "Description" })]
       }
       if (tool && split.sections.length > 1)
         return [
@@ -2064,15 +2074,10 @@ function lazyItem(
             label: "Description",
             depth: depth + 1,
             actions: noActions(),
-            children: () =>
-              split.sections.map((section) =>
-                lazySection(ctx, memo, level, owner, item, section, depth + 2 + section.depth, teamRef, catalogue, ownerPath),
-              ),
+            children: () => sectionKids(ctx, memo, level, owner, item, split, depth + 2, teamRef, catalogue, ownerPath),
           }, address),
         ]
-      return split.sections.map((section) =>
-        lazySection(ctx, memo, level, owner, item, section, depth + 1 + section.depth, teamRef, catalogue, ownerPath),
-      )
+      return sectionKids(ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
     })
     if (!tool) return sections
     return [...sections, ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath)]
@@ -2390,6 +2395,45 @@ function itemBadges(
   }
 }
 
+// One item's section rows at `base`, the depth a top-level section renders at.
+// A lone top-level heading that wraps the whole document is not an extra level
+// (sections.ts wrappingSection): its children render at `base` and its own body
+// becomes the first child row, "Introduction", when it has content or a record
+// keeps it addressable. Section ids, addresses and stored records never change.
+function sectionKids(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  split: Split,
+  base: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy[] {
+  const wrapper = wrappingSection(split)
+  if (wrapper === undefined)
+    return split.sections.map((section) =>
+      lazySection(ctx, memo, level, owner, item, section, base + section.depth, teamRef, catalogue, ownerPath),
+    )
+  const address = addressOf(level, owner, item.id, wrapper.id, teamRef, catalogue)
+  const body = ownBody(wholeOf(memo, level, owner, item, catalogue, teamRef).text, split, wrapper)
+  return split.sections.flatMap((section): Lazy[] => {
+    if (section.id !== wrapper.id)
+      return [lazySection(ctx, memo, level, owner, item, section, base + section.depth - 1, teamRef, catalogue, ownerPath)]
+    // No row for a body with nothing in it, unless a stored record would be
+    // stranded without one (excluding it still drops the wrapper and children).
+    if (body.length === 0 && !canReset(memo.ctx.customizations, address)) return []
+    return [
+      lazySection(ctx, memo, level, owner, item, section, base, teamRef, catalogue, ownerPath, {
+        label: "Introduction",
+        introduction: true,
+      }),
+    ]
+  })
+}
+
 function lazySection(
   ctx: BuildContext,
   memo: Memo,
@@ -2401,7 +2445,7 @@ function lazySection(
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
-  label?: string,
+  options?: { readonly label?: string; readonly introduction?: boolean },
 ): Lazy {
   const address = addressOf(level, owner, item.id, section.id, teamRef, catalogue)
   const id = rowIdOf("section", level, owner, item.id, catalogue, ownerPath, section.id)
@@ -2411,12 +2455,16 @@ function lazySection(
   return {
     id,
     kind: "section",
-    label: label ?? section.name,
+    label: options?.label ?? section.name,
     depth,
+    ...(options?.introduction === true ? { introduction: true as const } : {}),
     address,
     actions: {
       toggle: true,
-      edit: true,
+      // A wrapper's own body is presentation: an edit would store its section
+      // text, which replaces its children in the assembled text. The item's own
+      // editor still edits the whole document.
+      edit: options?.introduction !== true,
       reset: canReset(ctx.customizations, address),
       remove: false,
       split: false,

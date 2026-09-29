@@ -100,6 +100,35 @@ export function slice(text: string, section: Section): string {
   return text.slice(section.start, section.end)
 }
 
+/**
+ * The lone top-level section that wraps the whole document — the usual `# Title`
+ * of a split instruction or skill. Its children are the document's real
+ * sections, so the tree presents it as its own body row instead of an extra
+ * level. Undefined when the split has several (or no) top-level sections, or
+ * its one top-level section has no children.
+ */
+export function wrappingSection(split: Split): Section | undefined {
+  const tops = split.sections.filter((section) => section.depth === 0)
+  const wrapper = tops.length === 1 ? tops[0] : undefined
+  if (wrapper === undefined) return undefined
+  return split.sections.some((section) => section.id.startsWith(`${wrapper.id}/`)) ? wrapper : undefined
+}
+
+/**
+ * A wrapper's own body: what follows its heading line and precedes its first
+ * child section, trimmed. Empty when the wrapper carries nothing but its
+ * heading. Section ids and ranges do not change: the body is the wrapper
+ * section's preamble, read for the "Introduction" row.
+ */
+export function ownBody(text: string, split: Split, wrapper: Section): string {
+  const first = split.sections
+    .filter((section) => section.id.startsWith(`${wrapper.id}/`))
+    .reduce<number | undefined>((min, section) => (min === undefined || section.start < min ? section.start : min), undefined)
+  if (first === undefined) return ""
+  const line = text.indexOf("\n", wrapper.start)
+  return (line === -1 || line >= first ? "" : text.slice(line + 1, first)).trim()
+}
+
 interface Heading {
   readonly start: number
   readonly depth: number

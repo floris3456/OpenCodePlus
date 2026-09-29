@@ -425,7 +425,8 @@ Mode and MCP included, expands into Description and Permissions.
   `Description` group (`group:<level>:<owner>:tool:<id>:description`) that
   carries the tool's own address, so its detail shows every section combined,
   and offers no action of its own. Other item kinds keep their sections as
-  direct children. The `execute` row has no Description.
+  direct children. A lone top-level wrapper heading is not repeated as an extra
+  row in any of them (Sections engine). The `execute` row has no Description.
 - **Permissions** (`group:<level>:<owner>:tool:<id>:permissions`) holds one
   group per category (`…:permissions:<category>`, labelled by
   `permission-catalog.ts` `categoryLabel`), each holding that category's rows
@@ -544,6 +545,8 @@ export function derive(text: string, title: string): Split
 export function manual(text: string, boundaries: readonly Boundary[]): Split
 export function assemble(text: string, split: Split, excluded: ReadonlySet<string>): string
 export function slice(text: string, section: Section): string
+export function wrappingSection(split: Split): Section | undefined
+export function ownBody(text: string, split: Split, wrapper: Section): string
 ```
 
 - `derive` picks, in order: **heading** when the text contains markdown ATX
@@ -570,6 +573,16 @@ export function slice(text: string, section: Section): string
   blank runs left behind to a single blank line, and trims. It emits leaf
   ranges only so text covered by both a parent and its child is never doubled;
   a parent's own text (before its first child) belongs to the parent.
+- `wrappingSection` names the lone depth-0 section that wraps the whole
+  document when it has children — the usual `# Title` of a split instruction or
+  skill. The tree does not render that wrapper as an extra level: its children
+  render at its depth, and its own body (`ownBody`: the text after its heading
+  line and before its first child, trimmed) becomes the first child row,
+  labelled `Introduction`, when it has content or a stored record keeps it
+  addressable. The row keeps the wrapper's section id and address, so recorded
+  exclusions, splits and tool addresses are unchanged; excluding Introduction
+  still drops the wrapper and its children exactly as before. A split with
+  several (or no) top-level sections is unchanged.
 
 ## Level-aware model (`model.ts`)
 
