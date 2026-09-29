@@ -876,6 +876,38 @@ export const RunUnknown = Schema.Struct({
 export interface TeamsChanged extends Schema.Schema.Type<typeof TeamsChanged> {}
 export const TeamsChanged = Schema.Struct({}).annotate({ identifier: "Plus.TeamsChanged" })
 
+// Cache warming per chat: the per-chat switch and the chat's current warming
+// window, so the TUI can count down to when warming stops.
+export interface WarmingSessionInput extends Schema.Schema.Type<typeof WarmingSessionInput> {}
+export const WarmingSessionInput = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.WarmingSessionInput" })
+
+export interface WarmingSetInput extends Schema.Schema.Type<typeof WarmingSetInput> {}
+export const WarmingSetInput = Schema.Struct({
+  sessionID: Schema.String,
+  chat: Schema.Literals(["on", "off", "default"]),
+}).annotate({ identifier: "Plus.WarmingSetInput" })
+
+export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
+export const WarmingStatus = Schema.Struct({
+  sessionID: Schema.String,
+  chat: Schema.Literals(["on", "off", "default"]),
+  active: Schema.Boolean,
+  source: Schema.optionalKey(Schema.Literals(["chat", "model", "config"])),
+  level: Schema.optionalKey(Level),
+  since: Schema.optionalKey(Schema.Number),
+  expires: Schema.optionalKey(Schema.Number),
+  interval: Schema.optionalKey(Schema.Number),
+  lastWarm: Schema.optionalKey(Schema.Number),
+  now: Schema.Number,
+}).annotate({ identifier: "Plus.WarmingStatus" })
+
+export interface WarmingChanged extends Schema.Schema.Type<typeof WarmingChanged> {}
+export const WarmingChanged = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.WarmingChanged" })
+
 export interface AgentExists extends Schema.Schema.Type<typeof AgentExists> {}
 export const AgentExists = Schema.Struct({
   path: Schema.String,
@@ -1318,6 +1350,12 @@ const PortableRunUnknown = Schema.toStandardSchemaV1(
 const PortableTeamsChanged = Schema.toStandardSchemaV1(
   TeamsChanged.annotate({ identifier: "Plus.TeamsChanged" }),
 )
+const PortableWarmingSessionInput = Schema.toStandardSchemaV1(
+  WarmingSessionInput.annotate({ identifier: "Plus.WarmingSessionInput" }),
+)
+const PortableWarmingSetInput = Schema.toStandardSchemaV1(WarmingSetInput.annotate({ identifier: "Plus.WarmingSetInput" }))
+const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
+const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
@@ -1630,6 +1668,16 @@ export const Definition = Rpc.define({
       output: PortableCatalogModelsOutput,
       errors: {},
     },
+    "warming.status": {
+      input: PortableWarmingSessionInput,
+      output: PortableWarmingStatus,
+      errors: {},
+    },
+    "warming.set": {
+      input: PortableWarmingSetInput,
+      output: PortableWarmingStatus,
+      errors: {},
+    },
     "rule.add": {
       input: PortableRuleAddInput,
       output: PortableRuleRef,
@@ -1726,6 +1774,9 @@ export const Definition = Rpc.define({
     },
     "teams.changed": {
       schema: PortableTeamsChanged,
+    },
+    "warming.changed": {
+      schema: PortableWarmingChanged,
     },
   },
 })

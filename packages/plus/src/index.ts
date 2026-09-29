@@ -35,7 +35,7 @@ import { enforcementState, type EnforcementState, type PermissionTable } from ".
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
-import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
+import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelWarming, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
@@ -60,6 +60,8 @@ import { ensure, read } from "./project.js"
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
+import { warmingStore } from "./warming.js"
+import type { SessionWarming } from "@opencode/plugin/effect/session"
 
 export interface TeamOwnership {
   readonly team: string
@@ -78,6 +80,10 @@ export interface PlusState {
   baselines: Map<string, PromptBaseline>
   modelBaselines: Map<string, ModelBaseline>
   activeModels: Map<string, ModelRefLike>
+  /** Model records from the last publish or refresh: cache warming reads each agent's model rows here. */
+  cachedModels: readonly ModelRecord[]
+  /** When cache warming last checked the store for changes from another directory. */
+  warmingCheckedAt: number
   cachedAgents: readonly AgentSource[]
   cachedScopes: Scopes
   teamOutputIds: Map<string, TeamOwnership>
@@ -103,6 +109,8 @@ export function createState(): PlusState {
     baselines: new Map(),
     modelBaselines: new Map(),
     activeModels: new Map(),
+    cachedModels: [],
+    warmingCheckedAt: 0,
     cachedAgents: [],
     cachedScopes: { global: new Set(), defaults: new Set() },
     teamOutputIds: new Map(),
@@ -130,6 +138,7 @@ export default Plugin.define({
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
       yield* watchHostEvents(ctx, state)
+      yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // One tick, one place: dead-run reconciliation (and later GC) runs here
       // and nowhere else, cancelled with the plugin scope.
       yield* startSweep(ctx, teamsDataDir())
@@ -2902,7 +2911,50 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.catalogModels())
         return result.value
       }),
+    "warming.status": (input) => Effect.promise(() => warmingStore.status(input.sessionID)),
+    "warming.set": (input) =>
+      Effect.gen(function* () {
+        const status = yield* Effect.promise(() => warmingStore.setChat(input.sessionID, input.chat))
+        yield* emitWarmingChanged(state, input.sessionID)
+        return status
+      }),
   }
+}
+
+// Cache warming: the per-chat switch, then the agent's model row (Models tab,
+// resolved down the agent's chain like its active model), then the host
+// configuration core proposed. A failure leaves core's proposal in place.
+function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming): Effect.Effect<void> {
+  return Effect.promise(async () => {
+    if (Date.now() - state.warmingCheckedAt > 5_000) {
+      state.warmingCheckedAt = Date.now()
+      await refreshActiveModelsIfStale(await activationDirectory(ctx.location.directory), state)
+    }
+    return warmingStore.decide(event, warmingRowOf(state, event.agent, event.model))
+  }).pipe(
+    Effect.flatMap((changed) => (changed ? emitWarmingChanged(state, event.sessionID) : Effect.void)),
+    Effect.catchCause((cause) => Effect.logWarning("plus cache warming decision failed", { cause, sessionID: event.sessionID })),
+  )
+}
+
+export function warmingRowOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+): { readonly value: string; readonly level: Level } | undefined {
+  const agent = dedupeAgents([
+    ...state.cachedAgents.filter((entry) => entry.team !== undefined),
+    ...state.cachedAgents.filter((entry) => entry.team === undefined),
+  ]).find((entry) => entry.id === agentID)
+  const team = agent?.team === undefined ? undefined : { level: scopeLevel(agent.scope), team: agent.team }
+  const runtime =
+    agent === undefined
+      ? { level: "project" as const, scopes: state.cachedScopes }
+      : runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, state.cachedScopes)
+  return resolveModelWarming(
+    { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
+    { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) },
+  )
 }
 
 interface LoadedStores {
@@ -4148,6 +4200,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.baselines = new Map()
       state.modelBaselines = new Map()
       state.activeModels = new Map()
+      state.cachedModels = []
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
       state.teamOutputIds = new Map()
@@ -4353,6 +4406,7 @@ function publishFresh(
         publishChain(discovered, stored.records, directory, builtins, state.teamOutputIds),
       )
       state.activeModels = buildActiveModels(publishAgents, modelRecords, publishScopes)
+      state.cachedModels = modelRecords
       state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
       state.cachedScopes = publishScopes
       const fingerprint = JSON.stringify({
@@ -4622,6 +4676,12 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
+}
+
+function emitWarmingChanged(state: PlusState, sessionID: string): Effect.Effect<void> {
+  const registration = state.registration
+  if (!registration) return Effect.void
+  return registration.events.emit("warming.changed", { sessionID }).pipe(Effect.orDie)
 }
 
 function emitTeamsChanged(state: PlusState): Effect.Effect<void> {
@@ -5081,7 +5141,8 @@ async function refreshActiveModelsIfStale(directory: string, state: PlusState): 
   // Links and Defaults entries may have changed with the store: the cached
   // context keeps its agents and preset catalogue and takes the fresh ones.
   const fresh = presetStateOf(stored.records)
-  state.activeModels = buildActiveModels(state.cachedAgents, modelsOf(stored.records), {
+  state.cachedModels = modelsOf(stored.records)
+  state.activeModels = buildActiveModels(state.cachedAgents, state.cachedModels, {
     ...state.cachedScopes,
     links: fresh.links,
     entries: fresh.entries,

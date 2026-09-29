@@ -5,6 +5,7 @@ import { createAgentActions } from "./agents/create.js"
 import { InstructionsRoute } from "./instructions/route.js"
 import { createActiveTeam } from "./active-team.js"
 import { createSnapshotCache } from "./snapshot-cache.js"
+import { createWarming } from "./warming.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -17,6 +18,7 @@ export default Plugin.define({
     })
     const agents = createAgentActions(context, snapshots)
     const activeTeam = createActiveTeam(context)
+    const warming = createWarming(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
@@ -43,6 +45,21 @@ export default Plugin.define({
                 context.ui.dialog.clear()
                 context.ui.router.navigate({ type: "plugin", name: "instructions" })
               },
+            },
+            {
+              id: "plus.warming.toggle",
+              title: "Cache warming on/off for this chat",
+              group: "Session",
+              palette: true,
+              bind: "<leader>k",
+              run: () => warming.toggle(),
+            },
+            {
+              id: "plus.warming.follow",
+              title: "Cache warming: follow the model settings for this chat",
+              group: "Session",
+              palette: true,
+              run: () => warming.follow(),
             },
             {
               id: "plus.agent.create",
@@ -79,9 +96,15 @@ export default Plugin.define({
         return null
       },
     })
+    const disposeFooter = context.ui.slot({
+      append: "prompt.footer",
+      render: (props) => <warming.Footer sessionID={props.sessionID} />,
+    })
     return () => {
       disposeRoute()
       disposeSlot()
+      disposeFooter()
+      warming.dispose()
       agents.dispose()
       activeTeam.dispose()
       snapshots.dispose()
