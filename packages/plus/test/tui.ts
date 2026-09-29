@@ -19,6 +19,7 @@ import type {
   DeleteSkillInput,
   EntryCreateInput,
   ImportSkillInput,
+  InstructionsChanged,
   LinkSetInput,
   ModelAddInput,
   MutateInput,
@@ -263,7 +264,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   const promptScript = [...(options.dialogs?.prompts ?? [])]
   const selectScript = [...(options.dialogs?.selects ?? [])]
   const confirmScript = [...(options.dialogs?.confirms ?? [])]
-  type RpcListener = (event: { data: unknown }) => void
+  type RpcListener = (event: { data: InstructionsChanged }) => void
   const instructionsListeners = new Set<RpcListener>()
   const layers: KeymapLayerCallback[] = []
   const dialogSets: { size?: string; centered?: boolean }[] = []
@@ -550,7 +551,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
 
   async function emitChanged(next?: Snapshot): Promise<void> {
     if (next !== undefined) queue.push(next)
-    for (const listener of instructionsListeners) listener({ data: { enabled: true, directory: "" } })
+    const data: InstructionsChanged = { revision: next?.revision ?? 1, globalRevision: next?.globalRevision ?? 1 }
+    for (const listener of instructionsListeners) listener({ data })
   }
 
   // Cast to ResizableRenderer: processResize is marked private in CliRenderer's type
