@@ -314,6 +314,28 @@ test("a read-triggered migration creates no project store and keeps the migrated
   }
 })
 
+test("a global-only write after the migration keeps the held project row", async () => {
+  const { project } = await bareProject()
+  await writeV1GlobalStore()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  const before = await api.snapshot()
+  const written = await api.mutate({
+    expectedRevision: before.value.revision,
+    expectedGlobalRevision: before.value.globalRevision,
+    records: [...before.value.records, { ...customization("gamma"), level: "global" as const }],
+  })
+  expect(written.ok).toBe(true)
+  // The read-only held row survived a global-only save...
+  const after = await api.snapshot()
+  const alpha = after.value.records.find(
+    (record): record is Plus.SnapshotCustomizationRecord =>
+      record.type === "customization" && record.level === "project" && record.agent === "alpha",
+  )
+  expect(alpha?.text).toBe("mine")
+  // ...and the save still created no project store.
+  expect(await Bun.file(path.join(project, ".opencodeplus")).exists()).toBe(false)
+})
+
 test("a real project write after the migration creates the project store and loses nothing", async () => {
   const { project } = await bareProject()
   await writeV1GlobalStore()
