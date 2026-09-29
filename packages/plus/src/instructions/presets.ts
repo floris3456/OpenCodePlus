@@ -59,6 +59,8 @@ export interface PlusMemberPreset {
    * links to nothing.
    */
   readonly overrides: PresetOverrides
+  /** Item id prefixes the member preset ships off (tools a namespace may add to later). */
+  readonly offPrefixes: readonly string[]
 }
 
 export interface PlusTeamPreset {
@@ -182,20 +184,44 @@ const orchestratorShell: PresetOverrides = rows(off, [
 
 const tavily = rows(off, ["tool:search_tavily_search", "tool:search_tavily_extract"])
 
+// Tools a member's role never uses. Each costs tokens on every request and
+// invites a call the role text forbids. `websearch` duplicates the search
+// server's tools; the skills are the build seat's (configuration, releases,
+// issue reports) and the teaching row explains the configuration tools only
+// the build seat has (paths.ts teachingItemId and teachingSkillId; not imported:
+// this module stays free of filesystem code).
+const unused: PresetOverrides = rows(off, [
+  "tool:websearch",
+  "system:opencodeplus",
+  "skill:instructions-tools",
+  "skill:opencodeplus-release",
+  "skill:report",
+])
+
+// Files a member does not change: no edit, write or patch.
+const readOnly: PresetOverrides = rows(off, ["tool:edit", "tool:write", "tool:patch"])
+
 // A worker: no shell, no questions nobody watches, no subagents, no chat of
-// its own, no further delegation.
+// its own, no further delegation, no web search beyond code search.
 const worker: PresetOverrides = {
   ...secrets,
   ...inside,
   ...tavily,
+  ...unused,
   ...rows(off, [
     "tool:shell",
     "tool:question",
     "tool:subagent",
+    "skill:pilotty",
     "perm:team_get_context:bootstrap.chat",
     "perm:team_delegate:access.delegated",
   ]),
 }
+
+// The desktop browser, the Instructions and release tools, the tool monitor
+// and session management serve the user's own chat, the build seat; every
+// other member ships them off. By prefix: these namespaces add tools.
+const seatOnly = ["tool:browser_", "tool:instructions_", "tool:release_", "tool:monitor_", "tool:opencode_"]
 
 /**
  * Per Basic member: the shipped answers that differ from each item's own
@@ -205,7 +231,8 @@ const worker: PresetOverrides = {
 const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   planner: {
     ...secrets,
-    ...rows(off, ["tool:shell", "tool:subagent", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
+    ...unused,
+    ...rows(off, ["tool:shell", "tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
     ...teamToolRows(off, ["integrate", "checkpoint", "set_checks", "check"]),
     ...reach(["status", "wait", "list"]),
     ...rows(on, [
@@ -219,7 +246,11 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   orchestrator: {
     ...secrets,
     ...orchestratorShell,
-    ...rows(off, ["tool:question", "tool:subagent"]),
+    ...unused,
+    ...tavily,
+    // It changes no source files (implementers do, team_integrate lands them);
+    // it writes Brief and handoff files, the plan rows.
+    ...rows(off, ["tool:question", "tool:subagent", "perm:edit:allowed.*"]),
     ...teamToolRows(off, ["checkpoint"]),
     ...reach(["status", "wait"]),
     ...rows(on, [
@@ -236,11 +267,15 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   },
   reviewer: {
     ...worker,
+    ...readOnly,
+    ...rows(off, ["skill:opencode"]),
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "wait", "list", "check"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
   },
   scout: {
     ...worker,
+    ...readOnly,
+    ...rows(off, ["skill:opencode"]),
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "wait", "list", "check"]),
   },
   "build-seat": {
@@ -308,6 +343,7 @@ export const plusTeamPresets: readonly PlusTeamPreset[] = builtinTeams.map((team
     description: member.fields?.description ?? "",
     mode: member.fields?.mode ?? "primary",
     overrides: plusMemberOverrides[team.name]?.[member.id] ?? {},
+    offPrefixes: member.id === "build-seat" ? [] : seatOnly,
   })),
 }))
 
@@ -611,7 +647,10 @@ function memberShipped(
   if (item === "setting:mode") return { text: member.mode }
   if (item === "setting:description") return { text: member.description }
   if (isControl(item)) return undefined
-  const override = member.overrides[item] ?? buildSeatDelegates(team, id, item)
+  const override =
+    member.overrides[item] ??
+    (member.offPrefixes.some((prefix) => item.startsWith(prefix)) ? off : undefined) ??
+    buildSeatDelegates(team, id, item)
   const shipped = valueOf(upstream)
   if (override === undefined) return shipped
   return { ...shipped, ...override }

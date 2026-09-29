@@ -35,7 +35,10 @@ import {
 const namespace = "team"
 const origin = { type: "plugin", name: "opencode.plus" } as const
 
-const DelegateDescription = "Start a bounded task in a new isolated worktree. One call = one run.\n" + toolGuidance
+// The team surface guidance rides get_context and the Code Mode namespace; a
+// direct tool's description is sent with every request, so delegate's stays short.
+const DelegateDescription =
+  "Start a bounded task in a new isolated worktree. One call = one run.\nThe member must be in team_get_context's delegationTargets."
 const FinishDescription = "Declare an outcome for the current attempt.\nDone, blocked, or needs-context with evidence the parent verifies."
 const FollowupDescription =
   "Send a correction to an owned child.\nThe default queue delivers it as a new attempt when the child next goes idle; delivery:\"now\" needs an already idle child and fails E_BUSY otherwise."

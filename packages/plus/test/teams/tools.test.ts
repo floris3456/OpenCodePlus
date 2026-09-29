@@ -283,7 +283,9 @@ test("get_context maps real tool surfaces and the caller's permitted custom rost
           codeMode: expect.arrayContaining(teamNames.filter((name) => !codemodeFalse.has(name)).map((name) => `tools.team.${name}`)),
         },
       })
-      expect(need(created.tools, "team_delegate").description).toContain("Code Mode search does not list them")
+      expect(need(created.tools, "team_get_context").description).toContain("Code Mode search does not list them")
+      // Direct tools are sent with every request: delegate does not repeat the guidance.
+      expect(need(created.tools, "team_delegate").description).not.toContain("Code Mode search does not list them")
       expect(need(created.tools, "team_get_context").description).toContain("not persona names in preset examples")
       await saveRun(root, makeRun("w-2222222222222222", "denied", "ses_empty_roster"))
       const empty = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_empty_roster", "denied")))

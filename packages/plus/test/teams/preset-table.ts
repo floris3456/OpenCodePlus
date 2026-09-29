@@ -44,10 +44,25 @@ function toolItem(id: string, group: Item["group"]): Item {
   return { id: `tool:${id}`, kind: "tool", group, title: id, text: id, enabled: true, fingerprint: fingerprint(id) }
 }
 
+// Rows a member preset answers besides tools with permission rules: web search,
+// the skills an install ships or seeds, the Plus teaching row, and one tool of
+// each namespace the member presets ship off by prefix.
+const otherTools = ["websearch", "webfetch"]
+const prefixedTools = ["browser_navigate", "instructions_set", "release_request", "monitor_query", "opencode_session_move"]
+const skills = ["opencode", "report", "instructions-tools", "opencodeplus-release", "pilotty"]
+
+function rowItem(id: string, kind: Item["kind"], group: Item["group"]): Item {
+  return { id, kind, group, title: id, text: id, enabled: true, fingerprint: fingerprint(id) }
+}
+
 export const inventory: readonly Item[] = [
   ...teamTools.map((name) => toolItem(`team_${name}`, "plus")),
   ...nativeTools.map((name) => toolItem(name, "native")),
   ...searchTools.map((name) => toolItem(name, "mcp")),
+  ...otherTools.map((name) => toolItem(name, "native")),
+  ...prefixedTools.map((name) => toolItem(name, "plus")),
+  ...skills.map((name) => rowItem(`skill:${name}`, "skill", "plus")),
+  rowItem("system:opencodeplus", "system", "plus"),
 ]
 
 const catalog = catalogItems(inventory, (tool) => (tool.startsWith("team_") ? `team.${tool.slice("team_".length)}` : tool === "write" || tool === "patch" ? "edit" : tool))

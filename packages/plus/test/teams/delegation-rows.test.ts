@@ -114,7 +114,8 @@ test("a planner asks before each delegation, changes plan files only and does no
   }
   for (const member of ids.filter((id) => !planners.includes(id))) {
     expect([member, states[member]?.["perm:team_delegate:approval.every"]]).toEqual([member, "off"])
-    expect([member, states[member]?.["perm:edit:allowed.*"]]).toEqual([member, "on"])
+    // An orchestrator also writes plan and handoff files only; it changes no source.
+    expect([member, states[member]?.["perm:edit:allowed.*"]]).toEqual([member, orchestrators.includes(member) ? "off" : "on"])
   }
   // The planner's table refuses an edit outside plan files, for edit, write and patch alike.
   const table = presetTable({ members })
@@ -127,8 +128,12 @@ test("a planner asks before each delegation, changes plan files only and does no
     "Permission denied: this file is not one you may change here; only the allowed files (Files it may change) are",
   )
   expect(call("patch", { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch" }).refuse).toContain("Files it may change")
-  // An orchestrator's table does not.
-  expect(decide(table.toolRows("orchestrator", "edit"), { tool: "edit", input: { path: "packages/plus/src/index.ts" }, sessionID: "s", directory: "/repo", teamMembers: table.teamMembers }).refuse).toBeUndefined()
+  // An orchestrator's table refuses a source edit too and takes a handoff file; an implementer's refuses neither.
+  const edit = (member: string, path: string) =>
+    decide(table.toolRows(member, "edit"), { tool: "edit", input: { path }, sessionID: "s", directory: "/repo", teamMembers: table.teamMembers }).refuse
+  expect(edit("orchestrator", "packages/plus/src/index.ts")).toContain("Files it may change")
+  expect(edit("orchestrator", "docs/handoffs/brief.md")).toBeUndefined()
+  expect(edit("implementer", "packages/plus/src/index.ts")).toBeUndefined()
 })
 
 // The command families the old orchestrator role denied, verbatim.

@@ -70,15 +70,17 @@ test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, ro
   const alice = sharedStates(input, "ocp-alice")
   expect(Object.keys(alice).length).toBeGreaterThan(200)
   expect(alice).toEqual(sharedStates(input, "orchestrator"))
-  // And that is the old orchestrator role.
+  // And that is the old orchestrator role, less the web search the preset has
+  // shipped off since and the source edits (it writes only plan files).
   const old: Record<string, "on" | "off"> = {
     "tool:shell": "on",
+    "perm:edit:allowed.*": "off",
     "tool:question": "off",
     "tool:subagent": "off",
     "tool:team_checkpoint": "off",
     "tool:team_delegate": "on",
     "tool:team_integrate": "on",
-    "tool:search_tavily_search": "on",
+    "tool:search_tavily_search": "off",
     "perm:read:where.external": "on",
     "perm:read:files.keys": "off",
     "perm:read:env": "off",

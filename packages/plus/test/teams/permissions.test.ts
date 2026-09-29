@@ -135,6 +135,9 @@ test("an orchestrator preset ships shell on and an implementer preset ships it o
   expect(resolvedStates(swapped, "ocp-bob")["tool:shell"]).toBe("on")
 })
 
+// One tool of each namespace only the build seat keeps (preset-table's inventory).
+const seatOnlyTools = ["browser_navigate", "instructions_set", "release_request", "monitor_query", "opencode_session_move"]
+
 // The rules and tool plans one member carries after apply.
 async function applyFor(input: ReturnType<typeof presetInput>, member: string) {
   const agents = agentHarness([agentInfo(member, "upstream")])
@@ -145,10 +148,15 @@ async function applyFor(input: ReturnType<typeof presetInput>, member: string) {
 test("an implementer-preset member's rows resolve to the old implementer answers through apply", async () => {
   const member = linked("implementer", "implementer")
   const { permissions, tools } = await applyFor(presetInput({ members: [member] }), member.id)
-  // Tool rows off drop the tools: no shell, no question, no subagent, no delegation.
+  // Tool rows off drop the tools: no shell, no question, no subagent, no delegation,
+  // no web search beyond code search, none of the build seat's tools.
   const off = tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()
   expect(off).toEqual(
-    ["shell", "question", "subagent", "search_tavily_search", "search_tavily_extract", "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_supersede", "team_stop", "team_wait", "team_list"].toSorted(),
+    [
+      "shell", "question", "subagent", "search_tavily_search", "search_tavily_extract", "websearch",
+      "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_supersede", "team_stop", "team_wait", "team_list",
+      ...seatOnlyTools,
+    ].toSorted(),
   )
   expect(tools.find((plan) => plan.tool === "team_checkpoint")).toBeUndefined()
   // Secret read rows and the outside-checkout rule are core denies.
@@ -165,7 +173,10 @@ test("an orchestrator-preset member keeps shell and reads outside its checkout",
   const member = linked("orchestrator", "orchestrator")
   const { permissions, tools } = await applyFor(presetInput({ members: [member] }), member.id)
   expect(tools.find((plan) => plan.tool === "shell")).toBeUndefined()
-  expect(tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()).toEqual(["question", "subagent", "team_checkpoint"])
+  // It leaves web search to the planner.
+  expect(tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()).toEqual(
+    ["question", "subagent", "team_checkpoint", "search_tavily_search", "search_tavily_extract", "websearch", ...seatOnlyTools].toSorted(),
+  )
   expect(has(permissions, "external_directory", "*", "deny")).toBe(false)
   expect(has(permissions, "read", "*.key", "deny")).toBe(true)
 })

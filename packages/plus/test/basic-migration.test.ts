@@ -4,9 +4,13 @@
 // presets. The expected rows in test/fixtures/basic-migration-equivalence.json
 // were generated once by the same fixture against the pre-Basic catalogue
 // (before this change); this test rebuilds the chain with the migrated links
-// and compares every tool, perm and role row.
+// and compares every tool, perm and role row. Rows the Basic member preset has
+// deliberately answered differently since (its tightened role text, the tools
+// it ships off) are compared against the member preset itself; every other row
+// must still match the snapshot.
 import { expect, test } from "bun:test"
 import { fingerprint, resolve, type Item, type LinkRecord } from "../src/instructions/model.js"
+import { plusTeamPresets } from "../src/instructions/presets.js"
 import { migrateRemovedPresets } from "../src/instructions/store.js"
 import { presetInput, type TeamMember } from "./teams/preset-table.js"
 
@@ -75,6 +79,28 @@ function resolvedFor(agentId: string): { role: string; items: Record<string, { s
   return { role: resolvedRole.text, items }
 }
 
+// The snapshot, with the rows the member preset has changed on purpose since.
+function expectedFor(agentId: string, memberId: string): { role: string; items: Record<string, { state: string; text: string }> } {
+  const before = fixture.agents[agentId]
+  const member = plusTeamPresets.find((team) => team.id === "basic")?.members.find((entry) => entry.id === memberId)
+  if (before === undefined || member === undefined) throw new Error(`missing ${agentId} or ${memberId}`)
+  const items = Object.fromEntries(
+    Object.entries(before.items).map(([id, value]) => {
+      const state = member.overrides[id]?.state ?? (member.offPrefixes.some((prefix) => id.startsWith(prefix)) ? "off" : undefined)
+      return [id, state === undefined ? value : { ...value, state }]
+    }),
+  )
+  return { role: member.role, items }
+}
+
+// The rows the snapshot recorded; rows the test inventory gained later are not in it.
+function recorded(agentId: string): { role: string; items: Record<string, { state: string; text: string }> } {
+  const now = resolvedFor(agentId)
+  const keys = Object.keys(fixture.agents[agentId]?.items ?? {})
+  expect(keys.filter((id) => now.items[id] === undefined)).toEqual([])
+  return { role: now.role, items: Object.fromEntries(keys.map((id) => [id, now.items[id]])) }
+}
+
 test("the fixture is the pre-migration snapshot this test compares against", () => {
   expect(fixture.note).toContain("pre-Basic catalogue")
   expect(Object.keys(fixture.agents)).toEqual(["deepseek-worker", "astra-reviewer"])
@@ -90,11 +116,8 @@ test("the migrated links name the Basic member preset of the retired role", () =
   ])
 })
 
-test("an agent linked to the retired build-seat preset resolves every row exactly as before", () => {
-  const now = resolvedFor("deepseek-worker")
-  const before = fixture.agents["deepseek-worker"]
-  if (before === undefined) throw new Error("missing fixture agent")
-  expect(now).toEqual(before)
+test("an agent linked to the retired build-seat preset resolves every row as before, bar the preset's deliberate changes", () => {
+  expect(recorded("deepseek-worker")).toEqual(expectedFor("deepseek-worker", "build-seat"))
   // The provenance names the member preset, never a hidden agent preset.
   const delegate = resolve({
     upstream: migratedInput.after.items.find((item) => item.id === "perm:team_delegate:to.peer-unlinked") as Item,
@@ -106,11 +129,11 @@ test("an agent linked to the retired build-seat preset resolves every row exactl
   expect(delegate.from).toEqual({ kind: "preset", id: "build-seat", team: "basic", shipped: true })
 })
 
-test("an agent linked to the retired reviewer preset resolves every row exactly as before", () => {
-  const now = resolvedFor("astra-reviewer")
-  const before = fixture.agents["astra-reviewer"]
-  if (before === undefined) throw new Error("missing fixture agent")
-  expect(now).toEqual(before)
+test("an agent linked to the retired reviewer preset resolves every row as before, bar the preset's deliberate changes", () => {
+  expect(recorded("astra-reviewer")).toEqual(expectedFor("astra-reviewer", "reviewer"))
+  // The reviewer changes no files now; the snapshot had them on.
+  expect(fixture.agents["astra-reviewer"]?.items["tool:edit"]?.state).toBe("on")
+  expect(resolvedFor("astra-reviewer").items["tool:edit"]?.state).toBe("off")
 })
 
 test("the fixture's delegate rows show the old behaviour: the build seat opens every teammate, the reviewer none", () => {

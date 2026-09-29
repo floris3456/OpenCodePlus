@@ -172,3 +172,35 @@ test("built-in prompts name search tools by their MCP-served ids", () => {
     expect(member.body).toContain("search_exa_code_search")
   }
 })
+
+// A role line that names a tool the member lacks, or a member that has a tool
+// its role forbids, costs a refused call or an off-role action. Each Basic
+// member's role text and its member preset's rows must agree.
+test("every Basic role names only tools its member preset ships on, and forbids none it ships", () => {
+  const team = builtinTeams.find((entry) => entry.name === "basic")
+  if (team === undefined) throw new Error("missing basic")
+  const input = presetInput({
+    members: team.members.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
+  })
+  for (const member of team.members) {
+    const states = resolvedStates(input, member.id)
+    // No persona names: members are addressed by role, from delegationTargets.
+    expect([member.id, member.body.match(/\b(gemini|opus|muse|spark|astra|sol|fable)-[a-z]+/g)]).toEqual([member.id, null])
+    // Every team and search tool the text names is on for the member.
+    const named = [...new Set(member.body.match(/\b(team_[a-z_]+|search_[a-z_]+)\b/g) ?? [])]
+    expect([member.id, named.filter((tool) => states[`tool:${tool}`] !== "on")]).toEqual([member.id, []])
+    // A member told it cannot edit has no file tool; one told it writes only
+    // plan files edits nothing else.
+    if (/You cannot edit/.test(member.body))
+      expect([member.id, ["edit", "write", "patch"].filter((tool) => states[`tool:${tool}`] !== "off")]).toEqual([member.id, []])
+    if (/write only (plan|Brief)/i.test(member.body))
+      expect([member.id, states["perm:edit:allowed.*"], states["perm:edit:allowed.plans"]]).toEqual([member.id, "off", "on"])
+    // One told it has no shell has none.
+    if (/You have no shell|cannot run\s+commands/.test(member.body)) expect([member.id, states["tool:shell"]]).toEqual([member.id, "off"])
+    // Only the build seat, the user's own chat, keeps the configuration, release,
+    // monitor, browser and session tools and their teaching rows.
+    const seatOnly = ["tool:instructions_set", "tool:release_request", "tool:monitor_query", "tool:browser_navigate", "tool:opencode_session_move", "system:opencodeplus", "skill:instructions-tools", "skill:opencodeplus-release", "skill:report", "tool:websearch"]
+    const expected = member.id === "build-seat" ? "on" : "off"
+    expect([member.id, seatOnly.filter((id) => states[id] !== expected)]).toEqual([member.id, []])
+  }
+})
