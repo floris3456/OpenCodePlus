@@ -1290,7 +1290,10 @@ is only started by a real request. The switch persists per session in
 reports the chat's window (`since`, `expires` = `since` + total time) from the
 last decision; the TUI shows `cache warm · 23:41 left` under the prompt,
 `cache warming off` while switched off, and `cache warming on · starts after
-the next reply` while switched on with no window running. `warming.changed`
+the next reply` while switched on with no window running. Once a window has
+ended it shows `cache cold` (`cache cold · warming starts after the next reply`
+when switched on) in the warning feedback colour instead of disappearing; a chat
+that never had a window shows nothing. `warming.changed`
 fires when a decision or the switch changes what the footer shows.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,

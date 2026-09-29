@@ -192,8 +192,12 @@ test("the store applies the decision to the hook event and records the window fo
     since: 1_000_000,
     expires: 1_000_000 + 120 * MINUTE,
   })
-  // After the window ends the chat shows as not warming.
-  expect((await store.status("ses_warm", 1_000_000 + 121 * MINUTE)).active).toBe(false)
+  // After the window ends the chat shows as not warming, and keeps the ended
+  // window so the footer can say the cache went cold.
+  expect(await store.status("ses_warm", 1_000_000 + 121 * MINUTE)).toMatchObject({
+    active: false,
+    expires: 1_000_000 + 120 * MINUTE,
+  })
   // A model row switched off stops warming at the next decision.
   const warm = event({ phase: "warm", now: 1_000_000 + 2 * MINUTE })
   await store.decide(warm, { value: "off", level: "global" })
@@ -230,16 +234,30 @@ test("the per-chat switch persists across a restart and stops warming before the
   expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({})
 })
 
-test("the footer counts down to the end of the window and the switch flips the visible state", () => {
+test("the footer counts down to the end of the window, then shows the cache cold, and the switch flips the visible state", () => {
   const base = { sessionID: "ses_warm", chat: "default" as const, now: 0 }
   const running = { ...base, active: true, since: 0, expires: 23 * MINUTE + 41_000, interval: 4 * MINUTE }
   expect(formatRemaining(65 * MINUTE + 9_000)).toBe("1:05:09")
   expect(formatRemaining(7_000)).toBe("0:07")
-  expect(warmingLabel(running, 0)).toBe("cache warm · 23:41 left")
-  expect(warmingLabel(running, 23 * MINUTE + 41_000)).toBeUndefined()
+  expect(warmingLabel(running, 0)).toEqual({ text: "cache warm · 23:41 left", tone: "muted" })
+  // The window ran out: the footer stays and warns that the cache is cold.
+  expect(warmingLabel(running, 23 * MINUTE + 41_000)).toEqual({ text: "cache cold", tone: "warning" })
+  expect(warmingLabel({ ...running, active: false }, 24 * MINUTE)).toEqual({ text: "cache cold", tone: "warning" })
+  expect(warmingLabel({ ...running, chat: "on", active: false }, 24 * MINUTE)).toEqual({
+    text: "cache cold · warming starts after the next reply",
+    tone: "warning",
+  })
+  // Control: a chat that never had a window shows nothing, and off stays off.
   expect(warmingLabel({ ...base, active: false }, 0)).toBeUndefined()
-  expect(warmingLabel({ ...base, chat: "off", active: false }, 0)).toBe("cache warming off")
-  expect(warmingLabel({ ...base, chat: "on", active: false }, 0)).toBe("cache warming on · starts after the next reply")
+  expect(warmingLabel({ ...base, chat: "off", active: false }, 0)).toEqual({ text: "cache warming off", tone: "muted" })
+  expect(warmingLabel({ ...running, chat: "off", active: false }, 24 * MINUTE)).toEqual({
+    text: "cache warming off",
+    tone: "muted",
+  })
+  expect(warmingLabel({ ...base, chat: "on", active: false }, 0)).toEqual({
+    text: "cache warming on · starts after the next reply",
+    tone: "muted",
+  })
   expect(nextChatSwitch(running, 0)).toBe("off")
   expect(nextChatSwitch({ ...base, active: false }, 0)).toBe("on")
   expect(nextChatSwitch({ ...base, chat: "off", active: false }, 0)).toBe("on")

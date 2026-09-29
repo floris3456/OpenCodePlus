@@ -483,7 +483,7 @@ Core can keep a chat's provider prompt cache warm with keep-alive requests after
 
 - **Per agent and model, per level**: in Instructions → an agent → Models, press enter on a model row and set its warming to `off`, `on`, or a total time such as `45m`, `2h` or `1h30m` (1m to 24h); blank inherits. The value is stored at the level you are on, so a project can keep one agent warm for 3h on a model while another agent on the same model gets 20m, and another project keeps the global value. The row shows `warm 2h`.
 - **Per chat**: `ctrl+x k` switches warming on or off for the current chat, overriding the model row; the switch survives restarts.
-- **Countdown**: under the prompt, `cache warm · 23:41 left` counts down to when warming stops (the total time after the latest reply).
+- **Countdown**: under the prompt, `cache warm · 23:41 left` counts down to when warming stops (the total time after the latest reply). When it runs out the footer stays and shows `cache cold` in the warning colour until the next reply starts a new window.
 
 Without either, the host `warming` configuration applies unchanged. Keep-alive requests are real provider requests and cost tokens.
 

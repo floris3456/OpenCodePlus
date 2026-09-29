@@ -15,13 +15,25 @@ export function formatRemaining(ms: number): string {
   return `${minutes}:${rest}`
 }
 
-/** The footer text for a status at local time `now` (already corrected for server clock skew); undefined shows nothing. */
-export function warmingLabel(status: Plus.WarmingStatus | undefined, now: number): string | undefined {
+/**
+ * The footer for a status at local time `now` (already corrected for server
+ * clock skew); undefined shows nothing. Once a window has run out the footer
+ * stays and warns that the cache is cold, until the next reply opens a new one.
+ */
+export function warmingLabel(
+  status: Plus.WarmingStatus | undefined,
+  now: number,
+): { text: string; tone: "muted" | "warning" } | undefined {
   if (status === undefined) return undefined
-  if (status.chat === "off") return "cache warming off"
+  if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
   if (status.active && status.expires !== undefined && status.expires > now)
-    return `cache warm · ${formatRemaining(status.expires - now)} left`
-  if (status.chat === "on") return "cache warming on · starts after the next reply"
+    return { text: `cache warm · ${formatRemaining(status.expires - now)} left`, tone: "muted" }
+  if (status.expires !== undefined)
+    return {
+      text: status.chat === "on" ? "cache cold · warming starts after the next reply" : "cache cold",
+      tone: "warning",
+    }
+  if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
   return undefined
 }
 
@@ -105,9 +117,13 @@ export function createWarming(context: Plugin.Context) {
     createEffect(() => track(props.sessionID))
     return (
       <Show when={props.sessionID !== undefined ? label() : undefined}>
-        {(text) => (
-          <text fg={context.theme.text.muted} wrapMode="none" flexShrink={0}>
-            {text()}
+        {(footer) => (
+          <text
+            fg={footer().tone === "warning" ? context.theme.text.feedback.warning.base : context.theme.text.muted}
+            wrapMode="none"
+            flexShrink={0}
+          >
+            {footer().text}
           </text>
         )}
       </Show>
