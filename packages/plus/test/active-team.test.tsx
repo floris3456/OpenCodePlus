@@ -733,3 +733,69 @@ test("TeamMonitorTab ctrl+d surfaces warning toast when stop RPC is rejected", a
 
   output.renderer.destroy()
 })
+
+test("TeamMonitorTab refreshes runs only on session lifecycle events, once per 250 ms burst", async () => {
+  let listCalls = 0
+  let sessionListener: ((event: { details: { type: string } }) => void) | undefined
+
+  const white = RGBA.fromHex("#ffffff")
+  const gray = RGBA.fromHex("#888888")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { base: white, muted: gray, action: { primary: { base: white, selected: white, focused: white } } },
+    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: (handler: (event: { details: { type: string } }) => void) => {
+        sessionListener = handler
+        return () => {}
+      },
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async () => {
+          listCalls++
+          return { runs: [] }
+        },
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: { layer: () => {} },
+    ui: { toast: { show: () => {} }, router: { navigate: () => {} } },
+  }
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => <TeamMonitorTab sessionID="ses_root" active={() => false} close={() => {}} context={context} />,
+    output.renderer,
+  )
+  await output.renderOnce()
+  await new Promise((r) => setTimeout(r, 20))
+  // active is false so the 2 s interval stays out of the counts; the mount
+  // load still runs.
+  const loaded = listCalls
+  expect(loaded).toBeGreaterThanOrEqual(1)
+
+  // 100 streaming deltas change nothing.
+  for (let i = 0; i < 100; i++)
+    sessionListener!({ details: { type: i % 2 === 0 ? "session.text.delta" : "session.reasoning.delta" } })
+  await new Promise((r) => setTimeout(r, 350))
+  expect(listCalls).toBe(loaded)
+
+  // A burst of 20 lifecycle events inside one window costs one trailing refresh.
+  for (let i = 0; i < 20; i++) sessionListener!({ details: { type: "session.execution.started" } })
+  await new Promise((r) => setTimeout(r, 350))
+  expect(listCalls).toBe(loaded + 1)
+
+  // Control: a single lifecycle event after the window refreshes once more.
+  sessionListener!({ details: { type: "session.execution.succeeded" } })
+  await new Promise((r) => setTimeout(r, 350))
+  expect(listCalls).toBe(loaded + 2)
+
+  output.renderer.destroy()
+})

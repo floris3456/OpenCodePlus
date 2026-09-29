@@ -3,6 +3,7 @@ import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, Sho
 import { createStore } from "solid-js/store"
 import { TextAttributes } from "@opentui/core"
 import { Definition, type TeamLevel, type TeamListEntry, type TeamRunEntry } from "../rpc.js"
+import { SessionRunEvents } from "../teams/lifecycle.js"
 
 type SessionItem = ReturnType<Plugin.Context["data"]["session"]["list"]>[number]
 
@@ -296,6 +297,20 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     )
   }
 
+  // Only host session lifecycle events change a run's state (the same set the
+  // team runtime consumes). Streaming *.delta events never do, and one turn
+  // ending can arrive as several events: refresh once, at the end of a burst,
+  // and never twice inside one 250 ms window.
+  const RUN_REFRESH_MS = 250
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  function scheduleRefresh() {
+    if (disposed || refreshTimer !== undefined) return
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined
+      refreshRuns()
+    }, RUN_REFRESH_MS)
+  }
+
   createEffect(() => {
     targetLocation()
     showInactive()
@@ -307,9 +322,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   })
 
   const unsubscribeSession = props.context.data.listen((event) => {
-    if (!disposed && event.details.type.startsWith("session.")) {
-      refreshRuns()
-    }
+    if (!disposed && SessionRunEvents.has(event.details.type)) scheduleRefresh()
   })
 
   createEffect(() => {
@@ -322,6 +335,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
 
   onCleanup(() => {
     disposed = true
+    if (refreshTimer !== undefined) clearTimeout(refreshTimer)
     unsubscribeTeams()
     unsubscribeSession()
   })
