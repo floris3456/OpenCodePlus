@@ -10,6 +10,7 @@ import { Runtime } from "../src/framework/runtime"
 import { type Spec } from "../src/framework/spec"
 import { upstreamHandlers } from "../src/index"
 import { plusHandlers } from "../src/plus"
+import { OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../src/version"
 
 describe("plus build configuration", () => {
   test("uses binary name opencodeplus and channel plus", () => {
@@ -77,6 +78,13 @@ describe("plus build configuration", () => {
     const upstream = resolveBuildConfig({ version: "2.0.18", channel: "latest" })
     expect(upstream.upstream).toBeUndefined()
     expect(upstream.define.OPENCODE_UPSTREAM).toBe("null")
+  })
+
+  test("a source run names the OpenCode release of its source for the user agent", async () => {
+    const opencode = (await Bun.file(path.resolve(import.meta.dirname, "../package.json")).json()).version
+    // Tests run from source: no build defined a version, so it is "local", which Zen's free tier refuses.
+    expect(OPENCODE_VERSION).toBe("local")
+    expect(OPENCODE_UPSTREAM).toBe(opencode)
   })
 
   test("a build-target spelling records the platform alone as the identity target", () => {
