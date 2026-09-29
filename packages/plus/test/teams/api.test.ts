@@ -389,7 +389,8 @@ test("activation in a child worktree installs the parent project's agents and to
 
       // A plugin instance whose Location is the child worktree: the harness
       // records the session-creation seam but nothing about activation.
-      const ctx = fullContext({ directory: value.directory })
+      // The entrypoint registers the cache warming session hook.
+      const ctx = fullContext({ directory: value.directory, hooks: { current: 0 } })
       const pluginCtx = {
         ...ctx,
         rpc: Object.assign(

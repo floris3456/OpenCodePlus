@@ -1816,7 +1816,7 @@ export function formatDuration(ms: number): string {
 
 // Set (or with undefined clear) warming on the candidate at this address,
 // planting an inactive candidate row when the model is only inherited here.
-// Clearing on a row with no record returns an identical list.
+// Clearing where no record here sets warming returns an identical list.
 export function setModelWarming(
   models: readonly ModelRecord[],
   address: RecordScope,
@@ -1829,7 +1829,7 @@ export function setModelWarming(
     record.providerID === target.providerID &&
     record.modelID === target.modelID &&
     record.variant === target.variant
-  if (warming === undefined && !models.some(wanted)) return [...models]
+  if (warming === undefined && !models.some((record) => wanted(record) && record.warming !== undefined)) return [...models]
   return addModelRecord(models, address, target, updated).map((record) => {
     if (!wanted(record)) return record
     if (warming !== undefined) return { ...record, warming, updated }

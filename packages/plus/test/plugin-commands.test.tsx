@@ -17,7 +17,8 @@ interface CommandsHarness {
 function createHarness(): CommandsHarness {
   const layers: (Parameters<Plugin.Context["keymap"]["layer"]>[0])[] = []
   const navigations: unknown[] = []
-  const slotRenders: (() => unknown)[] = []
+  // Slot renders receive the slot's input; the prompt footer's carries no session here.
+  const slotRenders: ((props: object) => unknown)[] = []
   let current: unknown = { type: "session", sessionID: "ses_1" }
 
   const raw: {} = {
@@ -52,7 +53,7 @@ function createHarness(): CommandsHarness {
           navigations.push(route)
         },
       },
-      slot: (options: { render: () => unknown }) => {
+      slot: (options: { render: (props: object) => unknown }) => {
         slotRenders.push(options.render)
         return () => {}
       },
@@ -75,7 +76,7 @@ function createHarness(): CommandsHarness {
   return {
     context,
     mountSlot: () => {
-      for (const render of slotRenders) render()
+      for (const render of slotRenders) render({})
     },
     commands: () => layers.flatMap((fn) => fn().commands ?? []),
     navigations,

@@ -52,6 +52,8 @@ test("every method and event is declared", () => {
     "preset.addMember",
     "preset.delete",
     "link.set",
+    "warming.status",
+    "warming.set",
   ]
 
   for (const name of expectedMethods) {
@@ -59,7 +61,7 @@ test("every method and event is declared", () => {
   }
   expect(Object.keys(Plus.Definition.methods).sort()).toEqual(expectedMethods.sort())
 
-  const expectedEvents = ["instructions.changed", "teams.changed"]
+  const expectedEvents = ["instructions.changed", "teams.changed", "warming.changed"]
   for (const name of expectedEvents) {
     expect(name in Plus.Definition.events, `missing event ${name}`).toBe(true)
   }
