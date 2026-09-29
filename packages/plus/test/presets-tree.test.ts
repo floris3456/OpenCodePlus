@@ -305,8 +305,8 @@ test("rows say where their state comes from: preset, default entry, Defaults, Op
   // The displayed origin changes, but its API discriminator stays compatible.
   expect(badge("item:defaults:build:tool:shell")).toBe("OpenCode")
   expect(row(nodes, "item:defaults:build:tool:shell").badges.from).toEqual({ kind: "native" })
-  // A member preset ships its own rows: the badge names the member preset.
-  expect(badge("item:preset:basic/:planner:tool:shell")).toBe("from preset Basic › planner")
+  // A member preset ships its own rows: they are its own, not "from preset" itself.
+  expect(badge("item:preset:basic/:planner:tool:shell")).toBe("shipped")
   // A value set on the row itself.
   const own = expandedTree(input({ records: [record("project", "bob", "tool:shell", "on")] }))
   expect(own.find((node) => node.id === "item:project:bob:tool:shell")?.badges.fromLabel).toBe("set here")
@@ -324,34 +324,32 @@ test("a preset's own rows never read from preset itself; a different preset stil
   expect(badge("item:preset:build:setting:mode")).toBe("OpenCode")
   expect(badge("item:preset:build:tool:shell")).toBe("OpenCode")
   expect(badge("item:preset:build:tool:shell")).not.toBe("from preset Build")
-  // A Plus agent preset is the source of what it ships.
-  expect(badge("item:preset:orchestrator:setting:mode")).toBe("shipped")
-  expect(badge("item:preset:orchestrator:tool:shell")).toBe("shipped")
-  expect(badge("item:preset:orchestrator:tool:shell")).not.toBe("from preset Orchestrator")
-  // A member preset's own role and shipped rows are its own; what it inherits
-  // through its shipped link to the Planner agent preset still names it.
-  expect(badge("item:preset:starter/:planner:system:role")).toBe("shipped")
-  expect(badge("item:preset:starter/:planner:setting:mode")).toBe("shipped")
-  expect(badge("item:preset:starter/:planner:tool:shell")).toBe("from preset Planner")
+  // A shipped member preset is self-contained: everything it ships is its own.
+  expect(badge("item:preset:basic/:orchestrator:setting:mode")).toBe("shipped")
+  expect(badge("item:preset:basic/:orchestrator:tool:shell")).toBe("shipped")
+  expect(badge("item:preset:basic/:orchestrator:tool:shell")).not.toBe("from preset Basic › orchestrator")
+  expect(badge("item:preset:basic/:planner:system:role")).toBe("shipped")
+  expect(badge("item:preset:basic/:planner:setting:mode")).toBe("shipped")
+  expect(badge("item:preset:basic/:planner:tool:shell")).toBe("shipped")
   // A preset's own edit is set on the preset itself.
   const edited = input({ records: [...input().records, record("preset", "mine", "tool:shell", "on")] })
   expect(row(expandedTree(edited), "item:preset:mine:tool:shell").badges.fromLabel).toBe("set here")
   // A user preset created from another preset keeps the source preset's name.
   const derived = input({
     presets: [...presets, { type: "preset", level: "preset", kind: "agent", id: "derived", updated: UPDATED }],
-    links: [...links, { type: "link", level: "preset", agent: "derived", preset: { kind: "agent", id: "orchestrator" }, updated: UPDATED }],
+    links: [...links, { type: "link", level: "preset", agent: "derived", preset: { kind: "member", team: "basic", id: "orchestrator" }, updated: UPDATED }],
   })
   const derivedNodes = expandedTree(derived)
-  expect(row(derivedNodes, "item:preset:derived:tool:shell").badges.fromLabel).toBe("from preset Orchestrator")
-  expect(row(derivedNodes, "item:preset:derived:system:role").badges.fromLabel).toBe("from preset Orchestrator")
+  expect(row(derivedNodes, "item:preset:derived:tool:shell").badges.fromLabel).toBe("from preset Basic › orchestrator")
+  expect(row(derivedNodes, "item:preset:derived:system:role").badges.fromLabel).toBe("from preset Basic › orchestrator")
   // An agent linked to a preset names it; only a preset's own subtree changes.
-  expect(badge("item:project:alice:tool:question")).toBe("from preset Orchestrator")
+  expect(badge("item:project:alice:tool:question")).toBe("from preset Basic › orchestrator")
   // `list` projects the same words.
   expect(query(input(), { where: "id:item:preset:build:tool:shell", fields: ["from"] }).rows).toEqual([
     { id: "item:preset:build:tool:shell", from: "OpenCode" },
   ])
-  expect(query(input(), { where: "id:item:preset:starter/:planner:tool:shell", fields: ["from"] }).rows).toEqual([
-    { id: "item:preset:starter/:planner:tool:shell", from: "from preset Planner" },
+  expect(query(input(), { where: "id:item:preset:basic/:planner:tool:shell", fields: ["from"] }).rows).toEqual([
+    { id: "item:preset:basic/:planner:tool:shell", from: "shipped" },
   ])
 })
 
@@ -368,11 +366,11 @@ test("fromLabel and reviewLabel wording", () => {
   expect(fromLabel({ kind: "preset", id: "build", shipped: true }, { labels, own: ownBuild })).toBe("OpenCode")
   expect(fromLabel({ kind: "preset", id: "build", shipped: true }, { labels, own: { ref: ownBuild.ref, origin: "plus" } })).toBe("shipped")
   expect(fromLabel({ kind: "preset", id: "build", shipped: false }, { labels, own: ownBuild })).toBe("set here")
-  expect(fromLabel({ kind: "preset", id: "planner", shipped: true }, { labels, own: ownBuild })).toBe("from preset Planner")
+  expect(fromLabel({ kind: "preset", id: "planner", team: "basic", shipped: true }, { labels, own: ownBuild })).toBe("from preset Basic › planner")
   expect(
     fromLabel(
-      { kind: "preset", id: "planner", team: "starter", shipped: true },
-      { labels, own: { ref: { kind: "member", team: "starter", id: "planner" }, origin: "plus" } },
+      { kind: "preset", id: "planner", team: "basic", shipped: true },
+      { labels, own: { ref: { kind: "member", team: "basic", id: "planner" }, origin: "plus" } },
     ),
   ).toBe("shipped")
   expect(fromLabel({ kind: "default", name: "*orch*" })).toBe("from default *orch*")
