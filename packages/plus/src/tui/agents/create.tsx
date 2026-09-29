@@ -2,16 +2,20 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { validateAgentId } from "../../agents/files.js"
 import { Definition } from "../../rpc.js"
 import { pickAgentPreset } from "../preset-picker.js"
+import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import type { AgentEntry, FileScope, Snapshot } from "../../rpc.js"
 
-export function createAgentActions(context: Plugin.Context) {
+export function createAgentActions(context: Plugin.Context, cache: SnapshotCache = createSnapshotCache()) {
   const plus = context.client.rpc(Definition)
   let disposed = false
 
   async function loadSnapshot(): Promise<Snapshot | undefined> {
+    const cached = cache.fresh(context.location?.directory)
+    if (cached !== undefined) return cached
     try {
       const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
       if (disposed) return undefined
+      cache.put(context.location?.directory, snapshot)
       return snapshot
     } catch (error: unknown) {
       if (disposed) return undefined

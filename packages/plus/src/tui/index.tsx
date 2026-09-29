@@ -1,18 +1,27 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
+import { Definition } from "../rpc.js"
 import { createAgentActions } from "./agents/create.js"
 import { InstructionsRoute } from "./instructions/route.js"
 import { createActiveTeam } from "./active-team.js"
+import { createSnapshotCache } from "./snapshot-cache.js"
 
 export default Plugin.define({
   id: "opencode.plus",
   setup(context) {
-    const agents = createAgentActions(context)
+    // One stale-while-revalidate cache for the whole plugin: closing the
+    // screen keeps the last snapshot, and changes while it is closed only
+    // mark it stale (nothing refetches until the next open or dialog read).
+    const snapshots = createSnapshotCache({
+      events: context.client.rpc(Definition).events,
+      directory: () => context.location?.directory,
+    })
+    const agents = createAgentActions(context, snapshots)
     const activeTeam = createActiveTeam(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
-      render: () => <InstructionsRoute context={context} onClose={() => context.ui.router.navigate(previous())} />,
+      render: () => <InstructionsRoute context={context} cache={snapshots} onClose={() => context.ui.router.navigate(previous())} />,
     })
     const disposeSlot = context.ui.slot({
       append: "app",
@@ -76,6 +85,7 @@ export default Plugin.define({
       disposeSlot()
       agents.dispose()
       activeTeam.dispose()
+      snapshots.dispose()
     }
   },
 })

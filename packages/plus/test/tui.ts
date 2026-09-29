@@ -7,6 +7,8 @@ import type { Agent } from "@opencode/schema/agent"
 import { createComponent, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
+import { createSnapshotCache, type SnapshotCache } from "../src/tui/snapshot-cache.js"
+import { Definition } from "../src/rpc.js"
 import type {
   AddMcpInput,
   CreateAgentInput,
@@ -199,6 +201,10 @@ export interface TestFixture {
   readonly mockMouse: MockMouse
   readonly emitChanged: (next?: Snapshot) => Promise<void>
   readonly emitAgents: (agents: readonly Agent.Info[] | undefined) => void
+  /** The plugin-level snapshot cache this fixture renders against. */
+  readonly cache: SnapshotCache
+  /** Resolves every held `instructions.snapshot` answer and stops holding. */
+  readonly releaseSnapshots: () => Promise<void>
   readonly destroy: () => void
   readonly commands: () => readonly TestKeymapCommand[]
   readonly resize: (width: number, height: number) => void
@@ -209,7 +215,7 @@ export interface TestFixture {
 
 export interface RenderFixtureOptions {
   readonly snapshots: readonly Snapshot[]
-  readonly render: (context: Plugin.Context) => JSX.Element
+  readonly render: (context: Plugin.Context, cache: SnapshotCache) => JSX.Element
   readonly width?: number
   readonly height?: number
   readonly routeData?: unknown
@@ -221,6 +227,10 @@ export interface RenderFixtureOptions {
   readonly agents?: readonly Agent.Info[]
   /** Durable `storage.store` backing cells shared across fixtures, to model a TUI restart. */
   readonly storage?: Map<string, unknown>
+  /** The plugin-level snapshot cache; a fresh one is created when absent. */
+  readonly cache?: SnapshotCache
+  /** Holds every `instructions.snapshot` answer until releaseSnapshots(). */
+  readonly holdSnapshots?: boolean
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -274,6 +284,10 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   const memoryCells = new Map<string, { value: unknown }>()
   const storeCells = options.storage ?? new Map<string, unknown>()
   const [keymapMode, setKeymapMode] = createSignal("normal")
+  // Held snapshot answers: the test asserts on the frame while an RPC is in
+  // flight, then releases it to observe the fresh snapshot replace the cached.
+  const heldSnapshots: (() => void)[] = []
+  let holdingSnapshots = options.holdSnapshots ?? false
 
   function commands(): readonly TestKeymapCommand[] {
     return [...layers]
@@ -304,6 +318,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       rpc: () => ({
         "instructions.snapshot": async () => {
           fake.snapshotCalls++
+          if (holdingSnapshots) await new Promise<void>((release) => heldSnapshots.push(release))
           return nextSnapshot()
         },
         "instructions.refresh": async () => nextSnapshot(),
@@ -547,8 +562,14 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   // Cast to Plugin.Context: Plugin.Context requires full OpenCodeClient and ResolvedTheme
   // implementations from packages that are not dependencies of @opencode/plus.
   const context = rawContext as Plugin.Context
+  // The plugin-level cache, wired to the same change events the plugin uses:
+  // while the screen is closed it only marks entries stale.
+  const cache = options.cache ?? createSnapshotCache({
+    events: context.client.rpc(Definition).events,
+    directory: () => context.location?.directory,
+  })
 
-  await render(() => options.render(context), output.renderer)
+  await render(() => options.render(context, cache), output.renderer)
   output.renderer.start()
 
   function destroy() {
@@ -559,6 +580,12 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     if (next !== undefined) queue.push(next)
     const data: InstructionsChanged = { revision: next?.revision ?? 1, globalRevision: next?.globalRevision ?? 1 }
     for (const listener of instructionsListeners) listener({ data })
+  }
+
+  async function releaseSnapshots(): Promise<void> {
+    holdingSnapshots = false
+    for (const release of heldSnapshots.splice(0)) release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
   // Cast to ResizableRenderer: processResize is marked private in CliRenderer's type
@@ -587,6 +614,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     mockMouse: output.mockMouse,
     emitChanged,
     emitAgents: (next) => setAgents(next),
+    cache,
+    releaseSnapshots,
     destroy,
     commands,
     resize,
@@ -610,6 +639,10 @@ export interface RenderRouteOptions {
   readonly agents?: readonly Agent.Info[]
   /** Durable `storage.store` backing cells shared across fixtures, to model a TUI restart. */
   readonly storage?: Map<string, unknown>
+  /** The plugin-level snapshot cache; a fresh one is created when absent. */
+  readonly cache?: SnapshotCache
+  /** Holds every `instructions.snapshot` answer until releaseSnapshots(). */
+  readonly holdSnapshots?: boolean
 }
 
 export async function renderInstructionsRoute(options: RenderRouteOptions): Promise<TestFixture> {
@@ -624,11 +657,14 @@ export async function renderInstructionsRoute(options: RenderRouteOptions): Prom
     ...(options.models === undefined ? {} : { models: options.models }),
     ...(options.agents === undefined ? {} : { agents: options.agents }),
     ...(options.storage === undefined ? {} : { storage: options.storage }),
-    render: (context) =>
+    ...(options.cache === undefined ? {} : { cache: options.cache }),
+    ...(options.holdSnapshots === undefined ? {} : { holdSnapshots: options.holdSnapshots }),
+    render: (context, cache) =>
       createComponent(InstructionsRoute, {
         context,
         onClose: options.onClose ?? (() => {}),
         data: options.data,
+        cache,
       }),
   })
 }

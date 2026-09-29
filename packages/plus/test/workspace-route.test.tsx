@@ -41,8 +41,11 @@ function reviewSnapshot(): Snapshot {
 test("creating a team selects it in the sidebar once the host shows it", async () => {
   const before = createSnapshot({ agents: [build] })
   const after = createSnapshot({ agents: [build], teams: [{ level: "project", team: "crew", enabled: false, agents: ["reviewer"] }] })
+  // The dialog's preset step reads the screen's snapshot from the plugin
+  // cache (filled by the initial load), so only the create's own refresh
+  // consumes the next RPC answer: the after snapshot.
   await using fixture = await renderInstructionsRoute({
-    snapshots: [before, before, after],
+    snapshots: [before, after],
     width: 130,
     height: 45,
     dialogs: { prompts: ["crew"], selects: [""] },

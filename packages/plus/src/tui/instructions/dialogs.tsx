@@ -3,6 +3,7 @@ import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
+import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import type { InstructionsState } from "./state.js"
 
 export interface InstructionsDialogsOptions {
@@ -10,7 +11,12 @@ export interface InstructionsDialogsOptions {
   readonly parentOf?: (node: TreeNode) => TreeNode | undefined
 }
 
-export function createInstructionsDialogs(context: Plugin.Context, state: InstructionsState, options: InstructionsDialogsOptions = {}) {
+export function createInstructionsDialogs(
+  context: Plugin.Context,
+  state: InstructionsState,
+  options: InstructionsDialogsOptions = {},
+  cache: SnapshotCache = createSnapshotCache(),
+) {
   const plus = context.client.rpc(Definition)
   let disposed = false
 
@@ -119,9 +125,12 @@ export function createInstructionsDialogs(context: Plugin.Context, state: Instru
   }
 
   async function currentSnapshot(): Promise<Plus.Snapshot | undefined> {
+    const cached = cache.fresh(context.location?.directory)
+    if (cached !== undefined) return cached
     try {
       const snapshot = await plus["instructions.snapshot"](undefined, { location: context.location })
       if (disposed) return undefined
+      cache.put(context.location?.directory, snapshot)
       return snapshot
     } catch (error: unknown) {
       if (disposed) return undefined

@@ -24,6 +24,7 @@ import {
 import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
+import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
@@ -134,11 +135,14 @@ export interface InstructionsRouteProps {
   readonly onClose: () => void
   readonly data?: unknown
   readonly initialAgentTimeoutMs?: number
+  /** The plugin-level snapshot cache; a private one is used when absent. */
+  readonly cache?: SnapshotCache
 }
 
 export function InstructionsRoute(props: InstructionsRouteProps) {
   const theme = () => props.context.theme
-  const state = createInstructionsState(props.context)
+  const cache = props.cache ?? createSnapshotCache()
+  const state = createInstructionsState(props.context, cache)
   const dimensions = useTerminalDimensions()
   const wide = () => dimensions().width >= WIDE_THRESHOLD
   // The dialog host pushes "modal" for the whole dialog stack (help, prompts):
@@ -409,7 +413,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   const dialogs = createInstructionsDialogs(props.context, state, {
     parentOf: (node) => workspace().parents.get(node.id),
-  })
+  }, cache)
 
   onCleanup(() => {
     clearRetryTimer()

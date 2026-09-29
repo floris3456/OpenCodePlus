@@ -41,6 +41,7 @@ import {
 } from "../../instructions/ops.js"
 import { matchedTree, query } from "../../instructions/query.js"
 import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
+import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 
 export type { TreeNode }
 
@@ -141,14 +142,21 @@ export function toRpcRecords(
   ]
 }
 
-export function createInstructionsState(context: Plugin.Context) {
+export function createInstructionsState(context: Plugin.Context, cache: SnapshotCache = createSnapshotCache()) {
   const plus = context.client.rpc(Definition)
+  const directory = context.location?.directory
   const [snapshot, setSnapshot] = createSignal<Snapshot | undefined>(undefined)
   const [filter, setFilter] = createSignal<string>("")
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
   let disposed = false
   let generation = 0
+
+  // Opening the screen renders the plugin-level cached snapshot at once, stale
+  // or not, and the initial reload below revalidates it in the background. The
+  // first ever open (empty cache) behaves as before.
+  const cached = cache.peek(directory)
+  if (cached !== undefined) setSnapshot(cached.snapshot)
 
   // Presets and Defaults entries get the Role/persona row every agent has.
   const itemsForTree = createMemo<Item[]>(() => {
@@ -238,6 +246,7 @@ export function createInstructionsState(context: Plugin.Context) {
       const fresh = await plus["instructions.snapshot"](undefined, { location: context.location })
       if (disposed || requestGen !== generation) return
       setSnapshot(fresh)
+      cache.put(directory, fresh)
       setStatus("")
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return
@@ -255,6 +264,7 @@ export function createInstructionsState(context: Plugin.Context) {
       const fresh = await plus["instructions.refresh"](undefined, { location: context.location })
       if (disposed || requestGen !== generation) return
       setSnapshot(fresh)
+      cache.put(directory, fresh)
       setStatus("Refreshed from host")
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return
@@ -355,12 +365,16 @@ export function createInstructionsState(context: Plugin.Context) {
       // the write still succeeded: report it, or an editor never closes.
       const latest = requestGen === generation
       if (result.ok) {
-        if (latest) setSnapshot(result.snapshot)
+        if (latest) {
+          setSnapshot(result.snapshot)
+          cache.put(directory, result.snapshot)
+        }
         setStatus(successStatus)
         return true
       }
       if (!latest) return false
       setSnapshot(result.snapshot)
+      cache.put(directory, result.snapshot)
       setStatus(
         `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${result.snapshot.revision}/${result.snapshot.globalRevision}); ${retryHint}`,
       )
