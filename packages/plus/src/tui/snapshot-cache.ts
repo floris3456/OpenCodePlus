@@ -6,9 +6,17 @@ import type { Snapshot } from "../rpc.js"
  * The Instructions screen renders an entry as soon as it can — stale or not —
  * and revalidates in the background; the dialogs and the agent actions read an
  * entry only while it is fresh, and fetch once when it is not. The cache is
- * plugin-level, so it survives closing and reopening the screen; while the
- * screen is closed a change event only marks the entry stale (nothing
- * refetches), and the next open both renders it and validates it.
+ * plugin-level, so it survives closing and reopening the screen.
+ *
+ * A change event carries no directory, and a global-level change moves every
+ * directory's snapshot, so one event marks every entry stale; nothing refetches
+ * until the next open or dialog read. A put marks every other directory stale
+ * for the same reason: while the plugin sits on this directory the others are
+ * unverifiable (the event stream may be location-scoped).
+ *
+ * A put also ignores a snapshot older than the entry it would replace, so a
+ * dialog fetch that resolves after a newer route write cannot roll the entry
+ * back.
  */
 export interface SnapshotCacheEntry {
   readonly snapshot: Snapshot
@@ -20,20 +28,18 @@ export interface SnapshotCache {
   peek(directory: string | undefined): SnapshotCacheEntry | undefined
   /** The snapshot for a directory while it is fresh, or undefined. */
   fresh(directory: string | undefined): Snapshot | undefined
-  /** Stores a snapshot as the fresh entry for a directory. */
+  /** Stores a newer-or-equal snapshot for a directory and stales every other. */
   put(directory: string | undefined, snapshot: Snapshot): void
-  /** Marks a directory's entry stale; an absent entry stays absent. */
-  markStale(directory?: string | undefined): void
+  /** Marks every entry stale. */
+  markStale(): void
   dispose(): void
 }
 
 export interface SnapshotCacheOptions {
-  /** The client's `instructions.changed` stream; the cache only marks entries stale. */
+  /** The client's `instructions.changed` stream; one event marks every entry stale. */
   readonly events?: {
     on(name: "instructions.changed", handler: () => void): () => void
   }
-  /** The directory a change event belongs to: the plugin's current location. */
-  readonly directory?: () => string | undefined
 }
 
 export function createSnapshotCache(options: SnapshotCacheOptions = {}): SnapshotCache {
@@ -41,6 +47,9 @@ export function createSnapshotCache(options: SnapshotCacheOptions = {}): Snapsho
   // Implicit-local placement has no directory; the empty key still keeps it
   // apart from any real directory.
   const keyOf = (directory: string | undefined) => directory ?? ""
+  const markStale = () => {
+    for (const entry of entries.values()) entry.stale = true
+  }
   const cache: SnapshotCache = {
     peek: (directory) => {
       const entry = entries.get(keyOf(directory))
@@ -51,15 +60,22 @@ export function createSnapshotCache(options: SnapshotCacheOptions = {}): Snapsho
       return entry === undefined || entry.stale ? undefined : entry.snapshot
     },
     put: (directory, snapshot) => {
-      entries.set(keyOf(directory), { snapshot, stale: false })
+      const key = keyOf(directory)
+      const current = entries.get(key)?.snapshot
+      if (current !== undefined && !isNewer(snapshot, current)) return
+      markStale()
+      entries.set(key, { snapshot, stale: false })
     },
-    markStale: (directory) => {
-      const entry = entries.get(keyOf(directory))
-      if (entry !== undefined) entry.stale = true
-    },
+    markStale,
     dispose: () => {},
   }
-  if (options.events !== undefined)
-    cache.dispose = options.events.on("instructions.changed", () => cache.markStale(options.directory?.()))
+  if (options.events !== undefined) cache.dispose = options.events.on("instructions.changed", markStale)
   return cache
+}
+
+// Replace when either revision is newer, or both are equal; a snapshot behind
+// in one revision and level in the other is an older answer.
+function isNewer(next: Snapshot, current: Snapshot): boolean {
+  if (next.revision > current.revision || next.globalRevision > current.globalRevision) return true
+  return next.revision === current.revision && next.globalRevision === current.globalRevision
 }

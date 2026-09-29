@@ -134,7 +134,7 @@ test("P6: createAgentActions reads a fresh cache and fetches once when stale", a
 
   const stale = createSnapshotCache()
   stale.put(undefined, createSnapshot())
-  stale.markStale(undefined)
+  stale.markStale()
   const staleFixture = await renameWith(stale)
   try {
     // One fetch refilled the cache; the second read used it.
@@ -184,7 +184,7 @@ test("P6: dialogs read a fresh cache and fetch once when stale", async () => {
 
   const stale = createSnapshotCache()
   stale.put(undefined, createSnapshot())
-  stale.markStale(undefined)
+  stale.markStale()
   const staleFixture = await addAgentWith(stale)
   try {
     expect(staleFixture.fake.snapshotCalls).toBe(1)
@@ -192,4 +192,58 @@ test("P6: dialogs read a fresh cache and fetch once when stale", async () => {
   } finally {
     staleFixture.destroy()
   }
+})
+
+// The change event carries no directory and a global-level change moves every
+// directory's snapshot, so it stales every entry. A put for one directory also
+// makes the others unverifiable: while the plugin sits here, their events may
+// be missed (the stream can be location-scoped).
+test("cache: an event stales every directory and a put stales the others", () => {
+  const handlers = new Set<() => void>()
+  const cache = createSnapshotCache({
+    events: {
+      on: (_name, handler) => {
+        handlers.add(handler)
+        return () => {
+          handlers.delete(handler)
+        }
+      },
+    },
+  })
+  const snapshot = createSnapshot({ revision: 1, globalRevision: 1 })
+  cache.put("/a", snapshot)
+  expect(cache.fresh("/a")).toBeDefined()
+  cache.put("/b", snapshot)
+  // Control: the directory just put is fresh; the other one is not.
+  expect(cache.fresh("/b")).toBeDefined()
+  expect(cache.fresh("/a")).toBeUndefined()
+  cache.put("/a", snapshot)
+  expect(cache.fresh("/a")).toBeDefined()
+  expect(cache.fresh("/b")).toBeUndefined()
+  for (const handler of handlers) handler()
+  expect(cache.fresh("/a")).toBeUndefined()
+  expect(cache.fresh("/b")).toBeUndefined()
+  expect(cache.peek("/a")?.stale).toBe(true)
+  expect(cache.peek("/b")?.stale).toBe(true)
+  cache.dispose()
+  expect(handlers.size).toBe(0)
+})
+
+// A dialog fetch that resolves after a newer route write must not roll the
+// entry back: put ignores a snapshot behind the cached one.
+test("cache: an older snapshot cannot overwrite a newer entry", () => {
+  const cache = createSnapshotCache()
+  cache.put("/a", createSnapshot({ revision: 5, globalRevision: 7 }))
+  cache.put("/a", createSnapshot({ revision: 4, globalRevision: 6 }))
+  expect(cache.fresh("/a")?.revision).toBe(5)
+  // Behind in one revision and level in the other is still an older answer.
+  cache.put("/a", createSnapshot({ revision: 4, globalRevision: 7 }))
+  expect(cache.fresh("/a")?.revision).toBe(5)
+  // Control: either revision newer replaces, and an equal pair does too.
+  cache.put("/a", createSnapshot({ revision: 6, globalRevision: 7 }))
+  expect(cache.fresh("/a")?.revision).toBe(6)
+  cache.put("/a", createSnapshot({ revision: 6, globalRevision: 7 }))
+  expect(cache.fresh("/a")?.revision).toBe(6)
+  cache.put("/a", createSnapshot({ revision: 6, globalRevision: 8 }))
+  expect(cache.fresh("/a")?.globalRevision).toBe(8)
 })

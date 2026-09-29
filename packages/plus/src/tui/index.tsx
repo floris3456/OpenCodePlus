@@ -14,7 +14,6 @@ export default Plugin.define({
     // mark it stale (nothing refetches until the next open or dialog read).
     const snapshots = createSnapshotCache({
       events: context.client.rpc(Definition).events,
-      directory: () => context.location?.directory,
     })
     const agents = createAgentActions(context, snapshots)
     const activeTeam = createActiveTeam(context)

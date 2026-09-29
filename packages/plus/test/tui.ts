@@ -566,7 +566,6 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   // while the screen is closed it only marks entries stale.
   const cache = options.cache ?? createSnapshotCache({
     events: context.client.rpc(Definition).events,
-    directory: () => context.location?.directory,
   })
 
   await render(() => options.render(context, cache), output.renderer)
