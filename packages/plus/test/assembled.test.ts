@@ -8,7 +8,6 @@ import { assembled } from "../src/instructions/assembled.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { scrubLines } from "../src/instructions/tool-permissions.js"
 import { load, save } from "../src/instructions/store.js"
-import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
@@ -73,7 +72,6 @@ async function linkToBuild(project: string, ids: readonly string[]): Promise<voi
 // would mask what these tests pin.
 async function setup() {
   const { project } = await tempRoot()
-  await enable(project)
   for (const id of ["alpha", "beta"]) {
     const agentPath = path.join(project, ".opencode", "agent", `${id}.md`)
     await fs.mkdir(path.dirname(agentPath), { recursive: true })
@@ -199,7 +197,6 @@ function offRecord(item: Plus.SnapshotItem): Plus.SnapshotCustomizationRecord {
 
 test("reports a code mode tool as absent once its deny is installed", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role")
@@ -242,7 +239,6 @@ test("reports a code mode tool as absent once its deny is installed", async () =
 
 test("reports a natively denied tool as absent once the denial is installed", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role")
@@ -292,7 +288,6 @@ test("reports a natively denied tool as absent once the denial is installed", as
 
 test("reports a stored native-tool off that was never published as present", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role")
@@ -336,7 +331,6 @@ test("reports a stored native-tool off that was never published as present", asy
 
 test("disposal clears the installed set, so after teardown a stale record cannot hide a tool", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role")
@@ -441,7 +435,6 @@ async function setupTools(options: {
   native?: boolean
 }) {
   const { project } = await tempRoot()
-  await enable(project)
   for (const id of options.native === true ? [] : options.agents) {
     const agentPath = path.join(project, ".opencode", "agent", `${id}.md`)
     await fs.mkdir(path.dirname(agentPath), { recursive: true })
@@ -812,7 +805,6 @@ test("disposal clears the installed pin, so a stale pin record falls back to def
 
 test("an all-matching scrub preserves the original in assembled, matching the live request", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agents = agentHarness([agentInfo("alpha", "git push")])
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([])

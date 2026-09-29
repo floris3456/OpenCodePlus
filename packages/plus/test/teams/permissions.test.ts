@@ -18,7 +18,6 @@ import { teamsDataDir } from "../../src/instructions/paths.js"
 import { itemOf } from "../../src/instructions/snapshot.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
 import { fingerprint, type CustomizationRecord, type Item, type PolicyEffects } from "../../src/instructions/model.js"
-import { enable } from "../../src/project.js"
 import { Plus } from "../../src/rpc.js"
 import { teamTools } from "../../src/teams/policy.js"
 import { saveRun } from "../../src/teams/run.js"
@@ -254,7 +253,6 @@ test("a published member carries its preset's denies while a non-member carries 
   process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
   process.env.XDG_DATA_HOME = join(dir, "data")
   const project = join(dir, "project")
-  await enable(project)
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("build", "upstream")],
@@ -349,7 +347,6 @@ test("instructions_show on a run edit-scope row reports the rules and the messag
   process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
   process.env.XDG_DATA_HOME = join(dir, "data")
   const project = join(dir, "project")
-  await enable(project)
   const member = "gemini-implementer"
   const run = makeRun({ id: "w-0000000000000006", role: member })
   await saveRun(teamsDataDir(), run)

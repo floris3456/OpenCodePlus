@@ -8,7 +8,6 @@ import { createStore } from "solid-js/store"
 import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
-import { enable } from "../src/project.js"
 import { createActiveTeam, TeamMonitorTab } from "../src/tui/active-team.js"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
@@ -44,7 +43,6 @@ function throwingContext(): {
 
 test("team.list contents before and after enable, teams.changed fires", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const teamDir = path.join(projectTeamsPath(project), "my-team")
   await fs.mkdir(teamDir, { recursive: true })
   await Bun.write(path.join(teamDir, "coder.md"), formatMarkdown({ mode: "primary" }, "You write code."))

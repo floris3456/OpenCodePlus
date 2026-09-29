@@ -19,6 +19,7 @@ import type {
   DeleteSkillInput,
   EntryCreateInput,
   ImportSkillInput,
+  InstructionsChanged,
   LinkSetInput,
   ModelAddInput,
   MutateInput,
@@ -27,7 +28,6 @@ import type {
   PresetDeleteInput,
   RuleAddInput,
   Snapshot,
-  Status,
   TeamAddAgentInput,
 } from "../src/rpc.js"
 
@@ -198,7 +198,6 @@ export interface TestFixture {
   readonly memoryKeys: () => string[]
   readonly mockMouse: MockMouse
   readonly emitChanged: (next?: Snapshot) => Promise<void>
-  readonly emitProjectChanged: (status?: Partial<Status>) => Promise<void>
   readonly emitAgents: (agents: readonly Agent.Info[] | undefined) => void
   readonly destroy: () => void
   readonly commands: () => readonly TestKeymapCommand[]
@@ -268,9 +267,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   const promptScript = [...(options.dialogs?.prompts ?? [])]
   const selectScript = [...(options.dialogs?.selects ?? [])]
   const confirmScript = [...(options.dialogs?.confirms ?? [])]
-  type RpcListener = (event: { data: Status }) => void
+  type RpcListener = (event: { data: InstructionsChanged }) => void
   const instructionsListeners = new Set<RpcListener>()
-  const projectListeners = new Set<RpcListener>()
   const layers: KeymapLayerCallback[] = []
   const dialogSets: { size?: string; centered?: boolean }[] = []
   const memoryCells = new Map<string, { value: unknown }>()
@@ -409,12 +407,6 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         },
         events: {
           on: (name: string, handler: RpcListener) => {
-            if (name === "project.changed") {
-              projectListeners.add(handler)
-              return () => {
-                projectListeners.delete(handler)
-              }
-            }
             instructionsListeners.add(handler)
             return () => {
               instructionsListeners.delete(handler)
@@ -565,15 +557,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
 
   async function emitChanged(next?: Snapshot): Promise<void> {
     if (next !== undefined) queue.push(next)
-    for (const listener of instructionsListeners) listener({ data: { enabled: true, directory: "" } })
-  }
-
-  async function emitProjectChanged(status?: Partial<Status>): Promise<void> {
-    const data: Status = {
-      enabled: status?.enabled ?? false,
-      directory: status?.directory ?? "",
-    }
-    for (const listener of projectListeners) listener({ data })
+    const data: InstructionsChanged = { revision: next?.revision ?? 1, globalRevision: next?.globalRevision ?? 1 }
+    for (const listener of instructionsListeners) listener({ data })
   }
 
   // Cast to ResizableRenderer: processResize is marked private in CliRenderer's type
@@ -601,7 +586,6 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     memoryKeys: () => [...memoryCells.keys()],
     mockMouse: output.mockMouse,
     emitChanged,
-    emitProjectChanged,
     emitAgents: (next) => setAgents(next),
     destroy,
     commands,

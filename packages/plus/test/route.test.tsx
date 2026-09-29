@@ -8,7 +8,6 @@ import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
-import { enable } from "../src/project.js"
 import { load, save } from "../src/instructions/store.js"
 import type { PresetRef, Snapshot } from "../src/rpc.js"
 import { Definition } from "../src/rpc.js"
@@ -844,7 +843,6 @@ test.skip("created project instruction deletes through instruction.delete and th
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] })
   const handlers = createHandlers(ctx, createState())
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -1071,26 +1069,6 @@ test("key availability follows the selected row", async () => {
     dispatch(fixture, "ctrl+space")
     expect(fixture.fake.agentSelects).toEqual(["Implementer"])
     expect(fixture.fake.mutateInputs.length).toBe(0)
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("disabled project mode hides actions and keys", async () => {
-  const snapshot = createSnapshot({ agents: [projectAgent("Implementer")], items: [toolItem()] })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await fixture.emitProjectChanged({ enabled: false })
-    await fixture.waitForFrame((frame) => frame.includes("Project mode is disabled"))
-    const frame = fixture.captureCharFrame()
-    expect(frame).toContain("Project mode is disabled for this directory")
-    const after = binds(fixture)
-    expect(after).not.toContain("space")
-    expect(after).not.toContain("a")
-    expect(after).not.toContain("d")
-    expect(after).not.toContain("r")
-    expect(after).not.toContain("s")
   } finally {
     fixture.destroy()
   }
@@ -1722,7 +1700,6 @@ test("provenance flags travel real discovery -> snapshot -> rendered rows", asyn
   const config = path.join(root, "config")
   process.env.OPENCODE_CONFIG_DIR = config
   const project = path.join(root, "project")
-  await enable(project)
   // The native `build` agent owns the first coder row: Defaults "for every
   // agent" itself falls back to off (DESIGN §3.3), a native agent's row keeps
   // its native "on".
@@ -1791,7 +1768,6 @@ test("team row toggles through the real team.setEnabled and the rebuilt tree sho
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const teamDir = path.join(projectTeamsPath(project), "crew")
   await fs.mkdir(path.join(teamDir, "nested"), { recursive: true })
   await Bun.write(
@@ -1878,7 +1854,6 @@ test("a on the Teams group creates through the real team.create and the rebuilt 
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   // Empty built-in registry: this test pins the disk-only team universe, not
   // the shipped roster (covered by the dedicated well-formedness test).
@@ -2445,7 +2420,6 @@ test("addRule cancelling any prompt writes nothing, blank keywords saves with de
     e2eRoots.push(root)
     process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
     const project = path.join(root, "project")
-    await enable(project)
     await linkAlphaToBuild(project)
     const realCtx = fullContext({
       directory: project,
@@ -2525,7 +2499,6 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
     e2eRoots.push(root)
     process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
     const project = path.join(root, "project")
-    await enable(project)
     await linkAlphaToBuild(project)
     const realCtx = fullContext({
       directory: project,
@@ -2676,7 +2649,6 @@ test("a on a team row adds through the real team.addAgent without the generic pi
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -2745,7 +2717,6 @@ test("a on a colon team row calls team.addAgent with the full name", async () =>
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -2802,7 +2773,6 @@ test("a on a team row with an internal newline calls team.addAgent with the mult
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -2860,7 +2830,6 @@ test("team create on group:project:teams asks the name, then a grouped team pres
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -2924,7 +2893,6 @@ test("a on Defaults Teams asks team pattern, member pattern, preset; a on its en
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -2996,7 +2964,6 @@ test("a on a team member row adds through the real team.addAgent without the gen
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -3064,7 +3031,6 @@ test("a on a colon team member row calls team.addAgent with the full team name",
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -3121,7 +3087,6 @@ test("a on ambiguous team member row surfaces error toast and calls no team.addA
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -3187,7 +3152,6 @@ test("d on a member row with the real handler wired removes the row", async () =
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -3247,7 +3211,6 @@ test("d on a team row with the real handler wired removes the row and wires team
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
@@ -3317,7 +3280,6 @@ test("defaults team row offers no d delete", async () => {
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const registry = [{ name: "starter", members: [{ id: "planner", body: "planner body" }] }]
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: registry })

@@ -4,7 +4,6 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../../src/index.js"
-import { enable } from "../../src/project.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness } from "../harness.js"
 
 const roots: string[] = []
@@ -66,7 +65,6 @@ function fixtureWithFields() {
 
 test("second publish with fielded builtin member is a no-op", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agents = agentHarness([agentInfo("alpha", "upstream")])
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([])
@@ -116,7 +114,6 @@ test("second publish with fielded builtin member is a no-op", async () => {
 // and reinstall the whole registration set in a loop.
 test("second publish with the built-in team enabled is a no-op", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agents = agentHarness([agentInfo("alpha", "upstream")])
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([])

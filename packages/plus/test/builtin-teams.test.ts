@@ -8,7 +8,6 @@ import { createHandlers, createState } from "../src/index.js"
 import { builtinTeams } from "../src/instructions/builtin-teams.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { validateTeamName } from "../src/instructions/teams.js"
-import { enable } from "../src/project.js"
 import { teamTools } from "../src/teams/policy.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { presetInput, resolvedStates } from "./teams/preset-table.js"
@@ -140,7 +139,6 @@ test("every member preset links to a Plus agent preset whose team tool rows are 
 // team preset a project team is created from, with the same member ids.
 test("the live snapshot carries each member's Delegate to rows after the team is installed", async () => {
   const project = await tempProject()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
   await Effect.runPromise(

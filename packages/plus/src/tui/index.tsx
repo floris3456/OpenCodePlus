@@ -2,13 +2,11 @@ import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
 import { createAgentActions } from "./agents/create.js"
 import { InstructionsRoute } from "./instructions/route.js"
-import { createProjectMode } from "./project-mode.js"
 import { createActiveTeam } from "./active-team.js"
 
 export default Plugin.define({
   id: "opencode.plus",
   setup(context) {
-    const mode = createProjectMode(context)
     const agents = createAgentActions(context)
     const activeTeam = createActiveTeam(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
@@ -23,30 +21,12 @@ export default Plugin.define({
           mode: "global",
           commands: [
             {
-              id: "plus.project.toggle",
-              title: "Toggle project mode",
-              group: "Project",
-              palette: true,
-              bind: "<leader>p",
-              run: () => mode.toggle(),
-            },
-            {
-              id: "plus.project.status",
-              title: "Show project mode status",
-              group: "Project",
-              palette: true,
-              enabled: () => mode.status().enabled,
-              run: () => {
-                context.ui.toast.show({ message: `Project mode directory: ${mode.status().directory}` })
-              },
-            },
-            {
               id: "plus.instructions.open",
               title: "Instructions",
               group: "Project",
               palette: true,
+              bind: "<leader>p",
               slash: { name: "instructions" },
-              enabled: () => mode.status().enabled,
               run() {
                 const current = context.ui.router.current()
                 if (current.type === "plugin" && current.name === "instructions") return
@@ -61,7 +41,6 @@ export default Plugin.define({
               title: "Create agent",
               group: "Project",
               palette: true,
-              enabled: () => mode.status().enabled,
               run: () => agents.createAgent(),
             },
             {
@@ -69,7 +48,6 @@ export default Plugin.define({
               title: "Rename agent",
               group: "Project",
               palette: true,
-              enabled: () => mode.status().enabled,
               run: () => agents.renameAgent(),
             },
             {
@@ -77,7 +55,6 @@ export default Plugin.define({
               title: "Delete agent",
               group: "Project",
               palette: true,
-              enabled: () => mode.status().enabled,
               run: () => agents.deleteAgent(),
             },
             {
@@ -85,7 +62,6 @@ export default Plugin.define({
               title: "Select team",
               group: "Project",
               palette: true,
-              enabled: () => mode.status().enabled,
               run: () => {
                 context.ui.agents.open({ filter: "Team:" })
               },
@@ -98,7 +74,6 @@ export default Plugin.define({
     return () => {
       disposeRoute()
       disposeSlot()
-      mode.dispose()
       agents.dispose()
       activeTeam.dispose()
     }

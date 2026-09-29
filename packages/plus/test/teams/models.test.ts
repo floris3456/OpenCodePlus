@@ -6,7 +6,6 @@ import path from "node:path"
 import { applySessionModel, createHandlers, createState } from "../../src/index.js"
 import { builtinTeams } from "../../src/instructions/builtin-teams.js"
 import { load, save, type StoredRecord } from "../../src/instructions/store.js"
-import { enable } from "../../src/project.js"
 import {
   agentHarness,
   modelHarness,
@@ -121,7 +120,6 @@ async function publishOnce(project: string, records: readonly StoredRecord[]): P
 
 test("a defaults model pin for a built-in team member lands in activeModels on the first publish", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const { state } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
   expect(state.activeModels.get("muse-implementer")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
   expect("variant" in (state.activeModels.get("muse-implementer") ?? {})).toBe(false)
@@ -131,7 +129,6 @@ test("a defaults model pin for a built-in team member lands in activeModels on t
 
 test("session.created switches a team session to its pinned model", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
   await Effect.runPromise(
     applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1", agent: "muse-implementer" } }),
@@ -144,7 +141,6 @@ test("session.created switches a team session to its pinned model", async () => 
 
 test("session.agent.selected switches through the switchAgent path with the variant", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("opus-orchestrator", ORCHESTRATOR)])
   await Effect.runPromise(
     applySessionModel(ctx, state, { type: "session.agent.selected", properties: { sessionID: "ses_1", agent: "opus-orchestrator" } }),
@@ -157,7 +153,6 @@ test("session.agent.selected switches through the switchAgent path with the vari
 
 test("two roles pinned to two models each keep their own ref", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const { state } = await publishOnce(project, [
     teamRecord(),
     modelRecord("opus-orchestrator", ORCHESTRATOR),
@@ -173,7 +168,6 @@ test("two roles pinned to two models each keep their own ref", async () => {
 
 test("a role with no model record never switches", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
   await Effect.runPromise(
     applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1", agent: "scout" } }),
@@ -183,7 +177,6 @@ test("a role with no model record never switches", async () => {
 
 test("the built-in role description survives the model pin", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const { ctx } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
   const listed = await Effect.runPromise(ctx.agent.list())
   const agent = listed.data.find((entry) => String(entry.id) === "muse-implementer")
@@ -198,7 +191,6 @@ test("pinned team roles carry their models on the agent surface itself", async (
   // so the model update was dropped and the host fell back to its own model
   // on the next agent switch.
   const { project } = await tempRoot()
-  await enable(project)
   const { ctx } = await publishOnce(project, [
     teamRecord(),
     modelRecord("opus-orchestrator", ORCHESTRATOR),
@@ -227,7 +219,6 @@ test("disabling a pinned team removes its roles even with the model record retai
   // still-installed old role before disposing previous registrations; the
   // retained pin must not recreate it from Agent.Info.default (allow '*').
   const { project } = await tempRoot()
-  await enable(project)
   const agents = agentHarness([])
   const location = fullContext({ directory: project }).location
   const skillState = skillHarness([])

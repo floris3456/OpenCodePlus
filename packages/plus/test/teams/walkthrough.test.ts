@@ -29,7 +29,6 @@ import { type Level } from "../../src/instructions/model.js"
 import { chainContext } from "../../src/instructions/presets.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
-import { enable } from "../../src/project.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
@@ -268,7 +267,6 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
         ].join("\n"),
       )
       banner("20b", "a team member's rules are ordinary rows its preset sets")
-      await enable(repo.dir)
       const fixture = pluginContext(repo.dir)
       await enableShippedTeam(await registerAll(fixture.ctx))
 
@@ -424,7 +422,6 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
     const repo = await makeRepo()
     try {
       banner("20d", "root bootstrap → delegate → get_context → checkpoint → finish → notification → wait → integrate → worktree gone")
-      await enable(repo.dir)
       const sessions = recordSession()
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
@@ -579,7 +576,6 @@ test("continued root admits after notification and saves its first report withou
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
-      await enable(repo.dir)
       const sessions = recordSession()
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
@@ -623,7 +619,6 @@ test("[20e] a turn that ends without finish is idle / no_report", async () => {
       })
       await saveRun(root, child)
       const sessions = recordSession()
-      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
 
@@ -672,7 +667,6 @@ test("[20f] a followup queued while the child is working is delivered on idle", 
       await saveRun(root, parentRun)
       await saveRun(root, child)
       const sessions = recordSession()
-      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
 
@@ -826,7 +820,6 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
           sessionID: "ses_walkthrough_refusal",
         }),
       )
-      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, recordSession().domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
       const ctx = toolContext("ses_walkthrough_refusal", "sol-orchestrator")
@@ -868,8 +861,6 @@ test("[21] finish on the root run", async () => {
     const repo = await makeRepo()
     try {
       banner("21", "finish on the root run")
-      await enable(repo.dir)
-      await enable(repo.dir)
       const fixture = pluginContext(repo.dir, recordSession().domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
       const ctx = toolContext("ses_walkthrough_root_finish", "sol-orchestrator")

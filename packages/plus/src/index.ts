@@ -35,8 +35,8 @@ import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type 
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
-import { append, readBoth } from "./instructions/log.js"
-import { globalLogPath, globalTeamsPath, projectLogPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
+import { append, appendForLevel, readBoth } from "./instructions/log.js"
+import { globalLogPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -55,7 +55,7 @@ import {
 } from "./instructions/presets.js"
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
-import { disable, enable, read } from "./project.js"
+import { ensure, read } from "./project.js"
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
@@ -121,9 +121,9 @@ export default Plugin.define({
       yield* Effect.addFinalizer(() => deactivate(state))
       const registration = yield* ctx.rpc.register(Definition, createHandlers(ctx, state)).pipe(Effect.orDie)
       state.registration = registration
-      // Team tools exist in every Plus instance even with project mode off: a
-      // child worktree has no .opencodeplus/project.json and still needs them,
-      // so this stays out of activate/installTooling which require a project.
+      // Team tools exist in every Plus instance: a child worktree may carry no
+      // project store of its own and still needs them, so this stays out of
+      // activate/installTooling.
       yield* ensureTeamTooling(ctx, state)
       yield* activate(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
@@ -135,28 +135,22 @@ export default Plugin.define({
     }),
 })
 
-export type SnapshotResult =
-  | { ok: true; value: Plus.Snapshot }
-  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+export type SnapshotResult = { ok: true; value: Plus.Snapshot }
 
 export type RefreshResult = SnapshotResult
 
 export type MutateResult =
   | { ok: true; value: Plus.MutateResult }
-  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
   | { ok: false; error: { code: "agent.protected"; message: string; data: Plus.AgentProtected } }
   | { ok: false; error: { code: "agent.invalid"; message: string; data: Plus.AgentInvalid } }
 
-export type LogResult =
-  | { ok: true; value: Plus.LogOutput }
-  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
+export type LogResult = { ok: true; value: Plus.LogOutput }
 
 export type AssembledResult =
   | { ok: true; value: Plus.Assembled }
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.unknown"; message: string; data: Plus.AgentUnknown }
     }
 
@@ -165,14 +159,12 @@ export type CreateAgentResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
         | { code: "preset.invalid"; message: string; data: Plus.PresetInvalid }
     }
 
-type ProjectDisabledError = { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
 type PresetInvalidError = { code: "preset.invalid"; message: string; data: Plus.PresetInvalid }
 type EntryInvalidError = { code: "entry.invalid"; message: string; data: Plus.EntryInvalid }
 type EntryExistsError = { code: "entry.exists"; message: string; data: Plus.EntryExists }
@@ -182,30 +174,29 @@ type PresetReadonlyError = { code: "preset.readonly"; message: string; data: Plu
 
 export type CreateEntryResult =
   | { ok: true; value: Plus.EntryRef }
-  | { ok: false; error: ProjectDisabledError | EntryInvalidError | EntryExistsError | PresetInvalidError }
+  | { ok: false; error: EntryInvalidError | EntryExistsError | PresetInvalidError }
 
 export type DeleteEntryResult =
   | { ok: true; value: Plus.EntryRef }
-  | { ok: false; error: ProjectDisabledError | EntryInvalidError | EntryMissingError }
+  | { ok: false; error: EntryInvalidError | EntryMissingError }
 
 export type RenameEntryResult =
   | { ok: true; value: Plus.EntryRef }
-  | { ok: false; error: ProjectDisabledError | EntryInvalidError | EntryExistsError | EntryMissingError }
+  | { ok: false; error: EntryInvalidError | EntryExistsError | EntryMissingError }
 
 export type CreatePresetResult =
   | { ok: true; value: Plus.PresetResult }
-  | { ok: false; error: ProjectDisabledError | PresetInvalidError | PresetExistsError }
+  | { ok: false; error: PresetInvalidError | PresetExistsError }
 
 export type AddPresetMemberResult =
   | { ok: true; value: Plus.PresetResult }
-  | { ok: false; error: ProjectDisabledError | PresetInvalidError | PresetExistsError | PresetReadonlyError }
+  | { ok: false; error: PresetInvalidError | PresetExistsError | PresetReadonlyError }
 
 export type DeletePresetResult =
   | { ok: true; value: Plus.PresetResult }
   | {
       ok: false
       error:
-        | ProjectDisabledError
         | PresetInvalidError
         | PresetReadonlyError
         | { code: "preset.inUse"; message: string; data: Plus.PresetInUse }
@@ -216,7 +207,6 @@ export type SetLinkResult =
   | {
       ok: false
       error:
-        | ProjectDisabledError
         | PresetInvalidError
         | PresetReadonlyError
         | { code: "link.invalid"; message: string; data: Plus.LinkInvalid }
@@ -229,7 +219,6 @@ export type RenameAgentResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
@@ -241,7 +230,6 @@ export type DeleteAgentResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "agent.missing"; message: string; data: Plus.AgentMissing }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -252,7 +240,6 @@ export type CreateSkillResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "skill.exists"; message: string; data: Plus.SkillExists }
         | { code: "skill.invalid"; message: string; data: Plus.SkillInvalid }
     }
@@ -264,7 +251,6 @@ export type DeleteSkillResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "skill.missing"; message: string; data: Plus.SkillMissing }
         | { code: "skill.invalid"; message: string; data: Plus.SkillInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -275,7 +261,6 @@ export type CreateBaseResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "base.exists"; message: string; data: Plus.BaseExists }
         | { code: "base.invalid"; message: string; data: Plus.BaseInvalid }
     }
@@ -285,7 +270,6 @@ export type DeleteBaseResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "base.missing"; message: string; data: Plus.BaseMissing }
         | { code: "base.invalid"; message: string; data: Plus.BaseInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -296,7 +280,6 @@ export type CreateInstructionApiResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "instruction.exists"; message: string; data: Plus.InstructionExists }
         | { code: "instruction.invalid"; message: string; data: Plus.InstructionInvalid }
     }
@@ -306,7 +289,6 @@ export type DeleteInstructionApiResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "instruction.missing"; message: string; data: Plus.InstructionMissing }
         | { code: "instruction.invalid"; message: string; data: Plus.InstructionInvalid }
     }
@@ -316,7 +298,6 @@ export type AddMcpResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "mcp.exists"; message: string; data: Plus.McpExists }
         | { code: "mcp.invalid"; message: string; data: Plus.McpInvalid }
     }
@@ -326,7 +307,6 @@ export type RemoveMcpResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "mcp.missing"; message: string; data: Plus.McpMissing }
         | { code: "mcp.invalid"; message: string; data: Plus.McpInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -337,7 +317,6 @@ export type SetTeamEnabledResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
     }
@@ -347,7 +326,6 @@ export type CreateTeamResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "team.exists"; message: string; data: Plus.TeamExists }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "team.create"; message: string; data: Plus.TeamCreate }
@@ -359,7 +337,6 @@ export type AddTeamAgentResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
@@ -375,7 +352,6 @@ export type RemoveTeamAgentResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
@@ -387,7 +363,6 @@ export type DeleteTeamResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -395,14 +370,12 @@ export type DeleteTeamResult =
 
 export type ListTeamsResult =
   | { ok: true; value: Plus.TeamListOutput }
-  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
 
 export type AddModelResult =
   | { ok: true; value: Plus.ModelRef }
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "model.exists"; message: string; data: Plus.ModelExists }
         | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -413,7 +386,6 @@ export type RemoveModelResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "model.missing"; message: string; data: Plus.ModelMissing }
         | { code: "model.invalid"; message: string; data: Plus.ModelInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -421,14 +393,12 @@ export type RemoveModelResult =
 
 export type CatalogModelsResult =
   | { ok: true; value: Plus.CatalogModelsOutput }
-  | { ok: false; error: { code: "project.disabled"; message: string; data: Plus.ProjectDisabled } }
 
 export type AddRuleResult =
   | { ok: true; value: Plus.RuleRef }
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "rule.exists"; message: string; data: Plus.RuleExists }
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -439,7 +409,6 @@ export type RemoveRuleResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "rule.missing"; message: string; data: Plus.RuleMissing }
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
@@ -450,7 +419,6 @@ export type UpdateRuleResult =
   | {
       ok: false
       error:
-        | { code: "project.disabled"; message: string; data: Plus.ProjectDisabled }
         | { code: "rule.invalid"; message: string; data: Plus.RuleInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
@@ -505,8 +473,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     snapshot: async () => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
@@ -517,8 +483,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     refresh: async () => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
@@ -529,8 +493,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     mutate: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       // Links, Defaults entries and presets are not snapshot rows yet either:
@@ -616,9 +578,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     log: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const merged = await readBoth(directory, { ...(input.where === undefined ? {} : { where: input.where }) })
       const offset = input.offset === undefined || Number.isNaN(input.offset) ? 0 : Math.max(0, Math.floor(input.offset))
       const limit = input.limit === undefined || Number.isNaN(input.limit) ? undefined : Math.max(0, Math.floor(input.limit))
@@ -629,8 +588,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     assembled: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
@@ -657,8 +614,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     createAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validated = validateAgentId(input.id)
       if (!validated.ok)
         return {
@@ -706,8 +661,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     renameAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const from = validateAgentId(input.from)
       if (!from.ok)
         return {
@@ -768,8 +721,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     deleteAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validated = validateAgentId(input.id)
       if (!validated.ok)
         return {
@@ -806,8 +757,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     createSkill: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const scope = input.scope ?? "project"
-      if (scope === "project" && (await read(directory)) === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const target = skillTargetOf(directory, input)
       if (!target.ok)
         return { ok: false as const, error: { code: "skill.invalid" as const, message: target.message, data: { id: input.name, reason: target.message } } }
@@ -829,8 +778,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     importSkill: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const scope = input.scope ?? "project"
-      if (scope === "project" && (await read(directory)) === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const target = skillTargetOf(directory, input)
       if (!target.ok)
         return { ok: false as const, error: { code: "skill.invalid" as const, message: target.message, data: { id: input.path, reason: target.message } } }
@@ -853,8 +800,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const directory = await activationDirectory(ctx.location.directory)
       const scope = input.scope ?? "project"
       const config = await read(directory)
-      if (scope === "project" && config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const target = skillTargetOf(directory, input)
       if (!target.ok)
         return { ok: false as const, error: { code: "skill.invalid" as const, message: target.message, data: { id: input.id, reason: target.message } } }
@@ -863,7 +808,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // refuse a tool actor before either. The delete helper trims ids, so the
       // cascade address uses the same trimmed form.
       const stored = await load(directory)
-      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `skill:${input.id.trim()}`, config ?? { protectedAgents: [] })
+      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `skill:${input.id.trim()}`, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
       const result = await deleteSkill({ ...target.target, id: input.id })
       if (!result.ok && result.reason === "missing")
@@ -877,7 +822,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
       const freshStored = await load(directory)
-      const freshLoaded = { ...freshStored, protectedAgents: config?.protectedAgents ?? [] }
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
       await removeItemRecords(directory, freshLoaded, `skill:${result.id}`)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id} (${scope})` })
@@ -885,9 +830,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createBase: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const result = await createBaseTemplate(input.id, input.title, input.text)
       if (!result.ok && result.reason === "exists")
         return {
@@ -913,8 +855,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     deleteBase: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       // Same cascade guard as skill.delete: refuse a tool actor before the
       // template file is removed when a protected agent holds base:<id>.
       const stored = await load(directory)
@@ -951,9 +891,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // (instructions/discover.ts). The handler body below is kept for the rework.
       if (INSTRUCTIONS_DISABLED)
         return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
-      const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const result = await createInstruction({
         sessionDirectory: directory,
         projectDirectory: ctx.location.project.directory,
@@ -987,8 +924,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (INSTRUCTIONS_DISABLED)
         return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const result = await deleteInstruction({ projectDirectory: directory, name: input.name })
       if (!result.ok && result.reason === "missing")
         return {
@@ -1017,8 +952,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     addMcp: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const result = await addMcp({ projectDirectory: directory, name: input.name, config: { ...input.config } })
       if (!result.ok && result.reason === "exists")
         return {
@@ -1038,8 +971,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     removeMcp: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       // Same cascade guard as skill.delete: refuse a tool actor before the
       // server leaves the project config when a protected agent holds mcp:<name>.
       const stored = await load(directory)
@@ -1067,8 +998,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     createTeam: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validated = validateTeamName(input.team)
       if (!validated.ok)
         return {
@@ -1100,7 +1029,41 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const protectedMember = template?.find((member) => config.protectedAgents.includes(member.id))
       const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
+      // Validate every preset member before anything is created: a refused
+      // create must leave no team directory (and no `.opencodeplus`) behind.
+      const planned = (template ?? []).map((member) => {
+        if (member.id === "special") return { ok: false as const, code: "team.invalid" as const, reason: 'Member id "special" is reserved' }
+        const memberId = validateAgentId(member.id)
+        if (!memberId.ok) return { ok: false as const, code: "team.create" as const, reason: memberId.reason }
+        return {
+          ok: true as const,
+          id: memberId.id,
+          ...(member.mode === undefined ? {} : { mode: member.mode }),
+          ...(member.description === undefined ? {} : { description: member.description }),
+        }
+      })
+      const refusedMember = planned.find((member) => !member.ok)
+      if (refusedMember !== undefined && !refusedMember.ok)
+        return {
+          ok: false as const,
+          error:
+            refusedMember.code === "team.invalid"
+              ? { code: "team.invalid" as const, message: refusedMember.reason, data: { team: validated.team, reason: refusedMember.reason } }
+              : { code: "team.create" as const, message: `Could not create team ${validated.team}: ${refusedMember.reason}`, data: { level: input.level, team: validated.team, reason: refusedMember.reason } },
+        }
+      const members = planned.flatMap((member) => (member.ok ? [member] : []))
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
+      const teamDir = path.join(root, validated.team)
+      // A duplicate team is refused before any directory exists...
+      const exists = (target: string): Promise<boolean> => fs.stat(target).then(() => true, () => false)
+      if (await exists(teamDir))
+        return {
+          ok: false as const,
+          error: { code: "team.exists" as const, message: `Team ${validated.team} already exists`, data: { level: input.level, team: validated.team } },
+        }
+      // ...and a failed mkdir removes the parent chain it just created.
+      const plusExisted = await exists(path.dirname(root))
+      const rootExisted = await exists(root)
       const ensured = await fs.mkdir(root, { recursive: true }).then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -1112,12 +1075,16 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
         }
       }
-      const made = await fs.mkdir(path.join(root, validated.team)).then(
+      const made = await fs.mkdir(teamDir).then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       )
       if (!made.ok) {
         const code = typeof made.error === "object" && made.error !== null && "code" in made.error ? made.error.code : undefined
+        if (code !== "EEXIST") {
+          if (!rootExisted) await fs.rmdir(root).catch(() => undefined)
+          if (!plusExisted) await fs.rmdir(path.dirname(root)).catch(() => undefined)
+        }
         if (code === "EEXIST")
           return {
             ok: false as const,
@@ -1129,25 +1096,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
         }
       }
+      // A project-level team directory is a project-scoped write, so
+      // `.opencodeplus` is created on demand; a global team writes globally.
+      // The config lands only once the team directory exists, so a refused
+      // create above leaves nothing behind.
+      if (input.level === "project") await ensure(directory)
       if (template !== undefined && templateName !== undefined) {
-        const teamDir = path.join(root, validated.team)
-        for (const member of template) {
-          if (member.id === "special") {
-            const reason = 'Member id "special" is reserved'
-            return {
-              ok: false as const,
-              error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
-            }
-          }
-          const memberId = validateAgentId(member.id)
-          if (!memberId.ok) {
-            const reason = memberId.reason
-            return {
-              ok: false as const,
-              error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
-            }
-          }
-          const target = path.join(teamDir, `${memberId.id}.md`)
+        for (const member of members) {
+          const target = path.join(teamDir, `${member.id}.md`)
           // Core reads mode and description from the file; the body stays
           // empty so the role text, like everything else, follows the link.
           const content = formatMarkdown(presetFields(member), "")
@@ -1170,7 +1126,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const updated = new Date().toISOString()
         const linked = await saveLinks(directory, [
           { type: "link", level: input.level, agent: null, team: owner, preset: { kind: "team", id: templateName }, updated },
-          ...template.map(
+          ...members.map(
             (member): LinkRecord => ({
               type: "link",
               level: input.level,
@@ -1204,8 +1160,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     setTeamEnabled: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const validated = validateTeamName(input.team)
@@ -1231,7 +1185,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           },
         }
       if (saved.changed)
-        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await appendForLevel(directory, input.level, {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "team.setEnabled",
@@ -1246,8 +1200,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     addTeamAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validatedTeam = validateTeamName(input.team)
       if (!validatedTeam.ok)
         return {
@@ -1322,6 +1274,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
       await fs.mkdir(path.dirname(target), { recursive: true })
       await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      // The config lands only once the member file exists, so a failed write
+      // above leaves nothing behind.
+      if (input.level === "project") await ensure(directory)
       await setOwnerLink(
         directory,
         { level: input.level, agent: validated.id, team: { level: input.level, team: validatedTeam.team } },
@@ -1343,8 +1298,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     removeTeamAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validatedTeam = validateTeamName(input.team)
       if (!validatedTeam.ok)
         return {
@@ -1411,8 +1364,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     deleteTeam: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       if (input.level === "defaults") {
         const reason = `Team "${input.team}" is built in: built-in teams cannot be deleted`
         return {
@@ -1478,7 +1429,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             },
           }
         if (disabledSave.changed)
-          await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+          await appendForLevel(directory, input.level, {
             ts: new Date().toISOString(),
             actor: normalizeActor(input.actor),
             op: "team.setEnabled",
@@ -1527,18 +1478,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     listTeams: async () => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const stored = await load(directory)
       const result = await listTeams(directory, stored.records, builtins)
       return { ok: true as const, value: result }
     },
     catalogModels: async () => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const catalog = await Effect.runPromise(
         ctx.model.list().pipe(
           Effect.catchCause(() =>
@@ -1566,8 +1511,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     addModel: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       // A preset's rows are not an agent's, whatever its id.
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
@@ -1640,7 +1583,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       if (saved.changed)
-        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await appendForLevel(directory, input.level, {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "model.add",
@@ -1664,8 +1607,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     removeModel: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       // A preset's rows are not an agent's, whatever its id.
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
@@ -1707,7 +1648,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       if (saved.changed)
-        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await appendForLevel(directory, input.level, {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "model.remove",
@@ -1731,8 +1672,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     addRule: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       // A preset's rows are not an agent's, whatever its id.
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
@@ -1778,7 +1717,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       if (saved.changed)
-        await append(input.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await appendForLevel(directory, input.level, {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "rule.add",
@@ -1792,8 +1731,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     removeRule: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validated = validateRuleIdentity(input.tool, input.id)
       if (!validated.ok)
         return {
@@ -1839,7 +1776,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
       await removeItemRecords(directory, freshLoaded, permItemId(validated.tool, validated.id))
       if (saved.changed)
-        await append(existing.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await appendForLevel(directory, existing.level, {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "rule.remove",
@@ -1853,8 +1790,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     updateRule: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined)
-        return { ok: false as const, error: { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } } }
       const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
       if (!validated.ok)
         return {
@@ -1909,7 +1844,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       }
       if (saved.changed)
-        await append(next.level === "project" ? projectLogPath(directory) : globalLogPath(), {
+        await appendForLevel(directory, next.level, {
           ts: new Date().toISOString(),
           actor: normalizeActor(input.actor),
           op: "rule.update",
@@ -1922,14 +1857,10 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createEntry: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       return createEntryRecord(ctx, state, directory, builtins, input)
     },
     deleteEntry: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       const team = input.catalogue === "teams" ? (input.team?.trim() || "*") : undefined
       if (input.catalogue === "agents" && input.name === undefined)
         return { ok: false as const, error: entryInvalid("", "An Agents entry is deleted by name") }
@@ -1982,8 +1913,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     renameEntry: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       const team = input.catalogue === "teams" ? (input.team?.trim() || "*") : undefined
       const to = validateEntryName(input.to)
       if (!to.ok) return { ok: false as const, error: entryInvalid(input.to, to.reason) }
@@ -2030,8 +1959,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createPreset: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       const records = (await load(directory)).records
       const listing = await serverListing(ctx, records)
       const updated = new Date().toISOString()
@@ -2073,8 +2000,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     addPresetMember: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       const records = (await load(directory)).records
       const listing = await serverListing(ctx, records)
       const team = listed(listing, { kind: "team", id: input.team.trim() })
@@ -2098,8 +2023,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     deletePreset: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       const records = (await load(directory)).records
       const found = listed(await serverListing(ctx, records), input.ref)
       if (found === undefined) return { ok: false as const, error: unknownPreset(input.ref) }
@@ -2160,7 +2083,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     setLink: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
-      if (config === undefined) return { ok: false as const, error: disabledError(directory) }
       const owner: RecordScope = {
         level: input.level,
         agent: input.agent,
@@ -2278,10 +2200,6 @@ async function memberRelinks(
     .filter((member) => counterparts.has(member))
     .toSorted()
     .map((member) => ({ owner: { level, agent: member, team }, preset: { kind: "member" as const, team: id, id: member } }))
-}
-
-function disabledError(directory: string): ProjectDisabledError {
-  return { code: "project.disabled" as const, message: disabledMessage(directory), data: { directory } }
 }
 
 function presetInvalid(id: string, reason: string): PresetInvalidError {
@@ -2580,84 +2498,35 @@ async function setOwnerLink(directory: string, owner: RecordScope, preset: Prese
 export function createHandlers(ctx: Context, state: PlusState, options?: PlusApiOptions): RpcHandlers<typeof Definition> {
   const api = createPlusApi(ctx, state, options)
   return {
-    "project.status": () =>
-      Effect.gen(function* () {
-        // A run's session activates through its recorded project directory;
-        // status must report the same project the guards and activate use.
-        const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
-        const config = yield* Effect.promise(() => read(directory))
-        return {
-          enabled: config !== undefined,
-          directory,
-        }
-      }),
-    "project.enable": () =>
-      Effect.gen(function* () {
-        const directory = ctx.location.directory
-        yield* Effect.promise(() => enable(directory))
-        const status: Plus.Status = {
-          enabled: true,
-          directory,
-        }
-        if (state.registration) {
-          yield* state.registration.events.emit("project.changed", status).pipe(Effect.orDie)
-        }
-        yield* activate(ctx, state)
-        return status
-      }),
-    "project.disable": () =>
-      Effect.gen(function* () {
-        // enable/disable act on the Location's own directory, never the
-        // inherited run project: a child chat toggling the parent's project
-        // off would be surprising, and the child worktree stays copy-free.
-        const directory = ctx.location.directory
-        yield* Effect.promise(() => disable(directory))
-        const status: Plus.Status = {
-          enabled: false,
-          directory,
-        }
-        if (state.registration) {
-          yield* state.registration.events.emit("project.changed", status).pipe(Effect.orDie)
-        }
-        yield* deactivate(state)
-        return status
-      }),
-    "instructions.snapshot": (_input, context) =>
+    "instructions.snapshot": (_input) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.snapshot())
-        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
         return result.value
       }),
-    "instructions.refresh": (_input, context) =>
+    "instructions.refresh": (_input) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.refresh())
-        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
         return result.value
       }),
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.mutate(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.invalid")
             return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
         }
         return result.value
       }),
-    "instructions.log": (input, context) =>
+    "instructions.log": (input) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.log(input))
-        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
         return result.value
       }),
     "instructions.assembled": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.assembled(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.unknown", result.error.message, result.error.data))
         }
         return result.value
@@ -2666,8 +2535,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.createAgent(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.exists")
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -2682,8 +2549,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.renameAgent(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.missing")
             return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
           if (result.error.code === "agent.exists")
@@ -2698,8 +2563,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.deleteAgent(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.missing")
             return yield* Effect.fail(context.error("agent.missing", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -2712,8 +2575,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.createSkill(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "skill.exists")
             return yield* Effect.fail(context.error("skill.exists", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
@@ -2724,8 +2585,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.importSkill(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "skill.exists")
             return yield* Effect.fail(context.error("skill.exists", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("skill.invalid", result.error.message, result.error.data))
@@ -2736,8 +2595,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.deleteSkill(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "skill.missing")
             return yield* Effect.fail(context.error("skill.missing", result.error.message, result.error.data))
           if (result.error.code === "skill.invalid")
@@ -2756,8 +2613,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.createBase(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "base.exists")
             return yield* Effect.fail(context.error("base.exists", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("base.invalid", result.error.message, result.error.data))
@@ -2768,8 +2623,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.deleteBase(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "base.missing")
             return yield* Effect.fail(context.error("base.missing", result.error.message, result.error.data))
           if (result.error.code === "base.invalid")
@@ -2788,8 +2641,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.createInstruction(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "instruction.exists")
             return yield* Effect.fail(context.error("instruction.exists", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("instruction.invalid", result.error.message, result.error.data))
@@ -2800,8 +2651,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.deleteInstruction(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "instruction.missing")
             return yield* Effect.fail(context.error("instruction.missing", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("instruction.invalid", result.error.message, result.error.data))
@@ -2812,8 +2661,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.addMcp(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "mcp.exists")
             return yield* Effect.fail(context.error("mcp.exists", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("mcp.invalid", result.error.message, result.error.data))
@@ -2824,8 +2671,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.removeMcp(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "mcp.missing")
             return yield* Effect.fail(context.error("mcp.missing", result.error.message, result.error.data))
           if (result.error.code === "mcp.invalid")
@@ -2844,8 +2689,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.createTeam(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "team.exists")
             return yield* Effect.fail(context.error("team.exists", result.error.message, result.error.data))
           if (result.error.code === "team.invalid")
@@ -2860,8 +2703,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.setTeamEnabled(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "team.invalid")
             return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
@@ -2873,7 +2714,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.addTeamAgent(input))
         if (!result.ok) {
           const error = result.error
-          if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
           if (error.code === "team.unknown") return yield* Effect.fail(context.error(error.code, error.message, error.data))
           if (error.code === "team.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
           if (error.code === "agent.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
@@ -2890,7 +2730,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.createEntry(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "entry.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         return yield* Effect.fail(context.error("entry.invalid", error.message, error.data))
@@ -2900,7 +2739,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.deleteEntry(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "entry.missing") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         return yield* Effect.fail(context.error("entry.invalid", error.message, error.data))
       }),
@@ -2909,7 +2747,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.renameEntry(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "entry.missing") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "entry.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         return yield* Effect.fail(context.error("entry.invalid", error.message, error.data))
@@ -2919,7 +2756,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.createPreset(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         return yield* Effect.fail(context.error("preset.invalid", error.message, error.data))
       }),
@@ -2928,7 +2764,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.addPresetMember(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.readonly") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         return yield* Effect.fail(context.error("preset.invalid", error.message, error.data))
@@ -2938,7 +2773,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.deletePreset(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.readonly") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.inUse") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         return yield* Effect.fail(context.error("preset.invalid", error.message, error.data))
@@ -2948,7 +2782,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.setLink(input))
         if (result.ok) return result.value
         const error = result.error
-        if (error.code === "project.disabled") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "preset.readonly") return yield* Effect.fail(context.error(error.code, error.message, error.data))
         if (error.code === "link.cycle") return yield* Effect.fail(context.error(error.code, error.message, error.data))
@@ -2959,8 +2792,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.removeTeamAgent(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "team.unknown")
             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
           if (result.error.code === "team.invalid")
@@ -2975,8 +2806,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.deleteTeam(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "team.unknown")
             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -2985,12 +2814,9 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         }
         return result.value
       }),
-    "team.list": (input, context) =>
+    "team.list": () =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.listTeams())
-        if (!result.ok) {
-          return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
-        }
         return result.value
       }),
     "team.runs.list": (input, context) =>
@@ -3016,8 +2842,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.addModel(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "model.exists")
             return yield* Effect.fail(context.error("model.exists", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -3030,8 +2854,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.removeModel(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "model.missing")
             return yield* Effect.fail(context.error("model.missing", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -3044,8 +2866,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.addRule(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "rule.exists")
             return yield* Effect.fail(context.error("rule.exists", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -3058,8 +2878,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.removeRule(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "rule.missing")
             return yield* Effect.fail(context.error("rule.missing", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
@@ -3072,18 +2890,15 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.updateRule(input))
         if (!result.ok) {
-          if (result.error.code === "project.disabled")
-            return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
             return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("rule.invalid", result.error.message, result.error.data))
         }
         return result.value
       }),
-    "catalog.models": (_input, context) =>
+    "catalog.models": () =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.catalogModels())
-        if (!result.ok) return yield* Effect.fail(context.error("project.disabled", result.error.message, result.error.data))
         return result.value
       }),
   }
@@ -3099,10 +2914,6 @@ interface LoadedStores {
 // OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
 // (instructions/discover.ts). Flip to false together with restoring the rows.
 const INSTRUCTIONS_DISABLED = true
-
-function disabledMessage(directory: string): string {
-  return `Project mode is not enabled for ${directory}`
-}
 
 // Resolve the skill storage target from a skill RPC input. Scope defaults to
 // project; preset scope must name its preset. A missing preset is a caller
@@ -3760,7 +3571,7 @@ async function logMutate(input: {
   const delta = deltaRows(input.before, input.after)
   if (input.projectChanged) {
     const rows = canonical(delta.filter((record) => record.level === "project"))
-    await append(projectLogPath(input.directory), {
+    await appendForLevel(input.directory, "project", {
       ts,
       actor: { ...input.actor },
       op: "mutate",
@@ -3797,7 +3608,7 @@ async function logFileOp(input: {
   summary: string
 }): Promise<void> {
   const stored = await load(input.directory)
-  await append(input.scope === "project" ? projectLogPath(input.directory) : globalLogPath(), {
+  await appendForLevel(input.directory, input.scope, {
     ts: new Date().toISOString(),
     actor: { ...input.actor },
     op: input.op,
@@ -4236,15 +4047,14 @@ async function deleteInstruction(input: { projectDirectory: string; name: string
   return { ok: true, id: `system:${resolved.relative}`, path: resolved.path }
 }
 
-function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
+// The plugin's activation step, exported for tests that drive install/dispose
+// directly: with project mode gone there is no RPC method that activates.
+export function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
   return Effect.gen(function* () {
-    // A run session's worktree is outside its parent's tree, so project mode
-    // cannot be found by walking up from the worktree. The run record names the
-    // project directory its delegate ran from; every other Location resolves
-    // from its own directory, upward (project.read).
+    // A run session's worktree is outside its parent's tree. The run record
+    // names the project directory its delegate ran from; every other Location
+    // resolves from its own directory, upward (project.read).
     const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
-    const config = yield* Effect.promise(() => read(directory))
-    if (config === undefined) return
     yield* ensureTooling(ctx, state)
     const stored = yield* Effect.promise(() => loadCurrent(directory))
     yield* publishFresh(ctx, state, stored)
@@ -4318,7 +4128,7 @@ function disposeTeamTooling(state: PlusState): Effect.Effect<void> {
 async function loadCurrent(directory: string): Promise<LoadedStores> {
   const config = await read(directory)
   const stored = await loadMigrated(directory)
-  return { ...stored, protectedAgents: config?.protectedAgents ?? [] }
+  return { ...stored, protectedAgents: config.protectedAgents }
 }
 
 export function deactivate(state: PlusState): Effect.Effect<void> {
@@ -4588,7 +4398,6 @@ function publishFresh(
           headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w",
           instructions: async () => {
             const snapshot = await createPlusApi(ctx, state, { builtins }).snapshot()
-            if (!snapshot.ok) throw new Error(snapshot.error.message)
             return memoInputOf(snapshot.value)
           },
         },
@@ -5245,8 +5054,6 @@ export function applySessionModel(
     // recorded project directory's active models, not the worktree's own empty
     // ancestry.
     const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
-    const config = yield* Effect.promise(() => read(directory))
-    if (config === undefined) return
     yield* Effect.promise(() => refreshActiveModelsIfStale(directory, state))
     const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
     const sessionID = payload.sessionID
@@ -5321,14 +5128,9 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
 
 function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.gen(function* () {
-    // Same resolution as activate: a host refresh in a run's worktree must not
-    // deactivate the tooling activation just installed (see activationDirectory).
+    // Same resolution as activate: a host refresh in a run's worktree refreshes
+    // the recorded project, not the worktree (see activationDirectory).
     const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
-    const config = yield* Effect.promise(() => read(directory))
-    if (config === undefined) {
-      yield* deactivate(state)
-      return
-    }
     const stored = yield* Effect.promise(() => loadCurrent(directory))
     yield* publishFresh(ctx, state, stored)
   })

@@ -13,7 +13,6 @@ import { expandedTree } from "../src/instructions/tree.js"
 import { append, read } from "../src/instructions/log.js"
 import { globalLogPath, projectLogPath, projectTeamsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
-import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, skillInfo } from "./harness.js"
 
@@ -108,7 +107,6 @@ async function writeTeamAgent(teamDir: string, id: string, body = "role"): Promi
 
 test("mutate appends one line with actor tui by default and tool when provided", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const first = await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" })] }, throwingContext({})),
@@ -143,7 +141,6 @@ test("mutate appends one line with actor tui by default and tool when provided",
 
 test("a mutation changing both stores logs one line per store; a project-only change logs only the project store", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const both = await Effect.runPromise(
     handlers["instructions.mutate"]({
@@ -179,7 +176,6 @@ test("a mutation changing both stores logs one line per store; a project-only ch
 
 test("an unchanged save appends nothing and an empty log reads as empty", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const empty = await Effect.runPromise(handlers["instructions.log"]({}, throwingContext({})))
   expect(empty).toEqual({ entries: [], total: 0 })
@@ -207,7 +203,6 @@ test("an unchanged save appends nothing and an empty log reads as empty", async 
 
 test("an unchanged op-level save writes nothing and logs nothing", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("alpha", "upstream role")],
@@ -217,7 +212,6 @@ test("an unchanged op-level save writes nothing and logs nothing", async () => {
   })
   const api = createPlusApi(ctx, createState())
   const snapshot = await api.snapshot()
-  if (!snapshot.ok) throw new Error(`snapshot failed: ${snapshot.error.message}`)
   const row = expandedTree(memoInputOf(snapshot.value)).find((candidate) => candidate.address?.item === "tool:reader")
   if (row === undefined) throw new Error("missing reader row")
   const firstOp = saveText(memoInputOf(snapshot.value), row.id, "same text")
@@ -253,7 +247,6 @@ test("an unchanged op-level save writes nothing and logs nothing", async () => {
 
 test("a repeated identical resolve keep and edit writes no second line and moves no revision", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("alpha", "upstream role")],
@@ -275,7 +268,6 @@ test("a repeated identical resolve keep and edit writes no second line and moves
     }
   }
   const snapshot0 = await api.snapshot()
-  if (!snapshot0.ok) throw new Error(`snapshot failed: ${snapshot0.error.message}`)
   const rowId = rowOf(snapshot0.value)
   const seedOp = saveText(memoInputOf(snapshot0.value), rowId, "mine text")
   if ("refusal" in seedOp) throw new Error(`expected seed save: ${seedOp.refusal}`)
@@ -359,7 +351,6 @@ test("a repeated identical resolve keep and edit writes no second line and moves
 
 test("logging moves neither revisions nor the publish fingerprint", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const state = createState()
   const handlers = createHandlers(fullContext({ directory: project }), state)
   const mutated = await Effect.runPromise(
@@ -384,7 +375,6 @@ test("logging moves neither revisions nor the publish fingerprint", async () => 
 
 test("a stale save writes no line and the successful retry writes exactly one", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const seeded = await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "v1" })] }, throwingContext({})),
@@ -415,7 +405,6 @@ test("a stale save writes no line and the successful retry writes exactly one", 
 
 test("file operations log to the owning store, team toggles log their level, failures log nothing", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(
     handlers["agent.create"]({ scope: "project", id: "router" }, throwingContext({})),
@@ -470,7 +459,6 @@ test("file operations log to the owning store, team toggles log their level, fai
 
 test("instructions.log returns entries newest-first and honours where, limit, and offset", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "v1" })] }, throwingContext({})),
@@ -549,7 +537,6 @@ test("instructions.log returns entries newest-first and honours where, limit, an
 
 test("a corrupt line in log.jsonl is skipped rather than failing the read", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "v" })] }, throwingContext({})),
@@ -586,7 +573,6 @@ test("append caps the summary at 200 chars on a single line", async () => {
 
 test("a mutate with many unchanged records logs exactly the edited row", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const seeded = await Effect.runPromise(
     handlers["instructions.mutate"]({
@@ -624,7 +610,6 @@ test("a mutate with many unchanged records logs exactly the edited row", async (
 
 test("a mutate changing two rows in one store names both ids in canonical order", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const seeded = await Effect.runPromise(
     handlers["instructions.mutate"]({
@@ -653,7 +638,6 @@ test("a mutate changing two rows in one store names both ids in canonical order"
 
 test("one changed row per store logs the correct per-store target in each file", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const seeded = await Effect.runPromise(
     handlers["instructions.mutate"]({

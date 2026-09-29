@@ -11,7 +11,6 @@ import path from "node:path"
 import { createPlusApi, createState, type PlusApi } from "../src/index.js"
 import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
 import { load, type RuleRecord } from "../src/instructions/store.js"
-import { enable } from "../src/project.js"
 import { registerInstructionTools } from "../src/tools.js"
 import type { Plus } from "../src/rpc.js"
 import { fullContext } from "./harness.js"
@@ -44,7 +43,6 @@ async function tempProject(): Promise<string> {
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
   const project = path.join(root, "project")
-  await enable(project)
   return project
 }
 
@@ -121,7 +119,6 @@ async function runOk(tool: Tool.Info & { readonly id: string }, input: unknown):
 
 async function snapshotOf(api: PlusApi): Promise<Plus.Snapshot> {
   const result = await api.snapshot()
-  if (!result.ok) throw new Error(`snapshot failed: ${result.error.message}`)
   return result.value
 }
 
@@ -281,7 +278,6 @@ describe("tool state mutations preserve rule messages and catalogue identity", (
     // Publish the stored records the way the plugin does, then read the rule
     // the host actually installed on the agent.
     const refreshed = await api.refresh()
-    if (!refreshed.ok) throw new Error(`refresh failed: ${refreshed.error.message}`)
     const { evaluate } = await import("../../core/src/permission.js")
     const listed = await Effect.runPromise(ctx.agent.list())
     const installed = listed.data.find((entry) => String(entry.id) === "alpha")

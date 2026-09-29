@@ -281,7 +281,7 @@ Written from the code (`instructions/tree.ts`, `instructions/permission-catalog.
 
 ## 1. Open a tool's Permissions
 
-With project mode on, open `/instructions` and go to `Project → Agents → OpenCode → build → Tools → OpenCode → shell`. Expanding `shell` shows its `Description` (the tool's text, here one section) and its `Permissions`, one group per category:
+Open `/instructions` and go to `Project → Agents → OpenCode → build → Tools → OpenCode → shell`. Expanding `shell` shows its `Description` (the tool's text, here one section) and its `Permissions`, one group per category:
 
 ```
 shell [on]

@@ -30,7 +30,6 @@ import { contextOfSnapshot, memoInputOf } from "../src/instructions/snapshot.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
 import { parseTeamFields } from "../src/instructions/teams-apply.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { toRpcRecords } from "../src/tui/instructions/state.js"
 import { agentInfo, fullContext } from "./harness.js"
@@ -55,7 +54,6 @@ async function tempProject(): Promise<string> {
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
   const project = path.join(root, "project")
-  await enable(project)
   return project
 }
 

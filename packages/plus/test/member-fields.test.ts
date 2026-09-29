@@ -9,7 +9,6 @@ import { createHandlers, createState } from "../src/index.js"
 import { load } from "../src/instructions/store.js"
 import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { discoverBuiltinTeams } from "../src/instructions/teams.js"
-import { enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext } from "./harness.js"
 
@@ -85,7 +84,6 @@ test("schema: TeamAddAgentInput takes an optional preset and nothing of the old 
 // the preset. Host install reads the file.
 test("team.addAgent at project tier writes the preset's mode and description, an empty body, and a team-scoped link", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project, classifications: testClassifications })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -129,7 +127,6 @@ test("team.addAgent at project tier writes the preset's mode and description, an
 // the human's to extend).
 test("a global member file's own fields install on the host", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project, classifications: testClassifications })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -171,7 +168,6 @@ test("a global member file's own fields install on the host", async () => {
 // team.addAgent at defaults stores an entry and writes no overlay file.
 test("team.addAgent at defaults creates a Teams member entry and writes no overlay file", async () => {
   const { project, config } = await tempRoot()
-  await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const ctx = fullContext({ directory: project, classifications: testClassifications })
   const handlers = createHandlers(ctx, createState(), { builtins: registry })
@@ -209,7 +205,6 @@ test("team.addAgent at defaults creates a Teams member entry and writes no overl
 // it through the link instead.
 test("a member created from a Native preset copies mode and description, not the prompt", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const build = {
     ...agentInfo("build", "Build the whole system from scratch."),
     description: "Built-in builder agent",

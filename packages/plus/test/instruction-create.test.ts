@@ -7,7 +7,6 @@ import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { createHandlers, createState } from "../src/index.js"
-import { enable } from "../src/project.js"
 import { context, fullContext } from "./harness.js"
 
 const roots: string[] = []
@@ -64,7 +63,6 @@ function acceptedNamesMessage(failure: CapturedError): string {
 
 test("a non-AGENTS.md name is refused with instruction.invalid and no file is written", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   for (const name of ["STYLE.md", "STYLE"]) {
     const captured: { current?: CapturedError } = {}
@@ -84,7 +82,6 @@ test("a non-AGENTS.md name is refused with instruction.invalid and no file is wr
 // the rework re-enables them with the feature.
 test.skip("a valid creation appears in a real instructions.snapshot as system:AGENTS.md", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(
     handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})),
@@ -101,8 +98,6 @@ test.skip("AGENTS.md outside the session ancestor path is refused, on the path i
   const { project } = await tempRoot()
   const nested = path.join(project, "nested")
   await fs.mkdir(nested, { recursive: true })
-  await enable(project)
-  await enable(nested)
   const base = fullContext({ directory: nested })
   const location = new Location.Info({
     directory: AbsolutePath.make(nested),
@@ -135,7 +130,6 @@ test.skip("AGENTS.md outside the session ancestor path is refused, on the path i
 
 test.skip("traversal, empty, NUL, and duplicate refusals still hold", async () => {
   const { root, project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   for (const name of ["", "   ", "a\0b", "../evil", "sub/../../evil", "/tmp/plus-instruction-create-escape"]) {
     const captured: { current?: CapturedError } = {}

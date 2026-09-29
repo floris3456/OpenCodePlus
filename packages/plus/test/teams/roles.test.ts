@@ -4,7 +4,6 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../../src/index.js"
-import { enable } from "../../src/project.js"
 import { directTools, teamTools } from "../../src/teams/policy.js"
 import { fullContext } from "../harness.js"
 import { presetInput, resolvedStates } from "./preset-table.js"
@@ -99,7 +98,6 @@ const hostTools = [
 // /api/agent reports after a publish.
 test("enabling opencodeplus-team installs all ten members with mode, description, and their presets' core denies", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project, tools: hostTools, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
   const handlers = createHandlers(ctx, createState())
   await installFromPreset(handlers)
@@ -159,7 +157,6 @@ test("final ceilings are the team tool rows, exactly the old ceiling of every bu
 
 test("effective permission at /api/agent for a child session is never ask", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
 

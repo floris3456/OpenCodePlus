@@ -15,7 +15,6 @@ import { memoInputOf } from "../src/instructions/snapshot.js"
 import { discoverBuiltinTeams } from "../src/instructions/teams.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
-import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
 
@@ -40,10 +39,8 @@ async function tempRoot(): Promise<{ project: string }> {
   process.env.XDG_DATA_HOME = path.join(root, "share")
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  // Project mode resolves upward, so an ancestor of TMPDIR can be enabled
-  // (the development workspace is). The fixture writes its own explicit
-  // disabled marker; tests that need project mode call enable(project).
-  await disable(project)
+  // Project config resolves upward, so an ancestor of TMPDIR can carry one;
+  // no fixture file is needed and tests never require it.
   return { project }
 }
 
@@ -111,7 +108,6 @@ function expectRpcBody(value: unknown) {
 
 test("snapshot lists a disk team as disabled with member ids when no record exists", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "nested/beta")
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
@@ -123,7 +119,6 @@ test("snapshot lists a disk team as disabled with member ids when no record exis
 
 test("team.create at project scope creates the directory and the next snapshot lists it disabled", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   expect(created).toEqual({ level: "project", team: "crew", enabled: false })
@@ -137,7 +132,6 @@ test("team.create at project scope creates the directory and the next snapshot l
 
 test("team.create at global scope creates the directory under the global teams root as disabled", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(handlers["team.create"]({ level: "global", team: "ops" }, throwingContext({})))
   expect(created).toEqual({ level: "global", team: "ops", enabled: false })
@@ -151,7 +145,6 @@ test("team.create at global scope creates the directory under the global teams r
 
 test("a created team can then be enabled and its member agents apply", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
@@ -168,7 +161,6 @@ test("a created team can then be enabled and its member agents apply", async () 
 
 test("team.create raises every declared error through a real call", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const invalid: { current?: CapturedError } = {}
   await expectDeclaredError(
@@ -191,19 +183,20 @@ test("team.create raises every declared error through a real call", async () => 
     "team.create",
   )
   expect((await load(project)).records).toEqual([])
-  const gated = await tempRoot()
-  const gatedHandlers = createHandlers(fullContext({ directory: gated.project }), createState(), { builtins: [] })
-  const disabled: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    gatedHandlers["team.create"]({ level: "project", team: "crew" }, throwingContext(disabled)),
-    disabled,
-    "project.disabled",
+  // A project-level create in a fresh directory is allowed and creates its
+  // `.opencodeplus` teams directory on demand (project.json only when no
+  // config exists at or above, which the ambient checkout may provide).
+  const fresh = await tempRoot()
+  const freshHandlers = createHandlers(fullContext({ directory: fresh.project }), createState(), { builtins: [] })
+  const created = await Effect.runPromise(
+    freshHandlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})),
   )
+  expect(created).toEqual({ level: "project", team: "crew", enabled: false })
+  expect((await Bun.file(path.join(fresh.project, ".opencodeplus", "teams", "crew")).stat()).isDirectory()).toBe(true)
 })
 
 test("team.create does not disturb existing records and moves no revision", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "vets"), "alpha")
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -269,7 +262,6 @@ test("team.create does not disturb existing records and moves no revision", asyn
 
 test("team.create through the RPC handler logs with actor tui", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   const logged = await Effect.runPromise(handlers["instructions.log"]({}, throwingContext({})))
@@ -281,7 +273,6 @@ test("team.create through the RPC handler logs with actor tui", async () => {
 
 test("toggling a team on writes a real TeamRecord and the next snapshot reports it enabled", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
@@ -309,7 +300,6 @@ test("toggling a team on writes a real TeamRecord and the next snapshot reports 
 
 test("enabling a team disables every other enabled team across levels in one save", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
   await writeTeamAgent(path.join(projectTeamsPath(project), "band"), "beta", "band beta body")
   await writeTeamAgent(path.join(globalTeamsPath(), "orbit"), "gamma", "orbit gamma body")
@@ -348,7 +338,6 @@ test("enabling a team disables every other enabled team across levels in one sav
 
 test("toggling an unknown team name raises team.unknown and an invalid name raises team.invalid", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const unknown: { current?: CapturedError } = {}
   await expectDeclaredError(
@@ -366,20 +355,19 @@ test("toggling an unknown team name raises team.unknown and an invalid name rais
   expect((await load(project)).records).toEqual([])
 })
 
-test("team.setEnabled is gated on project mode with project.disabled", async () => {
+test("team.setEnabled on an unknown team fails team.unknown, never project.disabled", async () => {
   const { project } = await tempRoot()
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const captured: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext(captured)),
     captured,
-    "project.disabled",
+    "team.unknown",
   )
 })
 
 test("a toggle does not disturb existing customization or split records", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -431,7 +419,6 @@ test("a toggle does not disturb existing customization or split records", async 
 
 test("an unchanged toggle stays a no-op without moving revisions", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
@@ -448,7 +435,6 @@ test("an unchanged toggle stays a no-op without moving revisions", async () => {
 
 test("a normal instructions.mutate round-trip does not delete team records", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha")
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
@@ -480,7 +466,6 @@ function fixtureBuiltins() {
 
 test("built-ins appear as defaults-tier teams in a real snapshot", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: fixtureBuiltins() })
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams).toEqual([
@@ -492,7 +477,6 @@ test("built-ins appear as defaults-tier teams in a real snapshot", async () => {
 
 test("enabling a built-in installs its members and disabling removes them", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
   const toggled = await Effect.runPromise(
@@ -515,7 +499,6 @@ test("enabling a built-in installs its members and disabling removes them", asyn
 
 test("a built-in enablement record lands in the global store", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: fixtureBuiltins() })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
   const stored = await load(project)
@@ -525,7 +508,6 @@ test("a built-in enablement record lands in the global store", async () => {
 
 test("team.create refuses defaults with team.invalid", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: fixtureBuiltins() })
   const refused: { current?: CapturedError } = {}
   await expectDeclaredError(
@@ -545,7 +527,6 @@ test("team.create refuses defaults with team.invalid", async () => {
 // preset and the team its team preset.
 test("team.create from a team preset writes linked member files", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(
     handlers["team.create"]({ level: "project", team: "mine", preset: "review" }, throwingContext({})),
@@ -588,7 +569,6 @@ test("team.create from a team preset writes linked member files", async () => {
 
 test("team.addAgent on a project team writes the member file and the next snapshot lists it", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
@@ -627,7 +607,6 @@ test("team.addAgent on a project team writes the member file and the next snapsh
 // ENTRY instead, and never writes a file.
 test("team.addAgent on a fixture defaults team adds a member entry and an overlay file is not read", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
   const added = await Effect.runPromise(handlers["team.addAgent"]({ level: "defaults", team: "ship", id: "rookie" }, throwingContext({})))
@@ -649,7 +628,6 @@ test("team.addAgent on a fixture defaults team adds a member entry and an overla
 
 test("team.addAgent refuses a duplicate member id with agent.exists", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await Effect.runPromise(
@@ -666,7 +644,6 @@ test("team.addAgent refuses a duplicate member id with agent.exists", async () =
 
 test("a model activated on a project team member sets agent.model on the host and disabling the team clears it", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const hostAgent = agentInfo("m", "upstream m")
   const ctx = fullContext({
     directory: project,
@@ -725,7 +702,6 @@ test("a model activated on a project team member sets agent.model on the host an
 
 test("a model activated on a global team member sets agent.model on the host and disabling the team clears it", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const hostAgent = agentInfo("m", "upstream m")
   const ctx = fullContext({
     directory: project,
@@ -784,7 +760,6 @@ test("a model activated on a global team member sets agent.model on the host and
 
 test("a model activated on a team-only member sets agent.model and disabling the team removes the agent", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({
     directory: project,
     models: [modelInfo("acme", "nova-2")],
@@ -841,7 +816,6 @@ test("a model activated on a team-only member sets agent.model and disabling the
 
 test("a team member inherits a defaults-level model when no team-level model is set and overrides it when set", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const hostAgent = agentInfo("m", "upstream m")
   const ctx = fullContext({
     directory: project,
@@ -945,7 +919,6 @@ test("a team member inherits a defaults-level model when no team-level model is 
 
 test("team.removeAgent on a project team unlinks the file and on an enabled team unregisters from host", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
@@ -983,7 +956,6 @@ test("team.removeAgent on a project team unlinks the file and on an enabled team
 
 test("team.removeAgent on a shipped built-in member raises team.invalid", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
   const captured: { current?: CapturedError } = {}
@@ -998,7 +970,6 @@ test("team.removeAgent on a shipped built-in member raises team.invalid", async 
 // DESIGN §2: an overlay file is no member any more, so there is nothing to remove.
 test("team.removeAgent does not know a file left in the old overlay directory", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: registry })
   const overlayFile = path.join(process.env.OPENCODE_CONFIG_DIR ?? "", "opencodeplus", "teams-defaults", "ship", "rookie.md")
@@ -1015,7 +986,6 @@ test("team.removeAgent does not know a file left in the old overlay directory", 
 
 test("team.delete on a project team unlinks directory, drops record, updates snapshot, and logs actor tui", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -1059,7 +1029,6 @@ test("team.delete on a project team unlinks directory, drops record, updates sna
 
 test("team.delete on an enabled team unregisters member agents from host", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -1084,7 +1053,6 @@ test("team.delete on an enabled team unregisters member agents from host", async
 
 test("team.delete on a global team removes the directory under global teams root", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
 
@@ -1106,7 +1074,6 @@ test("team.delete on a global team removes the directory under global teams root
 
 test("team.delete raises every declared error through a real call", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
 
   const unknown: { current?: CapturedError } = {}
@@ -1131,19 +1098,18 @@ test("team.delete raises every declared error through a real call", async () => 
   )
   expect(defaultsRefusal.current?.message).toContain("built-in teams cannot be deleted")
 
-  const disabledProject = (await tempRoot()).project
-  const disabledHandlers = createHandlers(fullContext({ directory: disabledProject }), createState(), { builtins: [] })
-  const disabled: { current?: CapturedError } = {}
+  const fresh = (await tempRoot()).project
+  const freshHandlers = createHandlers(fullContext({ directory: fresh }), createState(), { builtins: [] })
+  const missing: { current?: CapturedError } = {}
   await expectDeclaredError(
-    disabledHandlers["team.delete"]({ level: "project", team: "crew" }, throwingContext(disabled)),
-    disabled,
-    "project.disabled",
+    freshHandlers["team.delete"]({ level: "project", team: "crew" }, throwingContext(missing)),
+    missing,
+    "team.unknown",
   )
 })
 
 test("team.list returns discovered teams, enabled state, and member modes without a snapshot", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const teamDir = path.join(projectTeamsPath(project), "alpha")
   await writeTeamAgent(teamDir, "member1", "member1 role")
   const subPath = path.join(teamDir, "member2.md")
@@ -1184,19 +1150,15 @@ test("team.list returns discovered teams, enabled state, and member modes withou
   const after = await Effect.runPromise(handlers["team.list"](undefined, throwingContext({})))
   expect(after.teams[0]?.enabled).toBe(true)
 
-  const disabledProject = (await tempRoot()).project
-  const disabledHandlers = createHandlers(fullContext({ directory: disabledProject }), createState(), { builtins: [] })
-  const disabled: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    disabledHandlers["team.list"](undefined, throwingContext(disabled)),
-    disabled,
-    "project.disabled",
-  )
+  // A directory with no project store of its own still lists (empty) teams.
+  const fresh = (await tempRoot()).project
+  const freshHandlers = createHandlers(fullContext({ directory: fresh }), createState(), { builtins: [] })
+  const listed = await Effect.runPromise(freshHandlers["team.list"](undefined, throwingContext({})))
+  expect(listed.teams).toEqual([])
 })
 
 test("team.addAgent refuses member id special with team.invalid", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   const captured: { current?: CapturedError } = {}
@@ -1210,7 +1172,6 @@ test("team.addAgent refuses member id special with team.invalid", async () => {
 
 test("enable team with special override reaches host agent.system and agent.model, disable restores, project team beats global for same team name", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const specialAgent = { ...agentInfo("title", "upstream title text"), origin: "special" as const }
   const ctx = fullContext({
     directory: project,
@@ -1323,7 +1284,6 @@ test("enable team with special override reaches host agent.system and agent.mode
 // Teams → crew → Special → summary is what apply enforces.
 test("a Special agent's tool row turned off under the enabled team is enforced without a team-scoped model", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const summary = { ...agentInfo("summary", "upstream summary text"), origin: "special" as const }
   const ctx = fullContext({
     directory: project,
@@ -1549,7 +1509,7 @@ test("team.runs.stop stops any run in the namespace without owner check, reconci
 
 test("team.addAgent and team.removeAgent refuse a tool actor on a protected member and allow the TUI", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -1590,7 +1550,7 @@ test("team.addAgent and team.removeAgent refuse a tool actor on a protected memb
 
 test("team.delete refuses a tool actor when the team contains a protected member and deletes for the TUI", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -1623,7 +1583,7 @@ test("team.delete refuses a tool actor when the team contains a protected member
 // protected one.
 test("team.create with a template refuses a tool actor cloning a protected member and seeds for the TUI", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["reviewer"] }),

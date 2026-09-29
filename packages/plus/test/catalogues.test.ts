@@ -10,7 +10,6 @@ import { expandedTree, tree, type TreeNode } from "../src/instructions/tree.js"
 import { query } from "../src/instructions/query.js"
 import { toggle } from "../src/instructions/ops.js"
 import { createHandlers, createState } from "../src/index.js"
-import { enable } from "../src/project.js"
 import { fullContext } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -206,7 +205,6 @@ test("a pre-split store migrates on load, persists once, and stays put afterward
 
 test("the plugin's first load migrates the catalogues and logs one migrate.catalogues revision", async () => {
   const { project } = await isolated()
-  await enable(project)
   await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [sharedOff()] })
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown): never => { throw { type, message, data } } }
@@ -228,7 +226,6 @@ test("the plugin's first load migrates the catalogues and logs one migrate.catal
 
 test("model.add writes a Teams-catalogue shared row only when asked", async () => {
   const { project } = await isolated()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown): never => { throw { type, message, data } } }
   await Effect.runPromise(

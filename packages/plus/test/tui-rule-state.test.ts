@@ -11,7 +11,6 @@ import { load, type CustomizationRecord, type RuleRecord, type SplitRecord } fro
 import { expandedTree, type MemoInput, type TreeNode } from "../src/instructions/tree.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { toRpcRecords } from "../src/tui/instructions/state.js"
-import { enable } from "../src/project.js"
 import type { Plus } from "../src/rpc.js"
 import { fullContext, modelInfo } from "./harness.js"
 
@@ -49,7 +48,6 @@ async function tempProject(): Promise<string> {
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
   const project = path.join(root, "project")
-  await enable(project)
   return project
 }
 

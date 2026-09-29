@@ -3,12 +3,6 @@ export * as Plus from "./rpc.js"
 import { Schema } from "effect"
 import { Rpc } from "@opencode/schema/rpc"
 
-export interface Status extends Schema.Schema.Type<typeof Status> {}
-export const Status = Schema.Struct({
-  enabled: Schema.Boolean,
-  directory: Schema.String,
-}).annotate({ identifier: "Plus.Status" })
-
 export type Level = typeof Level.Type
 export const Level = Schema.Union([
   Schema.Literal("defaults"),
@@ -881,11 +875,6 @@ export const RunUnknown = Schema.Struct({
 export interface TeamsChanged extends Schema.Schema.Type<typeof TeamsChanged> {}
 export const TeamsChanged = Schema.Struct({}).annotate({ identifier: "Plus.TeamsChanged" })
 
-export interface ProjectDisabled extends Schema.Schema.Type<typeof ProjectDisabled> {}
-export const ProjectDisabled = Schema.Struct({
-  directory: Schema.String,
-}).annotate({ identifier: "Plus.ProjectDisabled" })
-
 export interface AgentExists extends Schema.Schema.Type<typeof AgentExists> {}
 export const AgentExists = Schema.Struct({
   path: Schema.String,
@@ -1233,7 +1222,6 @@ export const RuleInvalid = Schema.Struct({
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
 const Empty = Schema.toStandardSchemaV1(Schema.Void.annotate({ identifier: "Plus.Empty" }))
-const PortableStatus = Schema.toStandardSchemaV1(Status.annotate({ identifier: "Plus.Status" }))
 const PortableSnapshot = Schema.toStandardSchemaV1(Snapshot.annotate({ identifier: "Plus.Snapshot" }))
 const PortableMutateInput = Schema.toStandardSchemaV1(MutateInput.annotate({ identifier: "Plus.MutateInput" }))
 const PortableMutateResult = Schema.toStandardSchemaV1(MutateResult.annotate({ identifier: "Plus.MutateResult" }))
@@ -1332,9 +1320,6 @@ const PortableTeamsChanged = Schema.toStandardSchemaV1(
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 
-const PortableProjectDisabled = Schema.toStandardSchemaV1(
-  ProjectDisabled.annotate({ identifier: "Plus.ProjectDisabled" }),
-)
 const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ identifier: "Plus.AgentExists" }))
 const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
 const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
@@ -1421,37 +1406,20 @@ const PortableRuleInvalid = Schema.toStandardSchemaV1(RuleInvalid.annotate({ ide
 export const Definition = Rpc.define({
   id: "opencode.plus",
   methods: {
-    "project.status": {
-      input: Empty,
-      output: PortableStatus,
-    },
-    "project.enable": {
-      input: Empty,
-      output: PortableStatus,
-    },
-    "project.disable": {
-      input: Empty,
-      output: PortableStatus,
-    },
     "instructions.snapshot": {
       input: Empty,
       output: PortableSnapshot,
-      errors: {
-        "project.disabled": PortableProjectDisabled,
-      },
+      errors: {},
     },
     "instructions.refresh": {
       input: Empty,
       output: PortableSnapshot,
-      errors: {
-        "project.disabled": PortableProjectDisabled,
-      },
+      errors: {},
     },
     "instructions.mutate": {
       input: PortableMutateInput,
       output: PortableMutateResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "agent.protected": PortableAgentProtected,
         "agent.invalid": PortableAgentInvalid,
       },
@@ -1459,15 +1427,12 @@ export const Definition = Rpc.define({
     "instructions.log": {
       input: PortableLogInput,
       output: PortableLogOutput,
-      errors: {
-        "project.disabled": PortableProjectDisabled,
-      },
+      errors: {},
     },
     "instructions.assembled": {
       input: PortableAssembledInput,
       output: PortableAssembled,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "agent.unknown": PortableAgentUnknown,
       },
     },
@@ -1475,7 +1440,6 @@ export const Definition = Rpc.define({
       input: PortableCreateAgentInput,
       output: PortableAgentRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "agent.exists": PortableAgentExists,
         "agent.invalid": PortableAgentInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1486,7 +1450,6 @@ export const Definition = Rpc.define({
       input: PortableRenameAgentInput,
       output: PortableRenameAgentResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "agent.missing": PortableAgentMissing,
         "agent.exists": PortableAgentExists,
         "agent.invalid": PortableAgentInvalid,
@@ -1497,7 +1460,6 @@ export const Definition = Rpc.define({
       input: PortableDeleteAgentInput,
       output: PortableAgentRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "agent.missing": PortableAgentMissing,
         "agent.invalid": PortableAgentInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1507,7 +1469,6 @@ export const Definition = Rpc.define({
       input: PortableCreateSkillInput,
       output: PortableSkillRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "skill.exists": PortableSkillExists,
         "skill.invalid": PortableSkillInvalid,
       },
@@ -1516,7 +1477,6 @@ export const Definition = Rpc.define({
       input: PortableImportSkillInput,
       output: PortableSkillRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "skill.exists": PortableSkillExists,
         "skill.invalid": PortableSkillInvalid,
       },
@@ -1525,7 +1485,6 @@ export const Definition = Rpc.define({
       input: PortableDeleteSkillInput,
       output: PortableSkillRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "skill.missing": PortableSkillMissing,
         "skill.invalid": PortableSkillInvalid,
       },
@@ -1534,7 +1493,6 @@ export const Definition = Rpc.define({
       input: PortableCreateBaseInput,
       output: PortableBaseRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "base.exists": PortableBaseExists,
         "base.invalid": PortableBaseInvalid,
       },
@@ -1543,7 +1501,6 @@ export const Definition = Rpc.define({
       input: PortableDeleteBaseInput,
       output: PortableBaseRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "base.missing": PortableBaseMissing,
         "base.invalid": PortableBaseInvalid,
       },
@@ -1552,7 +1509,6 @@ export const Definition = Rpc.define({
       input: PortableCreateInstructionInput,
       output: PortableInstructionRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "instruction.exists": PortableInstructionExists,
         "instruction.invalid": PortableInstructionInvalid,
       },
@@ -1561,7 +1517,6 @@ export const Definition = Rpc.define({
       input: PortableDeleteInstructionInput,
       output: PortableInstructionRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "instruction.missing": PortableInstructionMissing,
         "instruction.invalid": PortableInstructionInvalid,
       },
@@ -1570,7 +1525,6 @@ export const Definition = Rpc.define({
       input: PortableAddMcpInput,
       output: PortableMcpRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "mcp.exists": PortableMcpExists,
         "mcp.invalid": PortableMcpInvalid,
       },
@@ -1579,7 +1533,6 @@ export const Definition = Rpc.define({
       input: PortableMcpRef,
       output: PortableMcpRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "mcp.missing": PortableMcpMissing,
         "mcp.invalid": PortableMcpInvalid,
       },
@@ -1588,7 +1541,6 @@ export const Definition = Rpc.define({
       input: PortableCreateTeamInput,
       output: PortableTeamRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "team.exists": PortableTeamExists,
         "team.invalid": PortableTeamInvalid,
         "team.create": PortableTeamCreate,
@@ -1599,7 +1551,6 @@ export const Definition = Rpc.define({
       input: PortableSetTeamEnabledInput,
       output: PortableTeamActivation,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
       },
@@ -1608,7 +1559,6 @@ export const Definition = Rpc.define({
       input: PortableTeamAddAgentInput,
       output: PortableAgentRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
         "agent.exists": PortableAgentExists,
@@ -1623,7 +1573,6 @@ export const Definition = Rpc.define({
       input: PortableTeamRemoveAgentInput,
       output: PortableAgentRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
         "agent.invalid": PortableAgentInvalid,
@@ -1634,7 +1583,6 @@ export const Definition = Rpc.define({
       input: PortableDeleteTeamInput,
       output: PortableDeleteTeamResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1643,9 +1591,7 @@ export const Definition = Rpc.define({
     "team.list": {
       input: Empty,
       output: PortableTeamListOutput,
-      errors: {
-        "project.disabled": PortableProjectDisabled,
-      },
+      errors: {},
     },
     "team.runs.list": {
       input: PortableTeamRunsListInput,
@@ -1664,7 +1610,6 @@ export const Definition = Rpc.define({
       input: PortableModelAddInput,
       output: PortableModelRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "model.exists": PortableModelExists,
         "model.invalid": PortableModelInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1674,7 +1619,6 @@ export const Definition = Rpc.define({
       input: PortableModelRemoveInput,
       output: PortableModelRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "model.missing": PortableModelMissing,
         "model.invalid": PortableModelInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1683,15 +1627,12 @@ export const Definition = Rpc.define({
     "catalog.models": {
       input: Empty,
       output: PortableCatalogModelsOutput,
-      errors: {
-        "project.disabled": PortableProjectDisabled,
-      },
+      errors: {},
     },
     "rule.add": {
       input: PortableRuleAddInput,
       output: PortableRuleRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "rule.exists": PortableRuleExists,
         "rule.invalid": PortableRuleInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1701,7 +1642,6 @@ export const Definition = Rpc.define({
       input: PortableRuleRemoveInput,
       output: PortableRuleRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "rule.missing": PortableRuleMissing,
         "rule.invalid": PortableRuleInvalid,
         "agent.protected": PortableAgentProtected,
@@ -1711,7 +1651,6 @@ export const Definition = Rpc.define({
       input: PortableRuleUpdateInput,
       output: PortableRuleRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "rule.invalid": PortableRuleInvalid,
         "agent.protected": PortableAgentProtected,
       },
@@ -1720,7 +1659,6 @@ export const Definition = Rpc.define({
       input: PortableEntryCreateInput,
       output: PortableEntryRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "entry.invalid": PortableEntryInvalid,
         "entry.exists": PortableEntryExists,
         "preset.invalid": PortablePresetInvalid,
@@ -1730,7 +1668,6 @@ export const Definition = Rpc.define({
       input: PortableEntryDeleteInput,
       output: PortableEntryRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "entry.invalid": PortableEntryInvalid,
         "entry.missing": PortableEntryMissing,
       },
@@ -1739,7 +1676,6 @@ export const Definition = Rpc.define({
       input: PortableEntryRenameInput,
       output: PortableEntryRef,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "entry.invalid": PortableEntryInvalid,
         "entry.exists": PortableEntryExists,
         "entry.missing": PortableEntryMissing,
@@ -1749,7 +1685,6 @@ export const Definition = Rpc.define({
       input: PortablePresetCreateInput,
       output: PortablePresetResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "preset.invalid": PortablePresetInvalid,
         "preset.exists": PortablePresetExists,
       },
@@ -1758,7 +1693,6 @@ export const Definition = Rpc.define({
       input: PortablePresetAddMemberInput,
       output: PortablePresetResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "preset.invalid": PortablePresetInvalid,
         "preset.exists": PortablePresetExists,
         "preset.readonly": PortablePresetReadonly,
@@ -1768,7 +1702,6 @@ export const Definition = Rpc.define({
       input: PortablePresetDeleteInput,
       output: PortablePresetResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "preset.invalid": PortablePresetInvalid,
         "preset.readonly": PortablePresetReadonly,
         "preset.inUse": PortablePresetInUse,
@@ -1778,7 +1711,6 @@ export const Definition = Rpc.define({
       input: PortableLinkSetInput,
       output: PortableLinkResult,
       errors: {
-        "project.disabled": PortableProjectDisabled,
         "link.invalid": PortableLinkInvalid,
         "link.cycle": PortableLinkCycle,
         "preset.invalid": PortablePresetInvalid,
@@ -1788,9 +1720,6 @@ export const Definition = Rpc.define({
     },
   },
   events: {
-    "project.changed": {
-      schema: PortableStatus,
-    },
     "instructions.changed": {
       schema: PortableInstructionsChanged,
     },

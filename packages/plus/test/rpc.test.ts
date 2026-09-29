@@ -13,16 +13,16 @@ import { fingerprint, resolve, scopesOf, type CustomizationRecord, type SplitRec
 import { globalRecordsPath, projectLogPath, projectRecordsPath } from "../src/instructions/paths.js"
 import { load, save } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import { disable, enable } from "../src/project.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, modelHarness, context, defaultHostTemplates, fullContext, mcpHarness, modelInfo, modelRef, promptHarness, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 test("definition id, methods, and events contract", () => {
   expect(Plus.Definition.id).toBe("opencode.plus")
-  expect("project.status" in Plus.Definition.methods).toBe(true)
-  expect("project.enable" in Plus.Definition.methods).toBe(true)
-  expect("project.disable" in Plus.Definition.methods).toBe(true)
-  expect("project.changed" in Plus.Definition.events).toBe(true)
+  // Project mode is gone: no project.* method or event survives.
+  expect("project.status" in Plus.Definition.methods).toBe(false)
+  expect("project.enable" in Plus.Definition.methods).toBe(false)
+  expect("project.disable" in Plus.Definition.methods).toBe(false)
+  expect("project.changed" in Plus.Definition.events).toBe(false)
 })
 
 test("instructions and agent methods and the instructions.changed event are present", () => {
@@ -88,10 +88,9 @@ async function tempRoot(): Promise<{ project: string; config: string }> {
   const config = path.join(root, "config")
   process.env.OPENCODE_CONFIG_DIR = config
   const project = path.join(root, "project")
-  // Project mode resolves upward, so an ancestor of TMPDIR can be enabled
-  // (the development workspace is). The fixture writes its own explicit
-  // disabled marker; tests that need project mode call enable(project).
-  await disable(project)
+  // Project config resolves upward, so an ancestor of TMPDIR can carry one
+  // (the development workspace may). No fixture file is needed: every test
+  // writes the project store it inspects, and Plus is active regardless.
   return { project, config }
 }
 
@@ -231,41 +230,20 @@ async function logLines(logPath: string): Promise<string[]> {
   return (await file.text()).split("\n").filter((line) => line.trim().length > 0)
 }
 
-test("gated methods fail with project.disabled when project mode is off", async () => {
+test("handlers act on a directory with no project config and write nothing on reads", async () => {
   const { project } = await tempRoot()
   const handlers = createHandlers(fullContext({ directory: project }), createState())
-  const captured: { current?: CapturedError } = {}
-  await expectDeclaredError(handlers["instructions.snapshot"](undefined, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["instructions.refresh"](undefined, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(
-    handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [] }, throwingContext(captured)),
-    captured,
-    "project.disabled",
-  )
-  await expectDeclaredError(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["agent.rename"]({ scope: "project", from: "a", to: "b" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["agent.delete"]({ scope: "project", id: "a" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["skill.create"]({ name: "x", body: "y" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["skill.import"]({ path: "/tmp/x.md" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["skill.delete"]({ id: "x" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["base.create"]({ id: "x", title: "X", text: "y" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["base.delete"]({ id: "x" }, throwingContext(captured)), captured, "project.disabled")
-  // OpenCodePlus: instruction.create/delete are disabled pending the Context
-  // catalogue and refuse with instruction.invalid before the project gate.
-  await expectDeclaredError(handlers["instruction.create"]({ name: "x", text: "y" }, throwingContext(captured)), captured, "instruction.invalid")
-  await expectDeclaredError(handlers["instruction.delete"]({ name: "x" }, throwingContext(captured)), captured, "instruction.invalid")
-  await expectDeclaredError(handlers["mcp.add"]({ name: "x", config: { type: "remote", url: "https://x.test" } }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["mcp.remove"]({ name: "x" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["team.create"]({ level: "project", team: "x" }, throwingContext(captured)), captured, "project.disabled")
-  await expectDeclaredError(handlers["team.setEnabled"]({ level: "project", team: "x", enabled: true }, throwingContext(captured)), captured, "project.disabled")
-  const status = await Effect.runPromise(handlers["project.status"](undefined, throwingContext(captured)))
-  expect(status).toEqual({ enabled: false, directory: project })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(snapshot.revision).toBe(0)
+  expect(snapshot.globalRevision).toBe(0)
+  expect(await Bun.file(path.join(project, ".opencodeplus", "project.json")).exists()).toBe(false)
+  const logged = await Effect.runPromise(handlers["instructions.log"]({}, throwingContext({})))
+  expect(logged.total).toBe(0)
+  expect(await Bun.file(path.join(project, ".opencodeplus")).exists()).toBe(false)
 })
 
 test("snapshot shape carries both revisions, agents, items, records, servers, and protectedAgents", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   // Empty built-in registry: this test pins the disk-only snapshot shape, not
   // the shipped roster (covered by the dedicated well-formedness test).
   const handlers = createHandlers(fullContext({ directory: project, agents: [agentInfo("alpha", "upstream")] }), createState(), {
@@ -285,7 +263,6 @@ test("snapshot shape carries both revisions, agents, items, records, servers, an
 
 test("snapshot carries userBase and codemode flags on the right items", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const coder = { id: "coder", description: "code mode tool" }
   const ctx = fullContext({ directory: project, tools: [coder, { id: "reader", description: "native tool", options: { codemode: false } }] })
   const state = createState()
@@ -306,7 +283,6 @@ test("snapshot carries userBase and codemode flags on the right items", async ()
 
 test("snapshot carries code mode namespace, pinned, execute, and pin across the boundary", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({
     directory: project,
     tools: [{ id: "coder", description: "code mode tool", options: { namespace: "ns", pinned: true } }],
@@ -350,7 +326,6 @@ test("snapshot carries code mode namespace, pinned, execute, and pin across the 
 
 test("mutate routes project records to the project store and global/defaults records to the global store", async () => {
   const { project, config } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const records: Plus.SnapshotRecord[] = [
     record("tool:reader", { agent: "alpha", level: "project", text: "project text" }),
@@ -383,7 +358,6 @@ test("mutate routes project records to the project store and global/defaults rec
 
 test("mutate stale on either revision returns the fresh snapshot without writing", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const seeded = await Effect.runPromise(
     handlers["instructions.mutate"]({ expectedRevision: 0, expectedGlobalRevision: 0, records: [record("tool:a", { text: "first" }), record("tool:b", { level: "global", agent: "beta", text: "g" })] }, throwingContext({})),
@@ -409,7 +383,6 @@ test("mutate stale on either revision returns the fresh snapshot without writing
 
 test("successful mutate persists, republishes, and emits instructions.changed with both revisions", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const state = createState()
   const emitted = captureEmits(state)
   const handlers = createHandlers(fullContext({ directory: project }), state)
@@ -424,7 +397,6 @@ test("successful mutate persists, republishes, and emits instructions.changed wi
 
 test("instructions.assembled reads the host after application and reflects an excluded section's absence", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const text = "# One\n\na\n\n# Two\n\nb\n"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -478,7 +450,6 @@ test("instructions.assembled reads the host after application and reflects an ex
 
 test("a records-only mutate re-applies to the host", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -536,7 +507,6 @@ test("a records-only mutate re-applies to the host", async () => {
 
 test("an unchanged republish does not reinstall", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -582,7 +552,6 @@ test("an unchanged republish does not reinstall", async () => {
 
 test("two publishes after a Code Mode text edit keep an identical fingerprint and do not reinstall", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -653,7 +622,6 @@ test("two publishes after a Code Mode text edit keep an identical fingerprint an
 
 test("two publishes with an active model keep an identical fingerprint and do not reinstall", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -720,7 +688,6 @@ test("two publishes with an active model keep an identical fingerprint and do no
 
 test("two publishes with discovered perm candidates keep an identical fingerprint and do not reinstall", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -793,7 +760,6 @@ test("two publishes with discovered perm candidates keep an identical fingerprin
 
 test("instructions.assembled reports the registry tool description for a per-agent override", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   // alpha has no agent file, so it is addressed at Defaults.
   await linkToBuild(project, ["alpha"], "defaults")
   const agents = agentHarness([agentInfo("alpha", "upstream role")])
@@ -833,7 +799,6 @@ test("instructions.assembled reports the registry tool description for a per-age
 
 test("instructions.assembled prefers the agent's private skill copy over the original", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const agents = agentHarness([agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")])
   for (const id of ["alpha", "beta"]) {
     const agentPath = path.join(project, ".opencode", "agent", `${id}.md`)
@@ -903,7 +868,6 @@ test("instructions.assembled prefers the agent's private skill copy over the ori
 // and no record is copied.
 test("agent.create from the Native build preset copies mode and description, links, and copies no records", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const native = {
     ...agentInfo("build", "Build the thing."),
     description: "The default agent.",
@@ -944,7 +908,6 @@ test("agent.create from the Native build preset copies mode and description, lin
 
 test("snapshot reports built-in agents with defaults scope once without project or global duplication", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const builtinInfos = [
     agentInfo("build", "build agent"),
     agentInfo("plan", "plan agent"),
@@ -980,7 +943,6 @@ test("snapshot reports built-in agents with defaults scope once without project 
 
 test("agent create/rename/delete work at both scopes and create accepts a preset", async () => {
   const { project, config } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   // No preset: "None — everything off", a file with core's default mode only.
   const createdProject = await Effect.runPromise(
@@ -1005,7 +967,6 @@ test("agent create/rename/delete work at both scopes and create accepts a preset
 
 test("agent methods raise every declared error", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})))
   const exists: { current?: CapturedError } = {}
@@ -1026,7 +987,6 @@ test("agent methods raise every declared error", async () => {
 
 test("skill create and import write SKILL.md and raise declared errors", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["skill.create"]({ name: "notes", body: "Take notes." }, throwingContext({})))
   expect(created).toEqual({ id: "notes", path: path.join(project, ".opencode", "skill", "notes", "SKILL.md"), scope: "project" })
@@ -1051,7 +1011,6 @@ test("skill create and import write SKILL.md and raise declared errors", async (
 
 test("skill delete removes the project SKILL.md directory and raises declared errors", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["skill.create"]({ name: "notes", body: "Take notes." }, throwingContext({})))
   const deleted = await Effect.runPromise(handlers["skill.delete"]({ id: "notes" }, throwingContext({})))
@@ -1067,7 +1026,7 @@ test("skill delete removes the project SKILL.md directory and raises declared er
 test("skill create writes each scope to its own directory, needs no project mode off-project, and delete removes it", async () => {
   const { project, config } = await tempRoot()
   const handlers = createHandlers(fullContext({ directory: project }), createState())
-  // tempRoot disabled project mode: the non-project scopes still land.
+  // The project has no config of its own; the non-project scopes still land.
   const global = await Effect.runPromise(handlers["skill.create"]({ name: "g", body: "g body", scope: "global" }, throwingContext({})))
   expect(global).toEqual({ id: "g", path: path.join(config, "skills", "g", "SKILL.md"), scope: "global" })
   const defaults = await Effect.runPromise(
@@ -1086,13 +1045,11 @@ test("skill create writes each scope to its own directory, needs no project mode
     missing,
     "skill.invalid",
   )
-  // The default scope still requires project mode.
-  const disabled: { current?: CapturedError } = {}
-  await expectDeclaredError(
-    handlers["skill.create"]({ name: "proj", body: "x" }, throwingContext(disabled)),
-    disabled,
-    "project.disabled",
-  )
+  // The default scope writes the project's own .opencode/skill with no
+  // project config present.
+  const projectSkill = await Effect.runPromise(handlers["skill.create"]({ name: "proj", body: "x" }, throwingContext({})))
+  expect(projectSkill.path).toBe(path.join(project, ".opencode", "skill", "proj", "SKILL.md"))
+  expect(await Bun.file(projectSkill.path).exists()).toBe(true)
   const deleted = await Effect.runPromise(handlers["skill.delete"]({ id: "g", scope: "global" }, throwingContext({})))
   expect(deleted).toEqual({ id: "g", path: global.path, scope: "global" })
   expect(await Bun.file(global.path).exists()).toBe(false)
@@ -1100,7 +1057,6 @@ test("skill create writes each scope to its own directory, needs no project mode
 
 test("rule remove drops customizations so re-adding the rule reads enabled:true", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   // The row is read under the native `build` agent: Defaults "for every
   // agent" itself falls back to off (DESIGN §3.3), a native agent to its
   // native value, so only a leftover customization could turn it off.
@@ -1185,7 +1141,6 @@ test("rule remove drops customizations so re-adding the rule reads enabled:true"
 
 test("rule.add and rule.update accept an optional refusal message at the RPC boundary", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   await Effect.runPromise(
     handlers["rule.add"](
@@ -1221,7 +1176,6 @@ test("rule.add and rule.update accept an optional refusal message at the RPC bou
 
 test("rule.update keeps a matched Teams rule's catalogue on a message edit and materialises the addressed catalogue for a new override", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const added = await Effect.runPromise(
     handlers["rule.add"](
@@ -1296,7 +1250,6 @@ test("rule.update keeps a matched Teams rule's catalogue on a message edit and m
 
 test("skill delete drops item-addressed customizations so re-created skill resolves new body", async () => {
   const { project } = await tempRoot()
-  await enable(project)
 
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
@@ -1400,7 +1353,6 @@ test("skill delete drops item-addressed customizations so re-created skill resol
 
 test("base create refuses a builtin id so user templates can never shadow the host", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const builtin: { current?: CapturedError } = {}
   await expectDeclaredError(
@@ -1417,7 +1369,6 @@ test("base delete removes a legacy builtin-id shadow file to restore the host te
   // file exists on disk, so base.delete removes it instead of refusing as
   // builtin. Deleting the shadow restores the host template in the snapshot.
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const { userBaseFile } = await import("../src/agents/base.js")
   await fs.mkdir(path.dirname(userBaseFile("gpt")), { recursive: true })
@@ -1435,7 +1386,6 @@ test("base delete removes a legacy builtin-id shadow file to restore the host te
 
 test("base create stores a user template and raises declared errors", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwingContext({})))
   expect(created).toEqual({ id: "custom" })
@@ -1451,7 +1401,6 @@ test("base create stores a user template and raises declared errors", async () =
 
 test("base delete removes a user template, refuses missing, and refuses builtins without a shadow", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   await Effect.runPromise(handlers["base.create"]({ id: "custom", title: "Custom.txt", text: "custom base" }, throwingContext({})))
   const deleted = await Effect.runPromise(handlers["base.delete"]({ id: "custom" }, throwingContext({})))
@@ -1472,7 +1421,6 @@ test("base delete removes a user template, refuses missing, and refuses builtins
 // the rework re-enables them with the feature.
 test.skip("instruction create writes a project file core discovery picks up and raises declared errors", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})))
   expect(created.path).toBe(path.join(project, "AGENTS.md"))
@@ -1488,7 +1436,6 @@ test.skip("instruction create writes a project file core discovery picks up and 
 
 test.skip("instruction delete removes the project file, refuses traversal, and raises declared errors", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const created = await Effect.runPromise(handlers["instruction.create"]({ name: "AGENTS.md", text: "Follow the guide." }, throwingContext({})))
   const deleted = await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
@@ -1505,7 +1452,6 @@ test.skip("instruction delete removes the project file, refuses traversal, and r
 
 test("mcp add and remove edit the project config and raise declared errors", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const added = await Effect.runPromise(
     handlers["mcp.add"]({ name: "search", config: { type: "remote", url: "https://example.test" } }, throwingContext({})),
@@ -1536,7 +1482,6 @@ test("mcp add and remove edit the project config and raise declared errors", asy
 
 test("mcp methods refuse to destroy an unparseable project config", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const target = path.join(project, ".opencode", "opencode.json")
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, "{not json\n")
@@ -1554,7 +1499,6 @@ test("mcp methods refuse to destroy an unparseable project config", async () => 
 
 test("session.created uses the cached active model without rediscovery", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -1656,7 +1600,6 @@ test("session.created uses the cached active model without rediscovery", async (
 
 test("two publishes with a host-owned agent and absent upstream keep an identical fingerprint", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   // No agent file: host-owned built-in with no configured model (upstream absent).
   const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")]
   const agents = agentHarness([agentInfo("ghost", "ghost role")])
@@ -1712,7 +1655,6 @@ test("two publishes with a host-owned agent and absent upstream keep an identica
 
 test("two publishes with a family-changing activation keep an identical fingerprint", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -1771,7 +1713,6 @@ test("two publishes with a family-changing activation keep an identical fingerpr
 
 test("session.created without an agent adopts the default agent's model", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const upstream = "upstream role"
   const alphaPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(alphaPath), { recursive: true })
@@ -1840,8 +1781,6 @@ test("a shared change from another Location reaches this Location without discov
   process.env.OPENCODE_CONFIG_DIR = config
   const projectA = path.join(root, "a")
   const projectB = path.join(root, "b")
-  await enable(projectA)
-  await enable(projectB)
   const models = [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-9")]
   const makeCtx = (directory: string, agentState: ReturnType<typeof agentHarness>) => {
     const location = fullContext({ directory }).location
@@ -1919,7 +1858,6 @@ test("a shared change from another Location reaches this Location without discov
 
 test("snapshot reports the Plus-active base for a file-backed agent", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const fPath = path.join(project, ".opencode", "agent", "f.md")
   await fs.mkdir(path.dirname(fPath), { recursive: true })
   await Bun.write(fPath, "f body\n")
@@ -1975,7 +1913,6 @@ test("snapshot reports the Plus-active base for a file-backed agent", async () =
 
 test("enabling a fixture team marks its non-file-backed member as plus origin", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const registry = [{ name: "ship", members: [{ id: "mate", body: "ship mate body" }] }]
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: registry })
@@ -2001,7 +1938,6 @@ test("snapshot reports ancestor-backed agent with ancestor: true and omits the k
   await fs.mkdir(path.dirname(localPath), { recursive: true })
   await Bun.write(localPath, "# local agent\n")
 
-  await enable(project)
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("anc", "anc prompt"), agentInfo("local", "local prompt")],
@@ -2026,7 +1962,6 @@ test("snapshot reports ancestor-backed agent with ancestor: true and omits the k
 
 test("agent delete removes customization records so re-created agent does not inherit override", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
 
   await Effect.runPromise(
@@ -2087,7 +2022,6 @@ test("agent delete removes customization records so re-created agent does not in
 
 test("agent delete shadowing guard keeps global records when project agent is deleted", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
 
   await Effect.runPromise(
@@ -2164,7 +2098,6 @@ test("agent delete shadowing guard keeps global records when project agent is de
 
 test("base delete drops customizations so re-created base resolves new body", async () => {
   const { project } = await tempRoot()
-  await enable(project)
 
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
@@ -2251,7 +2184,6 @@ test("base delete drops customizations so re-created base resolves new body", as
 
 test.skip("instruction delete drops customizations so re-created instruction resolves new body", async () => {
   const { project } = await tempRoot()
-  await enable(project)
 
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
@@ -2339,7 +2271,6 @@ test.skip("instruction delete drops customizations so re-created instruction res
 
 test("mcp remove drops customizations from global store so re-created mcp resolves new body", async () => {
   const { project } = await tempRoot()
-  await enable(project)
 
   const baseMcp = mcpHarness([])
   const mcp = {
@@ -2445,8 +2376,8 @@ test("mcp remove drops customizations from global store so re-created mcp resolv
 
 test("protected agents refuse tool-actor agent writes at the RPC boundary and allow TUI writes", async () => {
   const { project } = await tempRoot()
-  await enable(project)
-  // enable() writes the default config; put a protected agent in it.
+  // The test writes the project config itself; put a protected agent in it.
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2523,7 +2454,7 @@ test("protected agents refuse tool-actor agent writes at the RPC boundary and al
 
 test("protected agents refuse tool-actor model add/remove at the RPC boundary and allow TUI writes", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2572,7 +2503,7 @@ test("protected agents refuse tool-actor model add/remove at the RPC boundary an
 
 test("protected agents refuse tool-actor rule writes at the RPC boundary and allow TUI writes", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2646,7 +2577,7 @@ test("protected agents refuse tool-actor rule writes at the RPC boundary and all
 
 test("rule.remove as a tool actor refuses when the item cascade would erase a protected agent's row", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2734,7 +2665,7 @@ test("rule.remove as a tool actor refuses when the item cascade would erase a pr
 
 test("rule.remove as a tool actor still drops customizations of unprotected agents", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2792,7 +2723,7 @@ test("rule.remove as a tool actor still drops customizations of unprotected agen
 
 test("skill.delete as a tool actor refuses when the item cascade would erase a protected agent's row", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2849,7 +2780,7 @@ test("skill.delete as a tool actor refuses when the item cascade would erase a p
 
 test("base.delete and mcp.remove as tool actors refuse when the cascade would erase a protected row", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),
@@ -2910,7 +2841,7 @@ test("base.delete and mcp.remove as tool actors refuse when the cascade would er
 
 test("instructions.mutate refuses a tool actor changing a protected agent's row and allows unchanged carries and TUI writes", async () => {
   const { project } = await tempRoot()
-  await enable(project)
+  await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
   await Bun.write(
     path.join(project, ".opencodeplus", "project.json"),
     JSON.stringify({ version: 1, protectedAgents: ["alpha"] }),

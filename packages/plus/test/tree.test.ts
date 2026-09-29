@@ -10,7 +10,6 @@ import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, skillScopeOfNode, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
-import { enable } from "../src/project.js"
 import { saveRun } from "../src/teams/run.js"
 import { fullContext } from "./harness.js"
 
@@ -430,7 +429,6 @@ test("a team member's own rows survive the snapshot boundary into the Policy gro
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
   const project = path.join(root, "project")
-  await enable(project)
   const memberFile = path.join(projectTeamsPath(project), "crew", `${member}.md`)
   await fs.mkdir(path.dirname(memberFile), { recursive: true })
   await Bun.write(memberFile, formatMarkdown({ description: `crew/${member}` }, "role"))
@@ -691,7 +689,6 @@ test("a team created from the Defaults Teams group is stored at project or globa
   teamRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = {
