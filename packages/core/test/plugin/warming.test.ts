@@ -473,4 +473,130 @@ describe("WarmingPlugin", () => {
       expect(warmed.every((call) => call.prompt === "global")).toBe(true)
     }),
   )
+
+  describe("warming hook", () => {
+    const setup = Effect.fn("setupHook")(function* (
+      decide: (event: SessionHooks["warming"]) => void,
+      warming: unknown = { prompt: "global", interval: "1 second", duration: "1 hour" },
+    ) {
+      const config = yield* makeConfig([document({ warming })])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const hooks = yield* PluginHooks.Service
+      const seen: Array<SessionHooks["warming"]> = []
+      yield* hooks.register("session", "warming", (event) =>
+        Effect.sync(() => {
+          decide(event)
+          seen.push({ ...event })
+        }),
+      )
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const sessions = yield* makeSessions()
+      return { calls, seen, sessions }
+    })
+
+    it.effect("sends no warming request when the hook disables it on activity", () =>
+      Effect.gen(function* () {
+        const state = { off: true }
+        const test = yield* setup((event) => {
+          if (event.phase === "activity" && state.off) event.settings = undefined
+        })
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(3)
+        expect(callsFor(test.calls, test.sessions.parent)).toEqual([])
+        // Control: the next activity with the hook leaving the settings alone warms.
+        state.off = false
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(3)
+        expect(callsFor(test.calls, test.sessions.parent).length).toBeGreaterThan(0)
+      }),
+    )
+
+    it.effect("enables warming the configuration leaves off", () =>
+      Effect.gen(function* () {
+        const test = yield* setup((event) => {
+          if (event.settings === undefined) event.settings = { prompt: "plugin", interval: 1_000, duration: 5_000 }
+        }, false)
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(3)
+        expect(callsFor(test.calls, test.sessions.parent).length).toBeGreaterThan(0)
+        expect(callsFor(test.calls, test.sessions.parent).every((call) => call.prompt === "plugin")).toBe(true)
+      }),
+    )
+
+    it.effect("keeps warming past the configured duration when the hook raises it, then stops at the new end", () =>
+      Effect.gen(function* () {
+        const test = yield* setup(
+          (event) => {
+            if (event.phase === "activity" && event.settings) event.settings.duration = 6_000
+          },
+          { prompt: "global", interval: "1 second", duration: "2 seconds" },
+        )
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(4)
+        // The configured two-second window would have ended; the raised window still warms.
+        const warmed = callsFor(test.calls, test.sessions.parent).length
+        expect(warmed).toBeGreaterThanOrEqual(3)
+        yield* advance(4)
+        const ended = callsFor(test.calls, test.sessions.parent).length
+        expect(ended).toBeGreaterThan(warmed)
+        yield* cross("1 minute")
+        expect(callsFor(test.calls, test.sessions.parent).length).toBe(ended)
+      }),
+    )
+
+    it.effect("stops without sending when the hook disables warming before a warming request", () =>
+      Effect.gen(function* () {
+        const state = { stop: false }
+        const test = yield* setup((event) => {
+          if (event.phase === "warm" && state.stop) event.settings = undefined
+        })
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(2)
+        const warmed = callsFor(test.calls, test.sessions.parent).length
+        expect(warmed).toBeGreaterThan(0)
+        state.stop = true
+        yield* advance(3)
+        yield* cross("4 minutes")
+        expect(callsFor(test.calls, test.sessions.parent).length).toBe(warmed)
+        // The stop reached the hook as a warm decision, and later decisions stopped with the loop.
+        expect(test.seen.filter((event) => event.phase === "warm" && event.settings === undefined).length).toBe(1)
+      }),
+    )
+
+    it.effect("re-times the window from its start when the hook shortens the duration before a warming request", () =>
+      Effect.gen(function* () {
+        const state = { duration: 3_600_000 }
+        const test = yield* setup((event) => {
+          if (event.phase === "warm" && event.settings) event.settings.duration = state.duration
+        })
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(3)
+        const warmed = callsFor(test.calls, test.sessions.parent).length
+        expect(warmed).toBeGreaterThan(0)
+        // The window started about three seconds ago, so a two-second window has already ended.
+        state.duration = 2_000
+        yield* advance(3)
+        yield* cross("4 minutes")
+        expect(callsFor(test.calls, test.sessions.parent).length).toBe(warmed)
+      }),
+    )
+
+    it.effect("reports phase, window start, agent and model", () =>
+      Effect.gen(function* () {
+        const test = yield* setup(() => {})
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* advance(2)
+        const activity = test.seen.filter((event) => event.phase === "activity")
+        const warm = test.seen.filter((event) => event.phase === "warm")
+        expect(activity.length).toBe(1)
+        expect(warm.length).toBeGreaterThan(0)
+        expect(activity[0]?.since).toBe(activity[0]?.now)
+        expect(warm.every((event) => event.since === activity[0]?.since && event.now > event.since)).toBe(true)
+        expect(test.seen.every((event) => event.sessionID === test.sessions.parent)).toBe(true)
+        expect(test.seen.every((event) => event.agent === Agent.ID.make("build"))).toBe(true)
+        expect(test.seen.every((event) => event.model.providerID === "alpha" && event.model.id === "m1")).toBe(true)
+      }),
+    )
+  })
 })

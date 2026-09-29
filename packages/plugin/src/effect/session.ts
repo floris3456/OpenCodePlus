@@ -135,6 +135,31 @@ export interface SessionRetry {
   decision: SessionRetryDecision
 }
 
+/** Warming settings in milliseconds. */
+export interface SessionWarmingSettings {
+  prompt: string
+  interval: number
+  duration: number
+}
+
+/**
+ * Decides cache warming for one Session. Runs when a non-warming request (re)starts the warming
+ * window (`activity`) and again before each warming request (`warm`). `settings` starts as the
+ * configured value (for `warm`, the settings in force); set it to undefined to stop warming, or
+ * change it. At `warm` a changed duration re-times the window from `since`.
+ */
+export interface SessionWarming {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  readonly model: Model.Ref
+  readonly phase: "activity" | "warm"
+  /** Epoch ms of the latest non-warming request: the start of the warming window. */
+  readonly since: number
+  /** Epoch ms of this decision. */
+  readonly now: number
+  settings: SessionWarmingSettings | undefined
+}
+
 export interface SessionCatalog {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
@@ -156,6 +181,7 @@ export interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly warming: SessionWarming
 }
 
 export type SessionDomain = Pick<
