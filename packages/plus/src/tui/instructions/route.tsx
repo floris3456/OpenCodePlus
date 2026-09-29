@@ -106,6 +106,9 @@ export function resetToolCountLog(): void {
   toolCountLog.sync.length = 0
   toolCountLog.sliced.length = 0
 }
+export function stopToolCountLog(): void {
+  toolCountLog.enabled = false
+}
 
 /**
  * Test observability for the list window (not read in production): one entry
@@ -121,6 +124,9 @@ export function resetListMountLog(): void {
   listMountLog.enabled = true
   listMountLog.rows.length = 0
 }
+export function stopListMountLog(): void {
+  listMountLog.enabled = false
+}
 
 // The list pane renders only the rows around the scrollbox viewport, with a
 // margin so a key or a wheel step lands on already-mounted rows. OpenTUI's
@@ -128,7 +134,6 @@ export function resetListMountLog(): void {
 // without the window a large level creates one native text handle per row and
 // can exhaust the renderer's SyntaxStyle handles.
 export const LIST_WINDOW_MARGIN = 12
-
 
 // The footer keeps the first hints that fit, in priority order, and always
 // its last two (? help, esc): everything else is in the help dialog.

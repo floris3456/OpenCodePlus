@@ -736,6 +736,8 @@ test("TeamMonitorTab ctrl+d surfaces warning toast when stop RPC is rejected", a
 
 test("TeamMonitorTab refreshes runs only on session lifecycle events, once per 250 ms burst", async () => {
   let listCalls = 0
+  let lastCallAt = 0
+  let runsState = "initial"
   let sessionListener: ((event: { details: { type: string } }) => void) | undefined
 
   const white = RGBA.fromHex("#ffffff")
@@ -760,7 +762,22 @@ test("TeamMonitorTab refreshes runs only on session lifecycle events, once per 2
       rpc: () => ({
         "team.runs.list": async () => {
           listCalls++
-          return { runs: [] }
+          lastCallAt = performance.now()
+          return {
+            runs: [
+              {
+                id: `w-run-${runsState}`,
+                role: "r",
+                state: "working",
+                task: null,
+                head: "abcdef",
+                worktree: "present",
+                lastUsed: "2026-09-10T12:00:00.000Z",
+                sessionID: "ses_run",
+                parent: "main-01",
+              },
+            ],
+          }
         },
         events: { on: () => () => {} },
       }),
@@ -787,15 +804,31 @@ test("TeamMonitorTab refreshes runs only on session lifecycle events, once per 2
   await new Promise((r) => setTimeout(r, 350))
   expect(listCalls).toBe(loaded)
 
-  // A burst of 20 lifecycle events inside one window costs one trailing refresh.
-  for (let i = 0; i < 20; i++) sessionListener!({ details: { type: "session.execution.started" } })
-  await new Promise((r) => setTimeout(r, 350))
+  // A burst of 20 lifecycle events inside one window costs one trailing
+  // refresh, no earlier than the window's end, and the result reflects the
+  // state after the LAST event: the runs list changes mid-burst.
+  const firstEventAt = performance.now()
+  sessionListener!({ details: { type: "session.execution.started" } })
+  runsState = "final"
+  for (let i = 1; i < 20; i++) sessionListener!({ details: { type: "session.execution.started" } })
+  await new Promise((r) => setTimeout(r, 150))
+  expect(listCalls).toBe(loaded)
+  await new Promise((r) => setTimeout(r, 200))
   expect(listCalls).toBe(loaded + 1)
+  expect(lastCallAt - firstEventAt).toBeGreaterThanOrEqual(250)
+  await output.renderOnce()
+  expect(output.captureCharFrame()).toContain("w-run-final")
+  expect(output.captureCharFrame()).not.toContain("w-run-initial")
 
   // Control: a single lifecycle event after the window refreshes once more.
   sessionListener!({ details: { type: "session.execution.succeeded" } })
   await new Promise((r) => setTimeout(r, 350))
   expect(listCalls).toBe(loaded + 2)
 
+  // A refresh scheduled but not yet fired is dropped when the tab unmounts.
+  sessionListener!({ details: { type: "session.execution.succeeded" } })
   output.renderer.destroy()
+  const callsAtDispose = listCalls
+  await new Promise((r) => setTimeout(r, 350))
+  expect(listCalls).toBe(callsAtDispose)
 })

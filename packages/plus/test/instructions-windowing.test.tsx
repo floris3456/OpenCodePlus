@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { fingerprint } from "../src/instructions/model.js"
-import { LIST_WINDOW_MARGIN, listMountLog, resetListMountLog } from "../src/tui/instructions/route.js"
+import { LIST_WINDOW_MARGIN, listMountLog, resetListMountLog, stopListMountLog } from "../src/tui/instructions/route.js"
 import { createSnapshot, renderInstructionsRoute } from "./tui.js"
 import { dispatch, selectedRow } from "./instructions-nav.js"
+
+// The mount log is module state shared by every test in the process.
+afterEach(() => stopListMountLog())
 
 // One project agent with thousands of tool rows: a level large enough that the
 // list pane instantiating every row would exhaust the renderer.

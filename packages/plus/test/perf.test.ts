@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
 import { controlItems } from "../src/instructions/agent-controls.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
@@ -7,11 +7,14 @@ import { memoInputOf } from "../src/instructions/snapshot.js"
 import { buildTreeMemo, expandedTree, tree, treeOf, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
-import { resetToolCountLog, toolCountLog } from "../src/tui/instructions/route.js"
+import { resetToolCountLog, stopToolCountLog, toolCountLog } from "../src/tui/instructions/route.js"
 import { createInstructionsState, type InstructionsState } from "../src/tui/instructions/state.js"
 import { LEVELS, parentsOf, toolCountOf, workspaceOf, type ToolCount } from "../src/tui/instructions/workspace.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import { breadcrumb, dispatch, moveTo, selectedRow, sleep } from "./instructions-nav.js"
+
+// The tool count log is module state shared by every test in the process.
+afterEach(() => stopToolCountLog())
 
 function makeSyntheticInput() {
   const agents: AgentSource[] = []
