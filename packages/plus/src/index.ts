@@ -1029,10 +1029,41 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const protectedMember = template?.find((member) => config.protectedAgents.includes(member.id))
       const refusal = refuseProtectedForTool(input.actor, protectedMember?.id, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
+      // Validate every preset member before anything is created: a refused
+      // create must leave no team directory (and no `.opencodeplus`) behind.
+      const planned = (template ?? []).map((member) => {
+        if (member.id === "special") return { ok: false as const, code: "team.invalid" as const, reason: 'Member id "special" is reserved' }
+        const memberId = validateAgentId(member.id)
+        if (!memberId.ok) return { ok: false as const, code: "team.create" as const, reason: memberId.reason }
+        return {
+          ok: true as const,
+          id: memberId.id,
+          ...(member.mode === undefined ? {} : { mode: member.mode }),
+          ...(member.description === undefined ? {} : { description: member.description }),
+        }
+      })
+      const refusedMember = planned.find((member) => !member.ok)
+      if (refusedMember !== undefined && !refusedMember.ok)
+        return {
+          ok: false as const,
+          error:
+            refusedMember.code === "team.invalid"
+              ? { code: "team.invalid" as const, message: refusedMember.reason, data: { team: validated.team, reason: refusedMember.reason } }
+              : { code: "team.create" as const, message: `Could not create team ${validated.team}: ${refusedMember.reason}`, data: { level: input.level, team: validated.team, reason: refusedMember.reason } },
+        }
+      const members = planned.flatMap((member) => (member.ok ? [member] : []))
       const root = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
-      // A project-level team directory is a project-scoped write, so
-      // `.opencodeplus` is created on demand; a global team writes globally.
-      if (input.level === "project") await ensure(directory)
+      const teamDir = path.join(root, validated.team)
+      // A duplicate team is refused before any directory exists...
+      const exists = (target: string): Promise<boolean> => fs.stat(target).then(() => true, () => false)
+      if (await exists(teamDir))
+        return {
+          ok: false as const,
+          error: { code: "team.exists" as const, message: `Team ${validated.team} already exists`, data: { level: input.level, team: validated.team } },
+        }
+      // ...and a failed mkdir removes the parent chain it just created.
+      const plusExisted = await exists(path.dirname(root))
+      const rootExisted = await exists(root)
       const ensured = await fs.mkdir(root, { recursive: true }).then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -1044,12 +1075,16 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
         }
       }
-      const made = await fs.mkdir(path.join(root, validated.team)).then(
+      const made = await fs.mkdir(teamDir).then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
       )
       if (!made.ok) {
         const code = typeof made.error === "object" && made.error !== null && "code" in made.error ? made.error.code : undefined
+        if (code !== "EEXIST") {
+          if (!rootExisted) await fs.rmdir(root).catch(() => undefined)
+          if (!plusExisted) await fs.rmdir(path.dirname(root)).catch(() => undefined)
+        }
         if (code === "EEXIST")
           return {
             ok: false as const,
@@ -1061,25 +1096,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
         }
       }
+      // A project-level team directory is a project-scoped write, so
+      // `.opencodeplus` is created on demand; a global team writes globally.
+      // The config lands only once the team directory exists, so a refused
+      // create above leaves nothing behind.
+      if (input.level === "project") await ensure(directory)
       if (template !== undefined && templateName !== undefined) {
-        const teamDir = path.join(root, validated.team)
-        for (const member of template) {
-          if (member.id === "special") {
-            const reason = 'Member id "special" is reserved'
-            return {
-              ok: false as const,
-              error: { code: "team.invalid" as const, message: reason, data: { team: validated.team, reason } },
-            }
-          }
-          const memberId = validateAgentId(member.id)
-          if (!memberId.ok) {
-            const reason = memberId.reason
-            return {
-              ok: false as const,
-              error: { code: "team.create" as const, message: `Could not create team ${validated.team}: ${reason}`, data: { level: input.level, team: validated.team, reason } },
-            }
-          }
-          const target = path.join(teamDir, `${memberId.id}.md`)
+        for (const member of members) {
+          const target = path.join(teamDir, `${member.id}.md`)
           // Core reads mode and description from the file; the body stays
           // empty so the role text, like everything else, follows the link.
           const content = formatMarkdown(presetFields(member), "")
@@ -1102,7 +1126,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const updated = new Date().toISOString()
         const linked = await saveLinks(directory, [
           { type: "link", level: input.level, agent: null, team: owner, preset: { kind: "team", id: templateName }, updated },
-          ...template.map(
+          ...members.map(
             (member): LinkRecord => ({
               type: "link",
               level: input.level,
@@ -1248,9 +1272,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // empty body; a team-scoped link makes the rest follow the preset.
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
-      if (input.level === "project") await ensure(directory)
       await fs.mkdir(path.dirname(target), { recursive: true })
       await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      // The config lands only once the member file exists, so a failed write
+      // above leaves nothing behind.
+      if (input.level === "project") await ensure(directory)
       await setOwnerLink(
         directory,
         { level: input.level, agent: validated.id, team: { level: input.level, team: validatedTeam.team } },
@@ -2688,7 +2714,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.addTeamAgent(input))
         if (!result.ok) {
           const error = result.error
-            if (error.code === "team.unknown") return yield* Effect.fail(context.error(error.code, error.message, error.data))
+          if (error.code === "team.unknown") return yield* Effect.fail(context.error(error.code, error.message, error.data))
           if (error.code === "team.invalid") return yield* Effect.fail(context.error(error.code, error.message, error.data))
           if (error.code === "agent.exists") return yield* Effect.fail(context.error(error.code, error.message, error.data))
           if (error.code === "agent.protected") return yield* Effect.fail(context.error(error.code, error.message, error.data))
