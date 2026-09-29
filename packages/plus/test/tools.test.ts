@@ -31,7 +31,7 @@ import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
-import { presetStateOfSnapshot } from "../src/instructions/snapshot.js"
+import { memoInputOf, presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
@@ -1303,6 +1303,31 @@ test("create model, activate through set, list with item:model and active, then 
   const deleted = (await runOk(need(tools, "instructions_delete"), { id: row.id, confirm: true })) as { providerID: string }
   expect(deleted).toMatchObject({ providerID: "acme" })
   void modelHarness
+})
+
+test("set warming on a model row stores it through the real store; bad values and non-model rows refuse", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const created = (await runOk(create, { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })) as { id: string }
+  const applied = (await runOk(set, { id: created.id, warming: "90m" })) as { status: string }
+  expect(applied.status).toBe('Cache warming for "acme/nova-2": 1h30m')
+  const stored = (await load(project)).records.find((record) => record.type === "model" && record.agent === "alpha")
+  expect(stored).toMatchObject({ providerID: "acme", modelID: "nova-2", warming: "1h30m" })
+  // The production snapshot reader carries it to the row (this file's memoFromSnapshot predates warming).
+  const row = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id === created.id)
+  expect(row?.badges.warming).toBe("1h30m")
+  expect(await runOk(need(tools, "instructions_show"), { id: created.id, view: "record" })).toMatchObject({ record: { warming: "1h30m" } })
+  // Refusals leave the store unchanged.
+  const before = await load(project)
+  expect((await runFail(set, { id: created.id, warming: "forever" })).message).toContain("not a warming time")
+  const tool = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.address?.item.startsWith("tool:") === true && node.address.agent === "alpha")
+  if (tool === undefined) throw new Error("missing tool row")
+  expect((await runFail(set, { id: tool.id, warming: "2h" })).message).toContain("not a model row")
+  expect((await load(project)).records).toEqual(before.records)
+  // Empty clears it again.
+  await runOk(set, { id: created.id, warming: "" })
+  expect((await load(project)).records.find((record) => record.type === "model" && record.agent === "alpha")).not.toHaveProperty("warming")
 })
 
 test("create model preserves the selected member owner and returns its addressable row", async () => {
