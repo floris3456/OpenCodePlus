@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createSignal, Show } from "solid-js"
 import { Definition, type Plus } from "../rpc.js"
 
 // Cache warming in the TUI: a countdown under the prompt to when warming stops
@@ -98,11 +98,11 @@ export function createWarming(context: Plugin.Context) {
     context.ui.toast.show({ variant: "info", message: "Cache warming for this chat follows the model settings" })
   }
 
+  // The footer follows the prompt it sits under. A remount (dialogs, route
+  // changes) may mount the new prompt before the old one cleans up, so the
+  // last session stays tracked instead of being dropped on cleanup.
   function Footer(props: { readonly sessionID?: string }) {
     createEffect(() => track(props.sessionID))
-    onCleanup(() => {
-      if (tracked.sessionID === props.sessionID) track(undefined)
-    })
     return (
       <Show when={props.sessionID !== undefined ? label() : undefined}>
         {(text) => (
